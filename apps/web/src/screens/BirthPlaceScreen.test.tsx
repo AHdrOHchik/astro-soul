@@ -4,12 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GeoPlace } from '../api';
 import { SEARCH_DEBOUNCE_MS } from '../hooks/usePlaceSearch';
 import { ru } from '../i18n/ru';
-import { apiError, deferred, fakeApi, fakeTelegram, kazan, kazanka, setupUser } from '../test/fixtures';
+import { apiError, deferred, fakeApi, fakeTelegram, kazan, kazanka, rejection, setupUser } from '../test/fixtures';
 import { BirthPlaceScreen } from './BirthPlaceScreen';
 
 const copy = ru.birthPlace;
 
-function setup(initial: { query?: string; place?: GeoPlace | null } = {}) {
+function setup(initial: { query?: string; place?: GeoPlace | null; serverError?: string } = {}) {
   const api = fakeApi();
   const onNext = vi.fn();
   const onChange = vi.fn();
@@ -23,6 +23,7 @@ function setup(initial: { query?: string; place?: GeoPlace | null } = {}) {
         telegram={fakeTelegram()}
         query={query}
         place={place}
+        serverError={initial.serverError}
         onChange={(nextQuery, nextPlace) => {
           onChange(nextQuery, nextPlace);
           setQuery(nextQuery);
@@ -142,9 +143,9 @@ describe('BirthPlaceScreen', () => {
     expect(screen.queryByRole('list', { name: copy.resultsLabel })).not.toBeInTheDocument();
   });
 
-  it('shows a failure, not "nothing found", when the API has no geo route, and keeps the framework text off the screen', async () => {
+  it('shows a failure, not "nothing found", for a 404, and keeps a text that is not Russian off the screen', async () => {
     const { api, user, input, settle } = setup();
-    // What the API answers today: the route is not implemented.
+    // A missing route, in the words of a server framework rather than of the API.
     api.resolveGeo.mockRejectedValue(
       apiError('NOT_FOUND', { status: 404, serverMessage: 'Cannot POST /api/v1/geo/resolve', requestId: 'req-404' }),
     );
@@ -177,6 +178,40 @@ describe('BirthPlaceScreen', () => {
 
     expect(api.resolveGeo).toHaveBeenCalledTimes(2);
     expect(results()).toHaveLength(2);
+  });
+
+  it('says that the search is down, not that the place does not exist, when the geodata provider fails; a retry repeats the search', async () => {
+    const { api, user, input, settle } = setup();
+    api.resolveGeo.mockRejectedValueOnce(apiError('GEO_NOT_FOUND', { status: 503, requestId: 'req-503' }));
+
+    await user.type(input, 'Каз');
+    await settle();
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(ru.errors.GEO_NOT_FOUND.title);
+    expect(alert).toHaveTextContent(ru.errors.GEO_NOT_FOUND.text);
+    expect(screen.queryByText(copy.emptyTitle)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: ru.common.retry }));
+    await settle();
+
+    expect(api.resolveGeo).toHaveBeenCalledTimes(2);
+    expect(results()).toHaveLength(2);
+  });
+
+  it('shows what the server says about the query at the field, where the query is', async () => {
+    const { api, user, input, settle } = setup();
+    api.resolveGeo.mockRejectedValue(rejection({ field: 'query', message: 'Слишком длинный запрос — введи название города' }));
+
+    await user.type(input, 'Каз');
+    await settle();
+
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toHaveTextContent('Слишком длинный запрос — введи название города');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAccessibleDescription('Слишком длинный запрос — введи название города');
+    expect(screen.queryByText(ru.errors.VALIDATION_FAILED.title)).not.toBeInTheDocument();
   });
 
   it('never shows the answer to an outdated query', async () => {
@@ -228,6 +263,26 @@ describe('BirthPlaceScreen', () => {
 
     await user.type(input, 'К');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  describe('with a place the server rejected', () => {
+    const REJECTED = 'Не знаем такой часовой пояс — выбери город заново';
+
+    it('shows the server text at the field, keeps the place on screen and puts the cursor into the field', () => {
+      const { input } = setup({ query: 'Казань', place: kazan, serverError: REJECTED });
+
+      expect(screen.getByRole('alert')).toHaveTextContent(REJECTED);
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(input).toHaveAccessibleDescription(REJECTED);
+      expect(input).toHaveFocus();
+      expect(screen.getByText(copy.timezone('Europe/Moscow'))).toBeInTheDocument();
+    });
+
+    it('lets the user go on with the same place: only the server can tell whether its verdict still stands', async () => {
+      const { user, submit, onNext } = setup({ query: 'Казань', place: kazan, serverError: REJECTED });
+      await user.click(submit);
+      expect(onNext).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('treats the keyboard Search key as "show results", not as "continue"', async () => {

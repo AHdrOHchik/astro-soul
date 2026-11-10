@@ -17,28 +17,39 @@ export interface BirthDateScreenProps {
   value: DateParts;
   /** The device's current day: the reference for the 18+ check. */
   today: Date;
+  /** The server's text about this date, when it rejected the chart request. Its checks are the ones that count. */
+  serverError?: string;
   back?: ScreenProps['back'];
   onChange: (value: DateParts) => void;
   onNext: () => void;
 }
 
 /** Screen 2. Calendar and 18+ validation happen as soon as the date is complete. */
-export function BirthDateScreen({ value, today, back, onChange, onNext }: BirthDateScreenProps) {
+export function BirthDateScreen({ value, today, serverError, back, onChange, onNext }: BirthDateScreenProps) {
   const messageId = useId();
   const field = useRef<HTMLDivElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
   const [submitted, setSubmitted] = useState(false);
+  // Where focus goes is decided once, when the screen opens. Brought back by the server's verdict, the user
+  // lands in the field it is about; an unfinished date gets the cursor; a finished one leaves focus to the title.
+  const [rejectedAtStart] = useState(serverError !== undefined);
+  const [typedAtStart] = useState(() => isDateTyped(value));
+  useEffect(() => {
+    if (rejectedAtStart) focusFirstOpenInput(field.current);
+  }, [rejectedAtStart]);
 
   const check = checkBirthDate(value, today);
   // A date that is still being typed is not an error until the user tries to go on.
   const issue = check.ok || (check.issue === 'incomplete' && !submitted) ? null : check.issue;
+  const error = issue ? copy.issues[issue] : serverError;
 
-  // "Typed" matters: 17.1.1994 is already a valid date while the user is on the way to 17.12.1994.
-  const finished = check.ok && isDateTyped(value);
+  // Counts the times typing completed a valid date. A count, not "the date is complete": a date
+  // that is already complete when the screen opens is nobody's keystroke and must not move focus.
+  const [completions, setCompletions] = useState(0);
   useEffect(() => {
-    // The last digit completed a valid date: hand focus to the button, which also folds the keyboard away.
-    if (finished && field.current?.contains(document.activeElement)) submit.current?.focus();
-  }, [finished]);
+    // After the render that shows the last digit: hand focus to the button, which also folds the keyboard away.
+    if (completions > 0 && field.current?.contains(document.activeElement)) submit.current?.focus();
+  }, [completions]);
 
   const handleSubmit = () => {
     if (check.ok) {
@@ -50,22 +61,33 @@ export function BirthDateScreen({ value, today, back, onChange, onNext }: BirthD
   };
 
   return (
-    <StepScreen step={1} title={copy.title} hint={copy.hint} back={back} submitRef={submit} focusesField onSubmit={handleSubmit}>
+    <StepScreen
+      step={1}
+      title={copy.title}
+      hint={copy.hint}
+      back={back}
+      submitRef={submit}
+      focusesField={rejectedAtStart || !typedAtStart}
+      onSubmit={handleSubmit}
+    >
       <Stack gap="sm">
         <div ref={field}>
           <SegmentedInput
             segments={SEGMENTS}
             values={value}
             separator="."
-            invalid={issue !== null}
+            invalid={error !== undefined}
             autoFocus
             describedBy={messageId}
             onChange={(next) => {
-              onChange({ day: next.day ?? '', month: next.month ?? '', year: next.year ?? '' });
+              const date = { day: next.day ?? '', month: next.month ?? '', year: next.year ?? '' };
+              onChange(date);
+              // "Typed" matters: 17.1.1994 is already a valid date while the user is on the way to 17.12.1994.
+              if (isDateTyped(date) && checkBirthDate(date, today).ok) setCompletions((count) => count + 1);
             }}
           />
         </div>
-        <FieldMessage id={messageId} error={issue && copy.issues[issue]} />
+        <FieldMessage id={messageId} error={error} />
       </Stack>
     </StepScreen>
   );
