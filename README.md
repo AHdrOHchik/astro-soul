@@ -117,6 +117,18 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 Правила, статус датасета и условия включения Nominatim — в [`geo.md`](./geo.md).
 `POST /charts` от справочника не зависит: место рождения приходит целиком с фронта.
 
+## Колесо карты без шрифтов
+
+`GET /charts/{id}/wheel.svg` — самодостаточный SVG: текст нарисован контурами
+глифов (`packages/astro/tools/build_glyphs.py` собирает их из DejaVu Sans,
+лицензия Bitstream Vera разрешает встраивание). В мобильном WebView нет
+DejaVu Sans и Segoe UI Symbol, поэтому `<text>` там превращался в «тофу» и
+наезжал на маркеры. Раскладка подписей проверяется тестом геометрически
+(`wheelLayout` в `packages/astro/astro/wheel.py`).
+
+`GET /charts/{id}/wheel.png?sig=…&size=1080` — та же картинка, растеризованная
+через `sharp`, для шаринга в чат.
+
 ## Миграции
 
 `migrations/NNNN_описание.sql`, раннер — `apps/api/src/db/migrate.ts`
@@ -169,6 +181,9 @@ Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
 `GET /charts/{id}` + подписанный `wheel.svg`, платежи (инвойсы, вебхук, подписка,
 возвраты), `DELETE /me` с каскадом.
 
+Итерация 5: контракт 1.3.0, правила возраста и версии согласия, `POST /events`,
+`wheel.png` и колесо без шрифтов.
+
 Итерация 4: контракт 1.2.1, `POST /geo/resolve` со справочником городов,
 `consent` и `time_precision` в `POST /charts`, `field_errors`, русские тексты
 ошибок, лимиты запросов, Node ≥ 22.22.2 и единая версия vitest.
@@ -178,7 +193,26 @@ Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
 
 ## Версия контракта
 
-`api.openapi.yaml` — 1.2.1. Отличия от 1.2.0 (по отчёту фронта):
+`api.openapi.yaml` — 1.3.0. Отличия от 1.2.1 (по отчёту фронта в PR #12):
+
+* `POST /geo/resolve`: `query` — минимум 2 символа; короче — `422` с
+  `field_errors[{field: "query"}]`. Пустой массив = только «города нет»;
+* `503 GEO_NOT_FOUND` отдаёт машинную причину в `details.reason`
+  (`provider_timeout | provider_unavailable | not_configured`); текст больше
+  не предлагает ручной ввод координат;
+* возраст: 18 лет — в **00:00 UTC** дня рождения, для рождённых 29 февраля
+  в невисокосный год — 1 марта (фронт повторяет то же правило);
+* согласие принимается только в редакции `CONSENT_VERSION` (сейчас `2026-11-10`);
+  устаревшая — `422` с `field_errors[{field: "consent.version"}]`;
+* `POST /api/v1/events` — события продукта батчем до 20 штук, ответ `202`,
+  закрытый список в `x-analytics-events`, ПДн в `props` отбрасываются;
+* `GET /api/v1/charts/{id}/wheel.png` — растр колеса для шаринга, в
+  `ChartResponse` добавлен `wheel_png_url`;
+* колесо SVG больше не содержит `<text>` и `font-family`: все подписи —
+  векторные контуры (`packages/astro/astro/glyphs.py`), поэтому глифы планет
+  рисуются в любом WebView, а подписи не наезжают на маркеры.
+
+Отличия 1.2.1 от 1.2.0 (по отчёту фронта в PR #2):
 
 * `VALIDATION_FAILED` — **всегда 422**, `CONFLICT` — 409; у ошибки валидации есть
   `details.field_errors[{field, message}]`, чтобы фронт подсвечивал поле;

@@ -30,6 +30,9 @@ export interface NominatimPlace {
 
 const NOMINATIM_TIMEOUT_MS = 2000;
 
+/** Машинные причины 503 `GEO_NOT_FOUND` из контракта 1.3.0. */
+export type GeoProviderReason = 'provider_timeout' | 'provider_unavailable' | 'not_configured';
+
 /**
  * Поиск города для места рождения (`geo.md`).
  *
@@ -48,10 +51,12 @@ export class GeoService {
     const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
     const limit = this.parseLimit(rawLimit);
 
-    if (query.length === 0) {
+    // Короче двух символов — 422, а не пустой массив: пустой массив по
+    // контракту 1.3.0 означает «города нет», а не «ты ввёл слишком мало».
+    if (query.length < MIN_QUERY_LENGTH) {
       throw invalidFields(
-        [{ field: 'query', message: 'Начни вводить название города' }],
-        { reason: 'geo_query_empty' },
+        [{ field: 'query', message: 'Введи хотя бы 2 буквы' }],
+        { reason: 'geo_query_too_short' },
       );
     }
 
@@ -60,11 +65,6 @@ export class GeoService {
         [{ field: 'query', message: 'Слишком длинный запрос — введи название города' }],
         { reason: 'geo_query_too_long' },
       );
-    }
-
-    // До трёх символов не ищем: это ещё не запрос, а мигание клавиатуры.
-    if (query.length < MIN_QUERY_LENGTH) {
-      return [];
     }
 
     const local = searchCities(query, limit);
@@ -90,6 +90,12 @@ export class GeoService {
    * а не пустой массив: пустой массив означает «такого города нет».
    */
   private async searchNominatim(query: string, limit: number): Promise<GeoPlace[]> {
+    if (this.env.GEO_CONTACT_EMAIL === undefined) {
+      // Политика Nominatim требует контакт в User-Agent: без него не ходим.
+      this.logger.warn('geo_provider_not_configured', { reason: 'contact_email_missing' });
+      throw this.providerUnavailable('not_configured');
+    }
+
     const url = new URL('/search', this.env.GEO_NOMINATIM_URL);
     url.searchParams.set('q', query);
     url.searchParams.set('format', 'jsonv2');
@@ -114,15 +120,23 @@ export class GeoService {
       const places = (await response.json()) as NominatimPlace[];
       return places.flatMap((place) => this.toPlace(place));
     } catch (error) {
+      const timedOut =
+        error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
       this.logger.warn('geo_provider_unavailable', {
         reason: error instanceof Error ? error.message : 'unknown',
+        timeout: timedOut,
       });
-      // 503 только когда провайдер недоступен: пустой массив — это «города нет».
-      throw new ApiError('GEO_NOT_FOUND', 503, {
-        reason: 'geo_provider_unavailable',
-        details: { provider: 'nominatim' },
-      });
+      throw this.providerUnavailable(timedOut ? 'provider_timeout' : 'provider_unavailable');
     }
+  }
+
+  /**
+   * 503 `GEO_NOT_FOUND` — только недоступность провайдера (контракт 1.3.0).
+   * `details.reason` — машинная причина: `provider_timeout | provider_unavailable |
+   * not_configured`. Пустой массив остаётся признаком «города нет».
+   */
+  private providerUnavailable(reason: GeoProviderReason): ApiError {
+    return new ApiError('GEO_NOT_FOUND', 503, { reason, details: { reason } });
   }
 
   private toPlace(place: NominatimPlace): GeoPlace[] {

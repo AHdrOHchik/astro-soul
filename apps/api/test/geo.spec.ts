@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import { createTestContext, type TestContext } from './test-app';
@@ -52,9 +52,18 @@ describe('POST /api/v1/geo/resolve', () => {
     expect(response.body).toEqual([]);
   });
 
-  it('до трёх символов не ищет и не ругается', async () => {
+  it('ищет с двух символов', async () => {
     const response = await resolve({ query: 'Мо' }).expect(200);
-    expect(response.body).toEqual([]);
+    expect((response.body as GeoPlace[]).map((place) => place.name)).toContain('Москва');
+  });
+
+  it('один символ → 422 «Введи хотя бы 2 буквы», а не пустой массив', async () => {
+    const response = await resolve({ query: 'М' }).expect(422);
+
+    expect(response.body.code).toBe('VALIDATION_FAILED');
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'query', message: 'Введи хотя бы 2 буквы' },
+    ]);
   });
 
   it('уважает limit', async () => {
@@ -76,5 +85,80 @@ describe('POST /api/v1/geo/resolve', () => {
       .post('/api/v1/geo/resolve')
       .send({ query: 'Москва' })
       .expect(401);
+  });
+});
+
+describe('POST /api/v1/geo/resolve: провайдер недоступен', () => {
+  const saved = { ...process.env };
+  let providerCtx: TestContext;
+
+  beforeAll(async () => {
+    providerCtx = await createTestContext({
+      astro: makeFakeAstro(),
+      env: { GEO_PROVIDER: 'nominatim', GEO_CONTACT_EMAIL: '' },
+    });
+  });
+
+  afterAll(async () => {
+    await providerCtx.close();
+    process.env['GEO_PROVIDER'] = saved['GEO_PROVIDER'];
+    process.env['GEO_CONTACT_EMAIL'] = saved['GEO_CONTACT_EMAIL'];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function resolveWith(query: string): request.Test {
+    return request(providerCtx.app.getHttpServer())
+      .post('/api/v1/geo/resolve')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ query });
+  }
+
+  it('нет контакта для User-Agent → 503 GEO_NOT_FOUND, reason=not_configured', async () => {
+    const response = await resolveWith('Атлан').expect(503);
+
+    expect(response.body.code).toBe('GEO_NOT_FOUND');
+    expect(response.body.details.reason).toBe('not_configured');
+    expect(response.body.message).toBe(
+      'Поиск городов временно недоступен. Попробуй ещё раз через минуту.',
+    );
+  });
+
+  it('провайдер отвечает ошибкой → reason=provider_unavailable', async () => {
+    process.env['GEO_CONTACT_EMAIL'] = 'support@example.com';
+    // Контекст читает env при создании, поэтому проверяем сервис напрямую.
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 500 })));
+
+    const { GeoService } = await import('../src/modules/geo/geo.service');
+    const { JsonLogger } = await import('../src/common/logger');
+    const env = (await import('../src/config/env')).loadEnv();
+    const service = new GeoService(
+      { ...env, GEO_PROVIDER: 'nominatim', GEO_CONTACT_EMAIL: 'a@b.c' },
+      new JsonLogger('error'),
+    );
+
+    await expect(service.resolve('Атлан', 5)).rejects.toMatchObject({
+      details: { reason: 'provider_unavailable' },
+    });
+  });
+
+  it('таймаут провайдера → reason=provider_timeout', async () => {
+    const timeout = new Error('The operation was aborted');
+    timeout.name = 'TimeoutError';
+    vi.stubGlobal('fetch', () => Promise.reject(timeout));
+
+    const { GeoService } = await import('../src/modules/geo/geo.service');
+    const { JsonLogger } = await import('../src/common/logger');
+    const env = (await import('../src/config/env')).loadEnv();
+    const service = new GeoService(
+      { ...env, GEO_PROVIDER: 'nominatim', GEO_CONTACT_EMAIL: 'a@b.c' },
+      new JsonLogger('error'),
+    );
+
+    await expect(service.resolve('Атлан', 5)).rejects.toMatchObject({
+      details: { reason: 'provider_timeout' },
+    });
   });
 });

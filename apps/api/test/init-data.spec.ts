@@ -1,11 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { verifyInitData, INIT_DATA_MAX_AGE_SECONDS } from '../src/modules/auth/init-data';
 import { ApiError } from '../src/common/api-error';
 import { signFields, signInitData } from './init-data-fixture';
 import { FICTIONAL_USER, TEST_BOT_TOKEN } from './test-env';
 
 const OTHER_BOT_TOKEN = '987654321:ANOTHER-BOT-TOKEN-for-tests';
-const nowSeconds = Math.floor(Date.now() / 1000);
+/**
+ * Фиксированное «сейчас». Раньше здесь был `Date.now()` на уровне модуля,
+ * а `signInitData` брал реальные часы: если между этими двумя вызовами
+ * переключалась секунда, тесты падали через раз. Теперь часы заморожены
+ * на одном мгновении и подпись, и проверка видят одно и то же время.
+ */
+const NOW_SECONDS = 1_760_000_000;
+const nowSeconds = NOW_SECONDS;
+
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date(NOW_SECONDS * 1000) });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function expectUnauthorized(fn: () => unknown, reason: string): void {
   try {

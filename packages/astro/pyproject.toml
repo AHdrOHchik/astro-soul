@@ -51,3 +51,5 @@ ignore = ["N802"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["E501"]
+# Контуры глифов — сгенерированные строки фиксированной длины (см. tools/build_glyphs.py).
+"astro/glyphs.py" = ["E501"]

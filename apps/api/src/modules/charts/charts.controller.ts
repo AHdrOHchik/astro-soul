@@ -54,4 +54,28 @@ export class ChartsController {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     res.status(200).send(svg);
   }
+
+  /**
+   * PNG колеса — картинка для шаринга в чат (контракт 1.3.0).
+   * Подпись та же, что у SVG: `?sig=` из `wheel_url`/`wheel_png_url`.
+   */
+  @Get(':chartId/wheel.png')
+  async wheelPng(
+    @Param('chartId', new ParseUUIDPipe()) chartId: string,
+    @Query('sig') signature: string | undefined,
+    @Query('theme') theme: string | undefined,
+    @Query('size') size: string | undefined,
+    @Res() res: Response,
+  ): Promise<void> {
+    const png = await this.charts.wheelPng(
+      chartId,
+      signature,
+      theme,
+      size === undefined ? undefined : Number(size),
+    );
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.status(200).send(png);
+  }
 }

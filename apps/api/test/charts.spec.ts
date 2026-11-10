@@ -12,7 +12,7 @@ const BIRTH = {
   birth_time: '14:20',
   time_precision: 'exact',
   birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
-  consent: { accepted: true, version: '2026-11-01' },
+  consent: { accepted: true, version: '2026-11-10' },
 };
 
 function initDataFor(user: Record<string, unknown> = FICTIONAL_USER): string {
@@ -133,6 +133,7 @@ describe('GET /api/v1/charts/{id}', () => {
     expect(own.body.chart.chart_id).toBe(chartId);
     expect(own.body.mini_reading.summary).toContain('Солнце');
     expect(own.body.wheel_url).toContain('/wheel.svg?sig=');
+    expect(own.body.wheel_png_url).toContain('/wheel.png?sig=');
 
     const stranger = await request(ctx.app.getHttpServer())
       .get(`/api/v1/charts/${chartId}`)
@@ -191,6 +192,44 @@ describe('GET /api/v1/charts/{id}/wheel.svg', () => {
     // Просроченная подпись того же вида.
     await request(ctx.app.getHttpServer())
       .get(`/api/v1/charts/${chartId}/wheel.svg?sig=1.${sig.split('.')[1]}`)
+      .expect(403);
+  });
+
+  it('wheel.png отдаёт PNG без initData (по подписи)', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    const pngUrl = created.body.wheel_png_url as string;
+    expect(pngUrl).toContain('/wheel.png?sig=');
+
+    const response = await request(ctx.app.getHttpServer())
+      .get(pngUrl)
+      .buffer(true)
+      .parse((res, done) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => done(null, Buffer.concat(chunks)));
+      })
+      .expect(200);
+
+    expect(response.headers['content-type']).toBe('image/png');
+    // PNG-сигнатура: 89 50 4E 47
+    expect((response.body as Buffer).subarray(0, 4).toString('hex')).toBe('89504e47');
+  });
+
+  it('wheel.png без подписи → 403', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    const chartId = created.body.chart.chart_id as string;
+    await request(ctx.app.getHttpServer())
+      .get(`/api/v1/charts/${chartId}/wheel.png`)
       .expect(403);
   });
 

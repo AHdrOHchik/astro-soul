@@ -20,7 +20,7 @@ const VALID = {
   birth_time: '14:20',
   time_precision: 'exact',
   birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
-  consent: { accepted: true, version: '2026-11-01' },
+  consent: { accepted: true, version: '2026-11-10' },
 };
 
 beforeAll(async () => {
@@ -80,7 +80,7 @@ describe('POST /charts — валидация', () => {
     const response = await request(ctx.app.getHttpServer())
       .post('/api/v1/charts')
       .set(INIT_DATA_HEADER, initDataFor())
-      .send({ ...VALID, consent: { accepted: false, version: '2026-11-01' } })
+      .send({ ...VALID, consent: { accepted: false, version: '2026-11-10' } })
       .expect(422);
 
     expect(response.body.details.field_errors).toContainEqual({
@@ -165,7 +165,7 @@ describe('POST /charts — валидация', () => {
       .send({
         ...VALID,
         birth_place: { ...VALID.birth_place, country: 'ru', lat: 200 },
-        consent: { accepted: false, version: '2026-11-01' },
+        consent: { accepted: false, version: '2026-11-10' },
       })
       .expect(422);
 
@@ -199,7 +199,7 @@ describe('POST /charts — успешный сценарий', () => {
 
     expect(profile).toMatchObject({
       time_mode: 'exact',
-      consent_version: '2026-11-01',
+      consent_version: '2026-11-10',
       onboarding_step: 'done',
     });
     expect(profile?.consent_at).not.toBeNull();

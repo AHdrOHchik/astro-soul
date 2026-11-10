@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import sharp from 'sharp';
 import type { Chart, ChartResponse, PlanetPosition } from '@astro-soul/shared';
 import { notFound, validationFailed, forbidden } from '../../common/api-error';
 import type { VerifiedInitData } from '../auth/init-data';
@@ -6,9 +7,17 @@ import { UsersRepository } from '../users/users.repository';
 import { AstroClient, type WheelTheme } from '../astro/astro.client';
 import { ChartsRepository, type ChartRow } from './charts.repository';
 import { parseChartCreate } from './charts.dto';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
 import { WheelSignatureService } from './wheel-signature.service';
 
 export const API_PREFIX = '/api/v1';
+/** PNG для шаринга: 1080 px по ширине — стандарт для картинок в чатах. */
+export const PNG_SIZE = 1080;
+export const PNG_MIN_SIZE = 160;
+export const PNG_MAX_SIZE = 1600;
+/** Плотность растеризации SVG: контуры глифов при 72 dpi выглядят рвано. */
+const PNG_DENSITY = 144;
 const WHEEL_THEMES: readonly WheelTheme[] = ['dark', 'light'];
 
 function positionLabel(planet: PlanetPosition): string {
@@ -52,10 +61,11 @@ export class ChartsService {
     @Inject(AstroClient) private readonly astro: AstroClient,
     @Inject(ChartsRepository) private readonly charts: ChartsRepository,
     @Inject(WheelSignatureService) private readonly signature: WheelSignatureService,
+    @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
 
   async create(auth: VerifiedInitData, body: unknown): Promise<ChartResponse> {
-    const input = parseChartCreate(body);
+    const input = parseChartCreate(body, new Date(), this.env.CONSENT_VERSION);
     const birthTime = input.birth_time ?? null;
 
     const { userId } = await this.users.ensureUser({
@@ -107,6 +117,22 @@ export class ChartsService {
     return this.toResponse(row);
   }
 
+  /**
+   * Публичный (по подписи) PNG колеса — картинка для шаринга в чат.
+   * Растеризуем тот же SVG, что и на экране: одна геометрия, один вид.
+   */
+  async wheelPng(
+    chartId: string,
+    signature: string | undefined,
+    theme: string | undefined,
+    size: number | undefined,
+  ): Promise<Buffer> {
+    const svg = await this.wheelSvg(chartId, signature, theme);
+    const width = Math.min(Math.max(Math.trunc(size ?? PNG_SIZE), PNG_MIN_SIZE), PNG_MAX_SIZE);
+
+    return sharp(Buffer.from(svg, 'utf8'), { density: PNG_DENSITY }).resize({ width }).png().toBuffer();
+  }
+
   /** Публичный (по подписи) SVG колеса. */
   async wheelSvg(
     chartId: string,
@@ -139,6 +165,9 @@ export class ChartsService {
    * дольше. Подпись не хранится в БД, поэтому продлевается сама.
    */
   private toResponse(row: ChartRow | { id: string; created_at: Date; data: ChartRow['data'] }): ChartResponse {
+    // Одна подпись на оба адреса: SVG для экрана, PNG для шаринга.
+    const signature = this.signature.sign(row.id);
+
     return {
       chart: {
         ...row.data.chart,
@@ -146,9 +175,8 @@ export class ChartsService {
         created_at: row.created_at.toISOString(),
       },
       mini_reading: buildMiniReading(row.data.chart),
-      wheel_url: `${API_PREFIX}/charts/${row.id}/wheel.svg?sig=${encodeURIComponent(
-        this.signature.sign(row.id),
-      )}`,
+      wheel_url: `${API_PREFIX}/charts/${row.id}/wheel.svg?sig=${encodeURIComponent(signature)}`,
+      wheel_png_url: `${API_PREFIX}/charts/${row.id}/wheel.png?sig=${encodeURIComponent(signature)}`,
     };
   }
 }
