@@ -1,0 +1,629 @@
+openapi: 3.1.0
+info:
+  title: Astro Soul API
+  version: 1.0.0
+  description: |
+    API мини-приложения «Разбор личности» (Telegram Mini App).
+    Контракт — единственный источник правды. Любое поле, которого здесь нет,
+    считается несуществующим: фронт не имеет права на него рассчитывать,
+    бэк не имеет права его отдавать без обновления этого файла и версии.
+
+    Аутентификация: каждый запрос из мини-аппа передаёт заголовок
+    `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
+    Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
+    Других способов авторизации нет (никаких JWT в localStorage — их нельзя защитить).
+servers:
+  - url: https://api.astro-soul.example.com
+    description: production
+  - url: http://localhost:8080
+    description: local
+
+tags:
+  - name: system
+  - name: profile
+  - name: charts
+  - name: reports
+  - name: engagement
+  - name: billing
+  - name: internal
+
+components:
+  securitySchemes:
+    TelegramInitData:
+      type: apiKey
+      in: header
+      name: X-Telegram-Init-Data
+      description: Сырая строка initData из Telegram.WebApp
+
+  headers:
+    RateLimit-Remaining:
+      schema: { type: integer }
+      description: Остаток квоты в текущем окне
+    RateLimit-Reset:
+      schema: { type: integer }
+      description: Unix-время сброса окна
+
+  schemas:
+    Problem:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code:
+          type: string
+          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND]
+        message: { type: string, description: Текст для показа пользователю (ru) }
+        request_id: { type: string, description: Для поиска в логах }
+        details:
+          type: object
+          additionalProperties: true
+
+    SubscriptionState:
+      type: object
+      required: [plan, is_active, expires_at, auto_renew]
+      properties:
+        plan:
+          type: string
+          enum: [none, trial, week, month, year]
+        is_active: { type: boolean }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        auto_renew:
+          type: boolean
+          description: Управляется пользователем в настройках Telegram, только для чтения
+        stars_paid_total:
+          type: integer
+          description: Сколько звёзд пользователь заплатил суммарно
+
+    Quota:
+      type: object
+      required: [code, used, limit, reset_at]
+      properties:
+        code:
+          type: string
+          enum: [forecast_daily, ask_daily, report_month, compat_month]
+        used: { type: integer }
+        limit: { type: integer, description: -1 = безлимит }
+        reset_at: { type: string, format: date-time }
+
+    Me:
+      type: object
+      required: [user_id, is_new, subscription, quotas, has_profile]
+      properties:
+        user_id: { type: string, description: Внутренний UUID, не telegram_id }
+        display_name: { type: string, nullable: true }
+        is_new: { type: boolean }
+        has_profile: { type: boolean }
+        has_chart: { type: boolean }
+        subscription: { $ref: '#/components/schemas/SubscriptionState' }
+        quotas:
+          type: array
+          items: { $ref: '#/components/schemas/Quota' }
+        onboarding_step:
+          type: string
+          enum: [birth_date, birth_time, birth_place, done]
+
+    GeoPlace:
+      type: object
+      required: [name, country, lat, lon, tz]
+      properties:
+        name: { type: string, example: Москва }
+        region: { type: string, nullable: true }
+        country: { type: string, example: RU }
+        lat: { type: number, example: 55.7558 }
+        lon: { type: number, example: 37.6173 }
+        tz: { type: string, example: Europe/Moscow }
+
+    PlanetPosition:
+      type: object
+      required: [key, name, sign, degree, minute, retrograde]
+      properties:
+        key: { type: string, enum: [sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, chiron, node] }
+        name: { type: string, example: Солнце }
+        sign: { type: string, example: Телец }
+        degree: { type: integer, example: 26 }
+        minute: { type: integer, example: 17 }
+        house: { type: integer, minimum: 1, maximum: 12, nullable: true }
+        retrograde: { type: boolean }
+
+    Aspect:
+      type: object
+      required: [a, b, type, orb]
+      properties:
+        a: { type: string }
+        b: { type: string }
+        type: { type: string, enum: [conjunction, opposition, trine, square, sextile] }
+        orb: { type: number, example: 0.41 }
+        strength: { type: number, minimum: 0, maximum: 1 }
+
+    Chart:
+      type: object
+      required: [chart_id, created_at, birth, asc, mc, planets, houses, aspects, balances]
+      properties:
+        chart_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        birth:
+          type: object
+          properties:
+            date: { type: string, format: date }
+            time: { type: string, nullable: true, description: "null, если время неизвестно" }
+            time_known: { type: boolean }
+            place: { $ref: '#/components/schemas/GeoPlace' }
+        asc:
+          type: object
+          properties:
+            sign: { type: string }
+            degree: { type: integer }
+            minute: { type: integer }
+        mc:
+          type: object
+          properties:
+            sign: { type: string }
+            degree: { type: integer }
+        planets:
+          type: array
+          items: { $ref: '#/components/schemas/PlanetPosition' }
+        houses:
+          type: array
+          description: 12 куспидов, начиная с 1-го дома
+          items:
+            type: object
+            properties:
+              house: { type: integer }
+              sign: { type: string }
+              degree: { type: integer }
+        aspects:
+          type: array
+          items: { $ref: '#/components/schemas/Aspect' }
+        balances:
+          type: object
+          properties:
+            elements:
+              type: object
+              properties:
+                fire: { type: number }
+                earth: { type: number }
+                air: { type: number }
+                water: { type: number }
+            modalities:
+              type: object
+              properties:
+                cardinal: { type: number }
+                fixed: { type: number }
+                mutable: { type: number }
+        engine_version: { type: string, example: "1.0.0" }
+
+    ChartCreateRequest:
+      type: object
+      required: [birth_date, birth_place]
+      properties:
+        birth_date: { type: string, format: date, example: "1994-05-17" }
+        birth_time:
+          type: string
+          nullable: true
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: Локальное время места рождения. null = неизвестно (включается флаг)
+        birth_place: { $ref: '#/components/schemas/GeoPlace' }
+
+    ReportRequest:
+      type: object
+      required: [chart_id, type]
+      properties:
+        chart_id: { type: string, format: uuid }
+        type: { type: string, enum: [full, compat, solar] }
+        partner:
+          type: object
+          nullable: true
+          description: Обязателен при type=compat
+          properties:
+            birth_date: { type: string, format: date }
+            birth_time: { type: string, nullable: true }
+            birth_place: { $ref: '#/components/schemas/GeoPlace' }
+            name: { type: string, maxLength: 60 }
+
+    Report:
+      type: object
+      required: [report_id, status, type, created_at]
+      properties:
+        report_id: { type: string, format: uuid }
+        chart_id: { type: string, format: uuid }
+        type: { type: string, enum: [full, compat, solar] }
+        status: { type: string, enum: [queued, generating, ready, failed, refunded] }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        created_at: { type: string, format: date-time }
+        ready_at: { type: string, format: date-time, nullable: true }
+        pdf_url: { type: string, nullable: true, description: Временная подписанная ссылка, TTL 24 ч }
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string, enum: [core, emotions, talents, relations, money, purpose, summary] }
+              title: { type: string }
+              body_md: { type: string }
+              order: { type: integer }
+        is_paid: { type: boolean }
+        teaser: { type: string, description: Первые 400 символов — для пейволла }
+
+    Forecast:
+      type: object
+      required: [date, text, is_paid]
+      properties:
+        date: { type: string, format: date }
+        text: { type: string, description: 3–6 предложений, вариант для бесплатного = урезанный }
+        focus: { type: string, enum: [career, love, money, health, self], nullable: true }
+        is_paid: { type: boolean }
+        generated_at: { type: string, format: date-time }
+
+    AskRequest:
+      type: object
+      required: [chart_id, question]
+      properties:
+        chart_id: { type: string, format: uuid }
+        question: { type: string, minLength: 3, maxLength: 500 }
+
+    AskResponse:
+      type: object
+      required: [answer, based_on]
+      properties:
+        answer: { type: string, maxLength: 1500 }
+        based_on:
+          type: array
+          description: Позиции карты, на которые опирался ответ (для прозрачности)
+          items: { type: string, example: "Луна в Льве, 12-й дом" }
+        quota: { $ref: '#/components/schemas/Quota' }
+
+    PlanCode:
+      type: string
+      enum: [week_149, month_399, year_2990, one_149, compat_249, solar_590]
+
+    InvoiceRequest:
+      type: object
+      required: [plan_code]
+      properties:
+        plan_code: { $ref: '#/components/schemas/PlanCode' }
+        chart_id: { type: string, format: uuid, description: Для разовых продуктов }
+
+    Invoice:
+      type: object
+      required: [invoice_link, plan_code, stars, is_subscription]
+      properties:
+        invoice_link:
+          type: string
+          description: Ссылка на инвойс для Telegram.WebApp.openInvoice
+        plan_code: { $ref: '#/components/schemas/PlanCode' }
+        stars: { type: integer, example: 399 }
+        is_subscription: { type: boolean }
+        subscription_period_sec: { type: integer, nullable: true, example: 2592000 }
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [system]
+      summary: Проверка живости
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  version: { type: string }
+                  db: { type: string, enum: [ok, down] }
+                  llm: { type: string, enum: [ok, down, unknown] }
+
+  /api/v1/me:
+    get:
+      tags: [profile]
+      summary: Профиль, подписка и квоты вызывающего пользователя
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401':
+          description: Неверная подпись initData
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    delete:
+      tags: [profile]
+      summary: Удалить все персональные данные пользователя (ПДн)
+      description: Полное удаление профиля, карт, разборов, прогнозов и вопросов. Подписка сохраняется до конца оплаченного периода, но данные удаляются безвозвратно.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '204':
+          description: Удалено
+        '409':
+          description: Есть незавершённые платежи
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/geo/resolve:
+    post:
+      tags: [profile]
+      summary: Поиск города для места рождения
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: { type: string, minLength: 2, maxLength: 120 }
+                limit: { type: integer, default: 5, maximum: 10 }
+      responses:
+        '200':
+          description: Кандидаты
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/GeoPlace' }
+        '404':
+          description: Ничего не найдено (GEO_NOT_FOUND)
+
+  /api/v1/charts:
+    post:
+      tags: [charts]
+      summary: Создать натальную карту
+      description: |
+        Расчёт синхронный (≤ 300 мс, Swiss Ephemeris локально).
+        В ответе — карта и текстовый мини-разбор (бесплатный крючок).
+        Повторный вызов с теми же данными возвращает существующую карту (идемпотентность по хэшу входа).
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChartCreateRequest' }
+      responses:
+        '201':
+          description: Создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chart: { $ref: '#/components/schemas/Chart' }
+                  mini_reading:
+                    type: object
+                    properties:
+                      sun: { type: string }
+                      moon: { type: string }
+                      asc: { type: string }
+                      summary: { type: string }
+                  wheel_url:
+                    type: string
+                    description: Путь к SVG-колесу карты (charts/{chart_id}/wheel.svg)
+        '422':
+          description: Некорректные данные (VALIDATION_FAILED)
+
+  /api/v1/charts/{chart_id}:
+    get:
+      tags: [charts]
+      summary: Получить карту
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: chart_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Chart' }
+        '404': { description: NOT_FOUND }
+
+  /api/v1/charts/{chart_id}/wheel.svg:
+    get:
+      tags: [charts]
+      summary: Колесо карты в SVG
+      description: Публично по подписанному токену в query (`?sig=`), чтобы можно было шарить картинку в чат.
+      security: []
+      parameters:
+        - name: chart_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: sig
+          in: query
+          required: true
+          schema: { type: string }
+        - name: theme
+          in: query
+          required: false
+          schema: { type: string, enum: [dark, light], default: dark }
+      responses:
+        '200':
+          description: SVG
+          content:
+            image/svg+xml:
+              schema: { type: string }
+
+  /api/v1/reports:
+    post:
+      tags: [reports]
+      summary: Заказать разбор (асинхронно)
+      description: |
+        Возвращает 202 и report_id. Генерация — в очереди, 30–90 сек.
+        Требуется оплата (кроме первого бесплатного мини-разбора, который приходит вместе с картой).
+        Идемпотентность: заголовок `Idempotency-Key` обязателен, TTL 24 ч.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReportRequest' }
+      responses:
+        '202':
+          description: В очереди
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '402':
+          description: Требуется оплата (PAYMENT_REQUIRED)
+
+  /api/v1/reports/{report_id}:
+    get:
+      tags: [reports]
+      summary: Статус и содержимое разбора
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Report' }
+        '404': { description: NOT_FOUND }
+
+  /api/v1/engagement/forecast:
+    get:
+      tags: [engagement]
+      summary: Прогноз на сегодня
+      description: |
+        Генерируется ночью пачкой и кэшируется по (chart_id, date).
+        Бесплатный вариант — урезанный (is_paid=false), полный — для подписки.
+        Никогда не генерируется в момент запроса.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: chart_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Forecast' }
+        '404': { description: Прогноз ещё не готов }
+
+  /api/v1/engagement/ask:
+    post:
+      tags: [engagement]
+      summary: «Спроси карту» — вопрос по своей карте
+      description: Квота 5/день для подписки, 1/день для бесплатных. Ответ опирается на позиции карты.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: Ответ
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AskResponse' }
+        '429':
+          description: Квота исчерпана (QUOTA_EXCEEDED), заголовки RateLimit-*
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AskRequest' }
+
+  /api/v1/billing/subscription:
+    get:
+      tags: [billing]
+      summary: Состояние подписки
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubscriptionState' }
+
+  /api/v1/billing/invoice:
+    post:
+      tags: [billing]
+      summary: Создать инвойс в Stars
+      description: |
+        Для подписок передаётся subscription_period, для разовых — обычный инвойс.
+        Ссылка открывается через Telegram.WebApp.openInvoice.
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvoiceRequest' }
+      responses:
+        '201':
+          description: Инвойс создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invoice' }
+        '429':
+          description: Слишком много инвойсов (антифрод)
+
+  /api/v1/internal/telegram/webhook/{secret}:
+    post:
+      tags: [internal]
+      summary: Вебхук Telegram Bot API
+      description: |
+        Принимает updates. Обязательные типы: pre_checkout_query, message.successful_payment,
+        edited_message (не нужен), my_chat_member (не нужен).
+        Доставка «at least once» — обработчик обязан быть идемпотентным по telegram_payment_charge_id.
+        Секрет в пути + проверка заголовка X-Telegram-Bot-Api-Secret-Token.
+      security: []
+      parameters:
+        - name: secret
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Принято }
+        '403': { description: Неверный секрет }
+
+  /api/v1/internal/jobs/run:
+    post:
+      tags: [internal]
+      summary: Триггер воркеров (крон, защищён секретом)
+      description: Запускает джобы — генерацию прогнозов на завтра, восстановление зависших разборов.
+      security: []
+      responses:
+        '202': { description: Принято }
+
+  /api/v1/admin/metrics:
+    get:
+      tags: [internal]
+      summary: Метрики продукта
+      description: Доступ только для admin_tg_id из переменной окружения. Без ПДн.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mau: { type: integer }
+                  paying: { type: integer }
+                  conversion_to_paid: { type: number }
+                  churn_30d: { type: number }
+                  stars_received_30d: { type: integer }
+                  llm_cost_usd_30d: { type: number }
+                  reports_failed_30d: { type: integer }
+        '403': { description: FORBIDDEN }
