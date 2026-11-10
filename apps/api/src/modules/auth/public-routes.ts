@@ -13,7 +13,14 @@ const PUBLIC_PATHS: ReadonlySet<string> = new Set(['/api/v1/health', '/health'])
 /** Колесо карты: доступ даёт подпись, а не сессия. */
 const WHEEL_SVG_PATH = /^\/api\/v1\/charts\/[^/]+\/wheel\.svg$/;
 
+/** Вебхук Telegram: секрет в пути + заголовок, проверка внутри обработчика. */
+const TELEGRAM_WEBHOOK_PATH = /^\/api\/v1\/internal\/telegram\/webhook\/[^/]+$/;
+
 export function isPublicPath(requestPath: string): boolean {
   const normalized = requestPath.length > 1 ? requestPath.replace(/\/+$/, '') : requestPath;
-  return PUBLIC_PATHS.has(normalized) || WHEEL_SVG_PATH.test(normalized);
+  return (
+    PUBLIC_PATHS.has(normalized) ||
+    WHEEL_SVG_PATH.test(normalized) ||
+    TELEGRAM_WEBHOOK_PATH.test(normalized)
+  );
 }

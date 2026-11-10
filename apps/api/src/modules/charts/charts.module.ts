@@ -10,6 +10,6 @@ import { WheelSignatureService } from './wheel-signature.service';
   imports: [AstroModule],
   controllers: [ChartsController],
   providers: [ChartsService, ChartsRepository, WheelSignatureService, UsersRepository],
-  exports: [ChartsService],
+  exports: [ChartsService, ChartsRepository],
 })
 export class ChartsModule {}

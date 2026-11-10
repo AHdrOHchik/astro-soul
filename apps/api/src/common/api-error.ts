@@ -55,3 +55,7 @@ export function conflict(options: ApiErrorOptions = {}): ApiError {
 export function forbidden(options: ApiErrorOptions = {}): ApiError {
   return new ApiError('FORBIDDEN', 403, options);
 }
+
+export function rateLimited(options: ApiErrorOptions = {}): ApiError {
+  return new ApiError('RATE_LIMITED', 429, options);
+}

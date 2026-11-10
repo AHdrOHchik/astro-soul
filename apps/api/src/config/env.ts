@@ -15,6 +15,8 @@ const envSchema = z.object({
   /** Токен бота: из него выводится ключ HMAC для initData. */
   TELEGRAM_BOT_TOKEN: z.string().min(10, 'TELEGRAM_BOT_TOKEN обязателен'),
   TELEGRAM_WEBHOOK_SECRET: z.string().min(8).optional(),
+  /** База Bot API: подменяется в тестах, в проде — https://api.telegram.org. */
+  TELEGRAM_API_BASE_URL: z.string().url().optional(),
 
   /** Перец для детерминированного UUID пользователя (не ПДн, но секрет). */
   PSEUDONYM_PEPPER: z.string().min(32, 'PSEUDONYM_PEPPER: минимум 32 байта'),
