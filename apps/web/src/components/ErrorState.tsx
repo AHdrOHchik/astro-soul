@@ -4,13 +4,21 @@ import { isApiError, type ApiErrorCode } from '../api';
 import { ru } from '../i18n/ru';
 import type { Telegram } from '../telegram';
 
-/** Failures where the same request may succeed a moment later. */
-const RETRYABLE: readonly ApiErrorCode[] = ['NETWORK', 'TIMEOUT', 'INTERNAL', 'UPSTREAM_LLM', 'RATE_LIMITED', 'INVALID_RESPONSE'];
+/** Failures where the same request may succeed a moment later. `GEO_NOT_FOUND` is one: the geodata provider is down. */
+const RETRYABLE: readonly ApiErrorCode[] = [
+  'NETWORK',
+  'TIMEOUT',
+  'INTERNAL',
+  'UPSTREAM_LLM',
+  'GEO_NOT_FOUND',
+  'RATE_LIMITED',
+  'INVALID_RESPONSE',
+];
 
 /**
  * `Problem.message` is written for the user, in Russian. A text without a single
- * Cyrillic letter is something else, e.g. the server framework's own
- * "Cannot POST /api/v1/…" for a route the API does not have: not for the screen.
+ * Cyrillic letter is something else, e.g. what a proxy or a server framework says
+ * on its own ("Cannot POST /api/v1/…"): not for the screen.
  */
 const RUSSIAN_TEXT = /\p{Script=Cyrillic}/u;
 
