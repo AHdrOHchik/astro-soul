@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { Button, FieldMessage, OptionCard, Screen, ScreenHeading, SkeletonGroup, StateView } from './index';
+import { Button, Checkbox, FieldMessage, OptionCard, Screen, ScreenHeading, SkeletonGroup, StateView } from './index';
 
 describe('Screen', () => {
   it('renders the in-app back control only when asked to', async () => {
@@ -30,6 +30,89 @@ describe('OptionCard', () => {
     expect(radio).toHaveAccessibleDescription('To the minute');
     await userEvent.click(radio);
     expect(onSelect).toHaveBeenCalledWith('exact');
+  });
+});
+
+describe('Checkbox', () => {
+  it('is a real checkbox named by its label, and reports a tap without ticking itself', async () => {
+    const onChange = vi.fn();
+    render(
+      <Checkbox checked={false} onChange={onChange}>
+        I agree
+      </Checkbox>,
+    );
+    const box = screen.getByRole('checkbox', { name: 'I agree' });
+    expect(box).not.toBeChecked();
+
+    await userEvent.click(box);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(true);
+    // The caller owns the state: until it passes `checked`, the box stays empty.
+    expect(box).not.toBeChecked();
+  });
+
+  it('toggles from a tap on the label text, and reports unticking', async () => {
+    const onChange = vi.fn();
+    render(
+      <Checkbox checked onChange={onChange}>
+        I agree
+      </Checkbox>,
+    );
+    expect(screen.getByRole('checkbox')).toBeChecked();
+
+    await userEvent.click(screen.getByText('I agree'));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(false);
+  });
+
+  it('is reached and toggled from the keyboard', async () => {
+    const onChange = vi.fn();
+    render(
+      <Checkbox checked={false} onChange={onChange}>
+        I agree
+      </Checkbox>,
+    );
+
+    await userEvent.tab();
+    expect(screen.getByRole('checkbox')).toHaveFocus();
+    await userEvent.keyboard(' ');
+
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it('carries the error state and its description to assistive tech', () => {
+    render(
+      <>
+        <Checkbox checked={false} invalid describedBy="why" onChange={vi.fn()}>
+          I agree
+        </Checkbox>
+        <p id="why">Consent is required</p>
+      </>,
+    );
+    const box = screen.getByRole('checkbox');
+    expect(box).toHaveAttribute('aria-invalid', 'true');
+    expect(box).toHaveAccessibleDescription('Consent is required');
+  });
+
+  it('is neither invalid nor focused unless asked to be', () => {
+    render(
+      <Checkbox checked={false} onChange={vi.fn()}>
+        I agree
+      </Checkbox>,
+    );
+    expect(screen.getByRole('checkbox')).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByRole('checkbox')).not.toHaveFocus();
+  });
+
+  it('takes focus when the screen opens, if asked to', () => {
+    render(
+      <Checkbox checked={false} autoFocus onChange={vi.fn()}>
+        I agree
+      </Checkbox>,
+    );
+    expect(screen.getByRole('checkbox')).toHaveFocus();
   });
 });
 

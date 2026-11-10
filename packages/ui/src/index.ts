@@ -1,5 +1,6 @@
 export { Button, type ButtonProps } from './Button';
 export { Card, type CardProps } from './Card';
+export { Checkbox, type CheckboxProps } from './Checkbox';
 export { cx } from './cx';
 export { FieldMessage, type FieldMessageProps } from './FieldMessage';
 export * from './icons';
