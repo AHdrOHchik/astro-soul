@@ -1,0 +1,75 @@
+.teaser {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+/* Exactly three lines; the standard property is not available in the oldest WebViews yet. */
+.summary {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.locked {
+  position: relative;
+}
+
+.hidden {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  filter: blur(var(--blur-locked));
+  opacity: var(--opacity-disabled);
+}
+
+.line {
+  display: block;
+  height: var(--size-skeleton-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-text-muted);
+}
+
+.line:last-child {
+  width: 60%;
+}
+
+.badge {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-raised);
+  color: var(--color-gold);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+}
+
+.badgeText {
+  margin-left: var(--space-2);
+  color: var(--color-text);
+}
+
+/* The amount and its star stay together when the button text wraps. */
+.price {
+  white-space: nowrap;
+}
+
+.note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}

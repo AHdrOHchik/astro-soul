@@ -1,0 +1,65 @@
+.screen {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: var(--size-content-max);
+  height: var(--tg-viewport-stable-height, var(--app-height));
+  margin: 0 auto;
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+
+.top {
+  display: grid;
+  flex: none;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4) 0;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  min-width: var(--size-tap);
+  min-height: var(--size-tap);
+  margin-left: calc(-1 * var(--space-2));
+  padding: 0 var(--space-3) 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-md);
+  touch-action: manipulation;
+}
+
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.footer {
+  position: relative;
+  display: grid;
+  flex: none;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+/*
+ * Content that scrolls under the pinned footer fades out instead of being cut by its edge.
+ * The strip is as tall as the bottom padding of the body, so it never covers the last line.
+ */
+.footer::before {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  width: 100%;
+  height: var(--space-6);
+  background: var(--gradient-scroll-fade);
+  content: '';
+  pointer-events: none;
+}

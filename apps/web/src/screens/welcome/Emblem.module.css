@@ -1,0 +1,32 @@
+.emblem {
+  width: var(--size-illustration);
+  height: var(--size-illustration);
+  fill: none;
+  stroke-width: var(--border-width);
+}
+
+.ring {
+  stroke: var(--color-border-strong);
+}
+
+.spoke {
+  stroke: var(--color-accent);
+  stroke-linecap: round;
+}
+
+.core {
+  fill: var(--color-accent-soft);
+  stroke: var(--color-accent);
+}
+
+.sun {
+  fill: var(--color-gold);
+}
+
+.planet {
+  fill: var(--color-accent);
+}
+
+.moon {
+  fill: var(--color-text);
+}

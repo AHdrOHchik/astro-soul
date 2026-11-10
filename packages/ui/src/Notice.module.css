@@ -1,0 +1,22 @@
+.notice {
+  display: flex;
+  align-items: flex-start;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.info {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.warning {
+  background: var(--color-gold-soft);
+  color: var(--color-gold);
+}
+
+.text {
+  margin-left: var(--space-3);
+  color: var(--color-text);
+}
