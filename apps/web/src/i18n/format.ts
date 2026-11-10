@@ -36,3 +36,16 @@ export function formatRegion(place: { region?: string | null; country: string })
   const country = countryName(place.country);
   return place.region ? `${place.region}, ${country}` : country;
 }
+
+/** «2 990»: digit groups the way the locale writes them. */
+export function formatCount(value: number): string {
+  return new Intl.NumberFormat(LOCALE).format(value);
+}
+
+export type PluralForm = 'one' | 'few' | 'many' | 'other';
+
+/** The form a counted Russian noun takes: 1 → one, 2 → few, 5 → many; fractions → other. */
+export function pluralForm(count: number): PluralForm {
+  const rule = new Intl.PluralRules(LOCALE).select(count);
+  return rule === 'one' || rule === 'few' || rule === 'many' ? rule : 'other';
+}

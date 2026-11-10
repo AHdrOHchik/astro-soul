@@ -1,7 +1,9 @@
+import { priceOf } from '@astro-soul/shared';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChartCreateRequest, ChartResult } from '../../api';
+import { formatCount, pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import { apiError, chart, chartResult, chartWithoutTime, deferred, fakeApi, fakeTelegram, kazan } from '../../test/fixtures';
 import { ChartScreen } from './ChartScreen';
@@ -9,6 +11,11 @@ import { ChartScreen } from './ChartScreen';
 const copy = ru.chart;
 const request: ChartCreateRequest = { birth_date: '1994-05-17', birth_time: '14:30', birth_place: kazan };
 const WHEEL_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`;
+// The price is whatever packages/shared says, so a price change there needs no edit here.
+const REPORT_PRICE = priceOf('one_149');
+const TEASER_CTA = `${copy.teaserCta} ${formatCount(REPORT_PRICE)}`;
+/** What a screen reader gets: the star sign is replaced with the word. */
+const TEASER_CTA_NAME = `${TEASER_CTA} ${ru.common.stars[pluralForm(REPORT_PRICE)]}`;
 
 function setup(options: { result?: ChartResult | Promise<ChartResult>; timeApproximate?: boolean } = {}) {
   const api = fakeApi();
@@ -122,15 +129,17 @@ describe('ChartScreen', () => {
     expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
   });
 
-  it('keeps the full report locked: a teaser, no price, and a button that cannot start a purchase yet', async () => {
+  it('keeps the full report locked: a teaser, the price from the shared plans, and a button that cannot start a purchase yet', async () => {
     setup();
 
     const teaser = within(await screen.findByRole('region', { name: copy.teaserTitle }));
     expect(teaser.getByText('Начало полного разбора.')).toBeInTheDocument();
     expect(teaser.getByText(copy.teaserLocked)).toBeInTheDocument();
-    expect(teaser.getByRole('button', { name: copy.teaserCta })).toBeDisabled();
-    expect(teaser.getByText(copy.teaserSoon)).toBeInTheDocument();
-    expect(screen.queryByText(/⭐|XTR|\d+\s*звёзд/)).not.toBeInTheDocument();
+    const cta = teaser.getByRole('button', { name: TEASER_CTA_NAME });
+    expect(cta).toBeDisabled();
+    // What is on the screen. Read from the node: toHaveTextContent replaces non-breaking spaces with plain ones.
+    expect(cta.textContent).toContain(`${TEASER_CTA} ${ru.common.starSign}`);
+    expect(cta).toHaveAccessibleDescription(copy.teaserSoon);
   });
 
   it('shares the signed wheel link through Telegram', async () => {
@@ -195,7 +204,7 @@ describe('ChartScreen', () => {
     expect(await screen.findByText(copy.wheelMissing)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.share })).not.toBeInTheDocument();
     expect(within(card(copy.sun)).getByText(/Телец, 26°17′/)).toBeInTheDocument();
-    expect(within(card(copy.teaserTitle)).getByRole('button', { name: copy.teaserCta })).toBeDisabled();
+    expect(within(card(copy.teaserTitle)).getByRole('button', { name: TEASER_CTA_NAME })).toBeDisabled();
   });
 
   it('says when a headline planet is missing from the response', async () => {

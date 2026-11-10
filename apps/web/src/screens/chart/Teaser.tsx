@@ -1,10 +1,14 @@
-import { Button, Card, LockIcon } from '@astro-soul/ui';
+import { priceOf } from '@astro-soul/shared';
+import { Button, Card, LockIcon, VisuallyHidden } from '@astro-soul/ui';
 import { useId } from 'react';
+import { formatCount, pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import styles from './Teaser.module.css';
 
 const copy = ru.chart;
 const HIDDEN_LINES = [0, 1, 2];
+/** The one-off purchase of the full report; prices live in packages/shared only (payments.md, section 1). */
+const REPORT_PRICE = priceOf('one_149');
 
 export interface TeaserProps {
   /** `mini_reading.summary`: the only report text the chart response carries. */
@@ -16,8 +20,7 @@ export interface TeaserProps {
  * stand-in for the rest. The stand-in is shapes, not text: nothing unpaid is in
  * the DOM to be read around the blur.
  *
- * Iteration 1 has no purchase flow, and the price can only come from the server
- * (`POST /billing/invoice`), so the button is disabled and shows no price.
+ * Iteration 1 has no purchase flow, so the button names the price but is disabled.
  */
 export function Teaser({ summary }: TeaserProps) {
   const titleId = useId();
@@ -41,7 +44,13 @@ export function Teaser({ summary }: TeaserProps) {
           </p>
         </div>
         <Button disabled aria-describedby={noteId}>
-          {copy.teaserCta}
+          <span>
+            {copy.teaserCta}{' '}
+            <span className={styles.price}>
+              {formatCount(REPORT_PRICE)} <span aria-hidden="true">{ru.common.starSign}</span>
+              <VisuallyHidden>{ru.common.stars[pluralForm(REPORT_PRICE)]}</VisuallyHidden>
+            </span>
+          </span>
         </Button>
         <p id={noteId} className={styles.note}>
           {copy.teaserSoon}

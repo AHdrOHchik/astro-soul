@@ -78,6 +78,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@astro-soul/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       '@astro-soul/ui':
         specifier: workspace:*
         version: link:../../packages/ui

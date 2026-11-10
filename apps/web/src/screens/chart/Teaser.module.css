@@ -63,6 +63,11 @@
   color: var(--color-text);
 }
 
+/* The amount and its star stay together when the button text wraps. */
+.price {
+  white-space: nowrap;
+}
+
 .note {
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);

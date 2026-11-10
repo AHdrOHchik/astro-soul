@@ -1,5 +1,6 @@
 import type { ApiErrorCode } from '../api';
 import type { DateIssue, TimeIssue, TimeMode } from '../lib/birth';
+import type { PluralForm } from './format';
 
 /*
  * Every user-facing string of the app. Tone: «ты», gender-neutral, no pressure,
@@ -107,6 +108,14 @@ const timeOptions: Record<TimeMode, TimeOptionCopy> = {
   },
 };
 
+/** Telegram Stars, the app's only currency: «1 звезда», «2 звезды», «149 звёзд». */
+const stars: Record<PluralForm, string> = {
+  one: 'звезда',
+  few: 'звезды',
+  many: 'звёзд',
+  other: 'звезды',
+};
+
 export const ru = {
   appName: 'Разбор личности',
 
@@ -118,6 +127,9 @@ export const ru = {
     loading: 'Загружаем…',
     step: (current: number, total: number) => `Шаг ${String(current)} из ${String(total)}`,
     requestId: (id: string) => `Код обращения: ${id}`,
+    /** Shown next to a price; screen readers get the word from `stars` instead. */
+    starSign: '⭐',
+    stars,
   },
 
   errors,
@@ -212,7 +224,8 @@ export const ru = {
     editData: 'Изменить данные рождения',
     teaserTitle: 'Полный разбор',
     teaserLocked: 'Продолжение закрыто',
-    teaserCta: 'Открыть полностью',
+    /** The price follows: «Открыть полностью — 149 ⭐». The space before the dash is non-breaking. */
+    teaserCta: 'Открыть полностью\u00a0—',
     teaserSoon: 'Покупка полного разбора появится в следующем обновлении.',
   },
 } as const;
