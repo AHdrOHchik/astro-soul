@@ -83,6 +83,21 @@ describe('request', () => {
     await expect(request('DELETE', '/api/v1/me')).resolves.toBeUndefined();
   });
 
+  it('asks the browser to finish the call without the page only when the caller says so', async () => {
+    const { fetchMock, request } = setup();
+    fetchMock.mockImplementation(() => Promise.resolve(json(200, {})));
+
+    await request('POST', '/a', { body: {} });
+    await request('POST', '/b', { body: {}, keepalive: true });
+    await request('POST', '/c', { body: {}, keepalive: false });
+
+    const [ordinary, last, declined] = fetchMock.mock.calls.map(([, init]) => init);
+    // Not `keepalive: false` either: an ordinary call is left exactly as it was before the option existed.
+    expect(ordinary).not.toHaveProperty('keepalive');
+    expect(last).toHaveProperty('keepalive', true);
+    expect(declined).not.toHaveProperty('keepalive');
+  });
+
   it('fails with INVALID_RESPONSE when a 2xx body is not JSON', async () => {
     const { fetchMock, request } = setup();
     fetchMock.mockResolvedValue(new Response('<html>', { status: 200 }));

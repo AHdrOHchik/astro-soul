@@ -14,9 +14,12 @@ export type Chart = components['schemas']['Chart'];
 export type ChartCreateRequest = components['schemas']['ChartCreateRequest'];
 /** How well the birth time is known: `exact`, `approximate` or `unknown`. */
 export type TimePrecision = ChartCreateRequest['time_precision'];
-/** Answer of `POST /charts`: the chart, its short reading and the path of the wheel picture. */
+/** Answer of `POST /charts`: the chart, its short reading and the paths of the wheel pictures. */
 export type ChartResult = components['schemas']['ChartResponse'];
 export type MiniReading = ChartResult['mini_reading'];
+/** A product event as `POST /events` takes it. */
+export type ClientEvent = components['schemas']['ClientEvent'];
+type EventsBatch = components['schemas']['EventsBatch'];
 type GeoResolveRequest = paths['/api/v1/geo/resolve']['post']['requestBody']['content']['application/json'];
 
 /** Root of every API path; relative URLs returned by the API (`wheel_url`) resolve against it. */
@@ -26,6 +29,7 @@ const PATHS = {
   me: '/api/v1/me',
   geoResolve: '/api/v1/geo/resolve',
   charts: '/api/v1/charts',
+  events: '/api/v1/events',
 } as const satisfies Record<string, keyof paths>;
 
 export interface Api {
@@ -37,6 +41,12 @@ export interface Api {
   resolveGeo(query: string, signal?: AbortSignal): Promise<GeoPlace[]>;
   /** Idempotent on the server by input hash, so it is safe to retry. */
   createChart(input: ChartCreateRequest, signal?: AbortSignal): Promise<ChartResult>;
+  /**
+   * One batch of product events, 1 to 20 of them. Sent once and never repeated: the caller
+   * has no use for the answer, and a batch that arrived twice would be counted twice.
+   * `keepalive` lets the browser deliver it while the page is being closed.
+   */
+  sendEvents(events: ClientEvent[], options?: { keepalive?: boolean }): Promise<void>;
 }
 
 function invalid(): ApiError {
@@ -99,11 +109,19 @@ export function createApi(options: HttpClientOptions): Api {
       const result = await request<unknown>('POST', PATHS.charts, { body: input, signal });
       // Without a chart there is nothing to show; the rest of the answer degrades to "absent".
       if (!isRecord(result) || !isRecord(result.chart) || typeof result.chart.chart_id !== 'string') throw invalid();
+      const wheelPng = text(result.wheel_png_url);
       return {
         chart: withContractShapes(result.chart) as Chart,
         mini_reading: toMiniReading(result.mini_reading),
         wheel_url: text(result.wheel_url),
+        // Optional in the contract: a server older than 1.3.0 does not send it.
+        ...(wheelPng !== '' && { wheel_png_url: wheelPng }),
       };
+    },
+
+    async sendEvents(events, { keepalive } = {}) {
+      const body: EventsBatch = { events };
+      await request<unknown>('POST', PATHS.events, { body, keepalive, retry: false });
     },
   };
 }

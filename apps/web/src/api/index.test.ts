@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import { absoluteApiUrl, createApi, fieldErrorsOf, type ChartCreateRequest, type GeoPlace } from './index';
+import { absoluteApiUrl, createApi, fieldErrorsOf, type ChartCreateRequest, type ClientEvent, type GeoPlace } from './index';
 
 const moscow: GeoPlace = { name: 'Москва', region: null, country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' };
 
 const json = (status: number, body?: unknown) =>
   new Response(body === undefined ? null : JSON.stringify(body), { status });
 
-function setup() {
+function setup({ retries = 0 }: { retries?: number } = {}) {
   const fetchMock = vi.fn<typeof fetch>();
-  const api = createApi({ baseUrl: '', getInitData: () => 'init', fetch: fetchMock, retries: 0 });
+  const api = createApi({ baseUrl: '', getInitData: () => 'init', fetch: fetchMock, retries, retryDelayMs: () => 0 });
   return { api, fetchMock };
 }
 
@@ -33,13 +33,13 @@ describe('resolveGeo', () => {
 
   it('reports an unavailable geodata provider as a failure, not as "nothing found"', async () => {
     const { api, fetchMock } = setup();
-    fetchMock.mockResolvedValue(
-      json(503, { code: 'GEO_NOT_FOUND', message: 'Геоданные сейчас недоступны.', request_id: 'r', details: { provider: 'nominatim' } }),
-    );
+    const message = 'Поиск городов временно недоступен. Попробуй ещё раз через минуту.';
+    fetchMock.mockResolvedValue(json(503, { code: 'GEO_NOT_FOUND', message, request_id: 'r', details: { reason: 'provider_timeout' } }));
     await expect(api.resolveGeo('Моск')).rejects.toMatchObject({
       code: 'GEO_NOT_FOUND',
       status: 503,
-      serverMessage: 'Геоданные сейчас недоступны.',
+      serverMessage: message,
+      details: { reason: 'provider_timeout' },
     });
   });
 
@@ -86,13 +86,28 @@ describe('createChart', () => {
     expect(JSON.parse(init?.body as string)).toEqual(input);
   });
 
-  it('returns the reading and the wheel path as they came', async () => {
+  it('returns the reading and both wheel paths as they came', async () => {
     const { api, fetchMock } = setup();
     const reading = { sun: 'Солнце в Телец, 26°17′', moon: 'Луна в Лев, 12°38′', asc: 'Асцендент в Дева, 15°03′', summary: 'Вместе' };
     const wheel = '/api/v1/charts/c-1/wheel.svg?sig=1767225600.abc123';
-    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1' }, mini_reading: reading, wheel_url: wheel }));
+    const wheelPng = '/api/v1/charts/c-1/wheel.png?sig=1767225600.abc123';
+    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1' }, mini_reading: reading, wheel_url: wheel, wheel_png_url: wheelPng }));
 
-    await expect(api.createChart(input)).resolves.toMatchObject({ mini_reading: reading, wheel_url: wheel });
+    await expect(api.createChart(input)).resolves.toMatchObject({ mini_reading: reading, wheel_url: wheel, wheel_png_url: wheelPng });
+  });
+
+  it.each([
+    ['is not sent, as by a server older than contract 1.3.0', {}],
+    ['is empty', { wheel_png_url: '' }],
+    ['is not a string', { wheel_png_url: { href: '/wheel.png' } }],
+  ])('leaves the PNG path out when it %s: the screen then knows there is none', async (_name, rest) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1' }, wheel_url: '/api/v1/charts/c-1/wheel.svg?sig=s', ...rest }));
+
+    const result = await api.createChart(input);
+
+    expect(result).not.toHaveProperty('wheel_png_url');
+    expect(result.wheel_url).toBe('/api/v1/charts/c-1/wheel.svg?sig=s');
   });
 
   it.each([
@@ -160,6 +175,46 @@ describe('createChart', () => {
 
     expect(error).toMatchObject({ code: 'VALIDATION_FAILED', status: 422, serverMessage: 'Сервис доступен с 18 лет', requestId: 'r-9' });
     expect(fieldErrorsOf(error)).toEqual(fields);
+  });
+});
+
+describe('sendEvents', () => {
+  const events: ClientEvent[] = [
+    { name: 'app_open', at: '2026-11-10T12:00:00.000Z' },
+    { name: 'screen_view', at: '2026-11-10T12:00:01.000Z', props: { step: 'welcome' } },
+  ];
+
+  it('posts the batch to the contract path under the `events` key, with the user\'s initData', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(202, { accepted: 2 }));
+
+    await expect(api.sendEvents(events)).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('/api/v1/events');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body as string)).toEqual({ events });
+    expect(init?.headers).toMatchObject({ 'X-Telegram-Init-Data': 'init' });
+    expect(init).not.toHaveProperty('keepalive');
+  });
+
+  it('asks the browser to deliver the batch without the page when the page is going away', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(202, { accepted: 2 }));
+
+    await api.sendEvents(events, { keepalive: true });
+
+    expect(fetchMock.mock.calls[0]?.[1]).toHaveProperty('keepalive', true);
+  });
+
+  it('never repeats a batch, even where other calls are retried: twice delivered is twice counted', async () => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockImplementation(() => Promise.resolve(json(503)));
+
+    await expect(api.sendEvents(events)).rejects.toMatchObject({ status: 503 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
