@@ -1,0 +1,17 @@
+{
+  "extends": "@astro-soul/ui/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "vite.config.ts",
+    "mock",
+    "tests"
+  ]
+}
