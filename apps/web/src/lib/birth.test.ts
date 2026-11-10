@@ -78,6 +78,21 @@ describe('checkBirthDate', () => {
     expect(checkBirthDate(born, earlyMorning)).toMatchObject({ ok: true });
   });
 
+  // The rule of the contract (1.3.0): an adult from 00:00:00.000 UTC of the 18th birthday.
+  it('lets the user in from the first millisecond of the 18th birthday in UTC, not one earlier', () => {
+    const born = { day: '11', month: '11', year: '2008' };
+    const birthday = Date.UTC(2026, 10, 11);
+    expect(checkBirthDate(born, new Date(birthday - 1))).toEqual({ ok: false, issue: 'underage' });
+    expect(checkBirthDate(born, new Date(birthday))).toEqual({ ok: true, iso: '2008-11-11' });
+  });
+
+  it('moves the 18th birthday of 29 February to 1 March, as the contract does', () => {
+    const born = { day: '29', month: '02', year: '2008' };
+    const firstOfMarch = Date.UTC(2026, 2, 1);
+    expect(checkBirthDate(born, new Date(firstOfMarch - 1))).toEqual({ ok: false, issue: 'underage' });
+    expect(checkBirthDate(born, new Date(firstOfMarch))).toEqual({ ok: true, iso: '2008-02-29' });
+  });
+
   it('tells a future date from an underage one', () => {
     expect(date('11', '11', '2026')).toEqual({ ok: false, issue: 'future' });
     expect(date('01', '01', '2030')).toEqual({ ok: false, issue: 'future' });
