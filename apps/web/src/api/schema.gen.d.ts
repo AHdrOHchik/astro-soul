@@ -35,6 +35,11 @@ export interface paths {
                             db?: "ok" | "down";
                             /** @enum {string} */
                             llm?: "ok" | "down" | "unknown";
+                            /**
+                             * @description Доступность локального сайдкара астро-движка
+                             * @enum {string}
+                             */
+                            astro?: "ok" | "down";
                         };
                     };
                 };
@@ -107,7 +112,7 @@ export interface paths {
                     };
                     content?: never;
                 };
-                /** @description Есть незавершённые платежи */
+                /** @description Есть незавершённые платежи (Problem.code = CONFLICT) */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -759,7 +764,7 @@ export interface components {
     schemas: {
         Problem: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND";
             /** @description Текст для показа пользователю (ru) */
             message: string;
             /** @description Для поиска в логах */
@@ -887,6 +892,12 @@ export interface components {
             };
             /** @example 1.0.0 */
             engine_version?: string;
+            /**
+             * @description Планеты, которые движок не смог рассчитать. Сейчас это `chiron`:
+             *     он требует файлов Swiss Ephemeris (`seas_18.se1`), которых нет в
+             *     fallback-режиме. В тексте разбора такие планеты не упоминаются.
+             */
+            omitted_planets?: string[];
         };
         ChartCreateRequest: {
             /**
