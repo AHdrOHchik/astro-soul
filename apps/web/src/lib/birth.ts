@@ -1,33 +1,37 @@
-import type { ChartCreateRequest, GeoPlace } from '../api';
+import type { ChartCreateRequest, GeoPlace, TimePrecision } from '../api';
 
 /** Field values exactly as typed; they become numbers only at validation. */
 export type DateParts = Readonly<{ day: string; month: string; year: string }>;
 export type TimeParts = Readonly<{ hours: string; minutes: string }>;
-
-/** How well the user knows the birth time: the three options of the BirthTime screen. */
-export type TimeMode = 'exact' | 'approx' | 'unknown';
 
 /**
  * Onboarding answers. Lives in React state only: birth data is personal data,
  * so it is never written to localStorage, the URL or analytics.
  */
 export interface BirthDraft {
+  /**
+   * Version of the consent text under which the user ticked the box; null until
+   * they do. There is no default: only the user's own tap sets it.
+   */
+  consentVersion: string | null;
   date: DateParts;
-  timeMode: TimeMode | null;
+  /** The option chosen on the BirthTime screen, in the contract's own values. */
+  timePrecision: TimePrecision | null;
   time: TimeParts;
   placeQuery: string;
   place: GeoPlace | null;
 }
 
 export const EMPTY_DRAFT: BirthDraft = {
+  consentVersion: null,
   date: { day: '', month: '', year: '' },
-  timeMode: null,
+  timePrecision: null,
   time: { hours: '', minutes: '' },
   placeQuery: '',
   place: null,
 };
 
-/** The service is 18+ (SPEC). The API must enforce this too; here it only saves a round trip. */
+/** The service is 18+ (SPEC). The API enforces it; the check here only saves a round trip. */
 export const MIN_AGE = 18;
 /** Typo guard ("0994", "1894"), not a product rule: nobody alive was born earlier. */
 export const MIN_BIRTH_YEAR = 1900;
@@ -93,9 +97,9 @@ export function checkBirthTime({ hours, minutes }: TimeParts): TimeCheck {
 }
 
 /** True when the BirthTime step has a usable answer. */
-export function isTimeStepDone(draft: Pick<BirthDraft, 'timeMode' | 'time'>): boolean {
-  if (draft.timeMode === null) return false;
-  return draft.timeMode === 'unknown' || checkBirthTime(draft.time).ok;
+export function isTimeStepDone(draft: Pick<BirthDraft, 'timePrecision' | 'time'>): boolean {
+  if (draft.timePrecision === null) return false;
+  return draft.timePrecision === 'unknown' || checkBirthTime(draft.time).ok;
 }
 
 export type BirthStep = 'birthDate' | 'birthTime' | 'birthPlace';
@@ -109,21 +113,27 @@ export function firstOpenStep(draft: BirthDraft, today: Date): BirthStep | null 
 }
 
 /**
- * Body of `POST /charts`, or null while the answers are incomplete.
+ * Body of `POST /charts`, or null while the answers are incomplete or the
+ * consent box is not ticked: `consent.accepted` is never sent on the user's behalf.
  *
- * The contract has no "approximate time" flag: an approximate time is sent as
- * a regular `HH:MM`, and the warning about it stays on the client.
+ * The time goes with its precision; without a known time it is null.
  * The place goes back exactly as `POST /geo/resolve` returned it.
  */
 export function toChartRequest(draft: BirthDraft, today: Date): ChartCreateRequest | null {
   const date = checkBirthDate(draft.date, today);
-  if (!date.ok || draft.place === null || draft.timeMode === null) return null;
+  if (!date.ok || draft.place === null || draft.timePrecision === null || draft.consentVersion === null) return null;
 
   let time: string | null = null;
-  if (draft.timeMode !== 'unknown') {
+  if (draft.timePrecision !== 'unknown') {
     const check = checkBirthTime(draft.time);
     if (!check.ok) return null;
     time = check.value;
   }
-  return { birth_date: date.iso, birth_time: time, birth_place: draft.place };
+  return {
+    birth_date: date.iso,
+    birth_time: time,
+    time_precision: draft.timePrecision,
+    birth_place: draft.place,
+    consent: { accepted: true, version: draft.consentVersion },
+  };
 }
