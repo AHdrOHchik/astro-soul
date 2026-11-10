@@ -1,0 +1,42 @@
+{
+  "name": "@astro-soul/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm run typecheck && vite build && node scripts/check-bundle.mjs",
+    "preview": "vite preview",
+    "typecheck": "pnpm run gen:api:check && tsc -p tsconfig.app.json && tsc -p tsconfig.node.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "size": "node scripts/check-bundle.mjs",
+    "gen:api": "openapi-typescript ../../api.openapi.yaml -o src/api/schema.gen.d.ts",
+    "gen:api:check": "openapi-typescript ../../api.openapi.yaml -o src/api/schema.gen.d.ts --check"
+  },
+  "dependencies": {
+    "@astro-soul/ui": "workspace:*",
+    "@telegram-apps/sdk": "^3.11.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/node": "^22.20.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^6.3.0",
+    "eslint": "^10.14.0",
+    "jsdom": "^31.0.0",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0"
+  }
+}
