@@ -1,9 +1,11 @@
 /* Shared test doubles. All birth data here is invented. */
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
+import type { EventName, Track } from '../analytics';
 import type { Api, Chart, ChartCreateRequest, ChartResult, FieldError, GeoPlace, Me } from '../api';
 import { ApiError, type ApiErrorCode } from '../api';
 import { CONSENT_VERSION } from '../i18n/ru';
+import type { TermsReload } from '../lib/termsReload';
 import type { Telegram } from '../telegram';
 
 /** Noon UTC: the app reads the UTC day, so the tests give the same result in any time zone. */
@@ -71,6 +73,7 @@ export const chartResult: ChartResult = {
     summary: 'Начало полного разбора.',
   },
   wheel_url: `/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`,
+  wheel_png_url: `/api/v1/charts/${chart.chart_id}/wheel.png?sig=test-signature`,
 };
 
 /** The same chart as the API returns it when the birth time is unknown. */
@@ -90,6 +93,7 @@ export const chartWithoutTime: ChartResult = {
     summary: 'Начало полного разбора.',
   },
   wheel_url: chartResult.wheel_url,
+  wheel_png_url: chartResult.wheel_png_url,
 };
 
 export function apiError(code: ApiErrorCode, info: ConstructorParameters<typeof ApiError>[1] = {}): ApiError {
@@ -111,6 +115,41 @@ export function fakeApi() {
     getMe: vi.fn<Api['getMe']>().mockResolvedValue(me),
     resolveGeo: vi.fn<Api['resolveGeo']>().mockResolvedValue([kazan, kazanka]),
     createChart: vi.fn<Api['createChart']>().mockResolvedValue(chartResult),
+    sendEvents: vi.fn<Api['sendEvents']>().mockResolvedValue(undefined),
+  };
+}
+
+export interface TrackedEvent {
+  name: EventName;
+  props?: object;
+}
+
+/** Stands in for the product analytics: keeps the events the app reports, in order. */
+export function fakeAnalytics() {
+  const events: TrackedEvent[] = [];
+  const track: Track = (name, ...[props]) => {
+    events.push(props === undefined ? { name } : { name, props });
+  };
+  return {
+    track,
+    events,
+    names: () => events.map((event) => event.name),
+    /** Forgets what was reported so far, to look only at what follows. */
+    clear: () => {
+      events.length = 0;
+    },
+  };
+}
+
+/**
+ * The restart for newer legal texts, without a page to reload. `refusedVersion` is what
+ * the start before this one left behind; `storage: false` is a browser that keeps nothing.
+ */
+export function fakeTermsReload(options: { refusedVersion?: string | null; storage?: boolean } = {}) {
+  return {
+    refusedVersion: options.refusedVersion ?? null,
+    remember: vi.fn<TermsReload['remember']>().mockReturnValue(options.storage ?? true),
+    reload: vi.fn<TermsReload['reload']>(),
   };
 }
 
