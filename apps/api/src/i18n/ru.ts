@@ -7,6 +7,7 @@ import type { ProblemCode } from '@astro-soul/shared';
 export const PROBLEM_MESSAGES: Readonly<Record<ProblemCode, string>> = {
   UNAUTHORIZED: 'Не удалось подтвердить вход. Откройте приложение заново.',
   FORBIDDEN: 'Это действие недоступно.',
+  CONFLICT: 'Незавершённая оплата. Дождитесь, пока платёж завершится, и повторите.',
   NOT_FOUND: 'Не нашли то, что искали.',
   VALIDATION_FAILED: 'Проверьте введённые данные.',
   QUOTA_EXCEEDED: 'Лимит на сегодня исчерпан.',

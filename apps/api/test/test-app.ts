@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AppModule } from '../src/app.module';
+import { AstroClient } from '../src/modules/astro/astro.client';
 import { DbService } from '../src/db/db.service';
 import { applyTestEnv } from './test-env';
 
@@ -10,11 +11,21 @@ export interface TestContext {
   close(): Promise<void>;
 }
 
+export interface TestContextOptions {
+  /** Подмена сайдкара движка: в тестах не поднимаем Python-процесс. */
+  readonly astro?: Pick<AstroClient, 'createChart' | 'transits' | 'wheelSvg' | 'health' | 'isConfigured'>;
+}
+
 /** Поднимает настоящее приложение (с БД и middleware), как в проде. */
-export async function createTestContext(): Promise<TestContext> {
+export async function createTestContext(options: TestContextOptions = {}): Promise<TestContext> {
   applyTestEnv();
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  if (options.astro !== undefined) {
+    builder.overrideProvider(AstroClient).useValue(options.astro);
+  }
+
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication({ logger: false });
 
   app.setGlobalPrefix('api/v1');
