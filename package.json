@@ -16,9 +16,13 @@
     "lint:fix": "eslint . --fix",
     "typecheck": "pnpm -r --if-present run typecheck",
     "test": "pnpm run build && pnpm -r --if-present run test",
+    "test:astro": "cd packages/astro && python3 -m pytest",
+    "lint:astro": "cd packages/astro && python3 -m ruff check .",
+    "setup:astro": "cd packages/astro && python3 -m pip install -e '.[dev]'",
     "db:migrate": "pnpm --filter @astro-soul/api run db:migrate",
     "db:seed": "pnpm --filter @astro-soul/api run db:seed",
     "dev:api": "pnpm --filter @astro-soul/api run dev",
+    "check": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:astro && pnpm lint:astro",
     "start:api": "pnpm --filter @astro-soul/api run start"
   },
   "devDependencies": {
