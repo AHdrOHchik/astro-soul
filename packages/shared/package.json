@@ -1,0 +1,19 @@
+{
+  "name": "@astro-soul/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Общие типы, планы и квоты: единственный источник правды по ценам и доступам",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}
