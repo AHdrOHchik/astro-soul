@@ -1,8 +1,8 @@
+import { MIN_QUERY_LENGTH } from '@astro-soul/shared';
 import { useEffect, useState } from 'react';
+import { errorCodeOf, trackRejection, type Track } from '../analytics';
 import { isAbortError, type Api, type GeoPlace } from '../api';
 
-/** SPEC: the search starts from three characters. */
-export const MIN_QUERY_LENGTH = 3;
 /** Pause after the last keystroke before asking the server. */
 export const SEARCH_DEBOUNCE_MS = 400;
 
@@ -20,8 +20,14 @@ export type PlaceSearch =
  * cancelled, answers are remembered per query for as long as the screen is
  * open (the endpoint is rate limited, so typing a name, deleting a letter and
  * typing it back should not cost three calls).
+ *
+ * The search starts from the length the contract allows (`query` of `POST /geo/resolve`:
+ * a shorter one is a 422). The number is the one the server checks against, from
+ * `@astro-soul/shared`, and it is counted the same way: after trimming.
+ *
+ * Events report that a search ran and how it ended, never what was searched for.
  */
-export function usePlaceSearch(api: Pick<Api, 'resolveGeo'>, query: string): PlaceSearch {
+export function usePlaceSearch(api: Pick<Api, 'resolveGeo'>, query: string, track: Track): PlaceSearch {
   const term = query.trim();
   // A Map, not an object: the keys are user input ("constructor" is a valid thing to type).
   const [lookups, setLookups] = useState<ReadonlyMap<string, Lookup>>(() => new Map());
@@ -36,12 +42,17 @@ export function usePlaceSearch(api: Pick<Api, 'resolveGeo'>, query: string): Pla
       setLookups((previous) => new Map(previous).set(term, result));
     };
     const timer = setTimeout(() => {
+      track('place_search');
       api.resolveGeo(term, controller.signal).then(
         (places) => {
+          if (places.length === 0) track('place_search_empty');
           remember({ places });
         },
         (error: unknown) => {
-          if (!isAbortError(error)) remember({ error });
+          if (isAbortError(error)) return;
+          track('place_search_failed', { code: errorCodeOf(error) });
+          trackRejection(track, 'birth_place', error);
+          remember({ error });
         },
       );
     }, SEARCH_DEBOUNCE_MS);
@@ -49,7 +60,7 @@ export function usePlaceSearch(api: Pick<Api, 'resolveGeo'>, query: string): Pla
       clearTimeout(timer);
       controller.abort();
     };
-  }, [api, term, pending]);
+  }, [api, term, pending, track]);
 
   const retry = () => {
     setLookups((previous) => {
