@@ -1,0 +1,25 @@
+.boot {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  justify-items: center;
+  padding-top: var(--space-4);
+}
+
+.emblem {
+  width: var(--size-illustration);
+  height: var(--size-illustration);
+}
+
+.title {
+  width: 70%;
+  height: var(--font-size-2xl);
+}
+
+.short {
+  width: 55%;
+}
+
+.button {
+  height: var(--size-control);
+}
