@@ -15,9 +15,11 @@ import {
   type ScreenProps,
 } from '@astro-soul/ui';
 import { useCallback, useId, useState } from 'react';
+import { errorCodeOf, trackRejection, type Track } from '../../analytics';
 import {
   absoluteApiUrl,
   fieldErrorsOf,
+  isAbortError,
   type Api,
   type Chart,
   type ChartCreateRequest,
@@ -45,6 +47,8 @@ export interface ChartScreenProps {
   request: ChartCreateRequest;
   /** API origin that a relative `wheel_url` resolves against; '' = this page's origin. */
   apiBaseUrl: string;
+  /** Reports the request, its outcome and the tap on «share»; nothing of the chart itself. */
+  track: Track;
   back?: ScreenProps['back'];
   /** Return to the birth data, e.g. after the server rejected it. */
   onEdit: () => void;
@@ -57,20 +61,31 @@ export interface ChartScreenProps {
 }
 
 /** Screen 5. Builds the chart (`POST /charts` is idempotent by input) and shows it. */
-export function ChartScreen({ api, telegram, request, apiBaseUrl, back, onEdit, onRejected }: ChartScreenProps) {
+export function ChartScreen({ api, telegram, request, apiBaseUrl, track, back, onEdit, onRejected }: ChartScreenProps) {
   const titleId = useId();
   const load = useCallback(
     async (signal: AbortSignal) => {
+      // Counted a moment later, and only if still wanted: a development build runs every
+      // effect twice and cancels the first run on the spot. That run is not a request the user made.
+      void Promise.resolve().then(() => {
+        if (!signal.aborted) track('chart_requested');
+      });
       try {
-        return await api.createChart(request, signal);
+        const result = await api.createChart(request, signal);
+        if (!signal.aborted) track('chart_created');
+        return result;
       } catch (error) {
-        const rejected = fieldErrorsOf(error);
-        // An answer nobody waits for any more (the screen was left) must not move the user anywhere.
-        if (rejected.length > 0 && !signal.aborted) onRejected?.(rejected);
+        // An answer nobody waits for any more (the screen was left) is neither counted nor acted on.
+        if (!signal.aborted && !isAbortError(error)) {
+          track('chart_failed', { code: errorCodeOf(error) });
+          trackRejection(track, 'chart', error);
+          const rejected = fieldErrorsOf(error);
+          if (rejected.length > 0) onRejected?.(rejected);
+        }
         throw error;
       }
     },
-    [api, request, onRejected],
+    [api, request, onRejected, track],
   );
   const state = useRequest(load);
 
@@ -96,6 +111,7 @@ export function ChartScreen({ api, telegram, request, apiBaseUrl, back, onEdit, 
             result={state.data}
             apiBaseUrl={apiBaseUrl}
             telegram={telegram}
+            track={track}
             onRetry={state.retry}
             onEdit={onEdit}
           />
@@ -145,15 +161,19 @@ interface ChartViewProps {
   result: ChartResult;
   apiBaseUrl: string;
   telegram: Pick<Telegram, 'share'>;
+  track: Track;
   onRetry: () => void;
   onEdit: () => void;
 }
 
-function ChartView({ result, apiBaseUrl, telegram, onRetry, onEdit }: ChartViewProps) {
+function ChartView({ result, apiBaseUrl, telegram, track, onRetry, onEdit }: ChartViewProps) {
   const cardsTitleId = useId();
   const [wheelFailed, setWheelFailed] = useState(false);
-  const { chart, mini_reading: reading, wheel_url: wheelPath } = result;
+  const { chart, mini_reading: reading, wheel_url: wheelPath, wheel_png_url: wheelPngPath } = result;
   const wheelUrl = wheelPath ? absoluteApiUrl(wheelPath, apiBaseUrl, window.location.origin) : null;
+  // What goes to a chat: there a PNG is shown as a picture, an SVG as a bare link.
+  // A server older than contract 1.3.0 has only the SVG.
+  const wheelPngUrl = wheelPngPath ? absoluteApiUrl(wheelPngPath, apiBaseUrl, window.location.origin) : null;
   const sun = chart.planets.find((planet) => planet.key === 'sun');
   const moon = chart.planets.find((planet) => planet.key === 'moon');
   const precision = timePrecisionOf(chart);
@@ -185,10 +205,12 @@ function ChartView({ result, apiBaseUrl, telegram, onRetry, onEdit }: ChartViewP
           <Button
             variant="secondary"
             icon={<ShareIcon />}
-            // What is shared is the link to this picture: no point in sending one that does not open here.
+            // What is shared is this picture, from the same server under the same signature:
+            // no point in sending one that does not open here.
             disabled={wheelFailed}
             onClick={() => {
-              telegram.share(wheelUrl, copy.shareText);
+              track('share_clicked');
+              telegram.share(wheelPngUrl ?? wheelUrl, copy.shareText);
             }}
           >
             {copy.share}

@@ -1,6 +1,7 @@
 import { priceOf } from '@astro-soul/shared';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { Chart, ChartResult, FieldError, TimePrecision } from '../../api';
 import { formatCount, pluralForm } from '../../i18n/format';
@@ -12,6 +13,7 @@ import {
   chartResult,
   chartWithoutTime,
   deferred,
+  fakeAnalytics,
   fakeApi,
   fakeTelegram,
   rejection,
@@ -20,22 +22,43 @@ import { ChartScreen } from './ChartScreen';
 
 const copy = ru.chart;
 const WHEEL_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`;
+const WHEEL_PNG_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.png?sig=test-signature`;
 // The price is whatever packages/shared says, so a price change there needs no edit here.
 const REPORT_PRICE = priceOf('one_149');
 const TEASER_CTA = `${copy.teaserCta} ${formatCount(REPORT_PRICE)}`;
 /** What a screen reader gets: the star sign is replaced with the word. */
 const TEASER_CTA_NAME = `${TEASER_CTA} ${ru.common.stars[pluralForm(REPORT_PRICE)]}`;
 
-function setup(options: { result?: ChartResult | Promise<ChartResult> } = {}) {
-  const api = fakeApi();
-  if (options.result) api.createChart.mockImplementation(() => Promise.resolve(options.result ?? chartResult));
+interface SetupOptions {
+  /** What `POST /charts` answers with; the fixture chart by default. */
+  result?: ChartResult | Promise<ChartResult>;
+  /** An API prepared by the test, e.g. one that fails first. */
+  api?: ReturnType<typeof fakeApi>;
+  /** False: nobody listens for the fields the server rejected. */
+  listens?: boolean;
+  /** Renders as a development build does: every effect runs twice, the first run cancelled at once. */
+  strict?: boolean;
+}
+
+function setup({ result, api = fakeApi(), listens = true, strict = false }: SetupOptions = {}) {
+  if (result) api.createChart.mockImplementation(() => Promise.resolve(result));
   const telegram = fakeTelegram();
+  const analytics = fakeAnalytics();
   const onEdit = vi.fn();
   const onRejected = vi.fn<(errors: FieldError[]) => void>();
-  const view = render(
-    <ChartScreen api={api} telegram={telegram} request={request} apiBaseUrl="https://api.test" onEdit={onEdit} onRejected={onRejected} />,
+  const chartScreen = (
+    <ChartScreen
+      api={api}
+      telegram={telegram}
+      request={request}
+      apiBaseUrl="https://api.test"
+      track={analytics.track}
+      onEdit={onEdit}
+      onRejected={listens ? onRejected : undefined}
+    />
   );
-  return { api, telegram, onEdit, onRejected, user: userEvent.setup(), ...view };
+  const view = render(strict ? <StrictMode>{chartScreen}</StrictMode> : chartScreen);
+  return { api, telegram, analytics, onEdit, onRejected, user: userEvent.setup(), ...view };
 }
 
 /** The fixture chart with another `birth` block. */
@@ -199,8 +222,20 @@ describe('ChartScreen', () => {
     expect(cta).toHaveAccessibleDescription(copy.teaserSoon);
   });
 
-  it('shares the signed wheel link through Telegram', async () => {
+  it('shares the wheel as a PNG through Telegram: a chat shows that as a picture', async () => {
     const { telegram, user } = setup();
+
+    await user.click(await screen.findByRole('button', { name: copy.share }));
+
+    expect(telegram.share).toHaveBeenCalledTimes(1);
+    expect(telegram.share).toHaveBeenCalledWith(WHEEL_PNG_URL, copy.shareText);
+    // On screen it is still the SVG.
+    expect(screen.getByRole('img', { name: copy.wheelAlt })).toHaveAttribute('src', WHEEL_URL);
+  });
+
+  it('shares the SVG link when the server has no PNG to offer (a server older than contract 1.3.0)', async () => {
+    const { wheel_png_url: _absent, ...withoutPng } = chartResult;
+    const { telegram, user } = setup({ result: withoutPng });
 
     await user.click(await screen.findByRole('button', { name: copy.share }));
 
@@ -212,8 +247,7 @@ describe('ChartScreen', () => {
     api.createChart
       .mockRejectedValueOnce(apiError('INTERNAL', { status: 500, serverMessage: 'Не получилось построить карту.', requestId: 'req-42' }))
       .mockResolvedValueOnce(chartResult);
-    const user = userEvent.setup();
-    render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={vi.fn()} />);
+    const { user } = setup({ api });
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(ru.errors.INTERNAL.title);
@@ -230,10 +264,7 @@ describe('ChartScreen', () => {
   it('sends the user back to the birth data when the server rejects it, without a pointless retry', async () => {
     const api = fakeApi();
     api.createChart.mockRejectedValue(apiError('VALIDATION_FAILED', { status: 422 }));
-    const onEdit = vi.fn();
-    const onRejected = vi.fn();
-    const user = userEvent.setup();
-    render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={onEdit} onRejected={onRejected} />);
+    const { user, onEdit, onRejected } = setup({ api });
 
     expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.VALIDATION_FAILED.text);
     expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
@@ -253,8 +284,7 @@ describe('ChartScreen', () => {
     it('hands them to the caller once, and shows the server text itself for as long as it stays on screen', async () => {
       const api = fakeApi();
       api.createChart.mockRejectedValue(rejection(...fields));
-      const onRejected = vi.fn();
-      render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={vi.fn()} onRejected={onRejected} />);
+      const { onRejected } = setup({ api });
 
       const alert = await screen.findByRole('alert');
 
@@ -281,7 +311,7 @@ describe('ChartScreen', () => {
     it('works without a listener', async () => {
       const api = fakeApi();
       api.createChart.mockRejectedValue(rejection(...fields));
-      render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={vi.fn()} />);
+      setup({ api, listens: false });
 
       expect(await screen.findByRole('alert')).toHaveTextContent('Сервис доступен с 18 лет');
     });
@@ -346,5 +376,70 @@ describe('ChartScreen', () => {
     unmount();
 
     expect(signal?.aborted).toBe(true);
+  });
+
+  describe('product events', () => {
+    it('reports the request, then the chart', async () => {
+      const pending = deferred<ChartResult>();
+      const { analytics } = setup({ result: pending.promise });
+
+      await act(() => Promise.resolve());
+      expect(analytics.events).toEqual([{ name: 'chart_requested' }]);
+
+      pending.resolve(chartResult);
+      await screen.findByRole('img', { name: copy.wheelAlt });
+      expect(analytics.events).toEqual([{ name: 'chart_requested' }, { name: 'chart_created' }]);
+    });
+
+    it('reports a failure by its code, and a retry as a new request', async () => {
+      const api = fakeApi();
+      api.createChart
+        .mockRejectedValueOnce(apiError('INTERNAL', { status: 500, serverMessage: 'Не получилось построить карту.', requestId: 'req-42' }))
+        .mockResolvedValueOnce(chartResult);
+      const { analytics, user } = setup({ api });
+
+      await screen.findByRole('alert');
+      expect(analytics.events).toEqual([{ name: 'chart_requested' }, { name: 'chart_failed', props: { code: 'INTERNAL' } }]);
+
+      analytics.clear();
+      await user.click(screen.getByRole('button', { name: ru.common.retry }));
+      await screen.findByRole('img', { name: copy.wheelAlt });
+      expect(analytics.events).toEqual([{ name: 'chart_requested' }, { name: 'chart_created' }]);
+    });
+
+    it('keeps the birth data and the chart out of every event', async () => {
+      const api = fakeApi();
+      api.createChart
+        .mockRejectedValueOnce(rejection({ field: 'birth_place', message: 'Выбери город рождения из подсказок' }))
+        .mockResolvedValueOnce(chartResult);
+      const { analytics, user, rerender } = setup({ api });
+      await screen.findByRole('alert');
+      // The same screen again, as after the user fixed the data: a new request, this time a chart.
+      rerender(
+        <ChartScreen
+          api={api}
+          telegram={fakeTelegram()}
+          request={{ ...request }}
+          apiBaseUrl="https://api.test"
+          track={analytics.track}
+          onEdit={vi.fn()}
+        />,
+      );
+      await user.click(await screen.findByRole('button', { name: copy.share }));
+
+      expect(analytics.names()).toEqual([
+        'chart_requested',
+        'chart_failed',
+        'validation_failed',
+        'chart_requested',
+        'chart_created',
+        'share_clicked',
+      ]);
+      const reported = JSON.stringify(analytics.events);
+      expect(reported).not.toMatch(/\p{Script=Cyrillic}/u);
+      for (const secret of ['1994', '05-17', '14:30', '55.79', '49.1', 'Europe', chart.chart_id, 'sig=']) {
+        expect(reported).not.toContain(secret);
+      }
+    });
   });
 });
