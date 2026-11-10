@@ -142,6 +142,24 @@ describe('BirthPlaceScreen', () => {
     expect(screen.queryByRole('list', { name: copy.resultsLabel })).not.toBeInTheDocument();
   });
 
+  it('shows a failure, not "nothing found", when the API has no geo route, and keeps the framework text off the screen', async () => {
+    const { api, user, input, settle } = setup();
+    // What the API answers today: the route is not implemented.
+    api.resolveGeo.mockRejectedValue(
+      apiError('NOT_FOUND', { status: 404, serverMessage: 'Cannot POST /api/v1/geo/resolve', requestId: 'req-404' }),
+    );
+
+    await user.type(input, 'Моск');
+    await settle();
+
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(ru.errors.NOT_FOUND.title);
+    expect(alert).toHaveTextContent(ru.errors.NOT_FOUND.text);
+    expect(screen.getByText(ru.common.requestId('req-404'))).toBeInTheDocument();
+    expect(screen.queryByText(copy.emptyTitle)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cannot POST/)).not.toBeInTheDocument();
+  });
+
   it('shows the error with a retry that repeats the search', async () => {
     const { api, user, input, settle } = setup();
     api.resolveGeo.mockRejectedValueOnce(apiError('RATE_LIMITED', { status: 429, serverMessage: 'Слишком часто.', requestId: 'req-7' }));

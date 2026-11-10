@@ -85,8 +85,9 @@ export function createApi(options: HttpClientOptions): Api {
       try {
         places = await request<unknown>('POST', PATHS.geoResolve, { body, signal });
       } catch (error) {
-        // "Nothing found" is an empty result for the UI, not a failure.
-        if (isApiError(error) && (error.code === 'GEO_NOT_FOUND' || error.code === 'NOT_FOUND')) return [];
+        // "Nothing found" is an empty result for the UI, not a failure. Only by its own code:
+        // any other 404 means the route is missing, and that must not look like an unknown place.
+        if (isApiError(error) && error.code === 'GEO_NOT_FOUND') return [];
         throw error;
       }
       if (!Array.isArray(places) || !places.every(isGeoPlace)) throw invalid();

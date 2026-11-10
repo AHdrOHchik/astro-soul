@@ -27,12 +27,21 @@ describe('resolveGeo', () => {
 
   it.each([
     ['a GEO_NOT_FOUND problem', json(404, { code: 'GEO_NOT_FOUND', message: 'Не нашли', request_id: 'r' })],
-    ['a bare 404', json(404)],
     ['an empty list', json(200, [])],
   ])('treats %s as "nothing found"', async (_name, response) => {
     const { api, fetchMock } = setup();
     fetchMock.mockResolvedValue(response);
     await expect(api.resolveGeo('Ыыы')).resolves.toEqual([]);
+  });
+
+  it.each([
+    // What the API answers for a route it does not have.
+    ['a NOT_FOUND problem', json(404, { code: 'NOT_FOUND', message: 'Cannot POST /api/v1/geo/resolve', request_id: 'r' })],
+    ['a bare 404', json(404)],
+  ])('does not pass %s off as "nothing found": the route is missing, not the place', async (_name, response) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(response);
+    await expect(api.resolveGeo('Моск')).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
   });
 
   it('keeps real failures as errors', async () => {

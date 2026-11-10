@@ -7,6 +7,13 @@ import type { Telegram } from '../telegram';
 /** Failures where the same request may succeed a moment later. */
 const RETRYABLE: readonly ApiErrorCode[] = ['NETWORK', 'TIMEOUT', 'INTERNAL', 'UPSTREAM_LLM', 'RATE_LIMITED', 'INVALID_RESPONSE'];
 
+/**
+ * `Problem.message` is written for the user, in Russian. A text without a single
+ * Cyrillic letter is something else, e.g. the server framework's own
+ * "Cannot POST /api/v1/…" for a route the API does not have: not for the screen.
+ */
+const RUSSIAN_TEXT = /\p{Script=Cyrillic}/u;
+
 export interface ErrorStateProps {
   error: unknown;
   telegram: Pick<Telegram, 'isTelegram' | 'close'>;
@@ -17,8 +24,9 @@ export interface ErrorStateProps {
 }
 
 /**
- * The error state of a screen. Prefers the server's own message (written for
- * the user, in Russian) and shows the request id so support can find the call.
+ * The error state of a screen. Prefers the server's own message when it is the
+ * Russian text the contract promises, and shows the request id so support can
+ * find the call.
  */
 export function ErrorState({ error, telegram, onRetry, children }: ErrorStateProps) {
   const apiError = isApiError(error) ? error : null;
@@ -27,7 +35,9 @@ export function ErrorState({ error, telegram, onRetry, children }: ErrorStatePro
   // Without Telegram there is no initData to sign in with: explain that instead of "session expired".
   const outside = unauthorized && !telegram.isTelegram;
   const copy = outside ? ru.outsideTelegram : ru.errors[code];
-  const text = outside ? copy.text : (apiError?.serverMessage ?? copy.text);
+  const serverMessage = apiError?.serverMessage;
+  const serverText = serverMessage !== undefined && RUSSIAN_TEXT.test(serverMessage) ? serverMessage : undefined;
+  const text = outside ? copy.text : (serverText ?? copy.text);
   const canRetry = onRetry !== undefined && RETRYABLE.includes(code);
   const canClose = unauthorized && telegram.isTelegram;
 

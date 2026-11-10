@@ -21,9 +21,10 @@ const errors: Record<ApiErrorCode, ErrorCopy> = {
     title: 'Нет доступа',
     text: 'Этот раздел сейчас недоступен.',
   },
+  // A failure, worded unlike the empty search result on the place screen («Ничего не нашли»).
   NOT_FOUND: {
-    title: 'Ничего не нашлось',
-    text: 'Таких данных нет. Возможно, они были удалены.',
+    title: 'Запрос не выполнен',
+    text: 'Сервер не нашёл то, что мы запросили. Попробуй зайти позже.',
   },
   VALIDATION_FAILED: {
     title: 'Проверь данные',
