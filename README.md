@@ -112,18 +112,60 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 `llmContext`, `renderWheel`, `hashInput` (порт `astro/engine.py`). Подробности,
 режимы `ASTRO_ENGINE` и ограничения — в [`packages/astro/README.md`](./packages/astro/README.md).
 
+API ходит в движок по HTTP, а не через subprocess:
+
+```bash
+# терминал 1 — сайдкар (только localhost)
+pnpm dev:astro                                 # = cd packages/astro && python3 -m astro.service
+
+# терминал 2 — API
+pnpm dev:api
+```
+
+* эндпоинты сайдкара: `GET /health`, `POST /chart`, `POST /transits`, `POST /wheel`;
+* таймаут вызова — 2 с; недоступный сайдкар → `503` с `Problem.code = INTERNAL`,
+  процесс API при этом живёт;
+* `GET /api/v1/health` показывает `astro: ok|down`, а `status` становится `degraded`;
+* в `charts.data` хранится и ответ контракта, и внутренние числа движка (долготы,
+  система домов) — наружу уходит только контракт.
+
+## Платежи
+
+Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
+`packages/shared/src/plans.ts`, сумма инвойса никогда не берётся из запроса.
+
+* `POST /api/v1/billing/invoice` — ссылка для `Telegram.WebApp.openInvoice`;
+  антифрод 3 инвойса в час / 10 в сутки, повтор того же плана в пределах 5 минут
+  отдаёт существующую ссылку;
+* `POST /api/v1/internal/telegram/webhook/{secret}` — `pre_checkout_query` и
+  `successful_payment`; учёт платежа и выдача доступа — одна транзакция с
+  `SELECT ... FOR UPDATE` по `telegram_payment_charge_id`, поэтому повторная
+  доставка не создаёт второй доступ;
+* `GET /api/v1/billing/subscription` — то же состояние, что в `GET /me`;
+* доступ всегда проверяется через `getEntitlements` — второй правды нет.
+
 ## Статус
 
 Сделано: каркас монорепо, миграции, авторизация через `initData`, `GET /me`,
-`GET /health`, порт астро-движка.
+`GET /health`, порт астро-движка, HTTP-сайдкар движка, `POST /charts` +
+`GET /charts/{id}` + подписанный `wheel.svg`, платежи (инвойсы, вебхук, подписка,
+возвраты), `DELETE /me` с каскадом.
 
-Дальше по порядку: `POST /charts` (и решение по транспорту до Python-движка) →
-платежи и `getEntitlements` в обработчиках → LLM-конвейер → ночные прогнозы →
-удаление данных.
+Дальше по порядку: LLM-конвейер (две стадии, лимит $0.35) → ночные прогнозы
+с advisory lock → гео-справочник `GET /geo/resolve` → джоб `subscription_downgrade`.
 
 ## Версия контракта
 
-`api.openapi.yaml` — 1.1.0. Отличия от 1.0.0:
+`api.openapi.yaml` — 1.2.0. Отличия от 1.1.0:
+
+* OpenAPI 3.1: `nullable: true` заменён на `type: [X, 'null']` (12 схем) —
+  так типы корректно генерируются `openapi-typescript`;
+* `Problem.code` += `CONFLICT` (удаление аккаунта при незавершённых платежах);
+* `Chart.omitted_planets` — движок сообщает, что не считает (`chiron`);
+* `/health` += `astro: ok|down`;
+* у вебхука описан `500` (Telegram повторит доставку), у инвойса — `422`/`429`.
+
+Отличия 1.1.0 от 1.0.0:
 
 * `Chart.asc`, `Chart.mc`, `Chart.houses` могут быть `null`: при неизвестном
   времени рождения дома и Асцендент не рассчитываются (`SPEC.md`);
