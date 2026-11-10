@@ -23,6 +23,7 @@ def test_planets_have_contract_fields(known_birth: BirthInput) -> None:
         "aspects",
         "balances",
         "engine_version",
+        "omitted_planets",
     }
 
     keys = [planet["key"] for planet in contract["planets"]]
