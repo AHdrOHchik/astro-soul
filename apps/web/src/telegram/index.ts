@@ -52,7 +52,7 @@ function attempt(action: () => unknown): void {
 }
 
 function report(error: unknown): void {
-  console.warn('[telegram]', error);
+  console.error('[telegram]', error);
 }
 
 export function shareLink(url: string, text: string): string {

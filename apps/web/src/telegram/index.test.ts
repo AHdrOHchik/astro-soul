@@ -32,7 +32,7 @@ async function start(options: Partial<TelegramOptions> = {}): Promise<Telegram> 
 
 beforeEach(() => {
   vi.resetModules();
-  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
 afterEach(() => {

@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
+import { frontendLayer } from './packages/ui/eslint.frontend.mjs';
 
 export default tseslint.config(
   {
@@ -61,4 +62,6 @@ export default tseslint.config(
       '@typescript-eslint/no-unsafe-argument': 'off',
     },
   },
+  // apps/web и packages/ui: слой FRONTEND поверх общих правил (strict + react-hooks).
+  ...frontendLayer(tseslint),
 );
