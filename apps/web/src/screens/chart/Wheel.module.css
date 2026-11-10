@@ -1,0 +1,62 @@
+/* A square without aspect-ratio (unsupported by the oldest WebViews): padding is relative to the width. */
+.frame {
+  position: relative;
+  width: 100%;
+  padding-top: 100%;
+}
+
+.fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.placeholder {
+  width: 100%;
+  height: 100%;
+}
+
+.image {
+  opacity: 0;
+  object-fit: contain;
+  transition: opacity var(--duration-fast);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.visible {
+  opacity: 1;
+}
+
+.failed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  align-content: center;
+  padding: var(--space-4);
+  border: var(--border-width) dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  text-align: center;
+}
+
+.message {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: center;
+}
+
+.icon {
+  display: inline-flex;
+  color: var(--color-danger);
+}
+
+.title {
+  font-weight: var(--font-weight-medium);
+}
+
+.text {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
