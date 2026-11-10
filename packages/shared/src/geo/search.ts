@@ -11,8 +11,11 @@ import { CITIES, CITY_DATASET_VERSION, type CityRecord } from './cities.data';
  *   • пустой результат — это не ошибка: `200` и пустой массив.
  */
 
-/** Минимальная длина запроса, после которой есть смысл искать. */
-export const MIN_QUERY_LENGTH = 3;
+/**
+ * Минимальная длина запроса: 2 символа (контракт 1.3.0).
+ * Короче — 422: пустой массив означает «города нет», а не «ты ввёл мало».
+ */
+export const MIN_QUERY_LENGTH = 2;
 export const MAX_QUERY_LENGTH = 120;
 export const DEFAULT_LIMIT = 5;
 export const MAX_LIMIT = 10;

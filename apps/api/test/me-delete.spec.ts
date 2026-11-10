@@ -40,7 +40,7 @@ async function seedPersonalData(): Promise<{ userId: string; chartId: string }> 
       birth_time: '14:20',
       time_precision: 'exact',
       birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
-      consent: { accepted: true, version: '2026-11-01' },
+      consent: { accepted: true, version: '2026-11-10' },
     })
     .expect(201);
 

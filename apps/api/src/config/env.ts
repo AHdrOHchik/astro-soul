@@ -29,12 +29,23 @@ const envSchema = z.object({
   GEO_PROVIDER: z.enum(['bundled', 'nominatim']).default('bundled'),
   GEO_NOMINATIM_URL: z.string().url().default('https://nominatim.openstreetmap.org'),
   /** Контакт для User-Agent при обращении к Nominatim (требование их политики). */
-  GEO_CONTACT_EMAIL: z.string().email().optional(),
+  // Пустая строка в .env — это «не задано», а не ошибка запуска.
+  GEO_CONTACT_EMAIL: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().email().optional(),
+  ),
 
   /** Лимиты запросов в минуту (SPEC). 0 — выключить (только для тестов). */
   RATE_LIMIT_PER_MIN: z.coerce.number().int().min(0).default(60),
   RATE_LIMIT_CHARTS_PER_MIN: z.coerce.number().int().min(0).default(10),
   RATE_LIMIT_GEO_PER_MIN: z.coerce.number().int().min(0).default(120),
+
+  /**
+   * Актуальная редакция согласия на обработку ПДн (контракт 1.3.0).
+   * Принимаем только её: устаревшая версия — 422 с field_errors[consent.version],
+   * по этому полю фронт сбрасывает галочку и показывает «Условия обновились».
+   */
+  CONSENT_VERSION: z.string().min(1).max(32).default('2026-11-10'),
 
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
 });

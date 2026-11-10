@@ -50,7 +50,11 @@ export function makeFakeAstro(options: { readonly down?: boolean } = {}): FakeAs
       if (options.down === true) {
         return Promise.reject(new ApiError('INTERNAL', 503, { reason: 'astro_unavailable' }));
       }
-      return Promise.resolve(`<svg xmlns="http://www.w3.org/2000/svg" data-theme="${theme}"></svg>`);
+      // Валидный SVG с размерами: конвертер в PNG обязан его растеризовать.
+      return Promise.resolve(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 560" width="560" height="560" data-theme="${theme}">` +
+          '<circle cx="280" cy="280" r="200" fill="none" stroke="#8b7fd4"/></svg>',
+      );
     },
     health(): Promise<'ok' | 'down'> {
       return Promise.resolve(options.down === true ? 'down' : 'ok');

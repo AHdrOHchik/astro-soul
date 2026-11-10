@@ -9,12 +9,23 @@ import { DbModule } from './db/db.module';
 import { InitDataMiddleware } from './modules/auth/init-data.middleware';
 import { BillingModule } from './modules/billing/billing.module';
 import { ChartsModule } from './modules/charts/charts.module';
+import { EventsModule } from './modules/events/events.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
 import { MeModule } from './modules/me/me.module';
 
 @Module({
-  imports: [EnvModule, CommonModule, DbModule, HealthModule, MeModule, ChartsModule, BillingModule, GeoModule],
+  imports: [
+    EnvModule,
+    CommonModule,
+    DbModule,
+    HealthModule,
+    MeModule,
+    ChartsModule,
+    BillingModule,
+    GeoModule,
+    EventsModule,
+  ],
   providers: [
     RequestIdMiddleware,
     InitDataMiddleware,

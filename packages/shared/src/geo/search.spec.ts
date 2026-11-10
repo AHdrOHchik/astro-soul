@@ -25,9 +25,10 @@ describe('searchCities', () => {
     expect(names).toContain('Нижний Новгород');
   });
 
-  it('до трёх символов возвращает пустой массив', () => {
-    expect(searchCities('Мо')).toEqual([]);
-    expect('Мо'.length).toBeLessThan(MIN_QUERY_LENGTH);
+  it('ищет с двух символов, с одного — пустой массив', () => {
+    expect(searchCities('Мо')[0]?.name).toBe('Москва');
+    expect(searchCities('М')).toEqual([]);
+    expect('М'.length).toBeLessThan(MIN_QUERY_LENGTH);
   });
 
   it('несуществующий город — пустой массив, а не ошибка', () => {
