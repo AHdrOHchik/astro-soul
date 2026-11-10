@@ -1,20 +1,57 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createAnalytics } from './analytics';
 import type { ChartResult, Me, TimePrecision } from './api';
 import { App } from './App';
 import { SEARCH_DEBOUNCE_MS } from './hooks/usePlaceSearch';
 import { CONSENT_VERSION, ru } from './i18n/ru';
-import { apiError, chartRequest, chartResult, deferred, fakeApi, fakeTelegram, kazan, me, rejection, setupUser, TODAY } from './test/fixtures';
+import {
+  apiError,
+  chartRequest,
+  chartResult,
+  deferred,
+  fakeAnalytics,
+  fakeApi,
+  fakeTelegram,
+  fakeTermsReload,
+  kazan,
+  me,
+  rejection,
+  setupUser,
+  TODAY,
+} from './test/fixtures';
 
 type FakeUser = ReturnType<typeof setupUser>;
 
-function setup(options: { telegram?: Parameters<typeof fakeTelegram>[0]; api?: (api: ReturnType<typeof fakeApi>) => void } = {}) {
+interface SetupOptions {
+  telegram?: Parameters<typeof fakeTelegram>[0];
+  api?: (api: ReturnType<typeof fakeApi>) => void;
+  /** What the start before this one left behind, and whether this browser keeps anything at all. */
+  termsReload?: Parameters<typeof fakeTermsReload>[0];
+  /** Renders as a development build does: every effect runs twice. */
+  strict?: boolean;
+}
+
+function setup(options: SetupOptions = {}) {
   const api = fakeApi();
   options.api?.(api);
   const telegram = fakeTelegram(options.telegram);
+  const analytics = fakeAnalytics();
+  const termsReload = fakeTermsReload(options.termsReload);
   const user = setupUser();
-  const view = render(<App api={api} telegram={telegram} apiBaseUrl="https://api.test" today={TODAY} />);
-  return { api, telegram, user, ...view };
+  const app = (
+    <App
+      api={api}
+      telegram={telegram}
+      apiBaseUrl="https://api.test"
+      track={analytics.track}
+      termsReload={termsReload}
+      today={TODAY}
+    />
+  );
+  const view = render(options.strict ? <StrictMode>{app}</StrictMode> : app);
+  return { api, telegram, analytics, termsReload, user, ...view };
 }
 
 const start = () => screen.findByRole('button', { name: ru.welcome.start });
@@ -22,6 +59,10 @@ const next = () => screen.getByRole('button', { name: ru.common.next });
 const heading = () => screen.getByRole('heading', { level: 1 });
 const consentBox = () => screen.getByRole('checkbox', { name: ru.consent.checkbox });
 const proceed = () => screen.getByRole('button', { name: ru.consent.submit });
+const notNow = () => screen.getByRole('button', { name: ru.consent.decline });
+/** The small print under «Начать», the way to the agreement. */
+const termsLine = () =>
+  screen.getByRole('button', { name: `${ru.welcome.terms.before}${ru.welcome.terms.link}${ru.welcome.terms.after}` });
 const buildChart = () => screen.getByRole('button', { name: ru.birthPlace.submit });
 const settleSearch = () => act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
 
@@ -92,6 +133,7 @@ describe('App: sign-in', () => {
     expect(ru.welcome.disclaimer).toMatch(/18\+/);
     expect(ru.welcome.disclaimer).toMatch(/развлекательный/);
     expect(screen.getByRole('button', { name: ru.welcome.start })).toBeInTheDocument();
+    expect(termsLine()).toBeInTheDocument();
     expect(screen.queryByText(ru.welcome.returning)).not.toBeInTheDocument();
     expect(telegram.ready).toHaveBeenCalledTimes(1);
   });
@@ -200,10 +242,7 @@ describe('App: consent to the processing of personal data', () => {
     expect(api.createChart.mock.calls[0]?.[0].consent).toEqual({ accepted: true, version: CONSENT_VERSION });
   });
 
-  it.each([
-    ['privacy', ru.documents.privacy.notCollected],
-    ['terms', ru.documents.terms.disclaimer],
-  ] as const)('opens the %s document inside the app and comes back with the tick kept', async (name, text) => {
+  it.each(['privacy', 'terms'] as const)('opens the %s document inside the app and comes back with the tick kept', async (name) => {
     const { telegram, user } = setup();
     await openConsent(user);
     await user.click(consentBox());
@@ -212,7 +251,8 @@ describe('App: consent to the processing of personal data', () => {
 
     expect(heading()).toHaveTextContent(ru.consent.documents[name]);
     expect(heading()).toHaveFocus();
-    expect(screen.getByText(text)).toBeInTheDocument();
+    for (const paragraph of ru.documents[name].paragraphs) expect(screen.getByText(paragraph)).toBeInTheDocument();
+    expect(screen.getByText(ru.documents.version(CONSENT_VERSION))).toBeInTheDocument();
 
     act(() => {
       backHandler(telegram)?.();
@@ -248,6 +288,49 @@ describe('App: consent to the processing of personal data', () => {
 
     expect(heading()).toHaveTextContent(ru.consent.title);
     expect(consentBox()).toBeChecked();
+  });
+
+  it('opens the agreement straight from the welcome screen and comes back to it; reading is not consenting', async () => {
+    const { api, telegram, user } = setup();
+    await start();
+
+    await user.click(termsLine());
+
+    expect(heading()).toHaveTextContent(ru.consent.documents.terms);
+    expect(heading()).toHaveFocus();
+    for (const paragraph of ru.documents.terms.paragraphs) expect(screen.getByText(paragraph)).toBeInTheDocument();
+
+    act(() => {
+      backHandler(telegram)?.();
+    });
+
+    expect(heading()).toHaveTextContent(ru.welcome.title);
+    expect(backHandler(telegram)).toBeNull();
+    await openConsent(user);
+    expect(consentBox()).not.toBeChecked();
+    expect(api.createChart).not.toHaveBeenCalled();
+  });
+
+  describe('«Не сейчас»', () => {
+    it('leads back to the welcome screen without a tick: asked again, the box is empty', async () => {
+      const { api, telegram, user } = setup();
+      await openConsent(user);
+      await user.click(consentBox());
+      expect(consentBox()).toBeChecked();
+
+      await user.click(notNow());
+
+      expect(heading()).toHaveTextContent(ru.welcome.title);
+      expect(heading()).toHaveFocus();
+      // The first screen again: nothing to go back to.
+      expect(backHandler(telegram)).toBeNull();
+
+      await openConsent(user);
+      expect(consentBox()).not.toBeChecked();
+      expect(proceed()).toBeDisabled();
+      expect(api.resolveGeo).not.toHaveBeenCalled();
+      expect(api.createChart).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -545,6 +628,253 @@ describe('App: fields the server rejects', () => {
 
     expect(heading()).toHaveTextContent(ru.birthPlace.title);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
+
+describe('App: the server refuses the version of the consent', () => {
+  const VERSION = { field: 'consent.version', message: 'Условия обновились — подтверди согласие ещё раз' };
+  const DATE = { field: 'birth_date', message: 'Сервис доступен с 18 лет' };
+  /** What the task asks the user to see after the restart, letter for letter. */
+  const RENEWED = 'Условия обновились, подтверди ещё раз.';
+  /** A version older than the one of this build: the build before the restart had it. */
+  const OLDER_VERSION = '2026-01-01';
+
+  /** Fills everything in; the server refuses the chart request because of `fields`. */
+  async function refused(options: SetupOptions = {}, ...fields: { field: string; message: string }[]) {
+    const view = setup({ ...options, api: (fake) => fake.createChart.mockRejectedValue(rejection(...fields)) });
+    await fillIn(view.user);
+    return view;
+  }
+
+  describe('in the build that was refused', () => {
+    it('notes the refused version, then restarts the app: newer texts come only with a newer build', async () => {
+      const { termsReload } = await refused({}, VERSION);
+
+      await waitFor(() => {
+        expect(termsReload.reload).toHaveBeenCalledTimes(1);
+      });
+      expect(termsReload.remember).toHaveBeenCalledTimes(1);
+      expect(termsReload.remember).toHaveBeenCalledWith(CONSENT_VERSION);
+      expect(termsReload.remember.mock.invocationCallOrder[0]).toBeLessThan(termsReload.reload.mock.invocationCallOrder[0] ?? 0);
+    });
+
+    it('restarts even when the server names other fields too: nothing can be corrected under outdated texts', async () => {
+      const { termsReload } = await refused({}, DATE, VERSION);
+
+      await waitFor(() => {
+        expect(termsReload.reload).toHaveBeenCalledTimes(1);
+      });
+      expect(screen.queryByText(DATE.message)).not.toBeInTheDocument();
+      expect(screen.queryByText(ru.birthDate.title)).not.toBeInTheDocument();
+    });
+
+    describe('where the browser keeps nothing between page loads', () => {
+      it('says what happened instead of restarting without a word, and leaves the restart to the user', async () => {
+        const { termsReload, user } = await refused({ termsReload: { storage: false } }, VERSION);
+
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent(ru.termsUpdate.outdatedTitle);
+        expect(alert).toHaveTextContent(ru.termsUpdate.outdatedText);
+        expect(termsReload.reload).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole('button', { name: ru.termsUpdate.reload }));
+
+        expect(termsReload.reload).toHaveBeenCalledTimes(1);
+        expect(screen.getByRole('main')).toHaveAttribute('aria-busy', 'true');
+      });
+    });
+  });
+
+  describe('in the build that starts after the restart, with newer texts', () => {
+    const afterRestart = (options: SetupOptions = {}) => setup({ ...options, termsReload: { refusedVersion: OLDER_VERSION } });
+
+    it('opens on the consent screen with an empty box and says why the user is here again', async () => {
+      const { api, termsReload } = afterRestart();
+
+      expect(await screen.findByRole('heading', { level: 1, name: ru.consent.title })).toHaveFocus();
+      const notice = screen.getByRole('note');
+      expect(notice).toHaveTextContent(RENEWED);
+      expect(notice).toHaveTextContent(ru.termsUpdate.renewed);
+      expect(heading()).toHaveAccessibleDescription(ru.termsUpdate.renewed);
+      expect(consentBox()).not.toBeChecked();
+      expect(proceed()).toBeDisabled();
+      // One restart is enough.
+      expect(termsReload.reload).not.toHaveBeenCalled();
+      expect(api.createChart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('in the build that starts after the restart, with the same texts', () => {
+    const stillOutdated = (options: SetupOptions = {}) => setup({ ...options, termsReload: { refusedVersion: CONSENT_VERSION } });
+
+    it('says that the new version has not arrived, and asks for no data it could not use', async () => {
+      const { api, termsReload } = stillOutdated();
+
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(ru.termsUpdate.outdatedTitle);
+      expect(alert).toHaveTextContent(ru.termsUpdate.outdatedText);
+      expect(screen.queryByRole('button', { name: ru.welcome.start })).not.toBeInTheDocument();
+      expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+      // No second restart on its own: that would be a loop.
+      expect(termsReload.reload).not.toHaveBeenCalled();
+      expect(api.createChart).not.toHaveBeenCalled();
+    });
+
+    it('restarts when the user asks, noting the version again so that the next start knows', async () => {
+      const { termsReload, user } = stillOutdated();
+
+      await user.click(await screen.findByRole('button', { name: ru.termsUpdate.reload }));
+
+      expect(termsReload.remember).toHaveBeenCalledWith(CONSENT_VERSION);
+      expect(termsReload.reload).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('status')).toHaveTextContent(ru.common.loading);
+    });
+  });
+});
+
+describe('App: product events', () => {
+  it('reports the way from the first screen to the chart, step by step', async () => {
+    const { analytics, user } = setup();
+
+    await fillIn(user);
+    await user.click(await screen.findByRole('button', { name: ru.chart.share }));
+
+    expect(analytics.events).toEqual([
+      { name: 'app_open' },
+      { name: 'screen_view', props: { step: 'welcome' } },
+      { name: 'screen_view', props: { step: 'consent' } },
+      { name: 'consent_view' },
+      { name: 'consent_accepted', props: { version: CONSENT_VERSION } },
+      { name: 'screen_view', props: { step: 'birth_date' } },
+      { name: 'birth_date_done' },
+      { name: 'screen_view', props: { step: 'birth_time' } },
+      { name: 'birth_time_done' },
+      { name: 'screen_view', props: { step: 'birth_place' } },
+      { name: 'place_search' },
+      { name: 'birth_place_done' },
+      { name: 'screen_view', props: { step: 'chart' } },
+      { name: 'chart_requested' },
+      { name: 'chart_created' },
+      { name: 'share_clicked' },
+    ]);
+  });
+
+  it('reports every step back by the screen that was left, whichever control took the user there', async () => {
+    const { analytics, telegram, user } = setup({ api: (fake) => fake.createChart.mockRejectedValue(apiError('VALIDATION_FAILED', { status: 422 })) });
+    await fillIn(user);
+    await screen.findByRole('alert');
+    analytics.clear();
+
+    // «Изменить данные» on the chart screen, then Telegram's Back twice, then «Не сейчас».
+    await user.click(screen.getByRole('button', { name: ru.chart.editData }));
+    act(() => {
+      backHandler(telegram)?.();
+    });
+    await user.click(notNow());
+
+    expect(analytics.events).toEqual([
+      { name: 'step_back', props: { step: 'chart' } },
+      { name: 'screen_view', props: { step: 'birth_date' } },
+      { name: 'step_back', props: { step: 'birth_date' } },
+      { name: 'screen_view', props: { step: 'consent' } },
+      { name: 'consent_view' },
+      { name: 'step_back', props: { step: 'consent' } },
+      { name: 'screen_view', props: { step: 'welcome' } },
+    ]);
+  });
+
+  describe('carry nothing the user entered', () => {
+    /** Everything the user types or picks in these tests, and everything the chart says back. */
+    const ENTERED = [
+      '1994',
+      '05-17',
+      '17.05',
+      '1705',
+      '14:30',
+      '1430',
+      'Каз',
+      'Казань',
+      'Татарстан',
+      '55.79',
+      '49.1',
+      'Europe',
+      'Moscow',
+      chartResult.chart.chart_id,
+      'sig=',
+    ];
+    /** The only properties an event may have, and what each may hold. */
+    const ALLOWED: Record<string, (value: unknown) => boolean> = {
+      step: (value) => ['welcome', 'consent', 'privacy', 'terms', 'birth_date', 'birth_time', 'birth_place', 'chart'].includes(String(value)),
+      code: (value) => /^[A-Z_]+$/.test(String(value)),
+      field: (value) => /^[a-z_.]+$/.test(String(value)),
+      version: (value) => value === CONSENT_VERSION,
+    };
+
+    /** A pass with a server rejection, a failed search and steps back in it: every kind of event the app has. */
+    async function eventfulPass(view: ReturnType<typeof setup>) {
+      const { api, telegram, user } = view;
+      api.createChart
+        .mockRejectedValueOnce(
+          rejection(
+            { field: 'birth_place', message: 'Не знаем такой часовой пояс — выбери город заново' },
+            { field: 'birth_place.tz', message: 'Europe/Moscow' },
+          ),
+        )
+        .mockResolvedValueOnce(chartResult);
+      api.resolveGeo
+        .mockResolvedValueOnce([kazan])
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(rejection({ field: 'query', message: 'Слишком длинный запрос — введи название города' }))
+        .mockResolvedValue([kazan]);
+
+      await fillIn(user);
+      await screen.findAllByRole('alert');
+      // Back on the place screen with the server's text: search again, three ways.
+      const field = screen.getByLabelText(ru.birthPlace.label);
+      await user.type(field, 'ск');
+      await settleSearch();
+      await user.type(field, 'ий');
+      await settleSearch();
+      await user.clear(field);
+      await user.type(field, 'Казань');
+      await settleSearch();
+      await user.click(screen.getByRole('button', { name: /Казань/ }));
+      act(() => {
+        backHandler(telegram)?.();
+      });
+      await user.click(next());
+      await user.click(buildChart());
+      await user.click(await screen.findByRole('button', { name: ru.chart.share }));
+    }
+
+    it('in what goes to the server: the bodies of POST /events', async () => {
+      const api = fakeApi();
+      const sent = createAnalytics({ api, isEnabled: () => true, now: () => TODAY });
+      const telegram = fakeTelegram();
+      const user = setupUser();
+      render(
+        <App api={api} telegram={telegram} apiBaseUrl="https://api.test" track={sent.track} termsReload={fakeTermsReload()} today={TODAY} />,
+      );
+      await eventfulPass({ api, telegram, user } as ReturnType<typeof setup>);
+      act(() => {
+        sent.flush();
+      });
+
+      const batches = api.sendEvents.mock.calls.map(([events]) => events);
+      const events = batches.flat();
+      expect(events.length).toBeGreaterThan(20);
+      for (const batch of batches) expect(batch.length).toBeLessThanOrEqual(20);
+      for (const event of events) {
+        expect(Object.keys(event).sort()).toEqual(event.props ? ['at', 'name', 'props'] : ['at', 'name']);
+        expect(event.at).toBe(TODAY.toISOString());
+        for (const [key, value] of Object.entries(event.props ?? {})) {
+          expect(ALLOWED[key]?.(value), `${event.name}: ${key}=${String(value)}`).toBe(true);
+        }
+      }
+      const body = JSON.stringify(batches);
+      expect(body).not.toMatch(/\p{Script=Cyrillic}/u);
+      for (const secret of ENTERED) expect(body).not.toContain(secret);
+    });
   });
 });
 
