@@ -595,8 +595,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Invoice' }
+        '422':
+          description: Неизвестный план или чужая карта (VALIDATION_FAILED / NOT_FOUND)
         '429':
-          description: Слишком много инвойсов (антифрод)
+          description: 'Слишком много инвойсов (антифрод): 3 в час, 10 в сутки — Problem.code = RATE_LIMITED'
 
   /api/v1/internal/telegram/webhook/{secret}:
     post:
@@ -616,6 +618,10 @@ paths:
       responses:
         '200': { description: Принято }
         '403': { description: Неверный секрет }
+        '500':
+          description: |
+            Временная ошибка (например, БД недоступна). Ответ не 2xx заставляет Telegram
+            повторить доставку — обработчик идемпотентен по telegram_payment_charge_id.
 
   /api/v1/internal/jobs/run:
     post:

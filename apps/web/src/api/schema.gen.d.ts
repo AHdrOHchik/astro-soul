@@ -603,7 +603,14 @@ export interface paths {
                         "application/json": components["schemas"]["Invoice"];
                     };
                 };
-                /** @description Слишком много инвойсов (антифрод) */
+                /** @description Неизвестный план или чужая карта (VALIDATION_FAILED / NOT_FOUND) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Слишком много инвойсов (антифрод): 3 в час, 10 в сутки — Problem.code = RATE_LIMITED */
                 429: {
                     headers: {
                         [name: string]: unknown;
@@ -654,6 +661,16 @@ export interface paths {
                 };
                 /** @description Неверный секрет */
                 403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /**
+                 * @description Временная ошибка (например, БД недоступна). Ответ не 2xx заставляет Telegram
+                 *     повторить доставку — обработчик идемпотентен по telegram_payment_charge_id.
+                 */
+                500: {
                     headers: {
                         [name: string]: unknown;
                     };
