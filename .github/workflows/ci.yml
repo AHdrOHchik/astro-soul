@@ -75,5 +75,15 @@ jobs:
           pnpm db:migrate
           pnpm db:seed
 
+      # Отдельный шаг до общего `check`: тесты API и общих пакетов должны
+      # отработать (и быть видны в логе), даже если `check` упадёт позже
+      # на линте/типах фронта.
+      - name: Тесты API, shared и UI
+        run: |
+          pnpm --filter @astro-soul/shared run build
+          pnpm --filter @astro-soul/api run test
+          pnpm --filter @astro-soul/shared run test
+          pnpm --filter @astro-soul/ui run test
+
       - name: Линт, типы, тесты
         run: pnpm check

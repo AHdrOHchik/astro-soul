@@ -11,6 +11,7 @@ export const ASTRO_TIMEOUT_MS = 2000;
 export interface AstroBirthInput {
   readonly birth_date: string;
   readonly birth_time: string | null;
+  readonly time_precision: 'exact' | 'approximate' | 'unknown';
   readonly birth_place: GeoPlace;
 }
 

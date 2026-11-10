@@ -49,6 +49,7 @@ def chart_from_wire(payload: dict[str, Any]) -> Chart:
     birth = BirthInput(
         date=date.fromisoformat(birth_data["date"]),
         time=time.fromisoformat(birth_data["time"]) if birth_data["time"] else None,
+        time_precision=birth_data.get("time_precision"),
         place=GeoPlace(
             name=place["name"],
             country=place["country"],

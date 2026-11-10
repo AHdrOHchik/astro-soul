@@ -19,6 +19,12 @@ export function applyTestEnv(): void {
   process.env['PSEUDONYM_PEPPER'] = TEST_PEPPER;
   process.env['LOG_LEVEL'] = 'error';
   process.env['APPLICATION_VERSION'] = '0.0.0-test';
+  // Лимиты в тестах выключены: интеграционные сценарии делают десятки запросов.
+  // Поведение самого лимитера проверяется отдельным спеком с явными значениями.
+  process.env['RATE_LIMIT_PER_MIN'] = '0';
+  process.env['RATE_LIMIT_CHARTS_PER_MIN'] = '0';
+  process.env['RATE_LIMIT_GEO_PER_MIN'] = '0';
+  process.env['GEO_PROVIDER'] = 'bundled';
 }
 
 /** Вымышленный пользователь Telegram. */

@@ -21,6 +21,25 @@ export interface EnsureUserResult {
   readonly isNew: boolean;
 }
 
+export type TimeMode = 'exact' | 'approximate' | 'unknown';
+
+export interface UpsertProfileInput {
+  readonly userId: string;
+  readonly birthDate: string;
+  readonly birthTime: string | null;
+  readonly timeMode: TimeMode;
+  readonly place: {
+    readonly name: string;
+    readonly region?: string | null;
+    readonly country: string;
+    readonly lat: number;
+    readonly lon: number;
+    readonly tz: string;
+  };
+  /** Версия текста согласия, которую показал фронт (контракт 1.2.1). */
+  readonly consentVersion: string;
+}
+
 @Injectable()
 export class UsersRepository {
   constructor(
@@ -55,6 +74,47 @@ export class UsersRepository {
     }
 
     return { userId: row.id, isNew: row.is_new };
+  }
+
+  /**
+   * Профиль рождения сохраняется вместе с картой (`POST /charts`): это
+   * завершение онбординга. `consent_at` пишется только при первом согласии —
+   * повторное «я согласен» не переписывает дату задним числом.
+   */
+  async upsertProfile(input: UpsertProfileInput): Promise<void> {
+    await this.db.query(
+      `INSERT INTO profiles (
+         user_id, birth_date, birth_time, time_mode, place_name, place_region,
+         place_country, place_lat, place_lon, place_tz, consent_at, consent_version,
+         onboarding_step
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), $11, 'done')
+       ON CONFLICT (user_id) DO UPDATE SET
+         birth_date = EXCLUDED.birth_date,
+         birth_time = EXCLUDED.birth_time,
+         time_mode = EXCLUDED.time_mode,
+         place_name = EXCLUDED.place_name,
+         place_region = EXCLUDED.place_region,
+         place_country = EXCLUDED.place_country,
+         place_lat = EXCLUDED.place_lat,
+         place_lon = EXCLUDED.place_lon,
+         place_tz = EXCLUDED.place_tz,
+         consent_at = COALESCE(profiles.consent_at, EXCLUDED.consent_at),
+         consent_version = EXCLUDED.consent_version,
+         onboarding_step = 'done'`,
+      [
+        input.userId,
+        input.birthDate,
+        input.birthTime,
+        input.timeMode,
+        input.place.name,
+        input.place.region ?? null,
+        input.place.country,
+        input.place.lat,
+        input.place.lon,
+        input.place.tz,
+        input.consentVersion,
+      ],
+    );
   }
 
   async getProfileState(userId: string): Promise<ProfileState> {

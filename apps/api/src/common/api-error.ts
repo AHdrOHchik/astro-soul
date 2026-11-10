@@ -40,8 +40,34 @@ export function notFound(options: ApiErrorOptions = {}): ApiError {
   return new ApiError('NOT_FOUND', 404, options);
 }
 
+/**
+ * `VALIDATION_FAILED` — всегда 422 (контракт 1.2.1, отчёт фронта).
+ * 400 в API не используется вовсе.
+ */
 export function validationFailed(options: ApiErrorOptions = {}): ApiError {
-  return new ApiError('VALIDATION_FAILED', 400, options);
+  return new ApiError('VALIDATION_FAILED', 422, options);
+}
+
+/** Ошибка конкретного поля — фронт подсвечивает его по `field`. */
+export interface FieldErrorInput {
+  readonly field: string;
+  readonly message: string;
+}
+
+/**
+ * `422 VALIDATION_FAILED` со списком полей.
+ * Первое сообщение становится текстом ошибки, весь список — в `details.field_errors`.
+ */
+export function invalidFields(
+  errors: readonly FieldErrorInput[],
+  options: Omit<ApiErrorOptions, 'details'> = {},
+): ApiError {
+  const first = errors[0];
+  return new ApiError('VALIDATION_FAILED', 422, {
+    ...options,
+    ...(first === undefined ? {} : { message: first.message }),
+    details: { field_errors: errors.map(({ field, message }) => ({ field, message })) },
+  });
 }
 
 export function internalError(options: ApiErrorOptions = {}): ApiError {

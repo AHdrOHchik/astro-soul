@@ -51,6 +51,7 @@ class ChartIn(BaseModel):
     birth_date: date_type
     birth_time: time_type | None = None
     birth_place: PlaceIn
+    time_precision: Literal["exact", "approximate", "unknown"] | None = None
     engine: Literal["fallback", "swisseph"] | None = None
 
 
@@ -89,10 +90,18 @@ def health() -> dict[str, Any]:
 
 @app.post("/chart")
 def chart(payload: ChartIn) -> dict[str, Any]:
+    # «Не знаю времени» с указанным временем — противоречие, а не повод угадывать.
+    if payload.time_precision == "unknown" and payload.birth_time is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="time_precision=unknown требует birth_time=null",
+        )
+
     birth = BirthInput(
         date=payload.birth_date,
         time=payload.birth_time,
         place=GeoPlace(**payload.birth_place.model_dump()),
+        time_precision=payload.time_precision,
     )
     try:
         result = calcChart(birth, engine=payload.engine)

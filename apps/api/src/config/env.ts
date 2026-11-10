@@ -25,6 +25,17 @@ const envSchema = z.object({
   ASTRO_ENGINE: z.enum(['fallback', 'swisseph']).default('fallback'),
   ASTRO_SERVICE_URL: z.string().url().optional(),
 
+  /** Геоданные: по умолчанию только локальный справочник, без сети (geo.md). */
+  GEO_PROVIDER: z.enum(['bundled', 'nominatim']).default('bundled'),
+  GEO_NOMINATIM_URL: z.string().url().default('https://nominatim.openstreetmap.org'),
+  /** Контакт для User-Agent при обращении к Nominatim (требование их политики). */
+  GEO_CONTACT_EMAIL: z.string().email().optional(),
+
+  /** Лимиты запросов в минуту (SPEC). 0 — выключить (только для тестов). */
+  RATE_LIMIT_PER_MIN: z.coerce.number().int().min(0).default(60),
+  RATE_LIMIT_CHARTS_PER_MIN: z.coerce.number().int().min(0).default(10),
+  RATE_LIMIT_GEO_PER_MIN: z.coerce.number().int().min(0).default(120),
+
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
 });
 

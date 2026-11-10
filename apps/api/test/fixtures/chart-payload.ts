@@ -1,6 +1,6 @@
 /**
  * Эталонная карта из настоящего движка (`packages/astro`), а не выдуманные числа.
- * Пересобрать: `python -m astro.service` + POST /chart, либо `python -c` из README движка.
+ * Пересобрать: `POST /chart` к сайдкару либо `python -c` из README движка.
  * Дата и место в фикстуре — публичный тестовый пример, не данные пользователя.
  */
 export const engineChartPayload = {
@@ -9,6 +9,7 @@ export const engineChartPayload = {
       "date": "1994-05-17",
       "time": "14:20",
       "time_known": true,
+      "time_precision": "exact",
       "place": {
         "name": "Москва",
         "region": null,

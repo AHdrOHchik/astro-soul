@@ -253,7 +253,7 @@ describe('GET /api/v1/me — данные', () => {
       FICTIONAL_USER.id,
     ]);
     await ctx.db.query(
-      `INSERT INTO profiles (user_id, birth_date, birth_time, time_accuracy, place_name,
+      `INSERT INTO profiles (user_id, birth_date, birth_time, time_mode, place_name,
                              place_country, place_lat, place_lon, place_tz, consent_at)
        VALUES ($1, '1990-01-01', null, 'unknown', 'Тестоград', 'RU', 55.75, 37.61,
                'Europe/Moscow', now())`,

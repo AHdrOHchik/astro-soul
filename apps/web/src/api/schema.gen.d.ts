@@ -148,6 +148,7 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
+                        /** @description Поиск идёт по мере ввода, начиная с 3 символов */
                         query: string;
                         /** @default 5 */
                         limit?: number;
@@ -155,7 +156,10 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Кандидаты */
+                /**
+                 * @description Кандидаты. Ответ **всегда** 200 и массив: пустой массив = «города нет»,
+                 *     это не ошибка. Лишних подтверждений от фронта не нужно.
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -164,8 +168,25 @@ export interface paths {
                         "application/json": components["schemas"]["GeoPlace"][];
                     };
                 };
-                /** @description Ничего не найдено (GEO_NOT_FOUND) */
-                404: {
+                /** @description Пустой или слишком короткий запрос (VALIDATION_FAILED) */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description Слишком частое обновление подсказок: лимит маршрута 120 запросов в минуту */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /**
+                 * @description Провайдер геоданных недоступен (GEO_NOT_FOUND + details.reason).
+                 *     Пустой результат сюда не относится — он отдаётся как 200 [].
+                 */
+                503: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -213,20 +234,14 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": {
-                            chart?: components["schemas"]["Chart"];
-                            mini_reading?: {
-                                sun?: string;
-                                moon?: string;
-                                asc?: string;
-                                summary?: string;
-                            };
-                            /** @description Путь к SVG-колесу карты (charts/{chart_id}/wheel.svg) */
-                            wheel_url?: string;
-                        };
+                        "application/json": components["schemas"]["ChartResponse"];
                     };
                 };
-                /** @description Некорректные данные (VALIDATION_FAILED) */
+                /**
+                 * @description Некорректные данные (VALIDATION_FAILED): `details.field_errors`
+                 *     содержит поле и текст для подсветки (birth_date, birth_time,
+                 *     birth_place, time_precision, consent).
+                 */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -260,13 +275,16 @@ export interface paths {
             };
             requestBody?: never;
             responses: {
-                /** @description OK */
+                /**
+                 * @description Тот же конверт, что и `POST /charts`: карта, мини-разбор и относительный
+                 *     путь к колесу с уже включённой подписью `sig` (его можно открывать без initData).
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["Chart"];
+                        "application/json": components["schemas"]["ChartResponse"];
                     };
                 };
                 /** @description NOT_FOUND */
@@ -779,14 +797,45 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        FieldError: {
+            /**
+             * @description Имя поля из запроса (birth_date, birth_time, birth_place, consent, plan_code)
+             * @example birth_date
+             */
+            field: string;
+            /**
+             * @description Короткий текст ошибки для этого поля (ru, на «ты»)
+             * @example Дата рождения должна быть в прошлом
+             */
+            message: string;
+        };
+        /**
+         * @description Единый формат ошибок, `application/problem+json`.
+         *
+         *     Соответствие кода и статуса жёсткое: `VALIDATION_FAILED` — **всегда 422**
+         *     (400 в API не используется), `CONFLICT` — 409, `UNAUTHORIZED` — 401,
+         *     `FORBIDDEN` — 403, `NOT_FOUND` — 404, `RATE_LIMITED` — 429,
+         *     `INTERNAL`/`GEO_NOT_FOUND`/`UPSTREAM_LLM` — 503/502.
+         *
+         *     `message` — готовый текст для экрана, обращение на «ты». Фронт может
+         *     показывать его без переписывания. Неизвестный маршрут тоже возвращает
+         *     `Problem` (`NOT_FOUND`, «Такой страницы нет. Обнови приложение»),
+         *     а не текст фреймворка.
+         */
         Problem: {
             /** @enum {string} */
             code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND";
-            /** @description Текст для показа пользователю (ru) */
+            /** @description Готовый текст для показа пользователю (ru */
             message: string;
             /** @description Для поиска в логах */
             request_id: string;
             details?: {
+                /**
+                 * @description Заполняется для `VALIDATION_FAILED`: список полей с ошибками.
+                 *     Порядок отражает порядок проверки, дубликатов по `field` нет.
+                 */
+                field_errors?: components["schemas"]["FieldError"][];
+            } & {
                 [key: string]: unknown;
             };
         };
@@ -860,6 +909,25 @@ export interface components {
             orb: number;
             strength?: number;
         };
+        ChartResponse: {
+            chart: components["schemas"]["Chart"];
+            mini_reading: {
+                /** @example Солнце в Телец, 26°17′ */
+                sun: string;
+                /** @example Луна в Лев, 12°38′ */
+                moon: string;
+                /** @example Асцендент в Дева, 15°03′ */
+                asc: string;
+                /** @example Солнце в Телец, 26°17′ · Луна в Лев, 12°38′ */
+                summary: string;
+            };
+            /**
+             * @description Относительный путь к SVG-колесу с подписью: `/api/v1/charts/{chart_id}/wheel.svg?sig=...`.
+             *     Маршрут публичный (security: []), initData не нужен — можно вставлять в `<img>`.
+             * @example /api/v1/charts/0f1c.../wheel.svg?sig=1767225600.abc123
+             */
+            wheel_url: string;
+        };
         Chart: {
             /** Format: uuid */
             chart_id: string;
@@ -871,6 +939,11 @@ export interface components {
                 /** @description null, если время неизвестно */
                 time?: string | null;
                 time_known?: boolean;
+                /**
+                 * @description Точность времени, с которой карта построена (эхо `ChartCreateRequest.time_precision`)
+                 * @enum {string}
+                 */
+                time_precision?: "exact" | "approximate" | "unknown";
                 place?: components["schemas"]["GeoPlace"];
             };
             /** @description null, если время рождения неизвестно (time_known = false) */
@@ -919,12 +992,39 @@ export interface components {
         ChartCreateRequest: {
             /**
              * Format: date
+             * @description Дата рождения в прошлом, не раньше 1900-01-01, возраст — не меньше 18 лет.
+             *     Проверяется на сервере (проверка на фронте — только UX, не защита).
              * @example 1994-05-17
              */
             birth_date: string;
-            /** @description Локальное время места рождения. null = неизвестно (включается флаг) */
+            /**
+             * @description Локальное время места рождения (HH:MM).
+             *     Обязательно при `time_precision` = exact | approximate, обязано быть `null`
+             *     при `time_precision` = unknown.
+             */
             birth_time?: string | null;
+            /**
+             * @description Насколько известно время. Сохраняется в `profiles.time_mode` и
+             *     возвращается в `Chart.birth.time_precision`.
+             *     `unknown` ⇒ дома и Асцендент не рассчитываются.
+             * @enum {string}
+             */
+            time_precision: "exact" | "approximate" | "unknown";
             birth_place: components["schemas"]["GeoPlace"];
+            /**
+             * @description Согласие на обработку ПДн (152-ФЗ). Обязательно, сохраняется
+             *     в `profiles.consent_at` и `profiles.consent_version`.
+             *     `accepted: false` → 422 VALIDATION_FAILED.
+             */
+            consent: {
+                /** @enum {boolean} */
+                accepted: true;
+                /**
+                 * @description Версия текста согласия, которую показал фронт
+                 * @example 2026-11-01
+                 */
+                version: string;
+            };
         };
         ReportRequest: {
             /** Format: uuid */

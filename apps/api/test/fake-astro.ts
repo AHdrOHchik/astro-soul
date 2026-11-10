@@ -19,11 +19,29 @@ export function makeFakeAstro(options: { readonly down?: boolean } = {}): FakeAs
 
   return {
     isConfigured: true,
-    createChart(): Promise<AstroChartData> {
+    createChart(input: unknown): Promise<AstroChartData> {
       if (options.down === true) {
         return Promise.reject(new ApiError('INTERNAL', 503, { reason: 'astro_unavailable' }));
       }
-      return Promise.resolve(data);
+
+      // Движок обязан эхом вернуть time_precision — подмена делает то же самое,
+      // иначе тесты не заметят, что поле потерялось по дороге.
+      const precision = (input as { time_precision?: 'exact' | 'approximate' | 'unknown' })
+        .time_precision;
+      const birthTime = (input as { birth_time?: string | null }).birth_time ?? null;
+
+      return Promise.resolve({
+        ...data,
+        chart: {
+          ...data.chart,
+          birth: {
+            ...data.chart.birth,
+            time: birthTime,
+            time_known: birthTime !== null,
+            ...(precision === undefined ? {} : { time_precision: precision }),
+          },
+        },
+      });
     },
     transits(): Promise<never> {
       return Promise.reject(new Error('транзиты в этих тестах не используются'));
