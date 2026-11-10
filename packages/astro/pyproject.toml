@@ -6,7 +6,12 @@ requires-python = ">=3.11"
 # pyswisseph — AGPL-3.0 (Swiss Ephemeris). До покупки коммерческой лицензии
 # движок работает в режиме ASTRO_ENGINE=fallback (встроенная эфемерида Moshier,
 # без файлов .se1). Подробности — README пакета.
-dependencies = ["pyswisseph==2.10.3.2"]
+dependencies = [
+    "pyswisseph==2.10.3.2",
+    # HTTP-сайдкар для API (NestJS): POST /chart, /transits, /wheel, GET /health
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -15,10 +20,13 @@ dev = [
     # проверка вывода движка по контракту (tests/test_contract.py)
     "jsonschema==4.23.0",
     "pyyaml==6.0.2",
+    # тесты сайдкара через ASGI-транспорт, без запуска сервера
+    "httpx>=0.27,<1",
 ]
 
 [project.scripts]
 astro-engine = "astro.cli:main"
+astro-service = "astro.service:main"
 
 [build-system]
 requires = ["setuptools>=68"]

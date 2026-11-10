@@ -1,9 +1,7 @@
+import type { QuotaCode } from './contracts';
 import type { Entitlements } from './entitlements';
 
-/** Коды квот из контракта (`Quota.code`). */
-export const QUOTA_CODES = ['forecast_daily', 'ask_daily', 'report_month', 'compat_month'] as const;
-
-export type QuotaCode = (typeof QUOTA_CODES)[number];
+export type { QuotaCode };
 
 /** `limit = -1` в контракте означает «безлимит». */
 export const UNLIMITED = -1;

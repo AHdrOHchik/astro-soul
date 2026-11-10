@@ -8,12 +8,14 @@ export const TEST_DATABASE_URL =
 
 export const TEST_BOT_TOKEN = '123456789:TEST-TOKEN-for-unit-tests-only';
 export const TEST_PEPPER = 'test-pepper-0123456789-0123456789-0123456789';
+export const TEST_WEBHOOK_SECRET = 'test-webhook-secret-0123456789';
 
 export function applyTestEnv(): void {
   process.env['NODE_ENV'] = 'test';
   process.env['DATABASE_URL'] = TEST_DATABASE_URL;
   process.env['DATABASE_POOL_MAX'] = '4';
   process.env['TELEGRAM_BOT_TOKEN'] = TEST_BOT_TOKEN;
+  process.env['TELEGRAM_WEBHOOK_SECRET'] = TEST_WEBHOOK_SECRET;
   process.env['PSEUDONYM_PEPPER'] = TEST_PEPPER;
   process.env['LOG_LEVEL'] = 'error';
   process.env['APPLICATION_VERSION'] = '0.0.0-test';

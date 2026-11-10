@@ -1,0 +1,79 @@
+name: ci
+
+# Один прогон на PR и на main: линт, типы, тесты, миграции, Python-движок.
+# Postgres поднимается сервис-контейнером GitHub Actions, docker compose
+# в CI не запускается — только проверяется, что файл валиден.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DATABASE_URL: postgres://astro:astro@127.0.0.1:5432/astro_soul
+  TEST_DATABASE_URL: postgres://astro:astro@127.0.0.1:5432/astro_soul_test
+  TELEGRAM_BOT_TOKEN: 123456789:CI-TOKEN-not-a-real-bot
+  PSEUDONYM_PEPPER: ci-pepper-0123456789-0123456789-0123456789
+  NODE_ENV: test
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: astro
+          POSTGRES_PASSWORD: astro
+          POSTGRES_DB: astro_soul
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U astro"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Python-зависимости движка
+        run: python -m pip install -e 'packages/astro[dev]'
+
+      - name: Node-зависимости
+        run: pnpm install --frozen-lockfile
+
+      - name: Тестовая БД
+        run: PGPASSWORD=astro psql -h 127.0.0.1 -U astro -d astro_soul -c 'CREATE DATABASE astro_soul_test'
+
+      # Docker в CI недоступен, но compose-файл обязан оставаться валидным.
+      - name: docker compose config
+        run: docker compose config -q
+
+      - name: Миграции и планы
+        run: |
+          pnpm db:migrate
+          pnpm db:seed
+
+      - name: Линт, типы, тесты
+        run: pnpm check

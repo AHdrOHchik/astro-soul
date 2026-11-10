@@ -136,6 +136,24 @@ class Chart:
                 return planet
         raise KeyError(f"планета {key!r} не рассчитана")
 
+    def to_internal(self) -> dict[str, Any]:
+        """Числа, которые не попадают в контракт, но нужны транзитам и колесу."""
+        return {
+            "planets": [
+                {
+                    "key": planet.key,
+                    "longitude": planet.longitude,
+                    "speed": planet.speed,
+                }
+                for planet in self.planets
+            ],
+            "houses": list(self.houses) if self.houses is not None else None,
+            "asc": self.asc,
+            "mc": self.mc,
+            "engine_mode": self.engine_mode,
+            "house_system": self.house_system,
+        }
+
     def to_dict(self) -> dict[str, Any]:
         """Ответ в форме контракта `Chart` (без chart_id и created_at — их ставит API).
 
@@ -158,6 +176,32 @@ class Chart:
             "aspects": [aspect.to_dict() for aspect in self.aspects],
             "balances": self.balances.to_dict(),
             "engine_version": self.engine_version,
+            # Планеты, которые движок не считает (Chiron без коммерческой
+            # лицензии Swiss Ephemeris). Клиент обязан это показать, а не прятать.
+            "omitted_planets": list(self.omitted_planets),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ChartWire:
+    """Транспортная форма: ответ контракта + внутренние числа движка.
+
+    `chart` — ровно то, что уходит клиенту (контракт `Chart`).
+    `internal` — то, что нужно движку для транзитов и колеса и что API хранит
+    в `charts.data`, но никогда не отдаёт наружу (долготы, режим, система домов).
+    """
+
+    chart: dict[str, Any]
+    internal: dict[str, Any]
+    input_hash: str
+    omitted_planets: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "chart": self.chart,
+            "internal": self.internal,
+            "input_hash": self.input_hash,
+            "omitted_planets": list(self.omitted_planets),
         }
 
 

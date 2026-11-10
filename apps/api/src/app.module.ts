@@ -6,11 +6,13 @@ import { RequestIdMiddleware } from './common/request-id.middleware';
 import { EnvModule } from './config/env.module';
 import { DbModule } from './db/db.module';
 import { InitDataMiddleware } from './modules/auth/init-data.middleware';
+import { BillingModule } from './modules/billing/billing.module';
+import { ChartsModule } from './modules/charts/charts.module';
 import { HealthModule } from './modules/health/health.module';
 import { MeModule } from './modules/me/me.module';
 
 @Module({
-  imports: [EnvModule, CommonModule, DbModule, HealthModule, MeModule],
+  imports: [EnvModule, CommonModule, DbModule, HealthModule, MeModule, ChartsModule, BillingModule],
   providers: [
     RequestIdMiddleware,
     InitDataMiddleware,

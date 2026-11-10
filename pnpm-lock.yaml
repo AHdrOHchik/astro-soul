@@ -136,6 +136,9 @@ importers:
 
   packages/shared:
     devDependencies:
+      openapi-typescript:
+        specifier: ^7.13.0
+        version: 7.13.0(typescript@5.9.3)
       typescript:
         specifier: ^5.6.3
         version: 5.9.3

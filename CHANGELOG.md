@@ -7,6 +7,49 @@
 
 ### Добавлено
 
+#### Итерация 3: карты, колесо, платежи, удаление данных
+
+- Контракт **1.2.0**: OpenAPI 3.1 (`type: [X, 'null']` вместо `nullable`),
+  `Problem.code += CONFLICT`, `Chart.omitted_planets`, `astro` в `/health`,
+  описание `422`/`429`/`500` у инвойсов и вебхука.
+- `packages/shared`: типы контракта генерируются `openapi-typescript`
+  (`pnpm gen:contracts`); `typecheck` падает, если типы разъехались с контрактом.
+- `packages/astro`: HTTP-сайдкар `astro/service.py` (FastAPI + uvicorn) —
+  `GET /health`, `POST /chart`, `POST /transits`, `POST /wheel`; темы колеса
+  `dark`/`light`; `astro/wire.py` для сборки карты обратно из `charts.data`.
+- `apps/api`: `AstroClient` (таймаут 2 с, недоступность → `503 INTERNAL`),
+  `GET /health` показывает `astro` и `degraded`.
+- `apps/api`: `POST /charts` (валидация 18+, идемпотентность по
+  `(user_id, input_hash)`), `GET /charts/{id}`, публичный
+  `GET /charts/{id}/wheel.svg?sig=&theme=` с HMAC-подписью на 30 дней.
+- `apps/api`: платежи Stars — `POST /billing/invoice` (антифрод 3/час, 10/сутки,
+  повтор плана в пределах 5 минут отдаёт ту же ссылку), вебхук
+  `POST /internal/telegram/webhook/{secret}` (`pre_checkout_query`,
+  `successful_payment` одной транзакцией с блокировкой по charge_id),
+  `GET /billing/subscription`, возвраты `refundStarPayment` с отзывом доступа.
+- `apps/api`: `DELETE /me` — каскад по `users`, `profiles`, `charts`, `reports`,
+  `forecasts`, `asks`, `quotas`; платежи остаются без `telegram_id`,
+  незавершённый платёж → `409 CONFLICT`.
+- Миграция `0005`: `invoices.chart_id`, снят `entitlements_compat_has_partner`.
+- `geo.md`: справочник городов в репозитории, `tz` обязателен, Nominatim только
+  как opt-in фолбэк; `POST /charts` от геоданных не зависит.
+- CI `.github/workflows/ci.yml`: линт, типы, тесты, миграции и
+  `docker compose config -q` (проверка compose-файла без docker-демона).
+
+### Изменено
+
+- `AGENTS.md`: ветку выдаёт среда, размер PR не ограничен, контракт живёт
+  в `api.openapi.yaml`, ссылки на удалённые `contracts/` и `docs/` убраны.
+- `apps/web`: только перегенерированные типы контракта плюс код `CONFLICT`
+  в словарях ошибок (без него `typecheck` фронта не собирался).
+
+### Ограничения
+
+- Docker в песочнице недоступен: локально Postgres поднимался бинарниками,
+  `docker-compose` не запускался (в CI проверяется только `config -q`).
+- Реальный Bot API не вызывался: платежи проверены на подменённом клиенте
+  и локальном стабе `api.telegram.org`.
+
 - Каркас pnpm-монорепо: `package.json`, `pnpm-workspace.yaml`, общий
   `tsconfig.base.json`, ESLint flat config с правилами, требующими типов,
   `docker-compose.yml` (Postgres 16 + Redis 7), `.env.example`, `.gitignore`.

@@ -39,7 +39,10 @@ describe('GET /api/v1/health', () => {
   it('отвечает без авторизации и сообщает состояние БД', async () => {
     const response = await request(ctx.app.getHttpServer()).get('/api/v1/health').expect(200);
 
-    expect(response.body).toMatchObject({ status: 'ok', db: 'ok', llm: 'unknown' });
+    // `astro: down` в тестах ожидаем: Python-сайдкар здесь не запущен.
+    expect(response.body).toMatchObject({ db: 'ok', llm: 'unknown' });
+    expect(['ok', 'degraded']).toContain(response.body.status);
+    expect(['ok', 'down']).toContain(response.body.astro);
     expect(typeof response.body.version).toBe('string');
   });
 });
