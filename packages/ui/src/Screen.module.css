@@ -35,6 +35,8 @@
   flex: 1 1 auto;
   min-height: 0;
   padding: var(--space-5) var(--space-4) var(--space-6);
+  /* What is scrolled into view (a field error, the focused field) stops above the footer's fade, not under it. */
+  scroll-padding-bottom: var(--space-6);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

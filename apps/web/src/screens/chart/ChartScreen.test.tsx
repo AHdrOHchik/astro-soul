@@ -1,15 +1,24 @@
 import { priceOf } from '@astro-soul/shared';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import type { ChartCreateRequest, ChartResult } from '../../api';
+import type { Chart, ChartResult, FieldError, TimePrecision } from '../../api';
 import { formatCount, pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
-import { apiError, chart, chartResult, chartWithoutTime, deferred, fakeApi, fakeTelegram, kazan } from '../../test/fixtures';
+import {
+  apiError,
+  chart,
+  chartRequest as request,
+  chartResult,
+  chartWithoutTime,
+  deferred,
+  fakeApi,
+  fakeTelegram,
+  rejection,
+} from '../../test/fixtures';
 import { ChartScreen } from './ChartScreen';
 
 const copy = ru.chart;
-const request: ChartCreateRequest = { birth_date: '1994-05-17', birth_time: '14:30', birth_place: kazan };
 const WHEEL_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`;
 // The price is whatever packages/shared says, so a price change there needs no edit here.
 const REPORT_PRICE = priceOf('one_149');
@@ -17,23 +26,26 @@ const TEASER_CTA = `${copy.teaserCta} ${formatCount(REPORT_PRICE)}`;
 /** What a screen reader gets: the star sign is replaced with the word. */
 const TEASER_CTA_NAME = `${TEASER_CTA} ${ru.common.stars[pluralForm(REPORT_PRICE)]}`;
 
-function setup(options: { result?: ChartResult | Promise<ChartResult>; timeApproximate?: boolean } = {}) {
+function setup(options: { result?: ChartResult | Promise<ChartResult> } = {}) {
   const api = fakeApi();
   if (options.result) api.createChart.mockImplementation(() => Promise.resolve(options.result ?? chartResult));
   const telegram = fakeTelegram();
   const onEdit = vi.fn();
+  const onRejected = vi.fn<(errors: FieldError[]) => void>();
   const view = render(
-    <ChartScreen
-      api={api}
-      telegram={telegram}
-      request={request}
-      apiBaseUrl="https://api.test"
-      timeApproximate={options.timeApproximate ?? false}
-      onEdit={onEdit}
-    />,
+    <ChartScreen api={api} telegram={telegram} request={request} apiBaseUrl="https://api.test" onEdit={onEdit} onRejected={onRejected} />,
   );
-  return { api, telegram, onEdit, user: userEvent.setup(), ...view };
+  return { api, telegram, onEdit, onRejected, user: userEvent.setup(), ...view };
 }
+
+/** The fixture chart with another `birth` block. */
+const chartBornWith = (birth: Chart['birth'], rest: Partial<Chart> = {}): ChartResult => ({
+  ...chartResult,
+  chart: { ...chart, ...rest, birth },
+});
+
+/** A reading and a wheel path as the client hands them over when the answer carried neither. */
+const NOTHING_BESIDES_THE_CHART = { mini_reading: { sun: '', moon: '', asc: '', summary: '' }, wheel_url: '' };
 
 /** The labelled region of one of the three headline cards. */
 const card = (title: string) => screen.getByRole('region', { name: title });
@@ -97,13 +109,41 @@ describe('ChartScreen', () => {
     expect(screen.queryByText(/Дева/)).not.toBeInTheDocument();
   });
 
-  it('reads a null Ascendant as an unknown time when the response has no time_known flag', async () => {
-    const { time_known: _omitted, ...birth } = chartWithoutTime.chart.birth;
-    setup({ result: { ...chartWithoutTime, chart: { ...chartWithoutTime.chart, birth } } });
+  it('shows the unknown-time text of the app in the Ascendant card, not the line the server sends for it', async () => {
+    setup({ result: chartWithoutTime });
 
-    expect(within(await screen.findByRole('region', { name: copy.asc })).getByText(copy.ascUnknown)).toBeInTheDocument();
-    expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
-    expect(screen.getByText(`17 мая 1994 г. · ${copy.timeUnknown} · Казань`)).toBeInTheDocument();
+    const asc = within(await screen.findByRole('region', { name: copy.asc }));
+    expect(asc.getByText(copy.ascUnknownText)).toBeInTheDocument();
+    expect(screen.queryByText(chartWithoutTime.mini_reading.asc)).not.toBeInTheDocument();
+  });
+
+  describe('a chart built before `birth.time_precision` existed', () => {
+    const { time_precision: _precision, ...legacyKnown } = chart.birth;
+    const { time_precision: _unknown, ...legacyUnknown } = chartWithoutTime.chart.birth;
+
+    it('reads `time_known: false` as an unknown time', async () => {
+      setup({ result: { ...chartWithoutTime, chart: { ...chartWithoutTime.chart, birth: legacyUnknown } } });
+
+      expect(within(await screen.findByRole('region', { name: copy.asc })).getByText(copy.ascUnknown)).toBeInTheDocument();
+      expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
+      expect(screen.getByText(`17 мая 1994 г. · ${copy.timeUnknown} · Казань`)).toBeInTheDocument();
+    });
+
+    it('reads a null Ascendant as an unknown time when there is no `time_known` flag either', async () => {
+      const { time_known: _flag, ...birth } = legacyUnknown;
+      setup({ result: { ...chartWithoutTime, chart: { ...chartWithoutTime.chart, birth } } });
+
+      expect(within(await screen.findByRole('region', { name: copy.asc })).getByText(copy.ascUnknown)).toBeInTheDocument();
+      expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
+    });
+
+    it('claims nothing about the accuracy of a time it knows only as "known"', async () => {
+      setup({ result: chartBornWith(legacyKnown) });
+
+      expect(within(await screen.findByRole('region', { name: copy.asc })).getByText('Дева, 4°09′')).toBeInTheDocument();
+      expect(screen.queryByText(copy.approxTime)).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
+    });
   });
 
   it('does not blame the birth time when the Ascendant is missing although the time is known', async () => {
@@ -116,10 +156,27 @@ describe('ChartScreen', () => {
     expect(screen.getByText('17 мая 1994 г. · 14:30 · Казань')).toBeInTheDocument();
   });
 
-  it('reminds about the accuracy when the time was given roughly', async () => {
-    setup({ timeApproximate: true });
+  it('reminds about the accuracy when the chart says the time was given roughly', async () => {
+    setup({ result: chartBornWith({ ...chart.birth, time_precision: 'approximate' }) });
+
     expect(await screen.findByText(copy.approxTime)).toBeInTheDocument();
     expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
+    // An approximate time is still a time: the Ascendant is shown.
+    expect(within(card(copy.asc)).getByText('Дева, 4°09′')).toBeInTheDocument();
+  });
+
+  it.each<[TimePrecision, string | null]>([
+    ['exact', null],
+    ['approximate', copy.approxTime],
+    ['unknown', copy.unknownTime],
+  ])('takes the precision from the chart, not from the other signs of a time: %s', async (precision, note) => {
+    // Everything else says "the time is known".
+    setup({ result: chartBornWith({ ...chart.birth, time_precision: precision }) });
+    await screen.findByRole('region', { name: copy.sun });
+
+    for (const text of [copy.approxTime, copy.unknownTime]) {
+      expect(screen.queryAllByText(text)).toHaveLength(text === note ? 1 : 0);
+    }
   });
 
   it('shows no accuracy note for an exact time', async () => {
@@ -156,7 +213,7 @@ describe('ChartScreen', () => {
       .mockRejectedValueOnce(apiError('INTERNAL', { status: 500, serverMessage: 'Не получилось построить карту.', requestId: 'req-42' }))
       .mockResolvedValueOnce(chartResult);
     const user = userEvent.setup();
-    render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" timeApproximate={false} onEdit={vi.fn()} />);
+    render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={vi.fn()} />);
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(ru.errors.INTERNAL.title);
@@ -174,18 +231,64 @@ describe('ChartScreen', () => {
     const api = fakeApi();
     api.createChart.mockRejectedValue(apiError('VALIDATION_FAILED', { status: 422 }));
     const onEdit = vi.fn();
+    const onRejected = vi.fn();
     const user = userEvent.setup();
-    render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" timeApproximate={false} onEdit={onEdit} />);
+    render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={onEdit} onRejected={onRejected} />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.VALIDATION_FAILED.text);
     expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
+    // The server named no field, so there is no screen to send the user to.
+    expect(onRejected).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: copy.editData }));
     expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
+  describe('when the server names the fields it rejected', () => {
+    const fields: FieldError[] = [
+      { field: 'birth_date', message: 'Сервис доступен с 18 лет' },
+      { field: 'birth_place', message: 'Выбери город рождения из подсказок' },
+    ];
+
+    it('hands them to the caller once, and shows the server text itself for as long as it stays on screen', async () => {
+      const api = fakeApi();
+      api.createChart.mockRejectedValue(rejection(...fields));
+      const onRejected = vi.fn();
+      render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={vi.fn()} onRejected={onRejected} />);
+
+      const alert = await screen.findByRole('alert');
+
+      expect(onRejected).toHaveBeenCalledTimes(1);
+      expect(onRejected).toHaveBeenCalledWith(fields);
+      expect(alert).toHaveTextContent('Сервис доступен с 18 лет');
+      expect(screen.getByText(ru.common.requestId('req-422'))).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: copy.editData })).toBeInTheDocument();
+    });
+
+    it('reports nothing once the screen has been left: a late answer must not move the user', async () => {
+      const pending = deferred<ChartResult>();
+      const { onRejected, unmount } = setup({ result: pending.promise });
+
+      unmount();
+      await act(async () => {
+        pending.reject(rejection(...fields));
+        await pending.promise.catch(() => undefined);
+      });
+
+      expect(onRejected).not.toHaveBeenCalled();
+    });
+
+    it('works without a listener', async () => {
+      const api = fakeApi();
+      api.createChart.mockRejectedValue(rejection(...fields));
+      render(<ChartScreen api={api} telegram={fakeTelegram()} request={request} apiBaseUrl="" onEdit={vi.fn()} />);
+
+      expect(await screen.findByRole('alert')).toHaveTextContent('Сервис доступен с 18 лет');
+    });
+  });
+
   it('has an empty state for a chart that came back with nothing to show', async () => {
-    const empty: ChartResult = { chart: { ...chart, birth: {}, asc: {}, planets: [] } };
+    const empty: ChartResult = { chart: { ...chart, birth: {}, asc: {}, planets: [] }, ...NOTHING_BESIDES_THE_CHART };
     const { api, user } = setup({ result: empty });
 
     expect(await screen.findByRole('heading', { name: copy.emptyTitle })).toBeInTheDocument();
@@ -199,7 +302,7 @@ describe('ChartScreen', () => {
   });
 
   it('copes with a response that has positions but no wheel and no texts', async () => {
-    setup({ result: { chart } });
+    setup({ result: { chart, ...NOTHING_BESIDES_THE_CHART } });
 
     expect(await screen.findByText(copy.wheelMissing)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.share })).not.toBeInTheDocument();

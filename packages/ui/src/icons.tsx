@@ -89,3 +89,15 @@ export const StarsIcon = () => (
     <path d="M10 3.5 11.8 8l4.7 1.8-4.7 1.8L10 16l-1.8-4.4L3.5 9.8 8.2 8 10 3.5ZM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14Z" />
   </Icon>
 );
+
+export const CheckIcon = () => (
+  <Icon>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </Icon>
+);
+
+export const DocumentIcon = () => (
+  <Icon>
+    <path d="M7 3h7l4 4v14H7V3ZM14 3v4h4M10 12h5M10 16h5" />
+  </Icon>
+);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GeoPlace } from '../api';
 import {
   checkBirthDate,
@@ -10,8 +10,8 @@ import {
   type BirthDraft,
 } from './birth';
 
-/** Local noon keeps the calendar day stable in any time zone the tests run in. */
-const TODAY = new Date(2026, 10, 10, 12);
+/** Noon UTC: the check reads the UTC day, so the result does not depend on the zone the tests run in. */
+const TODAY = new Date(Date.UTC(2026, 10, 10, 12));
 const date = (day: string, month: string, year: string) => checkBirthDate({ day, month, year }, TODAY);
 
 describe('checkBirthDate', () => {
@@ -55,8 +55,27 @@ describe('checkBirthDate', () => {
 
   it('counts a 29 February birthday from 1 March in a common year', () => {
     const born = { day: '29', month: '02', year: '2008' };
-    expect(checkBirthDate(born, new Date(2026, 1, 28, 12))).toEqual({ ok: false, issue: 'underage' });
-    expect(checkBirthDate(born, new Date(2026, 2, 1, 12))).toMatchObject({ ok: true });
+    expect(checkBirthDate(born, new Date(Date.UTC(2026, 1, 28, 12)))).toEqual({ ok: false, issue: 'underage' });
+    expect(checkBirthDate(born, new Date(Date.UTC(2026, 2, 1, 12)))).toMatchObject({ ok: true });
+  });
+
+  it('keeps a 1 March birthday underage on 29 February', () => {
+    const born = { day: '01', month: '03', year: '2010' };
+    expect(checkBirthDate(born, new Date(Date.UTC(2028, 1, 29, 12)))).toEqual({ ok: false, issue: 'underage' });
+    expect(checkBirthDate(born, new Date(Date.UTC(2028, 2, 1, 12)))).toMatchObject({ ok: true });
+  });
+
+  it('counts from the UTC day, as the API does, not from the day on the device', () => {
+    const born = { day: '11', month: '11', year: '2008' };
+    // 23:30 UTC on the 10th; the device, east of UTC, already shows the 11th.
+    const lateEvening = new Date('2026-11-10T23:30:00Z');
+    vi.spyOn(lateEvening, 'getDate').mockReturnValue(11);
+    expect(checkBirthDate(born, lateEvening)).toEqual({ ok: false, issue: 'underage' });
+
+    // 00:30 UTC on the 11th; the device, west of UTC, still shows the 10th.
+    const earlyMorning = new Date('2026-11-11T00:30:00Z');
+    vi.spyOn(earlyMorning, 'getDate').mockReturnValue(10);
+    expect(checkBirthDate(born, earlyMorning)).toMatchObject({ ok: true });
   });
 
   it('tells a future date from an underage one', () => {
@@ -97,8 +116,9 @@ describe('checkBirthTime', () => {
 describe('toChartRequest', () => {
   const place: GeoPlace = { name: 'Казань', region: 'Татарстан', country: 'RU', lat: 55.79, lon: 49.12, tz: 'Europe/Moscow' };
   const draft: BirthDraft = {
+    consentVersion: '2026-11-10',
     date: { day: '17', month: '05', year: '1994' },
-    timeMode: 'exact',
+    timePrecision: 'exact',
     time: { hours: '14', minutes: '30' },
     placeQuery: 'Казань',
     place,
@@ -106,42 +126,64 @@ describe('toChartRequest', () => {
 
   it('builds the contract body and passes the place through unchanged', () => {
     const request = toChartRequest(draft, TODAY);
-    expect(request).toEqual({ birth_date: '1994-05-17', birth_time: '14:30', birth_place: place });
+    expect(request).toEqual({
+      birth_date: '1994-05-17',
+      birth_time: '14:30',
+      time_precision: 'exact',
+      birth_place: place,
+      consent: { accepted: true, version: '2026-11-10' },
+    });
     expect(request?.birth_place).toBe(place);
   });
 
-  it('sends an approximate time as a plain time: the contract has no flag for it', () => {
-    expect(toChartRequest({ ...draft, timeMode: 'approx' }, TODAY)).toMatchObject({ birth_time: '14:30' });
+  it('sends an approximate time with its own precision', () => {
+    expect(toChartRequest({ ...draft, timePrecision: 'approximate' }, TODAY)).toMatchObject({
+      birth_time: '14:30',
+      time_precision: 'approximate',
+    });
   });
 
   it('sends null for an unknown time, even if digits were typed before', () => {
-    expect(toChartRequest({ ...draft, timeMode: 'unknown' }, TODAY)).toMatchObject({ birth_time: null });
+    expect(toChartRequest({ ...draft, timePrecision: 'unknown' }, TODAY)).toMatchObject({
+      birth_time: null,
+      time_precision: 'unknown',
+    });
+  });
+
+  it('sends the version of the text the user agreed to, not a constant of its own', () => {
+    expect(toChartRequest({ ...draft, consentVersion: '2027-01-15' }, TODAY)?.consent).toEqual({ accepted: true, version: '2027-01-15' });
   });
 
   it.each<[string, Partial<BirthDraft>]>([
+    ['no consent', { consentVersion: null }],
     ['no place', { place: null }],
-    ['no time option', { timeMode: null }],
+    ['no time option', { timePrecision: null }],
     ['an unfinished time', { time: { hours: '14', minutes: '' } }],
     ['an underage date', { date: { day: '17', month: '05', year: '2015' } }],
   ])('returns null with %s', (_name, patch) => {
     expect(toChartRequest({ ...draft, ...patch }, TODAY)).toBeNull();
+  });
+
+  it('returns null for the draft the app starts with: nothing is filled in and nobody has consented', () => {
+    expect(EMPTY_DRAFT.consentVersion).toBeNull();
     expect(toChartRequest(EMPTY_DRAFT, TODAY)).toBeNull();
   });
 });
 
 describe('isTimeStepDone', () => {
   it('needs an option, and a valid time unless it is unknown', () => {
-    expect(isTimeStepDone({ timeMode: null, time: { hours: '14', minutes: '30' } })).toBe(false);
-    expect(isTimeStepDone({ timeMode: 'unknown', time: { hours: '', minutes: '' } })).toBe(true);
-    expect(isTimeStepDone({ timeMode: 'approx', time: { hours: '14', minutes: '' } })).toBe(false);
-    expect(isTimeStepDone({ timeMode: 'exact', time: { hours: '14', minutes: '30' } })).toBe(true);
+    expect(isTimeStepDone({ timePrecision: null, time: { hours: '14', minutes: '30' } })).toBe(false);
+    expect(isTimeStepDone({ timePrecision: 'unknown', time: { hours: '', minutes: '' } })).toBe(true);
+    expect(isTimeStepDone({ timePrecision: 'approximate', time: { hours: '14', minutes: '' } })).toBe(false);
+    expect(isTimeStepDone({ timePrecision: 'exact', time: { hours: '14', minutes: '30' } })).toBe(true);
   });
 });
 
 describe('firstOpenStep', () => {
   const done: BirthDraft = {
+    consentVersion: '2026-11-10',
     date: { day: '17', month: '05', year: '1994' },
-    timeMode: 'unknown',
+    timePrecision: 'unknown',
     time: { hours: '', minutes: '' },
     placeQuery: '',
     place: { name: 'Казань', country: 'RU', lat: 55.79, lon: 49.12, tz: 'Europe/Moscow' },

@@ -4,17 +4,19 @@
  * a field the contract does not have fails `pnpm typecheck`.
  *
  * All people-related data is invented. Positions are NOT astronomy: the mock
- * does not calculate anything, and its texts say so.
+ * does not calculate anything. Its wheel says MOCK in the middle, and the chart
+ * names `mock` as its engine version.
  */
-import type { components, paths } from '../src/api/schema.gen';
+import type { components } from '../src/api/schema.gen';
 
 type Schemas = components['schemas'];
 export type Me = Schemas['Me'];
 export type GeoPlace = Schemas['GeoPlace'];
 export type Chart = Schemas['Chart'];
 export type Problem = Schemas['Problem'];
+export type FieldError = Schemas['FieldError'];
 export type ChartCreateRequest = Schemas['ChartCreateRequest'];
-export type ChartCreated = paths['/api/v1/charts']['post']['responses'][201]['content']['application/json'];
+export type ChartResponse = Schemas['ChartResponse'];
 
 export const MOCK_CHART_ID = '00000000-0000-4000-8000-00000000c0de';
 const MOCK_SIG = 'mock-signature';
@@ -32,10 +34,13 @@ export const me: Me = {
   onboarding_step: 'birth_date',
 };
 
-/** Trigger words for the failure scenarios, see apps/web/README.md. */
+/** Places that trigger the scenarios of `POST /charts`, see apps/web/README.md. */
 export const SCENARIO = {
   serverError: 'Ошибинск',
-  rejected: 'Отказово',
+  rejectedPlace: 'Отказово',
+  rejectedDate: 'Датино',
+  rejectedTime: 'Времянск',
+  rejectedConsent: 'Согласово',
   emptyChart: 'Пустошь',
   brokenWheel: 'Безколёсово',
 } as const;
@@ -72,9 +77,9 @@ export function findPlaces(query: string, limit: number): GeoPlace[] {
 
 let requestCounter = 0;
 
-export function problem(code: Problem['code'], message: string): Problem {
+export function problem(code: Problem['code'], message: string, details?: Problem['details']): Problem {
   requestCounter += 1;
-  return { code, message, request_id: `mock-${String(requestCounter).padStart(4, '0')}` };
+  return { code, message, request_id: `mock-${String(requestCounter).padStart(4, '0')}`, ...(details && { details }) };
 }
 
 /** Demo only: spreads the year evenly over the twelve signs, starting at the March equinox. */
@@ -86,21 +91,34 @@ function demoSunSign(isoDate: string): number {
 
 const signAt = (index: number) => SIGNS[((index % 12) + 12) % 12] ?? 'Овен';
 
-export function buildChart(input: ChartCreateRequest): ChartCreated {
-  const timeKnown = typeof input.birth_time === 'string';
+/** A position the way the API words it in `mini_reading`: sign, degrees, minutes of arc. */
+const positionLabel = ({ sign, degree, minute }: { sign: string; degree: number; minute: number }) =>
+  `${sign}, ${String(degree)}°${String(minute).padStart(2, '0')}′`;
+
+export function buildChart(input: ChartCreateRequest): ChartResponse {
+  const timeKnown = input.time_precision !== 'unknown';
   const sun = demoSunSign(input.birth_date);
   const house = (value: number) => (timeKnown ? value : null);
+  const sunPosition = { sign: signAt(sun), degree: 26, minute: 17 };
+  const moonPosition = { sign: signAt(sun + 5), degree: 3, minute: 42 };
+  const asc = timeKnown ? { sign: signAt(sun + 3), degree: 4, minute: 9 } : null;
 
   const chart: Chart = {
     chart_id: MOCK_CHART_ID,
     created_at: new Date().toISOString(),
-    birth: { date: input.birth_date, time: input.birth_time ?? null, time_known: timeKnown, place: input.birth_place },
-    // Contract 1.1.0: without a birth time the Ascendant, the MC and the houses are null.
-    asc: timeKnown ? { sign: signAt(sun + 3), degree: 4, minute: 9 } : null,
+    birth: {
+      date: input.birth_date,
+      time: timeKnown ? (input.birth_time ?? null) : null,
+      time_known: timeKnown,
+      time_precision: input.time_precision,
+      place: input.birth_place,
+    },
+    // Without a birth time the Ascendant, the MC and the houses are null.
+    asc,
     mc: timeKnown ? { sign: signAt(sun + 11), degree: 18, minute: 44 } : null,
     planets: [
-      { key: 'sun', name: 'Солнце', sign: signAt(sun), degree: 26, minute: 17, house: house(10), retrograde: false },
-      { key: 'moon', name: 'Луна', sign: signAt(sun + 5), degree: 3, minute: 42, house: house(3), retrograde: false },
+      { key: 'sun', name: 'Солнце', ...sunPosition, house: house(10), retrograde: false },
+      { key: 'moon', name: 'Луна', ...moonPosition, house: house(3), retrograde: false },
       { key: 'mercury', name: 'Меркурий', sign: signAt(sun + 1), degree: 11, minute: 5, house: house(11), retrograde: true },
       { key: 'venus', name: 'Венера', sign: signAt(sun - 1), degree: 19, minute: 30, house: house(9), retrograde: false },
       { key: 'mars', name: 'Марс', sign: signAt(sun + 7), degree: 7, minute: 58, house: house(5), retrograde: false },
@@ -115,19 +133,16 @@ export function buildChart(input: ChartCreateRequest): ChartCreated {
     engine_version: 'mock',
   };
 
+  // The same lines as apps/api builds today (`buildMiniReading`): positions as text, no interpretation yet.
+  const lines = {
+    sun: `Солнце в ${positionLabel(sunPosition)}`,
+    moon: `Луна в ${positionLabel(moonPosition)}`,
+    asc: asc ? `Асцендент в ${positionLabel(asc)}` : 'Время рождения неизвестно — Асцендент не рассчитан',
+  };
+
   return {
     chart,
-    mini_reading: {
-      sun: `Демо-текст мока. Солнце в знаке ${signAt(sun)}: здесь будет абзац о характере и о том, что даёт тебе энергию.`,
-      moon: `Демо-текст мока. Луна в знаке ${signAt(sun + 5)}: здесь будет абзац об эмоциях и о том, что помогает восстановиться.`,
-      ...(timeKnown && {
-        asc: `Демо-текст мока. Асцендент в знаке ${signAt(sun + 3)}: здесь будет абзац о первом впечатлении, которое ты производишь.`,
-      }),
-      summary:
-        'Демо-текст мока. Это начало полного разбора: в нём шесть глав — характер, эмоции, таланты, отношения, деньги и предназначение. ' +
-        'Каждый вывод опирается на конкретную позицию карты, поэтому текст получается про тебя, а не про знак в целом. ' +
-        'Дальше идёт продолжение, которое в приложении скрыто до покупки полного разбора.',
-    },
-    wheel_url: `charts/${MOCK_CHART_ID}/wheel.svg?sig=${MOCK_SIG}`,
+    mini_reading: { ...lines, summary: [lines.sun, lines.moon, lines.asc].join(' · ') },
+    wheel_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.svg?sig=${MOCK_SIG}`,
   };
 }

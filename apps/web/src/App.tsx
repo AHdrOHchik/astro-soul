@@ -1,15 +1,17 @@
 import { Screen } from '@astro-soul/ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Api } from './api';
+import type { Api, FieldError } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
-import { ru } from './i18n/ru';
+import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
 import { BirthDateScreen } from './screens/BirthDateScreen';
 import { BirthPlaceScreen } from './screens/BirthPlaceScreen';
 import { BirthTimeScreen } from './screens/BirthTimeScreen';
 import { BootScreen } from './screens/BootScreen';
 import { ChartScreen } from './screens/chart/ChartScreen';
+import { ConsentScreen, type LegalDocument } from './screens/ConsentScreen';
+import { DocumentScreen } from './screens/DocumentScreen';
 import { WelcomeScreen } from './screens/welcome/WelcomeScreen';
 import type { Telegram } from './telegram';
 
@@ -18,7 +20,7 @@ export interface AppProps {
   telegram: Telegram;
   /** API origin without a trailing slash; '' = this page's origin. */
   apiBaseUrl: string;
-  /** The current day. Tests pin it; the app reads the device clock once at start. */
+  /** The current moment, the reference for the 18+ check. Tests pin it; the app reads the device clock once at start. */
   today?: Date;
 }
 
@@ -53,20 +55,61 @@ export function App({ api, telegram, apiBaseUrl, today }: AppProps) {
   );
 }
 
-type Route = 'welcome' | BirthStep | 'chart';
+type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart';
+
+/** The screens that collect the chart request, in the order the user passes them. */
+const FORM_ROUTES = ['consent', 'birthDate', 'birthTime', 'birthPlace'] as const;
+
+/** Which screen collects each field of `POST /charts`, by the name the server reports the field under. */
+const FIELD_ROUTES = {
+  consent: 'consent',
+  birth_date: 'birthDate',
+  time_precision: 'birthTime',
+  birth_time: 'birthTime',
+  birth_place: 'birthPlace',
+} as const satisfies Record<string, (typeof FORM_ROUTES)[number]>;
+
+type ChartField = keyof typeof FIELD_ROUTES;
+/** The server's text for every field it rejected in the last chart request. */
+type ServerErrors = ReadonlyMap<ChartField, string>;
+
+const NO_SERVER_ERRORS: ServerErrors = new Map();
+
+function isChartField(field: string): field is ChartField {
+  return Object.prototype.hasOwnProperty.call(FIELD_ROUTES, field);
+}
+
+/**
+ * Where the user fixes what the server rejected: its texts by field, and the stack
+ * that ends at the earliest screen owning one of them, so the user walks forward
+ * through the rest. Null when no screen owns any of the fields.
+ */
+function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors; stack: readonly Route[] } | null {
+  const messages = new Map<ChartField, string>();
+  let earliest: number = FORM_ROUTES.length;
+  for (const { field, message } of errors) {
+    // The list is in the order of the server's checks: the first text about a field is the one to show.
+    if (!isChartField(field) || messages.has(field)) continue;
+    messages.set(field, message);
+    earliest = Math.min(earliest, FORM_ROUTES.indexOf(FIELD_ROUTES[field]));
+  }
+  if (messages.size === 0) return null;
+  return { messages, stack: ['welcome', ...FORM_ROUTES.slice(0, earliest + 1)] };
+}
 
 interface OnboardingProps extends AppProps {
   returning: boolean;
 }
 
 /**
- * Screens 1–5 as an in-memory stack. No router: Telegram owns the URL (launch
- * parameters live in the hash) and birth data must not end up in it.
+ * The screens up to the chart as an in-memory stack. No router: Telegram owns the
+ * URL (launch parameters live in the hash) and birth data must not end up in it.
  */
 function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }: OnboardingProps) {
   const [today] = useState(() => pinnedToday ?? new Date());
   const [stack, setStack] = useState<readonly Route[]>(['welcome']);
   const [draft, setDraft] = useState<BirthDraft>(EMPTY_DRAFT);
+  const [serverErrors, setServerErrors] = useState(NO_SERVER_ERRORS);
   const route = stack[stack.length - 1] ?? 'welcome';
   const canGoBack = stack.length > 1;
 
@@ -76,9 +119,23 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
   const goBack = useCallback(() => {
     setStack((current) => (current.length > 1 ? current.slice(0, -1) : current));
   }, []);
-  const update = (changes: Partial<BirthDraft>) => {
+  /** Stores what the user changed. The server's verdict on the fields behind it was about the old value: drop it. */
+  const update = (changes: Partial<BirthDraft>, ...fields: ChartField[]) => {
     setDraft((current) => ({ ...current, ...changes }));
+    setServerErrors((current) => {
+      if (!fields.some((field) => current.has(field))) return current;
+      const next = new Map(current);
+      for (const field of fields) next.delete(field);
+      return next;
+    });
   };
+  const handleRejected = useCallback((errors: readonly FieldError[]) => {
+    const rejection = routeRejection(errors);
+    // Fields no screen collects: the chart screen stays and shows the error itself.
+    if (rejection === null) return;
+    setServerErrors(rejection.messages);
+    setStack(rejection.stack);
+  }, []);
 
   useEffect(() => {
     telegram.setBackHandler(canGoBack ? goBack : null);
@@ -98,11 +155,11 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
         telegram={telegram}
         request={request}
         apiBaseUrl={apiBaseUrl}
-        timeApproximate={draft.timeMode === 'approx'}
         back={back}
         onEdit={() => {
-          setStack(['welcome', 'birthDate']);
+          setStack(['welcome', 'consent', 'birthDate']);
         }}
+        onRejected={handleRejected}
       />
     );
   }
@@ -113,18 +170,38 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
         <WelcomeScreen
           returning={returning}
           onStart={() => {
+            open('consent');
+          }}
+        />
+      );
+    case 'consent':
+      return (
+        <ConsentScreen
+          accepted={draft.consentVersion !== null}
+          serverError={serverErrors.get('consent')}
+          back={back}
+          onChange={(accepted) => {
+            // The version recorded is the one of the text on screen at the moment of the tap.
+            update({ consentVersion: accepted ? CONSENT_VERSION : null }, 'consent');
+          }}
+          onOpenDocument={open}
+          onNext={() => {
             open('birthDate');
           }}
         />
       );
+    case 'privacy':
+    case 'terms':
+      return <DocumentScreen name={route} back={back} />;
     case 'birthDate':
       return (
         <BirthDateScreen
           value={draft.date}
           today={today}
+          serverError={serverErrors.get('birth_date')}
           back={back}
           onChange={(date) => {
-            update({ date });
+            update({ date }, 'birth_date');
           }}
           onNext={() => {
             open('birthTime');
@@ -134,14 +211,17 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
     case 'birthTime':
       return (
         <BirthTimeScreen
-          mode={draft.timeMode}
+          mode={draft.timePrecision}
           time={draft.time}
+          precisionError={serverErrors.get('time_precision')}
+          timeError={serverErrors.get('birth_time')}
           back={back}
-          onModeChange={(timeMode) => {
-            update({ timeMode });
+          onModeChange={(timePrecision) => {
+            // The option decides whether a time is sent at all, so it answers for both fields.
+            update({ timePrecision }, 'time_precision', 'birth_time');
           }}
           onTimeChange={(time) => {
-            update({ time });
+            update({ time }, 'birth_time');
           }}
           onNext={() => {
             open('birthPlace');
@@ -156,11 +236,14 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
           telegram={telegram}
           query={draft.placeQuery}
           place={draft.place}
+          serverError={serverErrors.get('birth_place')}
           back={back}
           onChange={(placeQuery, place) => {
-            update({ placeQuery, place });
+            update({ placeQuery, place }, 'birth_place');
           }}
           onNext={() => {
+            // A new request gets a new verdict on every field.
+            setServerErrors(NO_SERVER_ERRORS);
             open('chart');
           }}
         />

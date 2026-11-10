@@ -110,14 +110,16 @@ describe('errors', () => {
   });
 
   it.each([
-    [400, 'VALIDATION_FAILED'],
     [401, 'UNAUTHORIZED'],
     [402, 'PAYMENT_REQUIRED'],
     [403, 'FORBIDDEN'],
     [404, 'NOT_FOUND'],
+    [409, 'CONFLICT'],
     [422, 'VALIDATION_FAILED'],
     [429, 'RATE_LIMITED'],
-    [409, 'INTERNAL'],
+    // The API never answers 400, so a bare one is not a verdict on what the user entered.
+    [400, 'INTERNAL'],
+    [418, 'INTERNAL'],
   ])('falls back to the status when %i has no Problem body', async (status, code) => {
     const { fetchMock, request } = setup();
     fetchMock.mockResolvedValue(new Response('nope', { status }));

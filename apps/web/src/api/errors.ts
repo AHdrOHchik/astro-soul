@@ -2,6 +2,7 @@ import type { components } from './schema.gen';
 
 export type Problem = components['schemas']['Problem'];
 export type ProblemCode = Problem['code'];
+export type FieldError = components['schemas']['FieldError'];
 /** Failures that happen before a readable answer arrives. Not part of the API contract. */
 export type ClientErrorCode = 'NETWORK' | 'TIMEOUT' | 'INVALID_RESPONSE';
 export type ApiErrorCode = ProblemCode | ClientErrorCode;
@@ -21,13 +22,17 @@ const PROBLEM_CODES: Record<ProblemCode, true> = {
   GEO_NOT_FOUND: true,
 };
 
-/** For answers without a Problem body (the contract describes one for only a few responses). */
+/**
+ * For answers without a Problem body, e.g. from a proxy in front of the API. Only the
+ * statuses the contract ties to a single code. 400 is not one of them: the API never
+ * answers with it, so a bare 400 says nothing about the user's input.
+ */
 const CODE_BY_STATUS: Partial<Record<number, ProblemCode>> = {
-  400: 'VALIDATION_FAILED',
   401: 'UNAUTHORIZED',
   402: 'PAYMENT_REQUIRED',
   403: 'FORBIDDEN',
   404: 'NOT_FOUND',
+  409: 'CONFLICT',
   422: 'VALIDATION_FAILED',
   429: 'RATE_LIMITED',
 };
@@ -71,6 +76,21 @@ export function isAbortError(error: unknown): boolean {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFieldError(value: unknown): value is FieldError {
+  return isRecord(value) && typeof value.field === 'string' && typeof value.message === 'string' && value.message.trim() !== '';
+}
+
+/**
+ * `details.field_errors` of a `VALIDATION_FAILED` answer: which request fields the
+ * server rejected and its text for each, in the order it checked them. Empty for
+ * any other error and when the server named no fields.
+ */
+export function fieldErrorsOf(error: unknown): FieldError[] {
+  if (!isApiError(error) || error.code !== 'VALIDATION_FAILED') return [];
+  const list = error.details?.field_errors;
+  return Array.isArray(list) ? list.filter(isFieldError) : [];
 }
 
 function isProblemCode(value: unknown): value is ProblemCode {

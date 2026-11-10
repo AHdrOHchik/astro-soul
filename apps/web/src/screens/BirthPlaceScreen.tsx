@@ -11,8 +11,8 @@ import {
   VisuallyHidden,
   type ScreenProps,
 } from '@astro-soul/ui';
-import { useId, useRef, useState } from 'react';
-import type { Api, GeoPlace } from '../api';
+import { useEffect, useId, useRef, useState } from 'react';
+import { fieldErrorsOf, type Api, type GeoPlace } from '../api';
 import { ErrorState } from '../components/ErrorState';
 import { MIN_QUERY_LENGTH, usePlaceSearch, type PlaceSearch } from '../hooks/usePlaceSearch';
 import { formatRegion } from '../i18n/format';
@@ -47,6 +47,8 @@ export interface BirthPlaceScreenProps {
   telegram: Pick<Telegram, 'isTelegram' | 'close'>;
   query: string;
   place: GeoPlace | null;
+  /** The server's text about the chosen place, when it rejected the chart request. */
+  serverError?: string;
   back?: ScreenProps['back'];
   /** A new query drops the chosen place; choosing a place puts its name in the field. */
   onChange: (query: string, place: GeoPlace | null) => void;
@@ -57,15 +59,31 @@ export interface BirthPlaceScreenProps {
  * Screen 4. The user never types coordinates or a time zone: both come from the
  * chosen place, and the object returned by the API goes into the chart request untouched.
  */
-export function BirthPlaceScreen({ api, telegram, query, place, back, onChange, onNext }: BirthPlaceScreenProps) {
+export function BirthPlaceScreen({ api, telegram, query, place, serverError, back, onChange, onNext }: BirthPlaceScreenProps) {
   const messageId = useId();
   const selectedId = useId();
   const input = useRef<HTMLInputElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
+  const failure = useRef<HTMLDivElement>(null);
   const [submitted, setSubmitted] = useState(false);
   // While a place is chosen the field shows its name; that must not trigger a new search.
   const search = usePlaceSearch(api, place === null ? query : '');
   const missing = place === null && submitted;
+  // The server's own text about the query it was sent belongs at the field, like any other problem with its value.
+  const queryError =
+    search.status === 'error' ? fieldErrorsOf(search.error).find(({ field }) => field === 'query')?.message : undefined;
+  const error = missing ? copy.choosePlace : (queryError ?? serverError);
+  const showsMessage = place === null || error !== undefined;
+  // Read once, when the screen opens: the field takes focus while there is no place yet,
+  // and when the server's verdict on the chosen one brought the user back here.
+  const focusesSearch = place === null || serverError !== undefined;
+
+  // A failed search is reported in a block of its own, under the field.
+  const failed = search.status === 'error' && queryError === undefined;
+  useEffect(() => {
+    // On a small screen or with the keyboard open that block is below the fold: a failure must not go unseen.
+    if (failed) failure.current?.scrollIntoView({ block: 'nearest' });
+  }, [failed]);
 
   const handleSubmit = () => {
     if (place !== null) {
@@ -90,7 +108,7 @@ export function BirthPlaceScreen({ api, telegram, query, place, back, onChange, 
       submitLabel={copy.submit}
       back={back}
       submitRef={submit}
-      focusesField={place === null}
+      focusesField={focusesSearch}
       onSubmit={handleSubmit}
     >
       <Stack gap="sm">
@@ -107,9 +125,9 @@ export function BirthPlaceScreen({ api, telegram, query, place, back, onChange, 
           autoCorrect="off"
           spellCheck={false}
           maxLength={MAX_QUERY_LENGTH}
-          autoFocus={place === null}
-          aria-invalid={missing || undefined}
-          aria-describedby={place === null ? messageId : undefined}
+          autoFocus={focusesSearch}
+          aria-invalid={error !== undefined || undefined}
+          aria-describedby={showsMessage ? messageId : undefined}
           onKeyDown={(event) => {
             // The keyboard's "Search" key is not "Continue": fold the keyboard to reveal the results instead.
             if (event.key === 'Enter' && place === null) {
@@ -123,14 +141,7 @@ export function BirthPlaceScreen({ api, telegram, query, place, back, onChange, 
             onChange(text, null);
           }}
         />
-        {place === null && (
-          <FieldMessage
-            id={messageId}
-            error={missing ? copy.choosePlace : null}
-            hint={statusText(search)}
-            live
-          />
-        )}
+        {showsMessage && <FieldMessage id={messageId} error={error} hint={statusText(search)} live />}
       </Stack>
 
       {place !== null && (
@@ -196,7 +207,11 @@ export function BirthPlaceScreen({ api, telegram, query, place, back, onChange, 
         </div>
       )}
 
-      {search.status === 'error' && <ErrorState error={search.error} telegram={telegram} onRetry={search.retry} />}
+      {failed && (
+        <div ref={failure}>
+          <ErrorState error={search.error} telegram={telegram} onRetry={search.retry} />
+        </div>
+      )}
     </StepScreen>
   );
 }

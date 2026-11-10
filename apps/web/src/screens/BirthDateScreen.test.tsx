@@ -9,12 +9,12 @@ import { BirthDateScreen } from './BirthDateScreen';
 const copy = ru.birthDate;
 const EMPTY: DateParts = { day: '', month: '', year: '' };
 
-function setup(initial: DateParts = EMPTY) {
+function setup(initial: DateParts = EMPTY, serverError?: string) {
   const onNext = vi.fn();
   const user = setupUser();
   function Harness() {
     const [value, setValue] = useState(initial);
-    return <BirthDateScreen value={value} today={TODAY} onChange={setValue} onNext={onNext} />;
+    return <BirthDateScreen value={value} today={TODAY} serverError={serverError} onChange={setValue} onNext={onNext} />;
   }
   render(<Harness />);
   return {
@@ -114,5 +114,42 @@ describe('BirthDateScreen', () => {
     setup();
     expect(screen.getByRole('main', { name: copy.title })).toBeInTheDocument();
     expect(screen.getByText(ru.common.step(1, 3))).toBeInTheDocument();
+  });
+
+  it('gives focus to the title when it opens with a finished date: there is nothing left to type', () => {
+    const { day, month, year } = setup({ day: '17', month: '05', year: '1994' });
+
+    expect(screen.getByRole('heading', { level: 1, name: copy.title })).toHaveFocus();
+    for (const input of [day, month, year]) expect(input).not.toHaveFocus();
+  });
+
+  describe('with a date the server rejected', () => {
+    const REJECTED = 'Сервис доступен с 18 лет';
+    const adult: DateParts = { day: '17', month: '05', year: '1994' };
+
+    it('shows the server text at the field and puts the cursor into it', () => {
+      const { day, month, year } = setup(adult, REJECTED);
+
+      expect(screen.getByRole('alert')).toHaveTextContent(REJECTED);
+      for (const input of [day, month, year]) expect(input).toHaveAttribute('aria-invalid', 'true');
+      expect(screen.getByRole('group')).toHaveAccessibleDescription(REJECTED);
+      expect(day).toHaveFocus();
+    });
+
+    it('lets the user go on with the same date: only the server can tell whether it still stands', async () => {
+      const { user, next, onNext } = setup(adult, REJECTED);
+      await user.click(next);
+      expect(onNext).toHaveBeenCalledTimes(1);
+    });
+
+    it('prefers its own text while the date on screen has a problem of its own', async () => {
+      const { user, year } = setup(adult, REJECTED);
+
+      await user.clear(year);
+      await user.type(year, '2015');
+
+      expect(screen.getByRole('alert')).toHaveTextContent(copy.issues.underage);
+      expect(screen.queryByText(REJECTED)).not.toBeInTheDocument();
+    });
   });
 });

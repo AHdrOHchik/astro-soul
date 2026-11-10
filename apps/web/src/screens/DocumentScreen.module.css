@@ -1,0 +1,51 @@
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+}
+
+.section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.caption {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.record {
+  padding: var(--space-4) 0;
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+.record:last-child {
+  border-bottom: var(--border-width) solid var(--color-border);
+}
+
+/* Names in a column as wide as the longest of them, values in the rest of the line. */
+.fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  align-items: baseline;
+  margin: 0;
+}
+
+.name {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.subject,
+.value {
+  margin: 0;
+  /* A word longer than the line wraps instead of pushing the page sideways. */
+  overflow-wrap: break-word;
+}
+
+.subject {
+  font-weight: var(--font-weight-medium);
+}

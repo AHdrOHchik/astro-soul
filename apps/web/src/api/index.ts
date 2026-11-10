@@ -1,8 +1,8 @@
-import { ApiError, isApiError, isRecord } from './errors';
+import { ApiError, isRecord } from './errors';
 import { createHttpClient, type HttpClientOptions } from './http';
 import type { components, paths } from './schema.gen';
 
-export { ApiError, isAbortError, isApiError, type ApiErrorCode } from './errors';
+export { ApiError, fieldErrorsOf, isAbortError, isApiError, type ApiErrorCode, type FieldError } from './errors';
 
 /*
  * Every type below is derived from api.openapi.yaml (see `pnpm gen:api`).
@@ -12,13 +12,11 @@ export type Me = components['schemas']['Me'];
 export type GeoPlace = components['schemas']['GeoPlace'];
 export type Chart = components['schemas']['Chart'];
 export type ChartCreateRequest = components['schemas']['ChartCreateRequest'];
-type ChartCreated = paths['/api/v1/charts']['post']['responses'][201]['content']['application/json'];
-export type MiniReading = NonNullable<ChartCreated['mini_reading']>;
-/**
- * `POST /charts` answer. The contract lists no required keys; the client insists
- * on `chart` because there is nothing to show without it.
- */
-export type ChartResult = ChartCreated & { chart: Chart };
+/** How well the birth time is known: `exact`, `approximate` or `unknown`. */
+export type TimePrecision = ChartCreateRequest['time_precision'];
+/** Answer of `POST /charts`: the chart, its short reading and the path of the wheel picture. */
+export type ChartResult = components['schemas']['ChartResponse'];
+export type MiniReading = ChartResult['mini_reading'];
 type GeoResolveRequest = paths['/api/v1/geo/resolve']['post']['requestBody']['content']['application/json'];
 
 /** Root of every API path; relative URLs returned by the API (`wheel_url`) resolve against it. */
@@ -32,7 +30,10 @@ const PATHS = {
 
 export interface Api {
   getMe(signal?: AbortSignal): Promise<Me>;
-  /** Candidates for a birth place; an empty list when nothing matches (404 GEO_NOT_FOUND). */
+  /**
+   * Candidates for a birth place; an empty list when nothing matches. A failure of the
+   * geodata provider is an error (503 `GEO_NOT_FOUND`), not an empty list.
+   */
   resolveGeo(query: string, signal?: AbortSignal): Promise<GeoPlace[]>;
   /** Idempotent on the server by input hash, so it is safe to retry. */
   createChart(input: ChartCreateRequest, signal?: AbortSignal): Promise<ChartResult>;
@@ -69,6 +70,14 @@ function withContractShapes(chart: Record<string, unknown>): Record<string, unkn
   };
 }
 
+const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+/** The reading is required by the contract; a missing or malformed line becomes an empty one, which the screen leaves out. */
+function toMiniReading(value: unknown): MiniReading {
+  const reading = isRecord(value) ? value : {};
+  return { sun: text(reading.sun), moon: text(reading.moon), asc: text(reading.asc), summary: text(reading.summary) };
+}
+
 export function createApi(options: HttpClientOptions): Api {
   const request = createHttpClient(options);
 
@@ -81,23 +90,20 @@ export function createApi(options: HttpClientOptions): Api {
 
     async resolveGeo(query, signal) {
       const body: GeoResolveRequest = { query };
-      let places: unknown;
-      try {
-        places = await request<unknown>('POST', PATHS.geoResolve, { body, signal });
-      } catch (error) {
-        // "Nothing found" is an empty result for the UI, not a failure. Only by its own code:
-        // any other 404 means the route is missing, and that must not look like an unknown place.
-        if (isApiError(error) && error.code === 'GEO_NOT_FOUND') return [];
-        throw error;
-      }
+      const places = await request<unknown>('POST', PATHS.geoResolve, { body, signal });
       if (!Array.isArray(places) || !places.every(isGeoPlace)) throw invalid();
       return places;
     },
 
     async createChart(input, signal) {
       const result = await request<unknown>('POST', PATHS.charts, { body: input, signal });
+      // Without a chart there is nothing to show; the rest of the answer degrades to "absent".
       if (!isRecord(result) || !isRecord(result.chart) || typeof result.chart.chart_id !== 'string') throw invalid();
-      return { ...result, chart: withContractShapes(result.chart) } as ChartResult;
+      return {
+        chart: withContractShapes(result.chart) as Chart,
+        mini_reading: toMiniReading(result.mini_reading),
+        wheel_url: text(result.wheel_url),
+      };
     },
   };
 }

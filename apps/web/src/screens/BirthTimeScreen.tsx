@@ -1,13 +1,14 @@
 import { FieldMessage, Notice, OptionCard, SegmentedInput, Stack, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
+import type { TimePrecision } from '../api';
 import { ru } from '../i18n/ru';
-import { checkBirthTime, isTimeTyped, type TimeMode, type TimeParts } from '../lib/birth';
-import { focusFirstOpenInput } from '../lib/focus';
+import { checkBirthTime, isTimeTyped, type TimeParts } from '../lib/birth';
+import { focusChosenOption, focusFirstOpenInput } from '../lib/focus';
 import styles from './BirthTimeScreen.module.css';
 import { StepScreen } from './StepScreen';
 
 const copy = ru.birthTime;
-const MODES: readonly TimeMode[] = ['exact', 'approx', 'unknown'];
+const MODES: readonly TimePrecision[] = ['exact', 'approximate', 'unknown'];
 
 const SEGMENTS: readonly Segment[] = [
   { id: 'hours', label: copy.hours, placeholder: copy.hoursPlaceholder, length: 2, max: 23 },
@@ -15,10 +16,14 @@ const SEGMENTS: readonly Segment[] = [
 ];
 
 export interface BirthTimeScreenProps {
-  mode: TimeMode | null;
+  mode: TimePrecision | null;
   time: TimeParts;
+  /** The server's text about the chosen option (`time_precision`), when it rejected the chart request. */
+  precisionError?: string;
+  /** The same about the time itself (`birth_time`). */
+  timeError?: string;
   back?: ScreenProps['back'];
-  onModeChange: (mode: TimeMode) => void;
+  onModeChange: (mode: TimePrecision) => void;
   onTimeChange: (time: TimeParts) => void;
   onNext: () => void;
 }
@@ -27,11 +32,21 @@ export interface BirthTimeScreenProps {
  * Screen 3. Three options; every one of them says plainly what it does to the
  * accuracy of the chart before the user moves on.
  */
-export function BirthTimeScreen({ mode, time, back, onModeChange, onTimeChange, onNext }: BirthTimeScreenProps) {
+export function BirthTimeScreen({
+  mode,
+  time,
+  precisionError,
+  timeError,
+  back,
+  onModeChange,
+  onTimeChange,
+  onNext,
+}: BirthTimeScreenProps) {
   const optionsMessageId = useId();
   const timeLabelId = useId();
   const timeMessageId = useId();
   const groupName = useId();
+  const options = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLDivElement>(null);
   const notice = useRef<HTMLDivElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
@@ -39,16 +54,31 @@ export function BirthTimeScreen({ mode, time, back, onModeChange, onTimeChange, 
   const noteIsNew = useRef(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const needsTime = mode === 'exact' || mode === 'approx';
+  const needsTime = mode === 'exact' || mode === 'approximate';
   const check = checkBirthTime(time);
   const timeIssue = !needsTime || check.ok || (check.issue === 'incomplete' && !submitted) ? null : check.issue;
   const done = mode === 'unknown' || (needsTime && check.ok);
+  // What the server said about the time is shown at the time field; without one on screen, next to the options.
+  const optionsError = mode === null && submitted ? copy.chooseOption : (precisionError ?? (needsTime ? undefined : timeError));
+  const timeFieldError = timeIssue ? copy.issues[timeIssue] : timeError;
 
-  // "Typed" matters: 14:3 is already a valid time while the user is on the way to 14:30.
-  const finished = needsTime && check.ok && isTimeTyped(time);
+  // Decided once, when the screen opens: brought back by the server's verdict, the user lands on what it is about.
+  const [rejectedAtStart] = useState<'options' | 'time' | null>(() => {
+    if (precisionError !== undefined || (timeError !== undefined && !needsTime)) return 'options';
+    return timeError === undefined ? null : 'time';
+  });
   useEffect(() => {
-    if (finished && field.current?.contains(document.activeElement)) submit.current?.focus();
-  }, [finished]);
+    if (rejectedAtStart === 'options') focusChosenOption(options.current);
+    if (rejectedAtStart === 'time') focusFirstOpenInput(field.current);
+  }, [rejectedAtStart]);
+
+  // Counts the times typing completed a valid time. A count, not "the time is complete": a time
+  // that is already complete when the screen opens is nobody's keystroke and must not move focus.
+  const [completions, setCompletions] = useState(0);
+  useEffect(() => {
+    // After the render that shows the last digit: hand focus to the button, which also folds the keyboard away.
+    if (completions > 0 && field.current?.contains(document.activeElement)) submit.current?.focus();
+  }, [completions]);
 
   useEffect(() => {
     if (!noteIsNew.current) return;
@@ -68,13 +98,22 @@ export function BirthTimeScreen({ mode, time, back, onModeChange, onTimeChange, 
   };
 
   return (
-    <StepScreen step={2} title={copy.title} hint={copy.hint} back={back} submitRef={submit} onSubmit={handleSubmit}>
+    <StepScreen
+      step={2}
+      title={copy.title}
+      hint={copy.hint}
+      back={back}
+      submitRef={submit}
+      focusesField={rejectedAtStart !== null}
+      onSubmit={handleSubmit}
+    >
       <Stack gap="sm">
         <div
+          ref={options}
           className={styles.options}
           role="radiogroup"
           aria-label={copy.optionsLabel}
-          aria-describedby={mode === null && submitted ? optionsMessageId : undefined}
+          aria-describedby={optionsError === undefined ? undefined : optionsMessageId}
         >
           {MODES.map((option) => (
             <OptionCard
@@ -93,7 +132,7 @@ export function BirthTimeScreen({ mode, time, back, onModeChange, onTimeChange, 
             />
           ))}
         </div>
-        {mode === null && submitted && <FieldMessage id={optionsMessageId} error={copy.chooseOption} />}
+        {optionsError !== undefined && <FieldMessage id={optionsMessageId} error={optionsError} />}
       </Stack>
 
       {/* Right under the choice and above the time field: the user reads it before typing. */}
@@ -113,16 +152,19 @@ export function BirthTimeScreen({ mode, time, back, onModeChange, onTimeChange, 
               segments={SEGMENTS}
               values={time}
               separator=":"
-              invalid={timeIssue !== null}
+              invalid={timeFieldError !== undefined}
               autoFocus
               labelledBy={timeLabelId}
               describedBy={timeMessageId}
               onChange={(next) => {
-                onTimeChange({ hours: next.hours ?? '', minutes: next.minutes ?? '' });
+                const typed = { hours: next.hours ?? '', minutes: next.minutes ?? '' };
+                onTimeChange(typed);
+                // "Typed" matters: 14:3 is already a valid time while the user is on the way to 14:30.
+                if (isTimeTyped(typed) && checkBirthTime(typed).ok) setCompletions((count) => count + 1);
               }}
             />
           </div>
-          <FieldMessage id={timeMessageId} error={timeIssue && copy.issues[timeIssue]} hint={copy.timeHint} />
+          <FieldMessage id={timeMessageId} error={timeFieldError} hint={copy.timeHint} />
         </Stack>
       )}
     </StepScreen>

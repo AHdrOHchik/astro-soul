@@ -1,12 +1,13 @@
 /* Shared test doubles. All birth data here is invented. */
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
-import type { Api, Chart, ChartResult, GeoPlace, Me } from '../api';
+import type { Api, Chart, ChartCreateRequest, ChartResult, FieldError, GeoPlace, Me } from '../api';
 import { ApiError, type ApiErrorCode } from '../api';
+import { CONSENT_VERSION } from '../i18n/ru';
 import type { Telegram } from '../telegram';
 
-/** Local noon: the calendar day is the same in whatever time zone the tests run. */
-export const TODAY = new Date(2026, 10, 10, 12);
+/** Noon UTC: the app reads the UTC day, so the tests give the same result in any time zone. */
+export const TODAY = new Date(Date.UTC(2026, 10, 10, 12));
 
 export const kazan: GeoPlace = {
   name: 'Казань',
@@ -36,10 +37,19 @@ export const me: Me = {
   quotas: [],
 };
 
+/** A complete body of `POST /charts`: what the app sends once every step is filled in and the consent box is ticked. */
+export const chartRequest: ChartCreateRequest = {
+  birth_date: '1994-05-17',
+  birth_time: '14:30',
+  time_precision: 'exact',
+  birth_place: kazan,
+  consent: { accepted: true, version: CONSENT_VERSION },
+};
+
 export const chart: Chart = {
   chart_id: '00000000-0000-4000-8000-00000000c0de',
   created_at: '2026-11-10T09:00:00Z',
-  birth: { date: '1994-05-17', time: '14:30', time_known: true, place: kazan },
+  birth: { date: '1994-05-17', time: '14:30', time_known: true, time_precision: 'exact', place: kazan },
   asc: { sign: 'Дева', degree: 4, minute: 9 },
   mc: { sign: 'Близнецы', degree: 18, minute: 44 },
   planets: [
@@ -60,25 +70,40 @@ export const chartResult: ChartResult = {
     asc: 'Текст про Асцендент.',
     summary: 'Начало полного разбора.',
   },
-  wheel_url: `charts/${chart.chart_id}/wheel.svg?sig=test-signature`,
+  wheel_url: `/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`,
 };
 
 /** The same chart as the API returns it when the birth time is unknown. */
 export const chartWithoutTime: ChartResult = {
   chart: {
     ...chart,
-    birth: { date: '1994-05-17', time: null, time_known: false, place: kazan },
+    birth: { date: '1994-05-17', time: null, time_known: false, time_precision: 'unknown', place: kazan },
     asc: null,
     mc: null,
     houses: null,
     planets: chart.planets.map((planet) => ({ ...planet, house: null })),
   },
-  mini_reading: { sun: 'Текст про Солнце.', moon: 'Текст про Луну.', summary: 'Начало полного разбора.' },
+  mini_reading: {
+    sun: 'Текст про Солнце.',
+    moon: 'Текст про Луну.',
+    asc: 'Время рождения неизвестно — Асцендент не рассчитан',
+    summary: 'Начало полного разбора.',
+  },
   wheel_url: chartResult.wheel_url,
 };
 
 export function apiError(code: ApiErrorCode, info: ConstructorParameters<typeof ApiError>[1] = {}): ApiError {
   return new ApiError(code, info);
+}
+
+/** `422 VALIDATION_FAILED` as the API sends it: the fields in `details.field_errors`, the first text as the message. */
+export function rejection(...fieldErrors: FieldError[]): ApiError {
+  return apiError('VALIDATION_FAILED', {
+    status: 422,
+    serverMessage: fieldErrors[0]?.message,
+    requestId: 'req-422',
+    details: { field_errors: fieldErrors },
+  });
 }
 
 export function fakeApi() {
