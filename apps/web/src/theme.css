@@ -1,0 +1,121 @@
+/*
+ * Design tokens — the single place where raw colours, sizes and timings live.
+ * Component styles (apps/web, packages/ui) may only reference these variables;
+ * `tests/design-system.test.ts` fails on literal values anywhere else and on unused tokens.
+ * The app is dark-only by design: it does not follow Telegram theme params.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Colour. Contrast on --color-bg: text 17.3, muted 8.3, accent 8.8 (WCAG AA = 4.5). */
+  --color-bg: #0f0d1a;
+  --color-surface: #1a1730;
+  --color-surface-raised: #252144;
+  --color-border: #3a3360;
+  --color-border-strong: #6f67a0;
+  --color-text: #f4f1ff;
+  --color-text-muted: #aca6cb;
+  --color-accent: #b9a1ff;
+  --color-accent-pressed: #a48af2;
+  --color-accent-soft: rgba(185, 161, 255, 0.14);
+  --color-on-accent: #161129;
+  --color-gold: #f1c76a;
+  --color-gold-soft: rgba(241, 199, 106, 0.12);
+  --color-danger: #ff9a9a;
+  --color-skeleton: #231f3d;
+  --color-skeleton-shine: #322c57;
+  --color-focus: #ffffff;
+  --gradient-page: radial-gradient(120% 55% at 50% -12%, rgba(185, 161, 255, 0.2), rgba(15, 13, 26, 0) 62%);
+  /* From --color-bg at zero alpha, not `transparent`: Safari before 15.4 fades that through grey. */
+  --gradient-scroll-fade: linear-gradient(to bottom, rgba(15, 13, 26, 0), var(--color-bg));
+
+  /* Typography. System fonts only: nothing to download, no late reflow. */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.125rem;
+  --font-size-xl: 1.375rem;
+  --font-size-2xl: 1.75rem;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 700;
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.45;
+  --letter-spacing-caps: 0.06em;
+
+  /* Spacing, 4px grid. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+
+  /* Radii. */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Sizes. --size-tap is the minimum touch target (48px) and must stay in px. */
+  --size-tap: 48px;
+  --size-control: 52px;
+  --size-field: 56px;
+  --size-icon: 24px;
+  --size-illustration: 132px;
+  --size-card-skeleton: 132px;
+  --size-content-max: 480px;
+  --size-progress: 4px;
+  --size-skeleton-line: 0.9em;
+  --size-hidden: 1px;
+  --border-width: 1px;
+  --border-width-strong: 2px;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  --blur-locked: 5px;
+  --opacity-disabled: 0.55;
+
+  /* Motion. */
+  --duration-fast: 120ms;
+  --duration-skeleton: 1.4s;
+
+  /*
+   * Layout. Telegram reports the viewport and safe areas through the SDK
+   * (`viewport.bindCssVars()` → --tg-viewport-*); outside Telegram the
+   * env()/vh fallbacks apply.
+   */
+  --app-height: 100vh;
+  --safe-top: 0px;
+  --safe-right: 0px;
+  --safe-bottom: 0px;
+  --safe-left: 0px;
+}
+
+@supports (height: 100dvh) {
+  :root {
+    --app-height: 100dvh;
+  }
+}
+
+@supports (padding: max(0px)) {
+  :root {
+    --safe-top: calc(
+      max(env(safe-area-inset-top, 0px), var(--tg-viewport-safe-area-inset-top, 0px)) +
+        var(--tg-viewport-content-safe-area-inset-top, 0px)
+    );
+    --safe-right: max(env(safe-area-inset-right, 0px), var(--tg-viewport-safe-area-inset-right, 0px));
+    --safe-bottom: calc(
+      max(env(safe-area-inset-bottom, 0px), var(--tg-viewport-safe-area-inset-bottom, 0px)) +
+        var(--tg-viewport-content-safe-area-inset-bottom, 0px)
+    );
+    --safe-left: max(env(safe-area-inset-left, 0px), var(--tg-viewport-safe-area-inset-left, 0px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-skeleton: 0s;
+  }
+}

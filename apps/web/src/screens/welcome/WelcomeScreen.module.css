@@ -1,0 +1,42 @@
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  justify-items: center;
+  text-align: center;
+}
+
+.points {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.point {
+  display: grid;
+  gap: var(--space-1);
+  padding-left: var(--space-4);
+  border-left: var(--border-width-strong) solid var(--color-accent);
+}
+
+.pointTitle {
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+}
+
+.pointText {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.disclaimer {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-align: center;
+}

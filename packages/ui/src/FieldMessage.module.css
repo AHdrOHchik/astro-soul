@@ -1,0 +1,25 @@
+.slot {
+  /* Room for two lines of text. */
+  min-height: calc(2 * var(--font-size-sm) * var(--line-height-normal));
+}
+
+.message {
+  display: flex;
+  align-items: flex-start;
+  font-size: var(--font-size-sm);
+}
+
+.hint {
+  color: var(--color-text-muted);
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+.message svg {
+  flex: none;
+  width: calc(var(--font-size-sm) * var(--line-height-normal));
+  height: calc(var(--font-size-sm) * var(--line-height-normal));
+  margin-right: var(--space-2);
+}

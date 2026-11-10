@@ -1,0 +1,53 @@
+.results {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.rowSkeleton {
+  height: var(--size-field);
+}
+
+.selected {
+  display: flex;
+  align-items: flex-start;
+}
+
+.pin {
+  display: inline-flex;
+  flex: none;
+  margin-right: var(--space-3);
+  color: var(--color-accent);
+}
+
+.selectedText {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.placeName {
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+  overflow-wrap: anywhere;
+}
+
+.timezone {
+  color: var(--color-gold);
+  font-weight: var(--font-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.empty {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  border: var(--border-width) dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  text-align: center;
+}

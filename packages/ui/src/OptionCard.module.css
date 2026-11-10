@@ -1,0 +1,80 @@
+.option {
+  position: relative;
+  display: block;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Kept in the layout (not display:none) so it stays focusable and announced. */
+.input {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.box {
+  display: flex;
+  align-items: center;
+  min-height: var(--size-field);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  transition: background-color var(--duration-fast), border-color var(--duration-fast);
+}
+
+.input:checked + .box {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+/*
+ * The ring belongs to keyboard focus. Engines without :focus-visible (Safari < 15.4,
+ * Chromium < 86) drop the second rule and show the ring on every focus instead of never.
+ */
+.input:focus + .box {
+  outline: var(--focus-ring-width) solid var(--color-focus);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.input:focus:not(:focus-visible) + .box {
+  outline: none;
+}
+
+.mark {
+  flex: none;
+  width: var(--size-icon);
+  height: var(--size-icon);
+  margin-right: var(--space-3);
+  border: var(--border-width-strong) solid var(--color-border-strong);
+  border-radius: 50%;
+}
+
+.input:checked + .box .mark {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  box-shadow: inset 0 0 0 var(--space-1) var(--color-surface);
+}
+
+.text {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.title {
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+}
+
+.description {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
