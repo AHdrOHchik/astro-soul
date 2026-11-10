@@ -81,9 +81,18 @@ export function ChartScreen({ api, telegram, request, apiBaseUrl, timeApproximat
   );
 }
 
+/**
+ * Without a birth time the Ascendant and the houses are not calculated: `asc` is null (contract 1.1.0).
+ * `time_known` is optional in the schema, so a null `asc` with no flag at all means the same.
+ */
+function isTimeKnown({ birth, asc }: Chart): boolean {
+  return birth.time_known ?? asc !== null;
+}
+
 /** Date · time · place the chart was built from: lets the user spot a typo. */
-function birthLine({ birth }: Chart): string | undefined {
-  const time = birth.time_known === false ? copy.timeUnknown : birth.time;
+function birthLine(chart: Chart): string | undefined {
+  const { birth } = chart;
+  const time = isTimeKnown(chart) ? birth.time : copy.timeUnknown;
   const parts = [birth.date && formatDate(birth.date), time, birth.place?.name].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : undefined;
 }
@@ -119,9 +128,8 @@ function ChartView({ result, apiBaseUrl, timeApproximate, telegram, onRetry, onE
   const wheelUrl = wheelPath ? absoluteApiUrl(wheelPath, apiBaseUrl, window.location.origin) : null;
   const sun = chart.planets.find((planet) => planet.key === 'sun');
   const moon = chart.planets.find((planet) => planet.key === 'moon');
-  // SPEC: with an unknown birth time the Ascendant and houses are not calculated.
-  const timeKnown = chart.birth.time_known !== false;
-  const ascSign = timeKnown ? chart.asc.sign : undefined;
+  const timeKnown = isTimeKnown(chart);
+  const asc = timeKnown ? chart.asc : null;
   const houseOf = (house: number | null | undefined) => (timeKnown && typeof house === 'number' ? copy.house(house) : undefined);
   // Positions come with minutes of arc either way; say plainly when the input does not support that precision.
   let accuracyNote: string | null = null;
@@ -129,7 +137,7 @@ function ChartView({ result, apiBaseUrl, timeApproximate, telegram, onRetry, onE
   else if (timeApproximate) accuracyNote = copy.approxTime;
 
   const hasReading = Boolean(reading?.sun ?? reading?.moon ?? reading?.asc ?? reading?.summary);
-  if (!sun && !moon && !ascSign && !wheelUrl && !hasReading) {
+  if (!sun && !moon && !asc?.sign && !wheelUrl && !hasReading) {
     return (
       <StateView title={copy.emptyTitle} text={copy.emptyText} icon={<InfoIcon />}>
         <Button onClick={onRetry}>{ru.common.retry}</Button>
@@ -187,7 +195,7 @@ function ChartView({ result, apiBaseUrl, timeApproximate, telegram, onRetry, onE
           <PointCard
             icon={<AscendantIcon />}
             title={copy.asc}
-            position={ascSign ? formatPosition(ascSign, chart.asc.degree, chart.asc.minute) : null}
+            position={asc?.sign ? formatPosition(asc.sign, asc.degree, asc.minute) : null}
             fallback={copy.noPosition}
             text={reading?.asc}
           />

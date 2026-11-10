@@ -54,18 +54,18 @@ function isGeoPlace(value: unknown): value is GeoPlace {
 }
 
 /**
- * SPEC says the Ascendant and houses are `null` when the birth time is unknown,
- * while the contract types them as always-present objects. Both shapes are
- * accepted here, so the screens can rely on the contract types alone.
+ * Brings the keys the screens read without checking to the shapes the contract
+ * gives them. `asc`, `mc` and `houses` are null when the birth time is unknown;
+ * a missing or malformed value is treated the same way: not calculated.
  */
-function withObjects(chart: Record<string, unknown>): Record<string, unknown> {
+function withContractShapes(chart: Record<string, unknown>): Record<string, unknown> {
   return {
     ...chart,
     birth: isRecord(chart.birth) ? chart.birth : {},
-    asc: isRecord(chart.asc) ? chart.asc : {},
-    mc: isRecord(chart.mc) ? chart.mc : {},
+    asc: isRecord(chart.asc) ? chart.asc : null,
+    mc: isRecord(chart.mc) ? chart.mc : null,
     planets: Array.isArray(chart.planets) ? chart.planets : [],
-    houses: Array.isArray(chart.houses) ? chart.houses : [],
+    houses: Array.isArray(chart.houses) ? chart.houses : null,
   };
 }
 
@@ -96,7 +96,7 @@ export function createApi(options: HttpClientOptions): Api {
     async createChart(input, signal) {
       const result = await request<unknown>('POST', PATHS.charts, { body: input, signal });
       if (!isRecord(result) || !isRecord(result.chart) || typeof result.chart.chart_id !== 'string') throw invalid();
-      return { ...result, chart: withObjects(result.chart) } as ChartResult;
+      return { ...result, chart: withContractShapes(result.chart) } as ChartResult;
     },
   };
 }

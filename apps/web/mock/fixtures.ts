@@ -95,8 +95,9 @@ export function buildChart(input: ChartCreateRequest): ChartCreated {
     chart_id: MOCK_CHART_ID,
     created_at: new Date().toISOString(),
     birth: { date: input.birth_date, time: input.birth_time ?? null, time_known: timeKnown, place: input.birth_place },
-    asc: timeKnown ? { sign: signAt(sun + 3), degree: 4, minute: 9 } : {},
-    mc: timeKnown ? { sign: signAt(sun + 11), degree: 18 } : {},
+    // Contract 1.1.0: without a birth time the Ascendant, the MC and the houses are null.
+    asc: timeKnown ? { sign: signAt(sun + 3), degree: 4, minute: 9 } : null,
+    mc: timeKnown ? { sign: signAt(sun + 11), degree: 18, minute: 44 } : null,
     planets: [
       { key: 'sun', name: 'Солнце', sign: signAt(sun), degree: 26, minute: 17, house: house(10), retrograde: false },
       { key: 'moon', name: 'Луна', sign: signAt(sun + 5), degree: 3, minute: 42, house: house(3), retrograde: false },
@@ -104,11 +105,12 @@ export function buildChart(input: ChartCreateRequest): ChartCreated {
       { key: 'venus', name: 'Венера', sign: signAt(sun - 1), degree: 19, minute: 30, house: house(9), retrograde: false },
       { key: 'mars', name: 'Марс', sign: signAt(sun + 7), degree: 7, minute: 58, house: house(5), retrograde: false },
     ],
-    houses: timeKnown ? SIGNS.map((_, index) => ({ house: index + 1, sign: signAt(sun + 3 + index), degree: 4 })) : [],
+    houses: timeKnown ? SIGNS.map((_, index) => ({ house: index + 1, sign: signAt(sun + 3 + index), degree: 4 })) : null,
     aspects: [{ a: 'sun', b: 'moon', type: 'trine', orb: 0.41, strength: 0.9 }],
     balances: {
-      elements: { fire: 2, earth: 4, air: 2, water: 2 },
-      modalities: { cardinal: 3, fixed: 4, mutable: 3 },
+      // Percentages; each group adds up to 100.
+      elements: { fire: 20, earth: 40, air: 20, water: 20 },
+      modalities: { cardinal: 30, fixed: 40, mutable: 30 },
     },
     engine_version: 'mock',
   };

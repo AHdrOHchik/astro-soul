@@ -828,7 +828,9 @@ export interface components {
             retrograde: boolean;
         };
         Aspect: {
+            /** @description ключ планеты из PlanetPosition.key */
             a: string;
+            /** @description ключ планеты из PlanetPosition.key */
             b: string;
             /** @enum {string} */
             type: "conjunction" | "opposition" | "trine" | "square" | "sextile";
@@ -849,23 +851,27 @@ export interface components {
                 time_known?: boolean;
                 place?: components["schemas"]["GeoPlace"];
             };
+            /** @description null, если время рождения неизвестно (time_known = false) */
             asc: {
                 sign?: string;
                 degree?: number;
                 minute?: number;
-            };
+            } | null;
+            /** @description null, если время рождения неизвестно (time_known = false) */
             mc: {
                 sign?: string;
                 degree?: number;
-            };
+                minute?: number;
+            } | null;
             planets: components["schemas"]["PlanetPosition"][];
-            /** @description 12 куспидов, начиная с 1-го дома */
+            /** @description 12 куспидов, начиная с 1-го дома; null, если время рождения неизвестно */
             houses: {
                 house?: number;
                 sign?: string;
                 degree?: number;
-            }[];
+            }[] | null;
             aspects: components["schemas"]["Aspect"][];
+            /** @description Доли в процентах, сумма по каждой группе ≈ 100 (округление до 0.1) */
             balances: {
                 elements?: {
                     fire?: number;

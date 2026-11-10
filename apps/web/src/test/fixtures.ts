@@ -41,7 +41,7 @@ export const chart: Chart = {
   created_at: '2026-11-10T09:00:00Z',
   birth: { date: '1994-05-17', time: '14:30', time_known: true, place: kazan },
   asc: { sign: 'Дева', degree: 4, minute: 9 },
-  mc: { sign: 'Близнецы', degree: 18 },
+  mc: { sign: 'Близнецы', degree: 18, minute: 44 },
   planets: [
     { key: 'sun', name: 'Солнце', sign: 'Телец', degree: 26, minute: 17, house: 9, retrograde: false },
     { key: 'moon', name: 'Луна', sign: 'Рак', degree: 3, minute: 5, house: 11, retrograde: false },
@@ -68,8 +68,9 @@ export const chartWithoutTime: ChartResult = {
   chart: {
     ...chart,
     birth: { date: '1994-05-17', time: null, time_known: false, place: kazan },
-    asc: {},
-    mc: {},
+    asc: null,
+    mc: null,
+    houses: null,
     planets: chart.planets.map((planet) => ({ ...planet, house: null })),
   },
   mini_reading: { sun: 'Текст про Солнце.', moon: 'Текст про Луну.', summary: 'Начало полного разбора.' },

@@ -90,6 +90,25 @@ describe('ChartScreen', () => {
     expect(screen.queryByText(/Дева/)).not.toBeInTheDocument();
   });
 
+  it('reads a null Ascendant as an unknown time when the response has no time_known flag', async () => {
+    const { time_known: _omitted, ...birth } = chartWithoutTime.chart.birth;
+    setup({ result: { ...chartWithoutTime, chart: { ...chartWithoutTime.chart, birth } } });
+
+    expect(within(await screen.findByRole('region', { name: copy.asc })).getByText(copy.ascUnknown)).toBeInTheDocument();
+    expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
+    expect(screen.getByText(`17 мая 1994 г. · ${copy.timeUnknown} · Казань`)).toBeInTheDocument();
+  });
+
+  it('does not blame the birth time when the Ascendant is missing although the time is known', async () => {
+    setup({ result: { ...chartResult, chart: { ...chart, asc: null } } });
+
+    const asc = within(await screen.findByRole('region', { name: copy.asc }));
+    expect(asc.getByText(copy.noPosition)).toBeInTheDocument();
+    expect(asc.queryByText(copy.ascUnknown)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
+    expect(screen.getByText('17 мая 1994 г. · 14:30 · Казань')).toBeInTheDocument();
+  });
+
   it('reminds about the accuracy when the time was given roughly', async () => {
     setup({ timeApproximate: true });
     expect(await screen.findByText(copy.approxTime)).toBeInTheDocument();

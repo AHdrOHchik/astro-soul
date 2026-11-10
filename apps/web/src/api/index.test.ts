@@ -62,13 +62,35 @@ describe('createChart', () => {
     expect(JSON.parse(init?.body as string)).toEqual(input);
   });
 
-  it('accepts null for the Ascendant and houses of a chart without birth time', async () => {
+  it('keeps the null Ascendant, MC and houses of a chart without birth time', async () => {
     const { api, fetchMock } = setup();
-    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1', asc: null, mc: null, houses: null } }));
+    const birth = { date: '1994-05-17', time: null, time_known: false, place: moscow };
+    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1', birth, asc: null, mc: null, houses: null, planets: [] } }));
 
     const { chart } = await api.createChart(input);
 
-    expect(chart).toMatchObject({ chart_id: 'c-1', asc: {}, mc: {}, houses: [], planets: [], birth: {} });
+    expect(chart).toEqual({ chart_id: 'c-1', birth, asc: null, mc: null, houses: null, planets: [] });
+  });
+
+  it('keeps the calculated Ascendant, MC and houses as they came', async () => {
+    const { api, fetchMock } = setup();
+    const angles = {
+      asc: { sign: 'Дева', degree: 4, minute: 9 },
+      mc: { sign: 'Близнецы', degree: 18, minute: 44 },
+      houses: [{ house: 1, sign: 'Дева', degree: 4 }],
+    };
+    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1', ...angles } }));
+
+    await expect(api.createChart(input)).resolves.toMatchObject({ chart: angles });
+  });
+
+  it('gives the screens safe shapes when the chart misses keys or has them malformed', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(201, { chart: { chart_id: 'c-1', asc: 'Дева', houses: {}, planets: null } }));
+
+    const { chart } = await api.createChart(input);
+
+    expect(chart).toEqual({ chart_id: 'c-1', birth: {}, asc: null, mc: null, houses: null, planets: [] });
   });
 
   it('fails when the answer has no chart to show', async () => {
