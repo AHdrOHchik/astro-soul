@@ -148,7 +148,11 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        /** @description Поиск идёт по мере ввода, начиная с 3 символов */
+                        /**
+                         * @description Поиск идёт по мере ввода, начиная с 2 символов. Короче —
+                         *     `422` с `field_errors[{field: "query"}]`; пустой массив
+                         *     означает «города нет», а не «слишком короткий запрос».
+                         */
                         query: string;
                         /** @default 5 */
                         limit?: number;
@@ -168,7 +172,10 @@ export interface paths {
                         "application/json": components["schemas"]["GeoPlace"][];
                     };
                 };
-                /** @description Пустой или слишком короткий запрос (VALIDATION_FAILED) */
+                /**
+                 * @description Запрос короче 2 символов (`VALIDATION_FAILED`) или `limit` вне 1…10.
+                 *     `details.field_errors[0]` = `{field: "query", message: "Введи хотя бы 2 буквы"}`.
+                 */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -183,8 +190,13 @@ export interface paths {
                     content?: never;
                 };
                 /**
-                 * @description Провайдер геоданных недоступен (GEO_NOT_FOUND + details.reason).
-                 *     Пустой результат сюда не относится — он отдаётся как 200 [].
+                 * @description Провайдер геоданных недоступен (`GEO_NOT_FOUND`). Машинная причина —
+                 *     `details.reason`: `provider_timeout` (не ответил за 2 с),
+                 *     `provider_unavailable` (сеть или статус), `not_configured`
+                 *     (провайдер включён, но не настроен контакт для User-Agent).
+                 *     Текст `message` готов к показу: «Поиск городов временно недоступен.
+                 *     Попробуй ещё раз через минуту.» Пустой результат сюда не относится —
+                 *     он отдаётся как 200 [].
                  */
                 503: {
                     headers: {
@@ -313,7 +325,14 @@ export interface paths {
         };
         /**
          * Колесо карты в SVG
-         * @description Публично по подписанному токену в query (`?sig=`), чтобы можно было шарить картинку в чат.
+         * @description Публично по подписанному токену в query (`?sig=`), чтобы можно было
+         *     вставлять картинку в чат и в `<img>`.
+         *
+         *     Самодостаточный SVG: все подписи — векторные контуры (`<path>`/`<use>`),
+         *     ни одного `<text>`, ни `font-family`, ни внешних ссылок и шрифтов.
+         *     Причина: в мобильном WebView нет ни DejaVu Sans, ни Segoe UI Symbol,
+         *     а глифы планет и знаков зодиака есть только в системных шрифтах —
+         *     `<text>` там превращается в «тофу» и наезжает на маркеры.
          */
         get: {
             parameters: {
@@ -338,10 +357,151 @@ export interface paths {
                         "image/svg+xml": string;
                     };
                 };
+                /** @description FORBIDDEN — подпись отсутствует или недействительна */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/charts/{chart_id}/wheel.png": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Колесо карты в PNG (для шаринга)
+         * @description Тот же рисунок, что и `wheel.svg`, растеризованный в PNG: в чат уходит
+         *     картинка, к ней добавляется ссылка на бота. Публично по той же подписи
+         *     `?sig=`, что и SVG.
+         */
+        get: {
+            parameters: {
+                query: {
+                    sig: string;
+                    theme?: "dark" | "light";
+                    /** @description Ширина картинки в пикселях (160…1600, по умолчанию 1080) */
+                    size?: number;
+                };
+                header?: never;
+                path: {
+                    chart_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description PNG */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "image/png": string;
+                    };
+                };
+                /** @description FORBIDDEN — подпись отсутствует или недействительна */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description NOT_FOUND */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * События продукта батчем
+         * @description Клиент присылает шаги воронки, которые сервер не видит: открытие,
+         *     экран согласия, шаги онбординга, возврат назад, поиск места, шаринг.
+         *
+         *     * батч от 1 до 20 событий; больше — `422`, клиент шлёт не больше 20;
+         *     * ответ `202 Accepted`: приём подтверждён, ждать его интерфейсу незачем.
+         *       Ошибки разбора тоже не должны ломать экран;
+         *     * `name` — только значения из `x-analytics-events` (закрытый список);
+         *     * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
+         *       рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
+         *       события отбрасываются на сервере и в БД не попадают;
+         *     * `at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
+         *       или позже серверного времени более чем на 5 минут — отбрасывается;
+         *     * лимит: общий, 60 запросов в минуту; `429` клиент игнорирует.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["EventsBatch"];
+                };
+            };
+            responses: {
+                /** @description Батч принят */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EventsAccepted"];
+                    };
+                };
+                /**
+                 * @description Батч пуст, больше 20 событий, неизвестное имя события или время
+                 *     вне допустимого окна (`VALIDATION_FAILED` + `details.field_errors`).
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description RATE_LIMITED — лимит запросов в минуту */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -927,6 +1087,17 @@ export interface components {
              * @example /api/v1/charts/0f1c.../wheel.svg?sig=1767225600.abc123
              */
             wheel_url: string;
+            /**
+             * @description Относительный путь к PNG-колесу с той же подписью: `/api/v1/charts/{chart_id}/wheel.png?sig=...`.
+             *     Нужен для шаринга: в чат уходит картинка, а не ссылка на SVG.
+             *     Маршрут публичный (`security: []`), размер по умолчанию 1080 px по ширине.
+             *
+             *     Поле новое в 1.3.0 и **необязательное для чтения**: сервер возвращает его
+             *     всегда, но клиент может его не читать, пока не делает шаринг картинкой.
+             *     Так поле можно ввести, не ломая уже собранный фронт.
+             * @example /api/v1/charts/0f1c.../wheel.png?sig=1767225600.abc123
+             */
+            wheel_png_url?: string;
         };
         Chart: {
             /** Format: uuid */
@@ -993,6 +1164,10 @@ export interface components {
             /**
              * Format: date
              * @description Дата рождения в прошлом, не раньше 1900-01-01, возраст — не меньше 18 лет.
+             *     Правило возраста (решение владельца продукта): 18 лет исполняется в
+             *     **00:00 UTC дня рождения**; для рождённых 29 февраля в невисокосный
+             *     год днём рождения считается 1 марта. Фронт повторяет это правило,
+             *     чтобы не отклонять дату, которую сервер принимает.
              *     Проверяется на сервере (проверка на фронте — только UX, не защита).
              * @example 1994-05-17
              */
@@ -1020,11 +1195,50 @@ export interface components {
                 /** @enum {boolean} */
                 accepted: true;
                 /**
-                 * @description Версия текста согласия, которую показал фронт
-                 * @example 2026-11-01
+                 * @description Версия текста согласия, которую показал фронт. Сервер принимает
+                 *     только актуальную редакцию (`CONSENT_VERSION`, сейчас `2026-11-10`).
+                 *     Любая другая — `422` с `details.field_errors[{field: "consent.version"}]`;
+                 *     по этому полю фронт снимает галочку и показывает «Условия обновились».
+                 * @example 2026-11-10
                  */
                 version: string;
             };
+        };
+        ClientEvent: {
+            /**
+             * @description Имя события из `x-analytics-events`
+             * @enum {string}
+             */
+            name: "app_open" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "validation_failed" | "paywall_view" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "share_clicked" | "screen_view";
+            /**
+             * Format: date-time
+             * @description Время события на устройстве (ISO 8601 с часовым поясом)
+             * @example 2026-11-10T12:00:00.000Z
+             */
+            at: string;
+            /**
+             * @description Идентификаторы, шаг, код ошибки. Строки до 64 символов.
+             *     Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
+             *     `city`, `query`, `date`, `time`, `lat`, `lon`, `tz`, `first_name`,
+             *     `username`, `phone`, `email`) запрещены — такое событие отбрасывается.
+             * @example {
+             *       "step": "chart",
+             *       "code": "VALIDATION_FAILED"
+             *     }
+             */
+            props?: {
+                [key: string]: string | number | boolean;
+            };
+        };
+        EventsBatch: {
+            events: components["schemas"]["ClientEvent"][];
+        };
+        EventsAccepted: {
+            /**
+             * @description Сколько событий записано (после отбрасывания ПДн и устаревших)
+             * @example 3
+             */
+            accepted: number;
         };
         ReportRequest: {
             /** Format: uuid */
