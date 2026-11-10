@@ -20,11 +20,17 @@ export interface TestContextOptions {
     TelegramClient,
     'createInvoiceLink' | 'answerPreCheckoutQuery' | 'sendMessage' | 'refundStarPayment'
   >;
+  /** Точечные переопределения окружения (например, включить лимиты запросов). */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Поднимает настоящее приложение (с БД и middleware), как в проде. */
 export async function createTestContext(options: TestContextOptions = {}): Promise<TestContext> {
   applyTestEnv();
+
+  for (const [key, value] of Object.entries(options.env ?? {})) {
+    process.env[key] = value;
+  }
 
   const builder = Test.createTestingModule({ imports: [AppModule] });
   if (options.astro !== undefined) {

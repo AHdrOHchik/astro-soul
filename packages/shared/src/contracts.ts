@@ -40,9 +40,15 @@ export type Report = Schemas['Report'];
 export type HealthResponse =
   paths['/api/v1/health']['get']['responses'][200]['content']['application/json'];
 
-/** `POST /api/v1/charts` — ответ с картой, мини-разбором и ссылкой на колесо. */
-export type ChartCreatedResponse =
-  paths['/api/v1/charts']['post']['responses'][201]['content']['application/json'];
+/** `POST /api/v1/charts` и `GET /api/v1/charts/{id}` — один и тот же конверт. */
+export type ChartResponse = Schemas['ChartResponse'];
+export type ChartCreatedResponse = ChartResponse;
+
+/** Ошибка конкретного поля — для подсветки на фронте (`15.2.1`). */
+export type FieldError = Schemas['FieldError'];
+
+/** `POST /api/v1/geo/resolve` — всегда 200 и массив, пустой = «города нет». */
+export type GeoResolveResponse = GeoPlace[];
 
 /** Значения квот в том порядке, в котором их ждёт фронт. */
 export const QUOTA_CODES = [

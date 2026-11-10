@@ -10,7 +10,9 @@ import { createHmac } from 'node:crypto';
 const BIRTH = {
   birth_date: '1994-05-17',
   birth_time: '14:20',
+  time_precision: 'exact',
   birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
+  consent: { accepted: true, version: '2026-11-01' },
 };
 
 function initDataFor(user: Record<string, unknown> = FICTIONAL_USER): string {
@@ -128,7 +130,9 @@ describe('GET /api/v1/charts/{id}', () => {
       .get(`/api/v1/charts/${chartId}`)
       .set(INIT_DATA_HEADER, initDataFor())
       .expect(200);
-    expect(own.body.chart_id).toBe(chartId);
+    expect(own.body.chart.chart_id).toBe(chartId);
+    expect(own.body.mini_reading.summary).toContain('Солнце');
+    expect(own.body.wheel_url).toContain('/wheel.svg?sig=');
 
     const stranger = await request(ctx.app.getHttpServer())
       .get(`/api/v1/charts/${chartId}`)
@@ -137,11 +141,13 @@ describe('GET /api/v1/charts/{id}', () => {
     expect(stranger.body.code).toBe('NOT_FOUND');
   });
 
-  it('битый uuid → 400 без падения', async () => {
-    await request(ctx.app.getHttpServer())
+  it('битый uuid → 422 VALIDATION_FAILED, а не 400', async () => {
+    const response = await request(ctx.app.getHttpServer())
       .get('/api/v1/charts/not-a-uuid')
       .set(INIT_DATA_HEADER, initDataFor())
-      .expect(400);
+      .expect(422);
+
+    expect(response.body.code).toBe('VALIDATION_FAILED');
   });
 });
 
@@ -188,7 +194,7 @@ describe('GET /api/v1/charts/{id}/wheel.svg', () => {
       .expect(403);
   });
 
-  it('неизвестная тема → 400 VALIDATION_FAILED', async () => {
+  it('неизвестная тема → 422 VALIDATION_FAILED с field_errors', async () => {
     const created = await request(ctx.app.getHttpServer())
       .post('/api/v1/charts')
       .set(INIT_DATA_HEADER, initDataFor())
@@ -196,8 +202,11 @@ describe('GET /api/v1/charts/{id}/wheel.svg', () => {
       .expect(201);
 
     const wheelUrl = created.body.wheel_url as string;
-    const response = await request(ctx.app.getHttpServer()).get(`${wheelUrl}&theme=neon`).expect(400);
+    const response = await request(ctx.app.getHttpServer()).get(`${wheelUrl}&theme=neon`).expect(422);
     expect(response.body.code).toBe('VALIDATION_FAILED');
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'theme', message: expect.any(String) as string },
+    ]);
   });
 });
 

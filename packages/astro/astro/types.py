@@ -28,21 +28,34 @@ class GeoPlace:
 
 @dataclass(frozen=True, slots=True)
 class BirthInput:
-    """Вход движка. `time = None` означает «время неизвестно»."""
+    """Вход движка. `time = None` означает «время неизвестно».
+
+    `time_precision` — эхо флага из контракта (`exact` | `approximate` | `unknown`).
+    Движок его не интерпретирует (дома либо считаются, либо нет), но обязан
+    вернуть в `Chart.birth`, иначе фронт не восстановит ответ пользователя.
+    """
 
     date: date
     time: time | None
     place: GeoPlace
+    time_precision: str | None = None
 
     @property
     def time_known(self) -> bool:
         return self.time is not None
+
+    @property
+    def precision(self) -> str:
+        if self.time_precision is not None:
+            return self.time_precision
+        return "unknown" if self.time is None else "exact"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "date": self.date.isoformat(),
             "time": self.time.strftime("%H:%M") if self.time is not None else None,
             "time_known": self.time_known,
+            "time_precision": self.precision,
             "place": {
                 "name": self.place.name,
                 "region": self.place.region,

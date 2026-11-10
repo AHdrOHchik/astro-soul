@@ -26,7 +26,7 @@ async function seedPersonalData(): Promise<{ userId: string; chartId: string }> 
   const userId = userIdFromTelegramId(BigInt(FICTIONAL_USER.id), TEST_PEPPER);
 
   await ctx.db.query(
-    `INSERT INTO profiles (user_id, birth_date, birth_time, time_accuracy, place_name,
+    `INSERT INTO profiles (user_id, birth_date, birth_time, time_mode, place_name,
                            place_country, place_lat, place_lon, place_tz, consent_at)
      VALUES ($1, '1994-05-17', '14:20', 'exact', 'Москва', 'RU', 55.7558, 37.6173, 'Europe/Moscow', now())`,
     [userId],
@@ -38,7 +38,9 @@ async function seedPersonalData(): Promise<{ userId: string; chartId: string }> 
     .send({
       birth_date: '1994-05-17',
       birth_time: '14:20',
+      time_precision: 'exact',
       birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
+      consent: { accepted: true, version: '2026-11-01' },
     })
     .expect(201);
 

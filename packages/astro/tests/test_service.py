@@ -52,6 +52,20 @@ def test_chart_is_idempotent_by_hash() -> None:
     assert first["chart"] == second["chart"]
 
 
+def test_time_precision_is_echoed_back() -> None:
+    for precision, birth_time in (("exact", "14:20"), ("approximate", "14:20"), ("unknown", None)):
+        body = client.post("/chart", json={**BIRTH, "birth_time": birth_time, "time_precision": precision})
+
+        assert body.status_code == 200
+        assert body.json()["chart"]["birth"]["time_precision"] == precision
+
+
+def test_unknown_precision_with_time_is_rejected() -> None:
+    payload = {**BIRTH, "time_precision": "unknown"}
+
+    assert client.post("/chart", json=payload).status_code == 422
+
+
 def test_unknown_time_gives_null_houses() -> None:
     payload = {**BIRTH, "birth_time": None}
 

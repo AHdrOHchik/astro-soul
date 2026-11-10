@@ -99,6 +99,24 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 - **Доступы.** Только через `EntitlementsService.getEntitlements(userId)`.
   Проверки вида `if (plan === 'month')` в обработчиках — ошибка ревью.
 
+## Лимиты запросов
+
+Счётчик — в памяти процесса (`apps/api/src/common/rate-limit.middleware.ts`):
+60 запросов в минуту на пользователя, 10 — на `POST /charts`, 120 — на поиск
+городов. Ответ `429 RATE_LIMITED` несёт заголовки `RateLimit-Limit`,
+`RateLimit-Remaining`, `RateLimit-Reset` и `Retry-After`.
+
+Публичные маршруты (health, колесо по подписи, вебхук Telegram) не лимитируются.
+При переходе на несколько инстансов счётчики нужно вынести в Redis — сейчас
+лимит умножается на число подов, и это записано как известное ограничение.
+
+## Геоданные
+
+`POST /api/v1/geo/resolve` — подсказки городов из локального справочника
+`packages/shared/src/geo/cities.data.ts` (149 городов: РФ, СНГ, столицы мира).
+Правила, статус датасета и условия включения Nominatim — в [`geo.md`](./geo.md).
+`POST /charts` от справочника не зависит: место рождения приходит целиком с фронта.
+
 ## Миграции
 
 `migrations/NNNN_описание.sql`, раннер — `apps/api/src/db/migrate.ts`
@@ -151,12 +169,30 @@ Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
 `GET /charts/{id}` + подписанный `wheel.svg`, платежи (инвойсы, вебхук, подписка,
 возвраты), `DELETE /me` с каскадом.
 
+Итерация 4: контракт 1.2.1, `POST /geo/resolve` со справочником городов,
+`consent` и `time_precision` в `POST /charts`, `field_errors`, русские тексты
+ошибок, лимиты запросов, Node ≥ 22.22.2 и единая версия vitest.
+
 Дальше по порядку: LLM-конвейер (две стадии, лимит $0.35) → ночные прогнозы
-с advisory lock → гео-справочник `GET /geo/resolve` → джоб `subscription_downgrade`.
+с advisory lock → джоб `subscription_downgrade` → полная сборка гео-датасета из GeoNames.
 
 ## Версия контракта
 
-`api.openapi.yaml` — 1.2.0. Отличия от 1.1.0:
+`api.openapi.yaml` — 1.2.1. Отличия от 1.2.0 (по отчёту фронта):
+
+* `VALIDATION_FAILED` — **всегда 422**, `CONFLICT` — 409; у ошибки валидации есть
+  `details.field_errors[{field, message}]`, чтобы фронт подсвечивал поле;
+* `message` в `Problem` — готовый текст на «ты», включая неизвестный маршрут
+  (`NOT_FOUND`, «Такой страницы нет. Обнови приложение.»);
+* `POST /geo/resolve` всегда отвечает `200` и массивом (пустой = «города нет»),
+  `GEO_NOT_FOUND` (503) — только при недоступном провайдере, лимит 120/мин;
+* `POST /charts` требует `consent {accepted, version}` и `time_precision`
+  (`exact | approximate | unknown`), отдаёт `Chart.birth.time_precision`,
+  проверяет 18+ и «не раньше 1900» на сервере;
+* `GET /charts/{id}` отвечает тем же конвертом, что и `POST /charts`:
+  `{chart, mini_reading, wheel_url}`.
+
+Отличия 1.2.0 от 1.1.0:
 
 * OpenAPI 3.1: `nullable: true` заменён на `type: [X, 'null']` (12 схем) —
   так типы корректно генерируются `openapi-typescript`;

@@ -9,12 +9,19 @@ export interface ProblemPayload {
   readonly problem: Problem;
 }
 
+/**
+ * Единственные разрешённые пары «HTTP-статус → код» (контракт 1.2.1):
+ * `VALIDATION_FAILED` — всегда 422 (400 в API не используется), `CONFLICT` — 409.
+ * Всё, что пришло от фреймворка, приводится к этой таблице.
+ */
 const HTTP_STATUS_TO_CODE: Readonly<Record<number, ProblemCode>> = {
   400: 'VALIDATION_FAILED',
   401: 'UNAUTHORIZED',
+  402: 'PAYMENT_REQUIRED',
   403: 'FORBIDDEN',
   404: 'NOT_FOUND',
-  405: 'FORBIDDEN',
+  // Метод для существующего пути: пользователю это «страницы нет», а не «запрещено».
+  405: 'NOT_FOUND',
   409: 'CONFLICT',
   413: 'VALIDATION_FAILED',
   415: 'VALIDATION_FAILED',
@@ -26,9 +33,23 @@ const HTTP_STATUS_TO_CODE: Readonly<Record<number, ProblemCode>> = {
   504: 'INTERNAL',
 };
 
+/** Нормализованный статус: `VALIDATION_FAILED` не бывает 400, `NOT_FOUND` — 405. */
+function normalizeStatus(status: number, code: ProblemCode): number {
+  if (code === 'VALIDATION_FAILED') {
+    return 422;
+  }
+  if (status === 405) {
+    return 404;
+  }
+  return status;
+}
+
 /**
  * Приводит любое исключение к телу `Problem`. Единственное место,
  * где формируется ответ об ошибке (единый формат — требование SPEC).
+ *
+ * Текст берётся из i18n, а не из `exception.message`: иначе наружу утекают
+ * английские строки фреймворка вида «Cannot POST /api/v1/geo/resolve».
  */
 export function toProblem(exception: unknown, requestId: string): ProblemPayload {
   if (exception instanceof ApiError) {
@@ -44,14 +65,15 @@ export function toProblem(exception: unknown, requestId: string): ProblemPayload
   }
 
   if (exception instanceof HttpException) {
-    const status = exception.getStatus();
-    const code = HTTP_STATUS_TO_CODE[status] ?? (status >= 500 ? 'INTERNAL' : 'VALIDATION_FAILED');
+    const rawStatus = exception.getStatus();
+    const code = HTTP_STATUS_TO_CODE[rawStatus] ?? (rawStatus >= 500 ? 'INTERNAL' : 'VALIDATION_FAILED');
+    const status = normalizeStatus(rawStatus, code);
 
     return {
       status,
       problem: {
         code,
-        message: code === 'INTERNAL' ? PROBLEM_MESSAGES.INTERNAL : exception.message,
+        message: PROBLEM_MESSAGES[code],
         request_id: requestId,
       },
     };

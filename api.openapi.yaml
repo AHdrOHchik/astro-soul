@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.2.0
+  version: 1.2.1
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -19,6 +19,21 @@ info:
     профиля с незавершёнными платежами); добавлено `Chart.omitted_planets`
     (планеты, которые движок не смог рассчитать); в `/health` добавлено
     состояние астро-движка `astro`.
+
+    1.2.1 — уточнения по отчёту фронта (PR #2):
+      • `VALIDATION_FAILED` всегда 422 (400 в контракте не используется),
+        `CONFLICT` — 409; у `VALIDATION_FAILED` есть `details.field_errors`
+        `[{field, message}]`, чтобы фронт подсвечивал конкретное поле;
+      • `message` в `Problem` — готовый текст на «ты», его можно показывать как есть;
+        неизвестный маршрут тоже отдаёт `Problem` (`NOT_FOUND`, русский текст);
+      • `POST /geo/resolve` всегда отвечает 200 и массивом (пустой массив =
+        «города нет»); `GEO_NOT_FOUND` (503) — только когда недоступен сам
+        провайдер геоданных; лимит маршрута — 120 запросов в минуту;
+      • `POST /charts`: обязательные `consent {accepted, version}` и
+        `time_precision` (exact | approximate | unknown), `Chart.birth.time_precision`
+        в ответе, проверка 18+ и даты не раньше 1900 на сервере;
+      • `GET /charts/{chart_id}` отвечает тем же конвертом, что и `POST /charts`:
+        `{chart, mini_reading, wheel_url}`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -56,18 +71,50 @@ components:
       description: Unix-время сброса окна
 
   schemas:
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field:
+          type: string
+          description: Имя поля из запроса (birth_date, birth_time, birth_place, consent, plan_code)
+          example: birth_date
+        message:
+          type: string
+          description: Короткий текст ошибки для этого поля (ru, на «ты»)
+          example: Дата рождения должна быть в прошлом
+
     Problem:
       type: object
       required: [code, message, request_id]
+      description: |
+        Единый формат ошибок, `application/problem+json`.
+
+        Соответствие кода и статуса жёсткое: `VALIDATION_FAILED` — **всегда 422**
+        (400 в API не используется), `CONFLICT` — 409, `UNAUTHORIZED` — 401,
+        `FORBIDDEN` — 403, `NOT_FOUND` — 404, `RATE_LIMITED` — 429,
+        `INTERNAL`/`GEO_NOT_FOUND`/`UPSTREAM_LLM` — 503/502.
+
+        `message` — готовый текст для экрана, обращение на «ты». Фронт может
+        показывать его без переписывания. Неизвестный маршрут тоже возвращает
+        `Problem` (`NOT_FOUND`, «Такой страницы нет. Обнови приложение»),
+        а не текст фреймворка.
       properties:
         code:
           type: string
           enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND]
-        message: { type: string, description: Текст для показа пользователю (ru) }
+        message: { type: string, description: Готовый текст для показа пользователю (ru, на «ты») }
         request_id: { type: string, description: Для поиска в логах }
         details:
           type: object
           additionalProperties: true
+          properties:
+            field_errors:
+              type: array
+              description: |
+                Заполняется для `VALIDATION_FAILED`: список полей с ошибками.
+                Порядок отражает порядок проверки, дубликатов по `field` нет.
+              items: { $ref: '#/components/schemas/FieldError' }
 
     SubscriptionState:
       type: object
@@ -148,6 +195,26 @@ components:
         orb: { type: number, example: 0.41 }
         strength: { type: number, minimum: 0, maximum: 1 }
 
+    ChartResponse:
+      type: object
+      required: [chart, mini_reading, wheel_url]
+      properties:
+        chart: { $ref: '#/components/schemas/Chart' }
+        mini_reading:
+          type: object
+          required: [sun, moon, asc, summary]
+          properties:
+            sun: { type: string, example: 'Солнце в Телец, 26°17′' }
+            moon: { type: string, example: 'Луна в Лев, 12°38′' }
+            asc: { type: string, example: 'Асцендент в Дева, 15°03′' }
+            summary: { type: string, example: 'Солнце в Телец, 26°17′ · Луна в Лев, 12°38′' }
+        wheel_url:
+          type: string
+          description: |
+            Относительный путь к SVG-колесу с подписью: `/api/v1/charts/{chart_id}/wheel.svg?sig=...`.
+            Маршрут публичный (security: []), initData не нужен — можно вставлять в `<img>`.
+          example: /api/v1/charts/0f1c.../wheel.svg?sig=1767225600.abc123
+
     Chart:
       type: object
       required: [chart_id, created_at, birth, asc, mc, planets, houses, aspects, balances]
@@ -160,6 +227,10 @@ components:
             date: { type: string, format: date }
             time: { type: [string, 'null'], description: "null, если время неизвестно" }
             time_known: { type: boolean }
+            time_precision:
+              type: string
+              enum: [exact, approximate, unknown]
+              description: Точность времени, с которой карта построена (эхо `ChartCreateRequest.time_precision`)
             place: { $ref: '#/components/schemas/GeoPlace' }
         asc:
           type: [object, 'null']
@@ -218,14 +289,47 @@ components:
 
     ChartCreateRequest:
       type: object
-      required: [birth_date, birth_place]
+      required: [birth_date, birth_place, time_precision, consent]
       properties:
-        birth_date: { type: string, format: date, example: "1994-05-17" }
+        birth_date:
+          type: string
+          format: date
+          example: "1994-05-17"
+          description: |
+            Дата рождения в прошлом, не раньше 1900-01-01, возраст — не меньше 18 лет.
+            Проверяется на сервере (проверка на фронте — только UX, не защита).
         birth_time:
           type: [string, 'null']
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
-          description: Локальное время места рождения. null = неизвестно (включается флаг)
+          description: |
+            Локальное время места рождения (HH:MM).
+            Обязательно при `time_precision` = exact | approximate, обязано быть `null`
+            при `time_precision` = unknown.
+        time_precision:
+          type: string
+          enum: [exact, approximate, unknown]
+          description: |
+            Насколько известно время. Сохраняется в `profiles.time_mode` и
+            возвращается в `Chart.birth.time_precision`.
+            `unknown` ⇒ дома и Асцендент не рассчитываются.
         birth_place: { $ref: '#/components/schemas/GeoPlace' }
+        consent:
+          type: object
+          description: |
+            Согласие на обработку ПДн (152-ФЗ). Обязательно, сохраняется
+            в `profiles.consent_at` и `profiles.consent_version`.
+            `accepted: false` → 422 VALIDATION_FAILED.
+          required: [accepted, version]
+          properties:
+            accepted:
+              type: boolean
+              enum: [true]
+            version:
+              type: string
+              minLength: 1
+              maxLength: 32
+              description: Версия текста согласия, которую показал фронт
+              example: "2026-11-01"
 
     ReportRequest:
       type: object
@@ -380,18 +484,30 @@ paths:
               type: object
               required: [query]
               properties:
-                query: { type: string, minLength: 2, maxLength: 120 }
+                query:
+                  type: string
+                  minLength: 3
+                  maxLength: 120
+                  description: Поиск идёт по мере ввода, начиная с 3 символов
                 limit: { type: integer, default: 5, maximum: 10 }
       responses:
         '200':
-          description: Кандидаты
+          description: |
+            Кандидаты. Ответ **всегда** 200 и массив: пустой массив = «города нет»,
+            это не ошибка. Лишних подтверждений от фронта не нужно.
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/GeoPlace' }
-        '404':
-          description: Ничего не найдено (GEO_NOT_FOUND)
+        '422':
+          description: Пустой или слишком короткий запрос (VALIDATION_FAILED)
+        '429':
+          description: 'Слишком частое обновление подсказок: лимит маршрута 120 запросов в минуту'
+        '503':
+          description: |
+            Провайдер геоданных недоступен (GEO_NOT_FOUND + details.reason).
+            Пустой результат сюда не относится — он отдаётся как 200 [].
 
   /api/v1/charts:
     post:
@@ -412,22 +528,12 @@ paths:
           description: Создана
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  chart: { $ref: '#/components/schemas/Chart' }
-                  mini_reading:
-                    type: object
-                    properties:
-                      sun: { type: string }
-                      moon: { type: string }
-                      asc: { type: string }
-                      summary: { type: string }
-                  wheel_url:
-                    type: string
-                    description: Путь к SVG-колесу карты (charts/{chart_id}/wheel.svg)
+              schema: { $ref: '#/components/schemas/ChartResponse' }
         '422':
-          description: Некорректные данные (VALIDATION_FAILED)
+          description: |
+            Некорректные данные (VALIDATION_FAILED): `details.field_errors`
+            содержит поле и текст для подсветки (birth_date, birth_time,
+            birth_place, time_precision, consent).
 
   /api/v1/charts/{chart_id}:
     get:
@@ -441,10 +547,12 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
-          description: OK
+          description: |
+            Тот же конверт, что и `POST /charts`: карта, мини-разбор и относительный
+            путь к колесу с уже включённой подписью `sig` (его можно открывать без initData).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Chart' }
+              schema: { $ref: '#/components/schemas/ChartResponse' }
         '404': { description: NOT_FOUND }
 
   /api/v1/charts/{chart_id}/wheel.svg:

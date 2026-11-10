@@ -7,6 +7,35 @@
 
 ### Добавлено
 
+#### Итерация 4: контракт 1.2.1 — разблокировка фронта
+
+- Контракт **1.2.1**: `VALIDATION_FAILED` всегда 422 (400 в API не используется),
+  `FieldError` и `details.field_errors[{field, message}]`, описание жёсткого
+  соответствия кодов и статусов, `ChartResponse` для `GET /charts/{id}`,
+  `consent` и `time_precision` в `ChartCreateRequest`, `Chart.birth.time_precision`,
+  `POST /geo/resolve` — всегда `200` и массив, `503 GEO_NOT_FOUND` только при
+  недоступном провайдере.
+- `POST /geo/resolve`: локальный справочник на 149 городов
+  (`packages/shared/src/geo`), нормализация «ё»/регистра/алиасов, поиск с 3 символов,
+  `limit` ≤ 10, лимит маршрута 120/мин, Nominatim только как opt-in фолбэк.
+- `POST /charts`: обязательное согласие (`profiles.consent_at`, `consent_version`),
+  `time_precision` → `profiles.time_mode`, проверка 18+, «не раньше 1900»,
+  существование часового пояса — всё на сервере, с `field_errors` по полям.
+- `GET /charts/{id}` отдаёт тот же конверт, что и `POST /charts`
+  (`{chart, mini_reading, wheel_url}` со свежей подписью).
+- Лимиты запросов: `RateLimitMiddleware` (60/мин, 10 на создание карты, 120 на гео),
+  заголовки `RateLimit-*` и `Retry-After`.
+- Единый формат ошибок: тексты на «ты» из `i18n/ru.ts`, неизвестный маршрут и
+  неверный метод больше не отдают английский текст фреймворка.
+- Миграция `0006`: `profiles.time_accuracy` → `time_mode`
+  (значение `approx` → `approximate`), добавлен `consent_version`.
+- Node `engines` → `>=22.22.2 <23`, `vitest` в `api`/`shared` поднят до 5.1.0
+  (в lock-файле больше нет двух мажорных версий).
+
+### Изменено
+
+- `apps/web`: только перегенерированные типы контракта (`schema.gen.d.ts`).
+
 #### Итерация 3: карты, колесо, платежи, удаление данных
 
 - Контракт **1.2.0**: OpenAPI 3.1 (`type: [X, 'null']` вместо `nullable`),

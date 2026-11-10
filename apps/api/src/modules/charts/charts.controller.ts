@@ -11,7 +11,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import type { Chart, ChartCreatedResponse } from '@astro-soul/shared';
+import type { ChartResponse } from '@astro-soul/shared';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { VerifiedInitData } from '../auth/init-data';
 import { ChartsService } from './charts.service';
@@ -25,7 +25,7 @@ export class ChartsController {
   async create(
     @CurrentUser() auth: VerifiedInitData,
     @Body() body: unknown,
-  ): Promise<ChartCreatedResponse> {
+  ): Promise<ChartResponse> {
     return this.charts.create(auth, body);
   }
 
@@ -33,7 +33,7 @@ export class ChartsController {
   async getById(
     @CurrentUser() auth: VerifiedInitData,
     @Param('chartId', new ParseUUIDPipe()) chartId: string,
-  ): Promise<Chart> {
+  ): Promise<ChartResponse> {
     return this.charts.getById(auth, chartId);
   }
 
