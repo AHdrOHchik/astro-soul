@@ -1,0 +1,23 @@
+/* `gap` stays next to `display: grid`: flex gap is unsupported by the oldest WebViews we target. */
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--stack-gap);
+}
+
+.xs {
+  --stack-gap: var(--space-1);
+}
+
+.sm {
+  --stack-gap: var(--space-2);
+}
+
+.md {
+  --stack-gap: var(--space-4);
+}
+
+.lg {
+  --stack-gap: var(--space-6);
+}
