@@ -1,0 +1,22 @@
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-6);
+}
+
+.points {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.point {
+  padding-left: var(--space-4);
+  border-left: var(--border-width-strong) solid var(--color-accent);
+}
+
+.documents {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
