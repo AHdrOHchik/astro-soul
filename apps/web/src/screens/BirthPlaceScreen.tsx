@@ -11,7 +11,7 @@ import {
   VisuallyHidden,
   type ScreenProps,
 } from '@astro-soul/ui';
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { fieldErrorsOf, type Api, type GeoPlace } from '../api';
 import { ErrorState } from '../components/ErrorState';
 import { MIN_QUERY_LENGTH, usePlaceSearch, type PlaceSearch } from '../hooks/usePlaceSearch';
@@ -64,6 +64,7 @@ export function BirthPlaceScreen({ api, telegram, query, place, serverError, bac
   const selectedId = useId();
   const input = useRef<HTMLInputElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
+  const failure = useRef<HTMLDivElement>(null);
   const [submitted, setSubmitted] = useState(false);
   // While a place is chosen the field shows its name; that must not trigger a new search.
   const search = usePlaceSearch(api, place === null ? query : '');
@@ -76,6 +77,13 @@ export function BirthPlaceScreen({ api, telegram, query, place, serverError, bac
   // Read once, when the screen opens: the field takes focus while there is no place yet,
   // and when the server's verdict on the chosen one brought the user back here.
   const focusesSearch = place === null || serverError !== undefined;
+
+  // A failed search is reported in a block of its own, under the field.
+  const failed = search.status === 'error' && queryError === undefined;
+  useEffect(() => {
+    // On a small screen or with the keyboard open that block is below the fold: a failure must not go unseen.
+    if (failed) failure.current?.scrollIntoView({ block: 'nearest' });
+  }, [failed]);
 
   const handleSubmit = () => {
     if (place !== null) {
@@ -199,8 +207,10 @@ export function BirthPlaceScreen({ api, telegram, query, place, serverError, bac
         </div>
       )}
 
-      {search.status === 'error' && queryError === undefined && (
-        <ErrorState error={search.error} telegram={telegram} onRetry={search.retry} />
+      {failed && (
+        <div ref={failure}>
+          <ErrorState error={search.error} telegram={telegram} onRetry={search.retry} />
+        </div>
       )}
     </StepScreen>
   );

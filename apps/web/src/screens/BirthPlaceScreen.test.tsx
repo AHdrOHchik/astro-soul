@@ -199,6 +199,28 @@ describe('BirthPlaceScreen', () => {
     expect(results()).toHaveLength(2);
   });
 
+  it('brings a failed search into view: its block is under the field, on a small screen below the fold', async () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { api, user, input, settle } = setup();
+    api.resolveGeo.mockRejectedValueOnce(apiError('GEO_NOT_FOUND', { status: 503 }));
+
+    await user.type(input, 'Каз');
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    await settle();
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(scrollIntoView.mock.contexts[0]).toContainElement(screen.getByRole('alert'));
+    expect(scrollIntoView.mock.contexts[0]).toContainElement(screen.getByRole('button', { name: ru.common.retry }));
+
+    // The retry answers with places: the list is announced in the line under the field and moves nothing.
+    await user.click(screen.getByRole('button', { name: ru.common.retry }));
+    await settle();
+
+    expect(results()).toHaveLength(2);
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
   it('shows what the server says about the query at the field, where the query is', async () => {
     const { api, user, input, settle } = setup();
     api.resolveGeo.mockRejectedValue(rejection({ field: 'query', message: 'Слишком длинный запрос — введи название города' }));
