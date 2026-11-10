@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -12,6 +12,13 @@ info:
     при неизвестном времени рождения дома и Асцендент не рассчитываются
     (SPEC, раздел «Астро-движок»). Уточнены семантика `Aspect.a`/`Aspect.b`
     (ключи планет) и единицы `Chart.balances` (проценты).
+
+    1.2.0 — `nullable: true` заменён на канонический для JSON Schema 2020-12
+    вид `type: [X, 'null']` (в OpenAPI 3.1 ключ `nullable` не определён и
+    игнорируется генераторами); добавлен код `CONFLICT` (409 при удалении
+    профиля с незавершёнными платежами); добавлено `Chart.omitted_planets`
+    (планеты, которые движок не смог рассчитать); в `/health` добавлено
+    состояние астро-движка `astro`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -55,7 +62,7 @@ components:
       properties:
         code:
           type: string
-          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND]
+          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND]
         message: { type: string, description: Текст для показа пользователю (ru) }
         request_id: { type: string, description: Для поиска в логах }
         details:
@@ -71,9 +78,8 @@ components:
           enum: [none, trial, week, month, year]
         is_active: { type: boolean }
         expires_at:
-          type: string
+          type: [string, 'null']
           format: date-time
-          nullable: true
         auto_renew:
           type: boolean
           description: Управляется пользователем в настройках Telegram, только для чтения
@@ -97,7 +103,7 @@ components:
       required: [user_id, is_new, subscription, quotas, has_profile]
       properties:
         user_id: { type: string, description: Внутренний UUID, не telegram_id }
-        display_name: { type: string, nullable: true }
+        display_name: { type: [string, 'null'] }
         is_new: { type: boolean }
         has_profile: { type: boolean }
         has_chart: { type: boolean }
@@ -114,7 +120,7 @@ components:
       required: [name, country, lat, lon, tz]
       properties:
         name: { type: string, example: Москва }
-        region: { type: string, nullable: true }
+        region: { type: [string, 'null'] }
         country: { type: string, example: RU }
         lat: { type: number, example: 55.7558 }
         lon: { type: number, example: 37.6173 }
@@ -129,7 +135,7 @@ components:
         sign: { type: string, example: Телец }
         degree: { type: integer, example: 26 }
         minute: { type: integer, example: 17 }
-        house: { type: integer, minimum: 1, maximum: 12, nullable: true }
+        house: { type: [integer, 'null'], minimum: 1, maximum: 12 }
         retrograde: { type: boolean }
 
     Aspect:
@@ -152,20 +158,18 @@ components:
           type: object
           properties:
             date: { type: string, format: date }
-            time: { type: string, nullable: true, description: "null, если время неизвестно" }
+            time: { type: [string, 'null'], description: "null, если время неизвестно" }
             time_known: { type: boolean }
             place: { $ref: '#/components/schemas/GeoPlace' }
         asc:
-          type: object
-          nullable: true
+          type: [object, 'null']
           description: null, если время рождения неизвестно (time_known = false)
           properties:
             sign: { type: string }
             degree: { type: integer }
             minute: { type: integer }
         mc:
-          type: object
-          nullable: true
+          type: [object, 'null']
           description: null, если время рождения неизвестно (time_known = false)
           properties:
             sign: { type: string }
@@ -175,8 +179,7 @@ components:
           type: array
           items: { $ref: '#/components/schemas/PlanetPosition' }
         houses:
-          type: array
-          nullable: true
+          type: [array, 'null']
           description: 12 куспидов, начиная с 1-го дома; null, если время рождения неизвестно
           items:
             type: object
@@ -205,6 +208,13 @@ components:
                 fixed: { type: number }
                 mutable: { type: number }
         engine_version: { type: string, example: "1.0.0" }
+        omitted_planets:
+          type: array
+          description: |-
+            Планеты, которые движок не смог рассчитать. Сейчас это `chiron`:
+            он требует файлов Swiss Ephemeris (`seas_18.se1`), которых нет в
+            fallback-режиме. В тексте разбора такие планеты не упоминаются.
+          items: { type: string }
 
     ChartCreateRequest:
       type: object
@@ -212,8 +222,7 @@ components:
       properties:
         birth_date: { type: string, format: date, example: "1994-05-17" }
         birth_time:
-          type: string
-          nullable: true
+          type: [string, 'null']
           pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
           description: Локальное время места рождения. null = неизвестно (включается флаг)
         birth_place: { $ref: '#/components/schemas/GeoPlace' }
@@ -225,12 +234,11 @@ components:
         chart_id: { type: string, format: uuid }
         type: { type: string, enum: [full, compat, solar] }
         partner:
-          type: object
-          nullable: true
+          type: [object, 'null']
           description: Обязателен при type=compat
           properties:
             birth_date: { type: string, format: date }
-            birth_time: { type: string, nullable: true }
+            birth_time: { type: [string, 'null'] }
             birth_place: { $ref: '#/components/schemas/GeoPlace' }
             name: { type: string, maxLength: 60 }
 
@@ -244,8 +252,8 @@ components:
         status: { type: string, enum: [queued, generating, ready, failed, refunded] }
         progress: { type: integer, minimum: 0, maximum: 100 }
         created_at: { type: string, format: date-time }
-        ready_at: { type: string, format: date-time, nullable: true }
-        pdf_url: { type: string, nullable: true, description: Временная подписанная ссылка, TTL 24 ч }
+        ready_at: { type: [string, 'null'], format: date-time }
+        pdf_url: { type: [string, 'null'], description: Временная подписанная ссылка, TTL 24 ч }
         sections:
           type: array
           items:
@@ -264,7 +272,7 @@ components:
       properties:
         date: { type: string, format: date }
         text: { type: string, description: 3–6 предложений, вариант для бесплатного = урезанный }
-        focus: { type: string, enum: [career, love, money, health, self], nullable: true }
+        focus: { type: [string, 'null'], enum: [career, love, money, health, self] }
         is_paid: { type: boolean }
         generated_at: { type: string, format: date-time }
 
@@ -307,7 +315,7 @@ components:
         plan_code: { $ref: '#/components/schemas/PlanCode' }
         stars: { type: integer, example: 399 }
         is_subscription: { type: boolean }
-        subscription_period_sec: { type: integer, nullable: true, example: 2592000 }
+        subscription_period_sec: { type: [integer, 'null'], example: 2592000 }
 
 paths:
   /api/v1/health:
@@ -327,6 +335,7 @@ paths:
                   version: { type: string }
                   db: { type: string, enum: [ok, down] }
                   llm: { type: string, enum: [ok, down, unknown] }
+                  astro: { type: string, enum: [ok, down], description: Доступность локального сайдкара астро-движка }
 
   /api/v1/me:
     get:
@@ -353,7 +362,7 @@ paths:
         '204':
           description: Удалено
         '409':
-          description: Есть незавершённые платежи
+          description: Есть незавершённые платежи (Problem.code = CONFLICT)
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
