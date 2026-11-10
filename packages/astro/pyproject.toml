@@ -1,0 +1,45 @@
+[project]
+name = "astro-soul-astro"
+version = "0.1.0"
+description = "Астро-движок «Разбор личности»: натальная карта, транзиты, SVG-колесо, контекст для LLM"
+requires-python = ">=3.11"
+# pyswisseph — AGPL-3.0 (Swiss Ephemeris). До покупки коммерческой лицензии
+# движок работает в режиме ASTRO_ENGINE=fallback (встроенная эфемерида Moshier,
+# без файлов .se1). Подробности — README пакета.
+dependencies = ["pyswisseph==2.10.3.2"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "ruff==0.7.4",
+    # проверка вывода движка по контракту (tests/test_contract.py)
+    "jsonschema==4.23.0",
+    "pyyaml==6.0.2",
+]
+
+[project.scripts]
+astro-engine = "astro.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["astro*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+# Публичный API пакета назван так же, как в SPEC и в задаче:
+# calcChart / transitsFor / llmContext / renderWheel / hashInput.
+ignore = ["N802"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]

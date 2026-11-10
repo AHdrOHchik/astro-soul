@@ -1,0 +1,39 @@
+# зависимости
+node_modules/
+.pnpm-store/
+
+# сборка
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# окружение
+.env
+.env.*
+!.env.example
+
+# тесты
+coverage/
+.nyc_output/
+test-results/
+
+# python (packages/astro)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# логи и временное
+*.log
+logs/
+.tmp/
+tmp/
+
+# редакторы / ОС
+.DS_Store
+.idea/
+.vscode/

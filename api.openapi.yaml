@@ -1,12 +1,17 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
     считается несуществующим: фронт не имеет права на него рассчитывать,
     бэк не имеет права его отдавать без обновления этого файла и версии.
+
+    1.1.0 — `Chart.asc`, `Chart.mc` и `Chart.houses` могут быть `null`:
+    при неизвестном времени рождения дома и Асцендент не рассчитываются
+    (SPEC, раздел «Астро-движок»). Уточнены семантика `Aspect.a`/`Aspect.b`
+    (ключи планет) и единицы `Chart.balances` (проценты).
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -131,8 +136,8 @@ components:
       type: object
       required: [a, b, type, orb]
       properties:
-        a: { type: string }
-        b: { type: string }
+        a: { type: string, description: 'ключ планеты из PlanetPosition.key' }
+        b: { type: string, description: 'ключ планеты из PlanetPosition.key' }
         type: { type: string, enum: [conjunction, opposition, trine, square, sextile] }
         orb: { type: number, example: 0.41 }
         strength: { type: number, minimum: 0, maximum: 1 }
@@ -152,21 +157,27 @@ components:
             place: { $ref: '#/components/schemas/GeoPlace' }
         asc:
           type: object
+          nullable: true
+          description: null, если время рождения неизвестно (time_known = false)
           properties:
             sign: { type: string }
             degree: { type: integer }
             minute: { type: integer }
         mc:
           type: object
+          nullable: true
+          description: null, если время рождения неизвестно (time_known = false)
           properties:
             sign: { type: string }
             degree: { type: integer }
+            minute: { type: integer }
         planets:
           type: array
           items: { $ref: '#/components/schemas/PlanetPosition' }
         houses:
           type: array
-          description: 12 куспидов, начиная с 1-го дома
+          nullable: true
+          description: 12 куспидов, начиная с 1-го дома; null, если время рождения неизвестно
           items:
             type: object
             properties:
@@ -178,6 +189,7 @@ components:
           items: { $ref: '#/components/schemas/Aspect' }
         balances:
           type: object
+          description: Доли в процентах, сумма по каждой группе ≈ 100 (округление до 0.1)
           properties:
             elements:
               type: object
