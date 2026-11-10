@@ -34,7 +34,7 @@ apps/api/           HTTP API (NestJS): auth, /me, /health, БД, миграци�
 apps/bot/           Telegram-бот (следующие итерации)
 apps/web/           Mini App (FRONTEND)
 packages/shared/    типы контракта, планы и цены, квоты, Entitlements
-packages/astro/     астро-движок (Python, pyswisseph) — следующая итерация
+packages/astro/     астро-движок (Python, pyswisseph): карта, транзиты, SVG, контекст для LLM
 packages/ui/        UI-кит (FRONTEND)
 migrations/         SQL-миграции, неизменяемые после мерджа
 infra/              локальная инфраструктура (инициализация Postgres и т.п.)
@@ -45,6 +45,7 @@ infra/              локальная инфраструктура (иници�
 ```bash
 cp .env.example .env          # заполнить TELEGRAM_BOT_TOKEN и PSEUDONYM_PEPPER
 pnpm install
+pnpm setup:astro              # python-пакет движка (pyswisseph, pytest, ruff)
 docker compose up -d          # Postgres 16 + Redis 7
 pnpm db:migrate               # миграции
 pnpm db:seed                  # plans из packages/shared/src/plans.ts
@@ -62,7 +63,10 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 | `pnpm build` | сборка всех пакетов |
 | `pnpm lint` | ESLint (flat config, правила с типами) |
 | `pnpm typecheck` | `tsc --noEmit` во всех пакетах |
-| `pnpm test` | сборка + тесты (нужна тестовая БД) |
+| `pnpm test` | сборка + тесты TS (нужна тестовая БД) |
+| `pnpm test:astro` | тесты движка (pytest) |
+| `pnpm lint:astro` | ruff по `packages/astro` |
+| `pnpm check` | всё сразу: lint, typecheck, build, тесты TS и Python |
 | `pnpm db:migrate` | накат миграций из `migrations/` |
 | `pnpm db:seed` | синхронизация таблицы `plans` |
 | `pnpm dev:api` | API в watch-режиме |
@@ -102,12 +106,26 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 неизменяемы: раннер падает, если файл изменили после наката, — нужна новая
 миграция.
 
+## Астро-движок
+
+`packages/astro` — Python-пакет с публичным API `calcChart`, `transitsFor`,
+`llmContext`, `renderWheel`, `hashInput` (порт `astro/engine.py`). Подробности,
+режимы `ASTRO_ENGINE` и ограничения — в [`packages/astro/README.md`](./packages/astro/README.md).
+
 ## Статус
 
-Итерация 1 (каркас): монорепо, миграции, авторизация через `initData`,
-`GET /me`, `GET /health`. Дальше по порядку: порт астро-движка →
-`POST /charts` → платежи и `getEntitlements` в обработчиках → LLM-конвейер →
-ночные прогнозы → удаление данных.
+Сделано: каркас монорепо, миграции, авторизация через `initData`, `GET /me`,
+`GET /health`, порт астро-движка.
 
-`packages/astro` не реализован: прототип `astro/engine.py`, на который ссылается
-`SPEC.md`, в репозиторий не попал (см. `CHANGELOG.md`).
+Дальше по порядку: `POST /charts` (и решение по транспорту до Python-движка) →
+платежи и `getEntitlements` в обработчиках → LLM-конвейер → ночные прогнозы →
+удаление данных.
+
+## Версия контракта
+
+`api.openapi.yaml` — 1.1.0. Отличия от 1.0.0:
+
+* `Chart.asc`, `Chart.mc`, `Chart.houses` могут быть `null`: при неизвестном
+  времени рождения дома и Асцендент не рассчитываются (`SPEC.md`);
+* `Aspect.a` / `Aspect.b` — ключи планет (`PlanetPosition.key`), а не названия;
+* `Chart.balances` — проценты.

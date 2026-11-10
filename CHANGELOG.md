@@ -24,11 +24,24 @@
 - Единый формат ошибок `application/problem+json`, `request_id` в ответе и
   логах, JSON-логи с вырезанием ПДн-полей.
 
+- `packages/astro` — порт прототипа `astro/engine.py` в Python-пакет:
+  `calcChart`, `transitsFor`, `llmContext`, `renderWheel`, `hashInput`, CLI,
+  режимы `ASTRO_ENGINE=fallback|swisseph` (Moshier / файлы `.se1`), 34 теста
+  на pytest, включая проверку вывода по схеме контракта. Аспекты в контракте —
+  по ключам планет, `balances` — проценты, в SVG нет персональных данных.
+
+### Изменено
+
+- `api.openapi.yaml` 1.0.0 → 1.1.0: `Chart.asc`, `Chart.mc`, `Chart.houses`
+  теперь могут быть `null` (неизвестное время рождения — требование `SPEC.md`);
+  уточнены `Aspect.a`/`Aspect.b` (ключи планет) и единицы `Chart.balances`
+  (проценты). Структура ответов не менялась, поля добавлены не были.
+
 ### Известные ограничения
 
-- `packages/astro` не портирован: файл `astro/engine.py`, указанный в `SPEC.md`,
-  отсутствует в репозитории. Итерация ждёт файл от владельца продукта.
-- Контракт требует `Chart.asc`, `Chart.mc` и `Chart.houses` как обязательные
-  непустые поля, а `SPEC.md` — `null` при неизвестном времени рождения.
-  Расхождение нужно решить правкой `api.openapi.yaml` до реализации `POST /charts`.
+- Хирон не рассчитывается в fallback-режиме: нужен файл `seas_18.se1` из
+  Swiss Ephemeris. До его подключения (и до решения по лицензии) в разборе
+  нет Хирона.
+- Транспорт между `apps/api` (NestJS) и `packages/astro` (Python) не выбран:
+  решается вместе с `POST /charts`. Сейчас движок доступен как библиотека и CLI.
 - Rate-limit (60/10 req/мин) и `DELETE /me` — следующие итерации.
