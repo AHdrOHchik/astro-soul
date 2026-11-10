@@ -6,8 +6,8 @@ import { ApiError, type ApiErrorCode } from '../api';
 import { CONSENT_VERSION } from '../i18n/ru';
 import type { Telegram } from '../telegram';
 
-/** Local noon: the calendar day is the same in whatever time zone the tests run. */
-export const TODAY = new Date(2026, 10, 10, 12);
+/** Noon UTC: the app reads the UTC day, so the tests give the same result in any time zone. */
+export const TODAY = new Date(Date.UTC(2026, 10, 10, 12));
 
 export const kazan: GeoPlace = {
   name: 'Казань',

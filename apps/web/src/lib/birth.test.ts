@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GeoPlace } from '../api';
 import {
   checkBirthDate,
@@ -10,8 +10,8 @@ import {
   type BirthDraft,
 } from './birth';
 
-/** Local noon keeps the calendar day stable in any time zone the tests run in. */
-const TODAY = new Date(2026, 10, 10, 12);
+/** Noon UTC: the check reads the UTC day, so the result does not depend on the zone the tests run in. */
+const TODAY = new Date(Date.UTC(2026, 10, 10, 12));
 const date = (day: string, month: string, year: string) => checkBirthDate({ day, month, year }, TODAY);
 
 describe('checkBirthDate', () => {
@@ -55,8 +55,27 @@ describe('checkBirthDate', () => {
 
   it('counts a 29 February birthday from 1 March in a common year', () => {
     const born = { day: '29', month: '02', year: '2008' };
-    expect(checkBirthDate(born, new Date(2026, 1, 28, 12))).toEqual({ ok: false, issue: 'underage' });
-    expect(checkBirthDate(born, new Date(2026, 2, 1, 12))).toMatchObject({ ok: true });
+    expect(checkBirthDate(born, new Date(Date.UTC(2026, 1, 28, 12)))).toEqual({ ok: false, issue: 'underage' });
+    expect(checkBirthDate(born, new Date(Date.UTC(2026, 2, 1, 12)))).toMatchObject({ ok: true });
+  });
+
+  it('keeps a 1 March birthday underage on 29 February', () => {
+    const born = { day: '01', month: '03', year: '2010' };
+    expect(checkBirthDate(born, new Date(Date.UTC(2028, 1, 29, 12)))).toEqual({ ok: false, issue: 'underage' });
+    expect(checkBirthDate(born, new Date(Date.UTC(2028, 2, 1, 12)))).toMatchObject({ ok: true });
+  });
+
+  it('counts from the UTC day, as the API does, not from the day on the device', () => {
+    const born = { day: '11', month: '11', year: '2008' };
+    // 23:30 UTC on the 10th; the device, east of UTC, already shows the 11th.
+    const lateEvening = new Date('2026-11-10T23:30:00Z');
+    vi.spyOn(lateEvening, 'getDate').mockReturnValue(11);
+    expect(checkBirthDate(born, lateEvening)).toEqual({ ok: false, issue: 'underage' });
+
+    // 00:30 UTC on the 11th; the device, west of UTC, still shows the 10th.
+    const earlyMorning = new Date('2026-11-11T00:30:00Z');
+    vi.spyOn(earlyMorning, 'getDate').mockReturnValue(10);
+    expect(checkBirthDate(born, earlyMorning)).toMatchObject({ ok: true });
   });
 
   it('tells a future date from an underage one', () => {

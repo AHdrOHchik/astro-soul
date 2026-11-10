@@ -15,7 +15,7 @@ const SEGMENTS: readonly Segment[] = [
 
 export interface BirthDateScreenProps {
   value: DateParts;
-  /** The device's current day: the reference for the 18+ check. */
+  /** The current moment: the reference for the 18+ check, which reads its UTC day (see `checkBirthDate`). */
   today: Date;
   /** The server's text about this date, when it rejected the chart request. Its checks are the ones that count. */
   serverError?: string;

@@ -46,7 +46,13 @@ function toNumber(value: string, minLength: number): number | null {
   return value.length >= minLength && DIGITS.test(value) ? Number(value) : null;
 }
 
-/** `today` is read in the device's local time zone: the user's own calendar day. */
+/**
+ * `today` is read as the UTC calendar day, not the device's: the API counts age and
+ * "not in the future" from the UTC day, and this check is there to give the same
+ * answer before the form is sent. With the device's day the two disagree whenever
+ * the dates differ: east of UTC, a user who turns 18 today would pass here and be
+ * turned down by the server after the last step.
+ */
 export function checkBirthDate({ day, month, year }: DateParts, today: Date): DateCheck {
   const d = toNumber(day, 1);
   const m = toNumber(month, 1);
@@ -60,9 +66,9 @@ export function checkBirthDate({ day, month, year }: DateParts, today: Date): Da
   }
   if (y < MIN_BIRTH_YEAR) return { ok: false, issue: 'too_old' };
 
-  const nowY = today.getFullYear();
-  const nowM = today.getMonth() + 1;
-  const nowD = today.getDate();
+  const nowY = today.getUTCFullYear();
+  const nowM = today.getUTCMonth() + 1;
+  const nowD = today.getUTCDate();
   const hadBirthdayThisYear = nowM > m || (nowM === m && nowD >= d);
   const age = nowY - y - (hadBirthdayThisYear ? 0 : 1);
   if (age < 0) return { ok: false, issue: 'future' };
