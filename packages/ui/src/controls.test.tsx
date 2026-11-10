@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { Button, Checkbox, FieldMessage, OptionCard, Screen, ScreenHeading, SkeletonGroup, StateView } from './index';
+import { Button, Checkbox, FieldMessage, Notice, OptionCard, Screen, ScreenHeading, SkeletonGroup, StateView } from './index';
 
 describe('Screen', () => {
   it('renders the in-app back control only when asked to', async () => {
@@ -158,6 +158,21 @@ describe('ScreenHeading', () => {
     );
 
     expect(screen.getByRole('button')).toHaveFocus();
+  });
+
+  it('is described by the notice that says why the screen opened', () => {
+    render(
+      <>
+        <ScreenHeading id="title" title="Title" describedBy="reason" focusOnMount />
+        <Notice id="reason" tone="warning">
+          Reason
+        </Notice>
+      </>,
+    );
+    const heading = screen.getByRole('heading', { level: 1, name: 'Title' });
+    expect(heading).toHaveFocus();
+    expect(heading).toHaveAccessibleDescription('Reason');
+    expect(screen.getByRole('note')).toHaveTextContent('Reason');
   });
 });
 
