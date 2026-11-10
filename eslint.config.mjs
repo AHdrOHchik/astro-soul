@@ -11,6 +11,8 @@ export default tseslint.config(
       'packages/astro/**',
       'migrations/**',
       'api.openapi.yaml',
+      // сгенерировано из контракта, руками не правим
+      '**/src/contracts/generated.ts',
       // сам конфиг не входит ни в один tsconfig — линтить его нечем
       'eslint.config.mjs',
     ],
