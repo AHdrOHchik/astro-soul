@@ -11,6 +11,7 @@ const PROBLEM_CODES: Record<ProblemCode, true> = {
   UNAUTHORIZED: true,
   FORBIDDEN: true,
   NOT_FOUND: true,
+  CONFLICT: true,
   VALIDATION_FAILED: true,
   QUOTA_EXCEEDED: true,
   PAYMENT_REQUIRED: true,
