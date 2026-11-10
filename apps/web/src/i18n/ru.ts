@@ -1,11 +1,24 @@
-import type { ApiErrorCode } from '../api';
-import type { DateIssue, TimeIssue, TimeMode } from '../lib/birth';
+import type { ApiErrorCode, TimePrecision } from '../api';
+import type { DateIssue, TimeIssue } from '../lib/birth';
 import type { PluralForm } from './format';
 
 /*
  * Every user-facing string of the app. Tone: «ты», gender-neutral, no pressure,
  * no promises about events, health or money (SPEC, «Генерация текста»).
+ *
+ * The exceptions are `consent` and `documents`: legal texts, copied from `legal.md`
+ * word for word and in that document's own tone. They are never edited here. A new
+ * wording comes from `legal.md` together with a new CONSENT_VERSION;
+ * `tests/legal-texts.test.ts` fails until both are in place.
  */
+
+/**
+ * Version of the legal texts below, sent as `consent.version` in `POST /charts`: the
+ * server stores it next to the user's consent. `legal.md` sets the format, the date of
+ * the text as YYYY-MM-DD; this one is the day `legal.md` came into the repository.
+ * A new date is due whenever the consent screen or a document it links to changes.
+ */
+export const CONSENT_VERSION = '2026-11-10';
 
 interface ErrorCopy {
   title: string;
@@ -54,9 +67,10 @@ const errors: Record<ApiErrorCode, ErrorCopy> = {
     title: 'Текст пока не готов',
     text: 'Сервис, который пишет разборы, временно недоступен. Попробуй ещё раз чуть позже.',
   },
+  // The geodata provider is down (503). An unknown place is not an error: the search answers with an empty list.
   GEO_NOT_FOUND: {
-    title: 'Место не найдено',
-    text: 'Проверь написание или введи ближайший крупный город.',
+    title: 'Поиск мест недоступен',
+    text: 'Справочник мест сейчас не отвечает. Попробуй ещё раз чуть позже.',
   },
   NETWORK: {
     title: 'Нет связи',
@@ -92,14 +106,14 @@ interface TimeOptionCopy {
   accuracy: string;
 }
 
-const timeOptions: Record<TimeMode, TimeOptionCopy> = {
+const timeOptions: Record<TimePrecision, TimeOptionCopy> = {
   exact: {
     title: 'Знаю точно',
     description: 'Есть в документах, или его помнят родные.',
     accuracy:
       'Асцендент в среднем сдвигается на градус каждые четыре минуты, поэтому даже небольшая неточность влияет на него и на дома.',
   },
-  approx: {
+  approximate: {
     title: 'Знаю примерно',
     description: 'Например, «около девяти утра».',
     accuracy:
@@ -155,6 +169,51 @@ export const ru = {
     disclaimer:
       '18+. Это развлекательный контент: не предсказание событий и не медицинская, юридическая или финансовая консультация.',
     start: 'Начать',
+  },
+
+  /** `legal.md`, section 2, word for word. See the note at the top of this file before touching it. */
+  consent: {
+    title: 'Обработка данных',
+    lead: 'Для расчёта карты нам нужны дата, время и место вашего рождения. Это персональные данные, поэтому нужно ваше согласие.',
+    points: [
+      'Мы используем их только для расчёта карты и генерации вашего разбора.',
+      'Не передаём третьим лицам; текст разбора генерируется без вашего имени, точных координат и id.',
+      'Вы можете удалить все данные в любой момент: Настройки → «Удалить мои данные». Это необратимо.',
+      'Если вы не заходите 24 месяца, данные удаляются автоматически.',
+    ],
+    /** The two documents the screen links to, by the names `legal.md` gives them. */
+    documents: {
+      privacy: 'Политика обработки персональных данных',
+      terms: 'Пользовательское соглашение и оплата',
+    },
+    checkbox: 'Я согласен на обработку персональных данных',
+    submit: 'Продолжить',
+  },
+
+  /**
+   * What the two links of the consent screen open. Neither document is written yet,
+   * so each screen shows the part of `legal.md` that belongs to it, word for word:
+   * section 1 (what is collected and why) under the policy, section 3 (the disclaimer
+   * that `legal.md` requires in the offer) under the agreement.
+   */
+  documents: {
+    privacy: {
+      caption: 'Что мы собираем и зачем',
+      columns: ['Данные', 'Зачем', 'Хранение'],
+      rows: [
+        ['Дата рождения', 'расчёт натальной карты', 'до удаления пользователем или 24 мес неактивности'],
+        ['Время рождения (если указано)', 'точность домов и Асцендента', 'то же'],
+        ['Место рождения (город, координаты, часовой пояс)', 'расчёт карты', 'то же'],
+        ['telegram_id, username', 'идентификация, оплата', 'пока существует аккаунт'],
+        ['Тексты вопросов к карте', 'ответ на вопрос', 'до удаления, не передаются третьим лицам'],
+        ['Платёжные идентификаторы', 'бухгалтерия, возвраты', 'по требованиям учёта, без ПДн'],
+      ],
+      notCollected: 'Не собираем: паспортные данные, телефон, email, геолокацию устройства, контакты.',
+    },
+    terms: {
+      disclaimer:
+        '18+. Сервис носит развлекательный и ознакомительный характер. Разборы и прогнозы не являются медицинской, психологической, юридической или финансовой рекомендацией и не предсказывают события. Решения о здоровье, деньгах и отношениях принимайте самостоятельно.',
+    },
   },
 
   birthDate: {
