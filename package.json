@@ -1,0 +1,30 @@
+{
+  "name": "astro-soul",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Разбор личности — Telegram Mini App: натальная карта, LLM-разбор, ежедневный прогноз",
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@9.12.3",
+  "engines": {
+    "node": ">=20.11 <23",
+    "pnpm": ">=9 <10"
+  },
+  "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "clean": "pnpm -r --if-present run clean",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm run build && pnpm -r --if-present run test",
+    "db:migrate": "pnpm --filter @astro-soul/api run db:migrate",
+    "db:seed": "pnpm --filter @astro-soul/api run db:seed",
+    "dev:api": "pnpm --filter @astro-soul/api run dev",
+    "start:api": "pnpm --filter @astro-soul/api run start"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.15.0",
+    "eslint": "^9.15.0",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.15.0"
+  }
+}

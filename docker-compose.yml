@@ -1,0 +1,46 @@
+# Локальная инфраструктура. Секретов здесь нет — только dev-значения по умолчанию,
+# их можно переопределить через .env (см. .env.example).
+name: astro-soul
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: astro-soul-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-astro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-astro_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-astro_soul}
+      # Стабильная сортировка для UUID/JSONB не нужна, но фиксируем локаль для одинаковых ORDER BY.
+      LANG: C.UTF-8
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    command:
+      - postgres
+      - '-c'
+      - 'log_min_duration_statement=300'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-astro} -d ${POSTGRES_DB:-astro_soul}']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Отдельная БД для интеграционных тестов (создаётся один раз при инициализации тома).
+      - ./infra/postgres/init-test-db.sql:/docker-entrypoint-initdb.d/10-init-test-db.sql:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: astro-soul-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'no', '--save', '']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:

@@ -1,0 +1,6 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+  # packages/astro — Python-пакет (pyswisseph), в pnpm-workspace не входит:
+  # у него нет package.json, собирается отдельно (uv/pip).
+  - '!packages/astro'
