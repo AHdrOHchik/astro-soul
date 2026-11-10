@@ -17,8 +17,17 @@ export type Problem = Schemas['Problem'];
 export type FieldError = Schemas['FieldError'];
 export type ChartCreateRequest = Schemas['ChartCreateRequest'];
 export type ChartResponse = Schemas['ChartResponse'];
+export type EventsAccepted = Schemas['EventsAccepted'];
 
 export const MOCK_CHART_ID = '00000000-0000-4000-8000-00000000c0de';
+
+/**
+ * The version of the legal texts the mock accepts in `consent.version` unless it is told
+ * another one (API_MOCK_CONSENT_VERSION): the version of the app's own texts, as on a
+ * server released together with this front. A server has its own copy of this constant,
+ * and so does the mock; tests/mock-api.test.ts keeps it equal to the app's CONSENT_VERSION.
+ */
+export const MOCK_CONSENT_VERSION = '2026-11-10';
 const MOCK_SIG = 'mock-signature';
 
 const SIGNS = ['Овен', 'Телец', 'Близнецы', 'Рак', 'Лев', 'Дева', 'Весы', 'Скорпион', 'Стрелец', 'Козерог', 'Водолей', 'Рыбы'];
@@ -41,6 +50,7 @@ export const SCENARIO = {
   rejectedDate: 'Датино',
   rejectedTime: 'Времянск',
   rejectedConsent: 'Согласово',
+  outdatedConsent: 'Версионово',
   emptyChart: 'Пустошь',
   brokenWheel: 'Безколёсово',
 } as const;
@@ -143,6 +153,8 @@ export function buildChart(input: ChartCreateRequest): ChartResponse {
   return {
     chart,
     mini_reading: { ...lines, summary: [lines.sun, lines.moon, lines.asc].join(' · ') },
+    // One signature for both addresses, as in apps/api: the SVG is for the screen, the PNG for sharing.
     wheel_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.svg?sig=${MOCK_SIG}`,
+    wheel_png_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.png?sig=${MOCK_SIG}`,
   };
 }

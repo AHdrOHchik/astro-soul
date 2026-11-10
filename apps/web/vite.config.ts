@@ -23,7 +23,16 @@ export default defineConfig(({ mode, command }) => {
   const useMock = env.API_MOCK === '1';
 
   return {
-    plugins: [react(), useMock && mockApi({ delayMs: Number(env.API_MOCK_DELAY ?? 400), me: env.API_MOCK_ME })],
+    plugins: [
+      react(),
+      useMock &&
+        mockApi({
+          delayMs: Number(env.API_MOCK_DELAY ?? 400),
+          me: env.API_MOCK_ME,
+          // Empty is the same as absent: the version of the app's own texts.
+          consentVersion: env.API_MOCK_CONSENT_VERSION || undefined,
+        }),
+    ],
     // @astro-soul/shared is built to CommonJS. The dev server serves workspace packages as they are,
     // and a browser cannot import CommonJS, so it has to be pre-bundled like an npm dependency.
     optimizeDeps: { include: ['@astro-soul/shared'] },

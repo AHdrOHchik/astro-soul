@@ -5,15 +5,23 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Connect, Plugin } from 'vite';
-import { buildChart, findPlaces, me, MOCK_CHART_ID, problem, SCENARIO } from './fixtures.ts';
-import type { ChartCreateRequest, FieldError, Problem } from './fixtures.ts';
+import { EVENT_NAMES } from '../src/analytics/events.ts';
+import { buildChart, findPlaces, me, MOCK_CHART_ID, MOCK_CONSENT_VERSION, problem, SCENARIO } from './fixtures.ts';
+import type { ChartCreateRequest, EventsAccepted, FieldError, Problem } from './fixtures.ts';
 import { renderMockWheel } from './wheel.ts';
+import { renderMockWheelPng } from './wheelPng.ts';
 
 export interface MockApiOptions {
   /** Artificial latency, so loading states can be seen. */
   delayMs: number;
   /** Scenario for GET /me: `returning`, `401`, `500`; anything else is a new user. */
   me?: string;
+  /**
+   * The version of the legal texts this "server" accepts in `consent.version`; any other is refused.
+   * By default MOCK_CONSENT_VERSION, the one of the app's own texts. Another value plays a server
+   * whose texts are newer than the app's.
+   */
+  consentVersion?: string;
 }
 
 const PREFIX = '/api/v1';
@@ -25,6 +33,13 @@ function send(res: ServerResponse, status: number, body: unknown, type = 'applic
   res.setHeader('Content-Type', `${type}; charset=utf-8`);
   res.setHeader('Cache-Control', 'no-store');
   res.end(typeof body === 'string' ? body : JSON.stringify(body));
+}
+
+function sendPng(res: ServerResponse, png: Buffer): void {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'image/png');
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(png);
 }
 
 function sendProblem(res: ServerResponse, status: number, code: Problem['code'], message: string, details?: Problem['details']): void {
@@ -49,9 +64,10 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 /*
- * The user-facing texts of the mock are the ones apps/api sends at contract 1.2.1
- * (i18n/ru.ts, modules/charts/charts.dto.ts, modules/geo/geo.service.ts), so a
- * screen looks in the mock the way it will with the real server.
+ * The user-facing texts of the mock are the ones apps/api sends at contract 1.3.0
+ * (i18n/ru.ts, modules/charts/charts.dto.ts, modules/geo/geo.service.ts,
+ * modules/events/events.dto.ts), so a screen looks in the mock the way it will
+ * with the real server.
  */
 const MESSAGE = {
   UNAUTHORIZED: 'Не удалось подтвердить вход. Открой приложение заново из чата с ботом.',
@@ -59,8 +75,11 @@ const MESSAGE = {
   NOT_FOUND: 'Такой страницы нет. Обнови приложение.',
   RATE_LIMITED: 'Слишком много запросов. Попробуй через минуту.',
   INTERNAL: 'Что-то сломалось на нашей стороне. Мы уже разбираемся.',
-  GEO_NOT_FOUND: 'Геоданные сейчас недоступны. Попробуй позже или введи координаты вручную.',
+  GEO_NOT_FOUND: 'Поиск городов временно недоступен. Попробуй ещё раз через минуту.',
 } as const satisfies Partial<Record<Problem['code'], string>>;
+
+/** What the server says when the consent was given to texts of another version than its own. */
+const CONSENT_VERSION_REFUSED: FieldError = { field: 'consent.version', message: 'Условия обновились — подтверди согласие ещё раз' };
 
 const FIELD_MESSAGE = {
   birth_date: 'Укажи дату рождения в формате ГГГГ-ММ-ДД',
@@ -87,8 +106,88 @@ function isConsent(value: unknown): boolean {
   return isRecord(value) && value.accepted === true && typeof value.version === 'string' && /^.{1,32}$/.test(value.version);
 }
 
+/** The limits of the contract for a search query, counted after trimming. */
+const QUERY_LENGTH = { min: 2, max: 120 } as const;
+
+/** The limits of the contract for product events. */
+const EVENTS = {
+  maxBatch: 20,
+  maxPropLength: 64,
+  /** An event may be this much ahead of the server's clock, and this old. */
+  maxAheadMs: 5 * 60_000,
+  maxAgeMs: 24 * 60 * 60_000,
+  /** Keys the server takes for personal data: an event with one of them is dropped without a word. */
+  forbiddenProps: [
+    'birth_date',
+    'birth_time',
+    'birth_place',
+    'date',
+    'time',
+    'place',
+    'city',
+    'query',
+    'lat',
+    'lon',
+    'tz',
+    'first_name',
+    'last_name',
+    'username',
+    'phone',
+    'email',
+  ],
+} as const;
+
+const EVENT_MESSAGE = {
+  events: 'События должны быть батчем от 1 до 20 штук',
+  'events.name': 'Такого события нет в контракте',
+  'events.at': 'Время события — ISO 8601 с часовым поясом',
+  'events.props': 'Свойства события — короткие строки, числа или флаги',
+} as const;
+
+type EventField = keyof typeof EVENT_MESSAGE;
+
+const isEventProp = (value: unknown) =>
+  (typeof value === 'string' && value.length <= EVENTS.maxPropLength) || typeof value === 'number' || typeof value === 'boolean';
+
+/** What is wrong with the shape of one event; undefined for an event the server would parse. */
+function eventShapeError(event: unknown): EventField | undefined {
+  if (!isRecord(event)) return 'events';
+  if (typeof event.name !== 'string' || !Object.hasOwn(EVENT_NAMES, event.name)) return 'events.name';
+  if (typeof event.at !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:\d{2})$/.test(event.at) || Number.isNaN(Date.parse(event.at))) {
+    return 'events.at';
+  }
+  if (event.props !== undefined && !(isRecord(event.props) && Object.values(event.props).every(isEventProp))) return 'events.props';
+  return undefined;
+}
+
+/**
+ * `POST /events` as apps/api answers it: one malformed event fails the whole batch with
+ * 422; an event with personal data in `props`, or with a time outside the window, is dropped
+ * silently and only lowers `accepted`.
+ */
+export function eventsAnswer(body: unknown, now: number): { errors: FieldError[] } | EventsAccepted {
+  const events = isRecord(body) ? body.events : undefined;
+  if (!Array.isArray(events) || events.length < 1 || events.length > EVENTS.maxBatch) {
+    return { errors: [{ field: 'events', message: EVENT_MESSAGE.events }] };
+  }
+  const fields = new Set<EventField>();
+  for (const event of events) {
+    const field = eventShapeError(event);
+    if (field) fields.add(field);
+  }
+  if (fields.size > 0) return { errors: [...fields].map((field) => ({ field, message: EVENT_MESSAGE[field] })) };
+
+  const accepted = (events as { at: string; props?: Record<string, unknown> }[]).filter((event) => {
+    const forbidden: readonly string[] = EVENTS.forbiddenProps;
+    if (Object.keys(event.props ?? {}).some((key) => forbidden.includes(key))) return false;
+    const at = Date.parse(event.at);
+    return at <= now + EVENTS.maxAheadMs && at >= now - EVENTS.maxAgeMs;
+  });
+  return { accepted: accepted.length };
+}
+
 /** The fields of a `POST /charts` body the server would reject, in the order of the form. Empty for a body it accepts. */
-function chartRequestErrors(body: unknown): FieldError[] {
+function chartRequestErrors(body: unknown, consentVersion: string): FieldError[] {
   if (!isRecord(body)) return [{ field: 'body', message: 'Проверь это поле' }];
   const time = body.birth_time;
   const timeGiven = typeof time === 'string';
@@ -105,27 +204,40 @@ function chartRequestErrors(body: unknown): FieldError[] {
   }
   if (errors.length > 0) return errors;
 
+  // From here on, as in apps/api, everything that is wrong is named at once.
   if (body.time_precision === 'unknown' && timeGiven) {
-    return [{ field: 'birth_time', message: 'Если время неизвестно, оставь это поле пустым' }];
+    errors.push({ field: 'birth_time', message: 'Если время неизвестно, оставь это поле пустым' });
   }
   if (body.time_precision !== 'unknown' && !timeGiven) {
-    return [{ field: 'birth_time', message: 'Укажи время рождения или отметь, что не знаешь' }];
+    errors.push({ field: 'birth_time', message: 'Укажи время рождения или отметь, что не знаешь' });
   }
-  return [];
+  if ((body.consent as { version: string }).version !== consentVersion) errors.push(CONSENT_VERSION_REFUSED);
+  return errors;
 }
 
-function createHandler({ delayMs, me: meScenario }: MockApiOptions) {
+function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_VERSION }: MockApiOptions) {
   return async function handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const route = `${req.method ?? 'GET'} ${url.pathname.slice(PREFIX.length)}`;
     await sleep(delayMs);
 
-    if (route === `GET /charts/${MOCK_CHART_ID}/wheel.svg`) {
-      // Public by signed token: no initData here, see the contract.
+    const wheel = { svg: `GET /charts/${MOCK_CHART_ID}/wheel.svg`, png: `GET /charts/${MOCK_CHART_ID}/wheel.png` };
+    if (route === wheel.svg || route === wheel.png) {
+      // Public by signed token: no initData here, see the contract. The same signature opens both.
       if (!url.searchParams.get('sig')) {
         sendProblem(res, 403, 'FORBIDDEN', MESSAGE.FORBIDDEN);
         return;
       }
-      send(res, 200, renderMockWheel(url.searchParams.get('theme') === 'light' ? 'light' : 'dark'), 'image/svg+xml');
+      const theme = url.searchParams.get('theme') ?? 'dark';
+      if (theme !== 'dark' && theme !== 'light') {
+        sendInvalid(res, [{ field: 'theme', message: 'Тема может быть dark или light' }]);
+        return;
+      }
+      if (route === wheel.svg) {
+        send(res, 200, renderMockWheel(theme), 'image/svg+xml');
+        return;
+      }
+      const size = url.searchParams.get('size');
+      sendPng(res, renderMockWheelPng(theme, size === null ? undefined : Number(size)));
       return;
     }
 
@@ -146,31 +258,38 @@ function createHandler({ delayMs, me: meScenario }: MockApiOptions) {
       const query = isRecord(body) && typeof body.query === 'string' ? body.query.trim() : '';
       const limit = isRecord(body) && typeof body.limit === 'number' ? Math.min(Math.max(body.limit, 1), 10) : 5;
       const needle = query.toLowerCase();
-      if (query.length === 0) {
-        sendInvalid(res, [{ field: 'query', message: 'Начни вводить название города' }]);
-      } else if (query.length > 120) {
+      if (query.length < QUERY_LENGTH.min) {
+        // 422, not an empty list: `[]` means «no such place», not «too little typed». The app never sends a query this short.
+        sendInvalid(res, [{ field: 'query', message: 'Введи хотя бы 2 буквы' }]);
+      } else if (query.length > QUERY_LENGTH.max) {
         sendInvalid(res, [{ field: 'query', message: 'Слишком длинный запрос — введи название города' }]);
-      } else if (query.length < 3) {
-        // What apps/api answers to one or two characters: an empty list. The schema of the contract
-        // (`minLength: 3`) asks for 422 here: issue #8. The app never sends a query this short.
-        send(res, 200, []);
       } else if (needle.startsWith('ошибка')) {
         sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
       } else if (needle.startsWith('лимит')) {
         sendProblem(res, 429, 'RATE_LIMITED', MESSAGE.RATE_LIMITED);
       } else if (needle.startsWith('провайдер')) {
-        // No `details`: the contract names `details.reason`, apps/api fills `details.provider` (issue #8).
-        // The app reads neither.
-        sendProblem(res, 503, 'GEO_NOT_FOUND', MESSAGE.GEO_NOT_FOUND);
+        // The reason is for machines; the app does not read it and shows `message`.
+        sendProblem(res, 503, 'GEO_NOT_FOUND', MESSAGE.GEO_NOT_FOUND, { reason: 'provider_timeout' });
       } else {
         send(res, 200, findPlaces(query, limit));
       }
       return;
     }
 
+    if (route === 'POST /events') {
+      const answer = eventsAnswer(await readJson(req), Date.now());
+      if ('accepted' in answer) {
+        send(res, 202, answer);
+        return;
+      }
+      const [first, ...rest] = answer.errors;
+      if (first) sendInvalid(res, [first, ...rest]);
+      return;
+    }
+
     if (route === 'POST /charts') {
       const body = await readJson(req);
-      const [first, ...rest] = chartRequestErrors(body);
+      const [first, ...rest] = chartRequestErrors(body, consentVersion);
       if (first) {
         sendInvalid(res, [first, ...rest]);
         return;
@@ -192,6 +311,11 @@ function createHandler({ delayMs, me: meScenario }: MockApiOptions) {
           return;
         case SCENARIO.rejectedConsent:
           sendInvalid(res, [{ field: 'consent', message: FIELD_MESSAGE.consent }]);
+          return;
+        case SCENARIO.outdatedConsent:
+          // The texts changed on the server after this app was built. The mock has no newer build to give:
+          // after its restart the app finds the same texts and says so.
+          sendInvalid(res, [CONSENT_VERSION_REFUSED]);
           return;
         case SCENARIO.emptyChart:
           // On purpose less than the contract promises: shows what the screen does with an answer it cannot draw.
