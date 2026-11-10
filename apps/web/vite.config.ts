@@ -11,7 +11,12 @@ import { mockApi } from './mock/plugin.ts';
  */
 const BROWSER_TARGET = ['es2020', 'chrome80', 'safari15'];
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
+  // `vite build` keeps a NODE_ENV that is already set, and with any value but `production`
+  // (CI sets `test`) it bundles the development build of React and leaves `import.meta.env.DEV`
+  // on. What `pnpm build` produces must not depend on who calls it.
+  if (command === 'build') process.env.NODE_ENV = 'production';
+
   // Third argument '': read un-prefixed variables too. They stay in this file;
   // only VITE_* ones reach the client bundle.
   const env = loadEnv(mode, process.cwd(), '');
