@@ -68,7 +68,12 @@ const chartBornWith = (birth: Chart['birth'], rest: Partial<Chart> = {}): ChartR
 });
 
 /** A reading and a wheel path as the client hands them over when the answer carried neither. */
-const NOTHING_BESIDES_THE_CHART = { mini_reading: { sun: '', moon: '', asc: '', summary: '' }, wheel_url: '' };
+const NOTHING_BESIDES_THE_CHART = {
+  mini_reading: { sun: '', moon: '', asc: '', summary: '' },
+  wheel_url: '',
+  warnings: [],
+  is_restored: false,
+};
 
 /** The labelled region of one of the three headline cards. */
 const card = (title: string) => screen.getByRole('region', { name: title });

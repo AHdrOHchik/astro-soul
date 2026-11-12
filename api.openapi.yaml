@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.3.0
+  version: 1.4.0
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -53,6 +53,41 @@ info:
         в `ChartResponse` добавлен `wheel_png_url`;
       • колесо SVG больше не использует `<text>` и `font-family`: все подписи —
         векторные контуры, поэтому глифы планет рисуются в любом WebView.
+
+    1.4.0 — единый конверт карты, предупреждения и «текущая карта»:
+      • `ChartResponse` — один и тот же объект из `POST /charts` (201 и 200),
+        `GET /charts/{chart_id}` и `GET /charts/current`:
+        `{chart, mini_reading, warnings, wheel_url, wheel_png_url, is_restored}`.
+        Никаких конвертов под конкретный метод;
+      • `GET /api/v1/charts/current` — карта пользователя либо `404`
+        (`NOT_FOUND`), по которому клиент уходит в онбординг. Ответ тот же
+        `ChartResponse`, `is_restored: true`;
+      • `POST /charts` отвечает `200`, когда такая карта уже есть (совпал хэш
+        входа), и `201`, когда создана. В обоих случаях `is_restored` в теле
+        говорит правду, поэтому клиент различает `chart_created` и
+        `chart_restored` по телу ответа, а не по коду;
+      • `ChartResponse.warnings` — обязательный массив верхнего уровня, `[]`
+        допустим. Коды: `no_birth_time` (время неизвестно),
+        `approximate_time` (время приблизительное), `approximate_place`
+        (города нет в справочнике либо часовой пояс восстановлен по
+        ближайшему крупному городу). Список расширяемый: неизвестные коды
+        клиент пропускает. Карты, созданные до появления поля, отдают `[]`;
+      • `GET /charts/{chart_id}/wheel.png` — `size=1080|1600`; любое другое
+        значение — `422` (не подменяем размер молча);
+      • `POST /geo/resolve`: `limit` вне 1…10 — `422`, а не обрезка до
+        границы: клиент не должен получать другой ответ, чем просил;
+      • `Me.entitlements` (`Entitlements`) и `Me.chart_id` — реальные значения,
+        а не заглушки. Удаление профиля с незавершённым платежом по-прежнему
+        `409 CONFLICT`;
+      • запрещённые ключи в `props` событий перечислены в контракте
+        (`x-events-forbidden-prop-keys`) и совпадают с кодом; `POST /events`
+        отвечает `202 {accepted}`, где `accepted` может быть меньше размера
+        батча — события с ПДн отбрасываются;
+      • `x-bot.share_link_template` — ссылка шаринга на конкретную карту:
+        `https://t.me/{username}?startapp=chart_{chart_id}`. Бот открывает
+        мини-апп, а карта поднимается через `GET /charts/current`;
+      • `GET /admin/metrics`: агрегаты по воронке считаются по
+        `events.occurred_at` (клиентское время), а не по `created_at`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -173,13 +208,47 @@ components:
         is_new: { type: boolean }
         has_profile: { type: boolean }
         has_chart: { type: boolean }
+        chart_id:
+          type: [string, 'null']
+          format: uuid
+          description: |
+            Карта пользователя для `GET /charts/{chart_id}` и `/charts/current`.
+            `null`, пока карты нет. Сервер возвращает поле всегда; в `required`
+            не включено, чтобы не ломать уже собранный клиент.
         subscription: { $ref: '#/components/schemas/SubscriptionState' }
+        entitlements: { $ref: '#/components/schemas/Entitlements' }
         quotas:
           type: array
           items: { $ref: '#/components/schemas/Quota' }
         onboarding_step:
           type: string
           enum: [birth_date, birth_time, birth_place, done]
+
+    Entitlements:
+      type: object
+      description: |
+        Права доступа (`Me.entitlements`). Источник правды —
+        `getEntitlements(userId)` на сервере (payments.md §4); клиент по этим
+        флагам только рисует интерфейс и никогда не решает доступ сам.
+      required:
+        [is_active, plan, full_forecast, ask_per_day, full_report, compat_per_month, solar_included]
+      properties:
+        is_active:
+          type: boolean
+          description: Подписка действует прямо сейчас
+        plan:
+          type: string
+          enum: [none, trial, week, month, year]
+        full_forecast: { type: boolean }
+        ask_per_day:
+          type: integer
+          description: 'Вопросов «спроси карту» в день: 0 / 1 / 5 / -1 (без лимита)'
+          enum: [0, 1, 5, -1]
+        full_report:
+          type: boolean
+          description: Куплен ли полный разбор (разово, навсегда для карты)
+        compat_per_month: { type: integer }
+        solar_included: { type: boolean }
 
     GeoPlace:
       type: object
@@ -216,9 +285,39 @@ components:
 
     ChartResponse:
       type: object
-      required: [chart, mini_reading, wheel_url]
+      description: |
+        Единый конверт карты (1.4.0). Один и тот же объект отдают
+        `POST /charts` (201 и 200), `GET /charts/{chart_id}` и
+        `GET /charts/current` — никаких отдельных конвертов под метод.
+      required: [chart, mini_reading, warnings, wheel_url, is_restored]
       properties:
         chart: { $ref: '#/components/schemas/Chart' }
+        is_restored:
+          type: boolean
+          description: |
+            `true` — карта уже существовала и отдана из хранилища,
+            `false` — рассчитана и сохранена этим запросом. Свойство тела,
+            а не кода ответа: на него опираются события `chart_created` и
+            `chart_restored`.
+          example: true
+        warnings:
+          type: array
+          description: |
+            Предупреждения о качестве входных данных. Массив обязателен,
+            пустой допустим.
+
+            Коды: `no_birth_time` — время рождения неизвестно;
+            `approximate_time` — время известно приблизительно;
+            `approximate_place` — города не было в справочнике либо часовой
+            пояс восстановлен по ближайшему крупному городу.
+
+            Список расширяемый: незнакомый клиенту код он пропускает и не
+            ломает экран. Карты, созданные до 1.4.0, отдают `[]`.
+          items:
+            type: string
+            enum: [no_birth_time, approximate_time, approximate_place]
+            x-extensible-enum: true
+          example: [no_birth_time]
         mini_reading:
           type: object
           required: [sun, moon, asc, summary]
@@ -594,7 +693,14 @@ paths:
                     Поиск идёт по мере ввода, начиная с 2 символов. Короче —
                     `422` с `field_errors[{field: "query"}]`; пустой массив
                     означает «города нет», а не «слишком короткий запрос».
-                limit: { type: integer, default: 5, maximum: 10 }
+                limit:
+                  type: integer
+                  default: 5
+                  minimum: 1
+                  maximum: 10
+                  description: |
+                    Сколько кандидатов вернуть, 1…10. Вне диапазона — `422`,
+                    без молчаливой обрезки до границы.
       responses:
         '200':
           description: |
@@ -628,7 +734,11 @@ paths:
       description: |
         Расчёт синхронный (≤ 300 мс, Swiss Ephemeris локально).
         В ответе — карта и текстовый мини-разбор (бесплатный крючок).
-        Повторный вызов с теми же данными возвращает существующую карту (идемпотентность по хэшу входа).
+
+        Повторный вызов с теми же данными возвращает существующую карту
+        (идемпотентность по хэшу входа), но уже с кодом `200` и
+        `is_restored: true`: по телу ответа клиент отличает `chart_created`
+        от `chart_restored`. Конверт в обоих случаях один и тот же.
       security: [{ TelegramInitData: [] }]
       requestBody:
         required: true
@@ -637,7 +747,14 @@ paths:
             schema: { $ref: '#/components/schemas/ChartCreateRequest' }
       responses:
         '201':
-          description: Создана
+          description: "Карта создана: `is_restored: false`"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChartResponse' }
+        '200':
+          description: |
+            Такая карта уже есть (`is_restored: true`) — тот же конверт,
+            что и на `201`. Клиент не считает это ошибкой.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChartResponse' }
@@ -646,6 +763,26 @@ paths:
             Некорректные данные (VALIDATION_FAILED): `details.field_errors`
             содержит поле и текст для подсветки (birth_date, birth_time,
             birth_place, time_precision, consent).
+
+  /api/v1/charts/current:
+    get:
+      tags: [charts]
+      summary: Текущая карта пользователя
+      description: |
+        Карта, которая есть у пользователя сейчас: нужна при возврате в
+        мини-апп, после `startapp=chart_<id>` и для кнопки «моя карта».
+
+        Конверт тот же, что у `POST /charts` и `GET /charts/{chart_id}`,
+        `is_restored: true`. Карты нет — `404 NOT_FOUND`, по нему клиент
+        уходит в онбординг. Это не ошибка и не повод показывать красный экран.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: Карта пользователя
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChartResponse' }
+        '404': { description: 'NOT_FOUND — карты ещё нет, иди в онбординг' }
 
   /api/v1/charts/{chart_id}:
     get:
@@ -727,8 +864,11 @@ paths:
         - name: size
           in: query
           required: false
-          description: Ширина картинки в пикселях (160…1600, по умолчанию 1080)
-          schema: { type: integer, minimum: 160, maximum: 1600, default: 1080 }
+          description: |
+            Ширина картинки в пикселях: только `1080` (по умолчанию) или
+            `1600`. Другие значения — `422 VALIDATION_FAILED`
+            (`field_errors[{field: "size"}]`), а не молчаливая подмена размера.
+          schema: { type: integer, enum: [1080, 1600], default: 1080 }
       responses:
         '200':
           description: PNG
@@ -737,6 +877,7 @@ paths:
               schema: { type: string, format: binary }
         '403': { description: 'FORBIDDEN — подпись отсутствует или недействительна' }
         '404': { description: NOT_FOUND }
+        '422': { description: '`size` не 1080 и не 1600' }
 
   /api/v1/events:
     post:
@@ -937,7 +1078,14 @@ paths:
     get:
       tags: [internal]
       summary: Метрики продукта
-      description: Доступ только для admin_tg_id из переменной окружения. Без ПДн.
+      description: |
+        Доступ только для `ADMIN_TG_ID` из переменной окружения (иначе `403`).
+        Без ПДн: только агрегаты.
+
+        Воронка считается по `events.occurred_at` — клиентскому времени
+        события, — поэтому опоздавший батч (`at` до суток назад) попадает в
+        свой день, а не в день доставки. Окно — 30 дней, `occurred_at` не
+        старше суток от серверного времени (см. `POST /events`).
       security: [{ TelegramInitData: [] }]
       responses:
         '200':
@@ -954,9 +1102,27 @@ paths:
                   stars_received_30d: { type: integer }
                   llm_cost_usd_30d: { type: number }
                   reports_failed_30d: { type: integer }
+                  events_30d:
+                    type: object
+                    description: |
+                      Счётчики событий по именам за 30 дней; считается по
+                      `events.occurred_at`. Нулевые имена не отдаются.
+                    additionalProperties: { type: integer }
+                    example: { app_open: 1280, chart_created: 412, payment_succeeded: 37 }
+                  funnel_30d:
+                    type: object
+                    description: |
+                      Воронка по `occurred_at`: сколько уникальных пользователей
+                      дошло до шага.
+                    properties:
+                      app_open: { type: integer }
+                      consent_accepted: { type: integer }
+                      chart_created: { type: integer }
+                      checkout_opened: { type: integer }
+                      payment_succeeded: { type: integer }
         '403': { description: FORBIDDEN }
 
-# Закрытый список событий продукта (контракт 1.3.0). Совпадает с
+# Закрытый список событий продукта (контракт 1.4.0). Совпадает с
 # ANALYTICS_EVENTS в apps/api/src/modules/events/events.dto.ts: новое событие
 # добавляется здесь и в коде одним PR, иначе сервер его отбросит.
 x-analytics-events:
@@ -981,3 +1147,33 @@ x-analytics-events:
   - payment_cancelled
   - share_clicked
   - screen_view
+
+# Ключи, которых не может быть в `props` события (`POST /events`).
+# Совпадает с BANNED_PROP_KEYS в apps/api/src/modules/events/events.dto.ts:
+# событие с таким ключом отбрасывается на сервере, оно не попадает в БД и
+# не считается в `accepted`. Список закрытый — новый ключ добавляется здесь
+# и в коде одним PR.
+x-events-forbidden-prop-keys:
+  - birth_date
+  - birth_time
+  - birth_place
+  - date
+  - time
+  - place
+  - city
+  - query
+  - lat
+  - lon
+  - tz
+  - first_name
+  - last_name
+  - username
+  - phone
+  - email
+
+# Шаблон ссылки шаринга на конкретную карту. `{username}` — имя бота из
+# `BOT_USERNAME` сервера (без `@`), `{chart_id}` — `Chart.chart_id`.
+# Бот по `startapp=chart_<id>` открывает мини-апп; карта поднимается через
+# `GET /charts/current`, а не через пустой онбординг.
+x-bot:
+  share_link_template: https://t.me/{username}?startapp=chart_{chart_id}

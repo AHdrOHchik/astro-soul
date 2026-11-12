@@ -74,6 +74,8 @@ export const chartResult: ChartResult = {
   },
   wheel_url: `/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`,
   wheel_png_url: `/api/v1/charts/${chart.chart_id}/wheel.png?sig=test-signature`,
+  warnings: [],
+  is_restored: false,
 };
 
 /** The same chart as the API returns it when the birth time is unknown. */
@@ -94,6 +96,8 @@ export const chartWithoutTime: ChartResult = {
   },
   wheel_url: chartResult.wheel_url,
   wheel_png_url: chartResult.wheel_png_url,
+  warnings: ['no_birth_time'],
+  is_restored: false,
 };
 
 export function apiError(code: ApiErrorCode, info: ConstructorParameters<typeof ApiError>[1] = {}): ApiError {

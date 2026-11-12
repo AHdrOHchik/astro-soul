@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Me, OnboardingStep } from '@astro-soul/shared';
+import type { Entitlements, Me, OnboardingStep } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
 import { conflict } from '../../common/api-error';
 import { displayNameOf, type VerifiedInitData } from '../auth/init-data';
@@ -7,6 +7,22 @@ import { UsersRepository } from '../users/users.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { QuotasService } from '../quotas/quotas.service';
 import { EventsRepository } from '../events/events.repository';
+
+/**
+ * `Entitlements` (packages/shared, camelCase) → контракт (`Me.entitlements`,
+ * snake_case, как и остальные поля ответа).
+ */
+export function toEntitlementsDto(entitlements: Entitlements): NonNullable<Me['entitlements']> {
+  return {
+    is_active: entitlements.isActive,
+    plan: entitlements.plan,
+    full_forecast: entitlements.fullForecast,
+    ask_per_day: entitlements.askPerDay as 0 | 1 | 5 | -1,
+    full_report: entitlements.fullReport,
+    compat_per_month: entitlements.compatPerMonth,
+    solar_included: entitlements.solarIncluded,
+  };
+}
 
 @Injectable()
 export class MeService {
@@ -42,7 +58,12 @@ export class MeService {
       is_new: isNew,
       has_profile: profileState.hasProfile,
       has_chart: profileState.hasChart,
+      // Карта, к которой ведёт кнопка «моя карта» и `GET /charts/current`.
+      chart_id: profileState.chartId,
       subscription,
+      // Реальные права из getEntitlements(userId): фронт рисует по ним
+      // пейволл, но доступ всё равно решается на сервере (payments.md §4).
+      entitlements: toEntitlementsDto(entitlements),
       quotas,
       onboarding_step: onboardingStep,
     };

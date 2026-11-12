@@ -138,6 +138,17 @@ describe('GET /api/v1/me — данные', () => {
     expect(me.onboarding_step).toBe('birth_date');
     expect(me.display_name).toBe('Тест Тестов');
     expect(me.subscription).toMatchObject({ plan: 'none', is_active: false, expires_at: null });
+    // Контракт 1.4.0: реальные права и карта, а не заглушки.
+    expect(me.chart_id).toBeNull();
+    expect(me.entitlements).toEqual({
+      is_active: false,
+      plan: 'none',
+      full_forecast: false,
+      ask_per_day: 1,
+      full_report: false,
+      compat_per_month: 0,
+      solar_included: false,
+    });
     expect(me.quotas.map((quota) => quota.code).sort()).toEqual([
       'ask_daily',
       'compat_month',
@@ -185,6 +196,14 @@ describe('GET /api/v1/me — данные', () => {
 
     const me = response.body as Me;
     expect(me.subscription).toMatchObject({ plan: 'month', is_active: true });
+    expect(me.entitlements).toMatchObject({
+      is_active: true,
+      plan: 'month',
+      full_forecast: true,
+      ask_per_day: 5,
+      // Месяц не включает карту года — она только в годе (plans.ts).
+      solar_included: false,
+    });
     expect(me.subscription.expires_at).not.toBeNull();
 
     const quotas = new Map(me.quotas.map((quota) => [quota.code, quota]));

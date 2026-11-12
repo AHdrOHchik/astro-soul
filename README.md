@@ -181,6 +181,13 @@ Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
 `GET /charts/{id}` + подписанный `wheel.svg`, платежи (инвойсы, вебхук, подписка,
 возвраты), `DELETE /me` с каскадом.
 
+Итерация 7: контракт 1.4.0 — единый `ChartResponse` (`warnings`,
+`is_restored`), `GET /charts/current`, `200` на повторный `POST /charts`,
+`Me.entitlements` и `Me.chart_id`, `size=1080|1600`, `limit` в гео без
+молчаливой обрезки, `GET /admin/metrics` и джобы крона
+(`subscription_downgrade`, автовозврат недоставленного товара), ссылка шаринга
+`startapp=chart_<id>`.
+
 Итерация 5: контракт 1.3.0, правила возраста и версии согласия, `POST /events`,
 `wheel.png` и колесо без шрифтов.
 
@@ -189,11 +196,43 @@ Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
 ошибок, лимиты запросов, Node ≥ 22.22.2 и единая версия vitest.
 
 Дальше по порядку: LLM-конвейер (две стадии, лимит $0.35) → ночные прогнозы
-с advisory lock → джоб `subscription_downgrade` → полная сборка гео-датасета из GeoNames.
+с advisory lock → полная сборка гео-датасета из GeoNames.
 
 ## Версия контракта
 
-`api.openapi.yaml` — 1.3.0. Отличия от 1.2.1 (по отчёту фронта в PR #12):
+`api.openapi.yaml` — 1.4.0. Отличия от 1.3.0:
+
+* **единый `ChartResponse`** — `{chart, mini_reading, warnings, wheel_url,
+  wheel_png_url, is_restored}` из `POST /charts` (201 и 200),
+  `GET /charts/{chart_id}` и `GET /charts/current`; отдельных конвертов под
+  метод больше нет;
+* `GET /api/v1/charts/current` — карта пользователя или `404` (клиент уходит
+  в онбординг), `is_restored: true`;
+* `POST /charts` отвечает **200**, если такая карта уже есть (совпал хэш
+  входа), и 201, если создана; различать `chart_created` и `chart_restored`
+  клиент должен по `is_restored`, а не по коду;
+* `ChartResponse.warnings` — обязательный массив, `[]` допустим; коды
+  `no_birth_time | approximate_time | approximate_place`, список расширяемый
+  (незнакомые коды клиент пропускает), карты до 1.4.0 отдают `[]`;
+* `wheel.png` принимает `size=1080|1600`, остальное — `422` (не подменяем
+  размер молча);
+* `POST /geo/resolve`: `limit` вне 1…10 → `422`, без обрезки до границы;
+* `Me.entitlements` (реальные права из `getEntitlements`) и `Me.chart_id`;
+* `POST /events` — `202 {accepted}`; запрещённые ключи `props` перечислены в
+  `x-events-forbidden-prop-keys` (16 штук, включая `last_name`) и совпадают
+  с кодом;
+* `x-bot.share_link_template` — `https://t.me/{username}?startapp=chart_{chart_id}`;
+  бот по `/start chart_<id>` открывает карту, а не пустой онбординг;
+* `GET /admin/metrics` агрегирует воронку по `events.occurred_at`
+  (`COALESCE(occurred_at, created_at)` для серверных событий).
+
+Статику мини-аппа отдаёт не API: заголовки кэширования описаны в
+[`deploy/nginx.miniapp.conf`](./deploy/nginx.miniapp.conf) — `index.html`
+обязан быть `no-cache`, файлы с хэшем в имени (`/assets/*`) — `immutable`.
+Без этого после смены `CONSENT_VERSION` пользователь остаётся на старом
+бандле и получает `422` на «Принять».
+
+Отличия 1.3.0 от 1.2.1 (по отчёту фронта в PR #12):
 
 * `POST /geo/resolve`: `query` — минимум 2 символа; короче — `422` с
   `field_errors[{field: "query"}]`. Пустой массив = только «города нет»;

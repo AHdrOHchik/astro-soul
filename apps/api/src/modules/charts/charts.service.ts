@@ -5,8 +5,9 @@ import { notFound, validationFailed, forbidden } from '../../common/api-error';
 import type { VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
 import { AstroClient, type WheelTheme } from '../astro/astro.client';
-import { ChartsRepository, type ChartRow } from './charts.repository';
+import { ChartsRepository, type ChartRow, type OwnedChart } from './charts.repository';
 import { parseChartCreate } from './charts.dto';
+import { computeWarnings, WARNING_CODES, type ChartWarning } from './charts.warnings';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { WheelSignatureService } from './wheel-signature.service';
@@ -14,7 +15,8 @@ import { WheelSignatureService } from './wheel-signature.service';
 export const API_PREFIX = '/api/v1';
 /** PNG для шаринга: 1080 px по ширине — стандарт для картинок в чатах. */
 export const PNG_SIZE = 1080;
-export const PNG_MIN_SIZE = 160;
+/** Разрешённые ширины PNG (контракт 1.4.0): других значений нет. */
+export const PNG_SIZES: readonly number[] = [1080, 1600];
 export const PNG_MAX_SIZE = 1600;
 /** Плотность растеризации SVG: контуры глифов при 72 dpi выглядят рвано. */
 const PNG_DENSITY = 144;
@@ -64,7 +66,15 @@ export class ChartsService {
     @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
 
-  async create(auth: VerifiedInitData, body: unknown): Promise<ChartResponse> {
+  /**
+   * `POST /charts`. Возвращаем и флаг «создана / уже была»: контроллер по нему
+   * ставит 201 или 200, а клиент по `is_restored` различает `chart_created`
+   * и `chart_restored` (контракт 1.4.0).
+   */
+  async create(
+    auth: VerifiedInitData,
+    body: unknown,
+  ): Promise<{ response: ChartResponse; created: boolean }> {
     const input = parseChartCreate(body, new Date(), this.env.CONSENT_VERSION);
     const birthTime = input.birth_time ?? null;
 
@@ -100,9 +110,26 @@ export class ChartsService {
       // но не полагаемся на это в записи в БД.
       engineVersion: data.chart.engine_version ?? 'unknown',
       timeKnown: birthTime !== null,
+      // Предупреждения считаем на входе и храним: `approximate_place` по самой
+      // карте уже не восстановить, а ответ должен быть одинаковым всегда.
+      warnings: computeWarnings({ timePrecision: input.time_precision, place: input.birth_place }),
     });
 
-    return this.toResponse(row);
+    // `inserted` различает вставку и попадание в существующую строку по
+    // `(user_id, input_hash)`: это и есть 201 против 200.
+    return { response: this.toResponse(row, !row.inserted), created: row.inserted };
+  }
+
+  /** `GET /charts/current` — карта пользователя или 404 (онбординг). */
+  async getCurrent(auth: VerifiedInitData): Promise<ChartResponse> {
+    const userId = this.users.userIdFor(auth.telegramUserId);
+    const row = await this.charts.findLatestByUser(userId);
+
+    if (row === null) {
+      throw notFound({ reason: 'chart_not_found' });
+    }
+
+    return this.toResponse(row, true);
   }
 
   /** Тот же конверт, что и `POST /charts` (контракт 1.2.1). */
@@ -114,7 +141,7 @@ export class ChartsService {
       throw notFound({ reason: 'chart_not_found' });
     }
 
-    return this.toResponse(row);
+    return this.toResponse(row, true);
   }
 
   /**
@@ -127,10 +154,24 @@ export class ChartsService {
     theme: string | undefined,
     size: number | undefined,
   ): Promise<Buffer> {
-    const svg = await this.wheelSvg(chartId, signature, theme);
-    const width = Math.min(Math.max(Math.trunc(size ?? PNG_SIZE), PNG_MIN_SIZE), PNG_MAX_SIZE);
+    // Контракт 1.4.0: только 1080 или 1600. Не подменяем размер молча —
+    // клиент должен получать ровно тот ответ, который просил.
+    const width = size ?? PNG_SIZE;
+    if (!PNG_SIZES.includes(width)) {
+      throw validationFailed({
+        reason: 'unknown_png_size',
+        details: {
+          field_errors: [{ field: 'size', message: 'Размер картинки — 1080 или 1600' }],
+        },
+      });
+    }
 
-    return sharp(Buffer.from(svg, 'utf8'), { density: PNG_DENSITY }).resize({ width }).png().toBuffer();
+    const svg = await this.wheelSvg(chartId, signature, theme);
+
+    return sharp(Buffer.from(svg, 'utf8'), { density: PNG_DENSITY })
+      .resize({ width: Math.min(width, PNG_MAX_SIZE) })
+      .png()
+      .toBuffer();
   }
 
   /** Публичный (по подписи) SVG колеса. */
@@ -164,7 +205,7 @@ export class ChartsService {
    * Свежая подпись на каждый ответ: ссылка на колесо живёт 30 дней, а карта —
    * дольше. Подпись не хранится в БД, поэтому продлевается сама.
    */
-  private toResponse(row: ChartRow | { id: string; created_at: Date; data: ChartRow['data'] }): ChartResponse {
+  private toResponse(row: OwnedChart | ChartRow, isRestored: boolean): ChartResponse {
     // Одна подпись на оба адреса: SVG для экрана, PNG для шаринга.
     const signature = this.signature.sign(row.id);
 
@@ -175,6 +216,14 @@ export class ChartsService {
         created_at: row.created_at.toISOString(),
       },
       mini_reading: buildMiniReading(row.data.chart),
+      // Карты, созданные до 1.4.0, отдают `[]` — ровно как требует контракт.
+      // Коды, которых нет в контракте (например, откатили релиз), не отдаём:
+      // клиент обязан пропускать незнакомые, но сервер не имеет права их
+      // изобретать — проще не отдать, чем отдать недокументированное.
+      warnings: (row.warnings ?? []).filter((code): code is ChartWarning =>
+        (WARNING_CODES as readonly string[]).includes(code),
+      ),
+      is_restored: isRestored,
       wheel_url: `${API_PREFIX}/charts/${row.id}/wheel.svg?sig=${encodeURIComponent(signature)}`,
       wheel_png_url: `${API_PREFIX}/charts/${row.id}/wheel.png?sig=${encodeURIComponent(signature)}`,
     };

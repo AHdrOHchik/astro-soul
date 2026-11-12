@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  HttpCode,
   Inject,
   Param,
   ParseUUIDPipe,
@@ -20,13 +19,26 @@ import { ChartsService } from './charts.service';
 export class ChartsController {
   constructor(@Inject(ChartsService) private readonly charts: ChartsService) {}
 
+  /**
+   * `POST /charts` — 201, когда карта создана, и 200, когда она уже есть
+   * (тот же конверт, `is_restored: true`). Код выставляем вручную:
+   * `@HttpCode` статичен, а решение зависит от результата.
+   */
   @Post()
-  @HttpCode(201)
   async create(
     @CurrentUser() auth: VerifiedInitData,
     @Body() body: unknown,
+    @Res({ passthrough: true }) res: Response,
   ): Promise<ChartResponse> {
-    return this.charts.create(auth, body);
+    const { response, created } = await this.charts.create(auth, body);
+    res.status(created ? 201 : 200);
+    return response;
+  }
+
+  /** `GET /charts/current` — карта пользователя или 404 (уходим в онбординг). */
+  @Get('current')
+  async getCurrent(@CurrentUser() auth: VerifiedInitData): Promise<ChartResponse> {
+    return this.charts.getCurrent(auth);
   }
 
   @Get(':chartId')

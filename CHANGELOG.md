@@ -7,6 +7,37 @@
 
 ### Добавлено
 
+#### Итерация 7: контракт 1.4.0, платежи и эксплуатация
+
+- Контракт **1.4.0**: единый `ChartResponse` (`chart`, `mini_reading`,
+  `warnings`, `wheel_url`, `wheel_png_url`, `is_restored`) из `POST /charts`
+  (201 и 200), `GET /charts/{chart_id}` и `GET /charts/current`; `GET
+  /charts/current` с `404` для онбординга; `200` на повторный `POST /charts`
+  с `is_restored: true`; `Me.entitlements` и `Me.chart_id`;
+  `size=1080|1600` у `wheel.png`; `limit` в `POST /geo/resolve` вне 1…10 →
+  `422`; `x-events-forbidden-prop-keys` (16 ключей); `x-bot.share_link_template`.
+- `ChartResponse.warnings`: коды `no_birth_time`, `approximate_time`,
+  `approximate_place`; считаются на входе и хранятся в `charts.warnings`
+  (миграция `0008`), карты до 1.4.0 отдают `[]`.
+- `GET /api/v1/charts/current` — последняя карта пользователя; `Me.chart_id`
+  указывает туда же.
+- `POST /api/v1/charts` возвращает `201` при создании и `200` при повторе
+  (идемпотентность по `(user_id, input_hash)`).
+- `Me.entitlements` — реальные права из `getEntitlements(userId)` (snake_case,
+  как у остальных полей ответа).
+- `GET /api/v1/admin/metrics` (только `ADMIN_TG_ID`): MAU, платящие,
+  конверсия, churn за 30 дней, звёзды, упавшие разборы, счётчики событий и
+  воронка — всё по `events.occurred_at` (`COALESCE(occurred_at, created_at)`).
+- `POST /api/v1/internal/jobs/run` (секрет `X-Jobs-Secret`): джоб
+  `subscription_downgrade` (истёкшие подписки + одно сообщение «продлить?»
+  не чаще раза в 30 дней) и автовозврат звёзд за недоставленный товар
+  (`payments.processed = false` дольше 10 минут).
+- `/start chart_<id>` в вебхуке: бот отвечает кнопкой «Открыть карту» на
+  мини-апп с `startapp=chart_<id>` (`BOT_USERNAME`, `MINI_APP_URL`).
+- `wheel.png`: `size` только `1080` или `1600`, иначе `422`.
+- `deploy/nginx.miniapp.conf`: `index.html` — `no-cache`, `/assets/*` —
+  `immutable`; без этого после смены версии согласия остаётся старый бандл.
+
 #### Итерация 5: контракт 1.3.0
 
 - Контракт **1.3.0**: `POST /geo/resolve` — минимум 2 символа (`422` ниже),

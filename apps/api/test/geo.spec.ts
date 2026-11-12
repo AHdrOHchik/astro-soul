@@ -71,6 +71,21 @@ describe('POST /api/v1/geo/resolve', () => {
     expect((response.body as GeoPlace[]).length).toBeLessThanOrEqual(2);
   });
 
+  it('limit вне 1…10 → 422, а не обрезка (контракт 1.4.0)', async () => {
+    for (const limit of [0, 11, -1, 100]) {
+      const response = await resolve({ query: 'Москва', limit }).expect(422);
+      expect(response.body.code).toBe('VALIDATION_FAILED');
+      expect(response.body.details.field_errors).toEqual([
+        { field: 'limit', message: expect.any(String) as string },
+      ]);
+    }
+  });
+
+  it('limit не целое число → 422', async () => {
+    const response = await resolve({ query: 'Москва', limit: 2.5 }).expect(422);
+    expect(response.body.details.field_errors[0]).toMatchObject({ field: 'limit' });
+  });
+
   it('пустой запрос → 422 с field_errors по query', async () => {
     const response = await resolve({ query: '   ' }).expect(422);
 

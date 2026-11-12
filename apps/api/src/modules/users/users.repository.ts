@@ -8,6 +8,7 @@ import { userIdFromTelegramId } from './pseudonym';
 export interface ProfileState {
   readonly hasProfile: boolean;
   readonly hasChart: boolean;
+  readonly chartId: string | null;
   readonly onboardingStep: OnboardingStep | null;
 }
 
@@ -121,11 +122,14 @@ export class UsersRepository {
     const row = await this.db.queryOne<{
       has_profile: boolean;
       has_chart: boolean;
+      chart_id: string | null;
       onboarding_step: OnboardingStep | null;
     }>(
       `SELECT
          EXISTS (SELECT 1 FROM profiles WHERE user_id = $1) AS has_profile,
          EXISTS (SELECT 1 FROM charts WHERE user_id = $1) AS has_chart,
+         (SELECT id FROM charts WHERE user_id = $1
+           ORDER BY created_at DESC, id DESC LIMIT 1) AS chart_id,
          (SELECT onboarding_step::text FROM profiles WHERE user_id = $1) AS onboarding_step`,
       [userId],
     );
@@ -133,6 +137,7 @@ export class UsersRepository {
     return {
       hasProfile: row?.has_profile ?? false,
       hasChart: row?.has_chart ?? false,
+      chartId: row?.chart_id ?? null,
       onboardingStep: row?.onboarding_step ?? null,
     };
   }

@@ -69,9 +69,29 @@ export class TelegramClient {
     });
   }
 
-  async sendMessage(chatId: number | string, text: string): Promise<void> {
+  async sendMessage(
+    chatId: number | string,
+    text: string,
+    options: { readonly button?: { readonly text: string; readonly webAppUrl: string } } = {},
+  ): Promise<void> {
+    // Кнопка открывает мини-апп сразу на нужной карте (`startapp=chart_<id>`),
+    // а не пустой онбординг (контракт 1.4.0, `x-bot.share_link_template`).
+    const replyMarkup =
+      options.button === undefined
+        ? {}
+        : {
+            reply_markup: {
+              inline_keyboard: [[{ text: options.button.text, web_app: { url: options.button.webAppUrl } }]],
+            },
+          };
+
     try {
-      await this.call('sendMessage', { chat_id: chatId, text, parse_mode: 'HTML' });
+      await this.call('sendMessage', {
+        chat_id: chatId,
+        text,
+        parse_mode: 'HTML',
+        ...replyMarkup,
+      });
     } catch (error) {
       // Сообщение — не критичная часть платежа: платёж уже записан.
       this.logger.warn('telegram_send_message_failed', {

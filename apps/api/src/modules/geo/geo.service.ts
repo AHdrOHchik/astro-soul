@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
   CITY_DATASET_VERSION,
+  DEFAULT_LIMIT,
   MAX_LIMIT,
   MAX_QUERY_LENGTH,
   MIN_QUERY_LENGTH,
@@ -75,11 +76,29 @@ export class GeoService {
     return this.searchNominatim(query, limit);
   }
 
+  /**
+   * `limit` — 1…10 (контракт 1.4.0). Вне диапазона — 422, а не обрезка:
+   * клиент не должен получать другой ответ, чем просил. Отсутствие поля —
+   * значение по умолчанию.
+   */
   private parseLimit(rawLimit: unknown): number {
-    if (typeof rawLimit !== 'number' || !Number.isFinite(rawLimit)) {
-      return 5;
+    if (rawLimit === undefined || rawLimit === null) {
+      return DEFAULT_LIMIT;
     }
-    return Math.min(Math.max(Math.trunc(rawLimit), 1), MAX_LIMIT);
+
+    if (typeof rawLimit !== 'number' || !Number.isInteger(rawLimit)) {
+      throw invalidFields([{ field: 'limit', message: 'limit — целое число от 1 до 10' }], {
+        reason: 'geo_limit_invalid',
+      });
+    }
+
+    if (rawLimit < 1 || rawLimit > MAX_LIMIT) {
+      throw invalidFields([{ field: 'limit', message: 'limit — целое число от 1 до 10' }], {
+        reason: 'geo_limit_out_of_range',
+      });
+    }
+
+    return rawLimit;
   }
 
   /**
