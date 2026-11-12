@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ru } from '../i18n/ru';
 import type { DateParts } from '../lib/birth';
-import { setupUser, TODAY } from '../test/fixtures';
+import { fakeAnalytics, setupUser, TODAY } from '../test/fixtures';
 import { BirthDateScreen } from './BirthDateScreen';
 
 const copy = ru.birthDate;
@@ -11,15 +11,19 @@ const EMPTY: DateParts = { day: '', month: '', year: '' };
 
 function setup(initial: DateParts = EMPTY, serverError?: string) {
   const onNext = vi.fn();
+  const analytics = fakeAnalytics();
   const user = setupUser();
   function Harness() {
     const [value, setValue] = useState(initial);
-    return <BirthDateScreen value={value} today={TODAY} serverError={serverError} onChange={setValue} onNext={onNext} />;
+    return (
+      <BirthDateScreen value={value} today={TODAY} serverError={serverError} track={analytics.track} onChange={setValue} onNext={onNext} />
+    );
   }
   render(<Harness />);
   return {
     user,
     onNext,
+    analytics,
     day: screen.getByLabelText<HTMLInputElement>(copy.day),
     month: screen.getByLabelText<HTMLInputElement>(copy.month),
     year: screen.getByLabelText<HTMLInputElement>(copy.year),
@@ -69,6 +73,16 @@ describe('BirthDateScreen', () => {
     expect(year).toHaveFocus();
     await user.click(next);
     expect(onNext).not.toHaveBeenCalled();
+  });
+
+  it('reports a check that stopped the user once per message, by the field alone: neither the date nor what was wrong with it', async () => {
+    const { user, next, analytics } = setup();
+
+    await user.keyboard('11112008');
+    // The message stays while the user tries to go on with it: still one event.
+    await user.click(next);
+
+    expect(analytics.events).toEqual([{ name: 'validation_failed_client', props: { step: 'birth_date', field: 'birth_date' } }]);
   });
 
   it('accepts the 18th birthday itself', async () => {

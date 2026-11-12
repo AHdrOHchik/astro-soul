@@ -299,7 +299,7 @@ describe('BirthPlaceScreen', () => {
   });
 
   it('does not continue without a chosen place', async () => {
-    const { user, input, submit, onNext } = setup();
+    const { user, input, submit, onNext, analytics } = setup();
 
     await user.click(submit);
 
@@ -307,6 +307,7 @@ describe('BirthPlaceScreen', () => {
     expect(input).toHaveAttribute('aria-invalid', 'true');
     expect(input).toHaveFocus();
     expect(onNext).not.toHaveBeenCalled();
+    expect(analytics.events).toEqual([{ name: 'validation_failed_client', props: { step: 'birth_place', field: 'birth_place' } }]);
 
     await user.type(input, 'К');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TimePrecision } from '../api';
 import { ru } from '../i18n/ru';
 import type { TimeParts } from '../lib/birth';
-import { setupUser } from '../test/fixtures';
+import { fakeAnalytics, setupUser } from '../test/fixtures';
 import { BirthTimeScreen, type BirthTimeScreenProps } from './BirthTimeScreen';
 
 const copy = ru.birthTime;
@@ -15,15 +15,26 @@ function setup(
   rejected: Pick<BirthTimeScreenProps, 'precisionError' | 'timeError'> = {},
 ) {
   const onNext = vi.fn();
+  const analytics = fakeAnalytics();
   const user = setupUser();
   function Harness() {
     const [mode, setMode] = useState(initialMode);
     const [time, setTime] = useState(initialTime);
-    return <BirthTimeScreen mode={mode} time={time} {...rejected} onModeChange={setMode} onTimeChange={setTime} onNext={onNext} />;
+    return (
+      <BirthTimeScreen
+        mode={mode}
+        time={time}
+        {...rejected}
+        track={analytics.track}
+        onModeChange={setMode}
+        onTimeChange={setTime}
+        onNext={onNext}
+      />
+    );
   }
   render(<Harness />);
   const option = (mode: TimePrecision) => screen.getByRole('radio', { name: copy.options[mode].title });
-  return { user, onNext, option, next: screen.getByRole('button', { name: ru.common.next }) };
+  return { user, onNext, analytics, option, next: screen.getByRole('button', { name: ru.common.next }) };
 }
 
 afterEach(() => {
@@ -39,10 +50,11 @@ describe('BirthTimeScreen', () => {
   });
 
   it('asks for a choice before going on', async () => {
-    const { user, next, onNext } = setup();
+    const { user, next, onNext, analytics } = setup();
     await user.click(next);
     expect(screen.getByRole('alert')).toHaveTextContent(copy.chooseOption);
     expect(onNext).not.toHaveBeenCalled();
+    expect(analytics.events).toEqual([{ name: 'validation_failed_client', props: { step: 'birth_time', field: 'time_precision' } }]);
   });
 
   it('"I don\'t know" needs no time and warns that the Ascendant and houses are not calculated', async () => {

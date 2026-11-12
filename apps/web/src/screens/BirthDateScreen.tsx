@@ -1,5 +1,7 @@
 import { FieldMessage, SegmentedInput, Stack, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
+import type { Track } from '../analytics';
+import { useClientCheck } from '../hooks/useClientCheck';
 import { ru } from '../i18n/ru';
 import { checkBirthDate, isDateTyped, type DateParts } from '../lib/birth';
 import { focusFirstOpenInput } from '../lib/focus';
@@ -19,13 +21,15 @@ export interface BirthDateScreenProps {
   today: Date;
   /** The server's text about this date, when it rejected the chart request. Its checks are the ones that count. */
   serverError?: string;
+  /** Reports that a check of this screen stopped the user; never the date or what was wrong with it. */
+  track: Track;
   back?: ScreenProps['back'];
   onChange: (value: DateParts) => void;
   onNext: () => void;
 }
 
 /** Screen 2. Calendar and 18+ validation happen as soon as the date is complete. */
-export function BirthDateScreen({ value, today, serverError, back, onChange, onNext }: BirthDateScreenProps) {
+export function BirthDateScreen({ value, today, serverError, track, back, onChange, onNext }: BirthDateScreenProps) {
   const messageId = useId();
   const field = useRef<HTMLDivElement>(null);
   const submit = useRef<HTMLButtonElement>(null);
@@ -42,6 +46,7 @@ export function BirthDateScreen({ value, today, serverError, back, onChange, onN
   // A date that is still being typed is not an error until the user tries to go on.
   const issue = check.ok || (check.issue === 'incomplete' && !submitted) ? null : check.issue;
   const error = issue ? copy.issues[issue] : serverError;
+  useClientCheck(track, 'birth_date', 'birth_date', issue);
 
   // Counts the times typing completed a valid date. A count, not "the date is complete": a date
   // that is already complete when the screen opens is nobody's keystroke and must not move focus.
