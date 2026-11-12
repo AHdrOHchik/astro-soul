@@ -156,5 +156,9 @@ export function buildChart(input: ChartCreateRequest): ChartResponse {
     // One signature for both addresses, as in apps/api: the SVG is for the screen, the PNG for sharing.
     wheel_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.svg?sig=${MOCK_SIG}`,
     wheel_png_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.png?sig=${MOCK_SIG}`,
+    // Contract 1.4.0: required `warnings` and `is_restored`. The mock mirrors
+    // the server rule: unknown birth time -> no_birth_time.
+    warnings: timeKnown ? [] : (['no_birth_time'] as const).slice(),
+    is_restored: false,
   };
 }

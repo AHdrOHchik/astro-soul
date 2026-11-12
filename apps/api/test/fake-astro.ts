@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { ApiError } from '../src/common/api-error';
 import type { AstroChartData, WheelTheme } from '../src/modules/astro/astro.client';
 import { engineChartPayload } from './fixtures/chart-payload';
@@ -32,6 +33,9 @@ export function makeFakeAstro(options: { readonly down?: boolean } = {}): FakeAs
 
       return Promise.resolve({
         ...data,
+        // Настоящий движок хэширует вход: от этого зависит идемпотентность
+        // POST /charts (201 против 200). Подмена обязана вести себя так же.
+        input_hash: `sha256:${createHash('sha256').update(JSON.stringify(input ?? null)).digest('hex')}`,
         chart: {
           ...data.chart,
           birth: {

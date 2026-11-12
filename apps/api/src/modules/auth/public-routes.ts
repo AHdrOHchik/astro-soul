@@ -16,6 +16,9 @@ const WHEEL_SVG_PATH = /^\/api\/v1\/charts\/[^/]+\/wheel\.svg$/;
 /** PNG колеса для шаринга: тоже по подписи (картинку вставляет Telegram). */
 const WHEEL_PNG_PATH = /^\/api\/v1\/charts\/[^/]+\/wheel\.png$/;
 
+/** Триггер джобов: секрет в заголовке `X-Jobs-Secret` (крон, не пользователь). */
+const JOBS_RUN_PATH = /^\/api\/v1\/internal\/jobs\/run$/;
+
 /** Вебхук Telegram: секрет в пути + заголовок, проверка внутри обработчика. */
 const TELEGRAM_WEBHOOK_PATH = /^\/api\/v1\/internal\/telegram\/webhook\/[^/]+$/;
 
@@ -25,6 +28,7 @@ export function isPublicPath(requestPath: string): boolean {
     PUBLIC_PATHS.has(normalized) ||
     WHEEL_SVG_PATH.test(normalized) ||
     WHEEL_PNG_PATH.test(normalized) ||
+    JOBS_RUN_PATH.test(normalized) ||
     TELEGRAM_WEBHOOK_PATH.test(normalized)
   );
 }

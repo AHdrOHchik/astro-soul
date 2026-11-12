@@ -154,7 +154,11 @@ export interface paths {
                          *     означает «города нет», а не «слишком короткий запрос».
                          */
                         query: string;
-                        /** @default 5 */
+                        /**
+                         * @description Сколько кандидатов вернуть, 1…10. Вне диапазона — `422`,
+                         *     без молчаливой обрезки до границы.
+                         * @default 5
+                         */
                         limit?: number;
                     };
                 };
@@ -225,7 +229,11 @@ export interface paths {
          * Создать натальную карту
          * @description Расчёт синхронный (≤ 300 мс, Swiss Ephemeris локально).
          *     В ответе — карта и текстовый мини-разбор (бесплатный крючок).
-         *     Повторный вызов с теми же данными возвращает существующую карту (идемпотентность по хэшу входа).
+         *
+         *     Повторный вызов с теми же данными возвращает существующую карту
+         *     (идемпотентность по хэшу входа), но уже с кодом `200` и
+         *     `is_restored: true`: по телу ответа клиент отличает `chart_created`
+         *     от `chart_restored`. Конверт в обоих случаях один и тот же.
          */
         post: {
             parameters: {
@@ -240,7 +248,19 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description Создана */
+                /**
+                 * @description Такая карта уже есть (`is_restored: true`) — тот же конверт,
+                 *     что и на `201`. Клиент не считает это ошибкой.
+                 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ChartResponse"];
+                    };
+                };
+                /** @description Карта создана: `is_restored: false` */
                 201: {
                     headers: {
                         [name: string]: unknown;
@@ -262,6 +282,57 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/charts/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Текущая карта пользователя
+         * @description Карта, которая есть у пользователя сейчас: нужна при возврате в
+         *     мини-апп, после `startapp=chart_<id>` и для кнопки «моя карта».
+         *
+         *     Конверт тот же, что у `POST /charts` и `GET /charts/{chart_id}`,
+         *     `is_restored: true`. Карты нет — `404 NOT_FOUND`, по нему клиент
+         *     уходит в онбординг. Это не ошибка и не повод показывать красный экран.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Карта пользователя */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ChartResponse"];
+                    };
+                };
+                /** @description NOT_FOUND — карты ещё нет, иди в онбординг */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -392,8 +463,12 @@ export interface paths {
                 query: {
                     sig: string;
                     theme?: "dark" | "light";
-                    /** @description Ширина картинки в пикселях (160…1600, по умолчанию 1080) */
-                    size?: number;
+                    /**
+                     * @description Ширина картинки в пикселях: только `1080` (по умолчанию) или
+                     *     `1600`. Другие значения — `422 VALIDATION_FAILED`
+                     *     (`field_errors[{field: "size"}]`), а не молчаливая подмена размера.
+                     */
+                    size?: 1080 | 1600;
                 };
                 header?: never;
                 path: {
@@ -421,6 +496,13 @@ export interface paths {
                 };
                 /** @description NOT_FOUND */
                 404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `size` не 1080 и не 1600 */
+                422: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -908,7 +990,13 @@ export interface paths {
         };
         /**
          * Метрики продукта
-         * @description Доступ только для admin_tg_id из переменной окружения. Без ПДн.
+         * @description Доступ только для `ADMIN_TG_ID` из переменной окружения (иначе `403`).
+         *     Без ПДн: только агрегаты.
+         *
+         *     Воронка считается по `events.occurred_at` — клиентскому времени
+         *     события, — поэтому опоздавший батч (`at` до суток назад) попадает в
+         *     свой день, а не в день доставки. Окно — 30 дней, `occurred_at` не
+         *     старше суток от серверного времени (см. `POST /events`).
          */
         get: {
             parameters: {
@@ -933,6 +1021,29 @@ export interface paths {
                             stars_received_30d?: number;
                             llm_cost_usd_30d?: number;
                             reports_failed_30d?: number;
+                            /**
+                             * @description Счётчики событий по именам за 30 дней; считается по
+                             *     `events.occurred_at`. Нулевые имена не отдаются.
+                             * @example {
+                             *       "app_open": 1280,
+                             *       "chart_created": 412,
+                             *       "payment_succeeded": 37
+                             *     }
+                             */
+                            events_30d?: {
+                                [key: string]: number;
+                            };
+                            /**
+                             * @description Воронка по `occurred_at`: сколько уникальных пользователей
+                             *     дошло до шага.
+                             */
+                            funnel_30d?: {
+                                app_open?: number;
+                                consent_accepted?: number;
+                                chart_created?: number;
+                                checkout_opened?: number;
+                                payment_succeeded?: number;
+                            };
                         };
                     };
                 };
@@ -1026,10 +1137,39 @@ export interface components {
             is_new: boolean;
             has_profile: boolean;
             has_chart?: boolean;
+            /**
+             * Format: uuid
+             * @description Карта пользователя для `GET /charts/{chart_id}` и `/charts/current`.
+             *     `null`, пока карты нет. Сервер возвращает поле всегда; в `required`
+             *     не включено, чтобы не ломать уже собранный клиент.
+             */
+            chart_id?: string | null;
             subscription: components["schemas"]["SubscriptionState"];
+            entitlements?: components["schemas"]["Entitlements"];
             quotas: components["schemas"]["Quota"][];
             /** @enum {string} */
             onboarding_step?: "birth_date" | "birth_time" | "birth_place" | "done";
+        };
+        /**
+         * @description Права доступа (`Me.entitlements`). Источник правды —
+         *     `getEntitlements(userId)` на сервере (payments.md §4); клиент по этим
+         *     флагам только рисует интерфейс и никогда не решает доступ сам.
+         */
+        Entitlements: {
+            /** @description Подписка действует прямо сейчас */
+            is_active: boolean;
+            /** @enum {string} */
+            plan: "none" | "trial" | "week" | "month" | "year";
+            full_forecast: boolean;
+            /**
+             * @description Вопросов «спроси карту» в день: 0 / 1 / 5 / -1 (без лимита)
+             * @enum {integer}
+             */
+            ask_per_day: 0 | 1 | 5 | -1;
+            /** @description Куплен ли полный разбор (разово, навсегда для карты) */
+            full_report: boolean;
+            compat_per_month: number;
+            solar_included: boolean;
         };
         GeoPlace: {
             /** @example Москва */
@@ -1069,8 +1209,37 @@ export interface components {
             orb: number;
             strength?: number;
         };
+        /**
+         * @description Единый конверт карты (1.4.0). Один и тот же объект отдают
+         *     `POST /charts` (201 и 200), `GET /charts/{chart_id}` и
+         *     `GET /charts/current` — никаких отдельных конвертов под метод.
+         */
         ChartResponse: {
             chart: components["schemas"]["Chart"];
+            /**
+             * @description `true` — карта уже существовала и отдана из хранилища,
+             *     `false` — рассчитана и сохранена этим запросом. Свойство тела,
+             *     а не кода ответа: на него опираются события `chart_created` и
+             *     `chart_restored`.
+             * @example true
+             */
+            is_restored: boolean;
+            /**
+             * @description Предупреждения о качестве входных данных. Массив обязателен,
+             *     пустой допустим.
+             *
+             *     Коды: `no_birth_time` — время рождения неизвестно;
+             *     `approximate_time` — время известно приблизительно;
+             *     `approximate_place` — города не было в справочнике либо часовой
+             *     пояс восстановлен по ближайшему крупному городу.
+             *
+             *     Список расширяемый: незнакомый клиенту код он пропускает и не
+             *     ломает экран. Карты, созданные до 1.4.0, отдают `[]`.
+             * @example [
+             *       "no_birth_time"
+             *     ]
+             */
+            warnings: ("no_birth_time" | "approximate_time" | "approximate_place")[];
             mini_reading: {
                 /** @example Солнце в Телец, 26°17′ */
                 sun: string;

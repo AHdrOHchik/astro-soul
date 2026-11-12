@@ -47,6 +47,41 @@ const envSchema = z.object({
    */
   CONSENT_VERSION: z.string().min(1).max(32).default('2026-11-10'),
 
+  /**
+   * Имя бота без `@` — из него собирается ссылка шаринга
+   * (`x-bot.share_link_template` в контракте):
+   * `https://t.me/{BOT_USERNAME}?startapp=chart_{chart_id}`.
+   * Не задано — ссылку не собираем, шаринг остаётся «текстом».
+   */
+  BOT_USERNAME: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_]{4,32}$/, 'BOT_USERNAME: 4–32 символа, буквы/цифры/_')
+      .optional(),
+  ),
+
+  /**
+   * Публичный адрес мини-аппа. По нему бот собирает кнопку «открыть карту»
+   * для `/start chart_<id>`; без него бот отвечает ссылкой-шаблоном.
+   */
+  MINI_APP_URL: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().url().optional(),
+  ),
+
+  /** Telegram id владельца: единственный, кому доступен `GET /admin/metrics`. */
+  ADMIN_TG_ID: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.coerce.number().int().positive().optional(),
+  ),
+
+  /** Секрет `POST /internal/jobs/run` (крон). Не задан — маршрут закрыт всегда. */
+  INTERNAL_JOB_SECRET: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(8).optional(),
+  ),
+
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
 });
 

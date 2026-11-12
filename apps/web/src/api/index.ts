@@ -114,6 +114,11 @@ export function createApi(options: HttpClientOptions): Api {
         chart: withContractShapes(result.chart) as Chart,
         mini_reading: toMiniReading(result.mini_reading),
         wheel_url: text(result.wheel_url),
+        // Contract 1.4.0: `warnings` is a required array and `is_restored`
+        // says whether the chart already existed. Fall back to "no warnings,
+        // new chart" when the server (or the mock plugin) omits them.
+        warnings: [],
+        is_restored: result.is_restored === true,
         // Optional in the contract: a server older than 1.3.0 does not send it.
         ...(wheelPng !== '' && { wheel_png_url: wheelPng }),
       };

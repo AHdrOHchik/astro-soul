@@ -76,15 +76,84 @@ describe('POST /api/v1/charts', () => {
       .send(BIRTH)
       .expect(201);
 
+    // Контракт 1.4.0: повтор того же входа — 200 и `is_restored: true`,
+    // тот же конверт, что и на 201.
     const second = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(200);
+
+    expect(second.body.chart.chart_id).toBe(first.body.chart.chart_id);
+    expect(first.body.is_restored).toBe(false);
+    expect(second.body.is_restored).toBe(true);
+    const rows = await ctx.db.query(`SELECT 1 FROM charts`);
+    expect(rows.length).toBe(1);
+  });
+
+  it('warnings: пустой массив для точного времени и известного города', async () => {
+    const created = await request(ctx.app.getHttpServer())
       .post('/api/v1/charts')
       .set(INIT_DATA_HEADER, initDataFor())
       .send(BIRTH)
       .expect(201);
 
-    expect(second.body.chart.chart_id).toBe(first.body.chart.chart_id);
-    const rows = await ctx.db.query(`SELECT 1 FROM charts`);
-    expect(rows.length).toBe(1);
+    expect(created.body.warnings).toEqual([]);
+  });
+
+  it('warnings: unknown → no_birth_time, approximate → approximate_time', async () => {
+    const unknownTime = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ ...BIRTH, birth_time: null, time_precision: 'unknown' })
+      .expect(201);
+
+    expect(unknownTime.body.warnings).toContain('no_birth_time');
+    expect(unknownTime.body.warnings).not.toContain('approximate_time');
+
+    // Другая дата: иначе тот же input_hash и ответ 200 (карта уже есть).
+    const approximate = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ ...BIRTH, birth_date: '1990-01-02', time_precision: 'approximate' })
+      .expect(201);
+
+    expect(approximate.body.warnings).toContain('approximate_time');
+  });
+
+  it('warnings: город вне справочника → approximate_place', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({
+        ...BIRTH,
+        birth_place: {
+          name: 'Нижние Котлы',
+          country: 'RU',
+          lat: 55.7,
+          lon: 37.6,
+          tz: 'Europe/Moscow',
+        },
+      })
+      .expect(201);
+
+    expect(created.body.warnings).toEqual(['approximate_place']);
+  });
+
+  it('warnings сохраняются: повторный GET отдаёт тот же список', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ ...BIRTH, time_precision: 'approximate' })
+      .expect(201);
+
+    const fetched = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/charts/${created.body.chart.chart_id as string}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(fetched.body.warnings).toEqual(created.body.warnings);
+    expect(fetched.body.is_restored).toBe(true);
   });
 
   it('без initData → 401', async () => {
@@ -113,6 +182,65 @@ describe('POST /api/v1/charts', () => {
       .set(INIT_DATA_HEADER, initDataFor())
       .send({ ...BIRTH, birth_place: { ...BIRTH.birth_place, country: 'RUS' } })
       .expect(422);
+  });
+});
+
+describe('GET /api/v1/charts/current', () => {
+  it('без карты → 404 NOT_FOUND (клиент уходит в онбординг)', async () => {
+    const response = await request(ctx.app.getHttpServer())
+      .get('/api/v1/charts/current')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(404);
+
+    expect(response.body.code).toBe('NOT_FOUND');
+  });
+
+  it('возвращает последнюю карту и is_restored: true', async () => {
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    const response = await request(ctx.app.getHttpServer())
+      .get('/api/v1/charts/current')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(response.body.chart.chart_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(response.body.is_restored).toBe(true);
+    expect(Array.isArray(response.body.warnings)).toBe(true);
+    expect(response.body.wheel_url).toContain('/wheel.svg?sig=');
+    expect(response.body.wheel_png_url).toContain('/wheel.png?sig=');
+  });
+
+  it('Me.chart_id указывает на последнюю карту (контракт 1.4.0)', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    const me = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(me.body.chart_id).toBe(created.body.chart.chart_id);
+    expect(me.body.has_chart).toBe(true);
+  });
+
+  it('чужая карта не видна: у второго пользователя 404', async () => {
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    await request(ctx.app.getHttpServer())
+      .get('/api/v1/charts/current')
+      .set(INIT_DATA_HEADER, initDataFor({ id: 555000222, first_name: 'Второй' }))
+      .expect(404);
   });
 });
 
@@ -218,6 +346,49 @@ describe('GET /api/v1/charts/{id}/wheel.svg', () => {
     expect(response.headers['content-type']).toBe('image/png');
     // PNG-сигнатура: 89 50 4E 47
     expect((response.body as Buffer).subarray(0, 4).toString('hex')).toBe('89504e47');
+  });
+
+  it('wheel.png: size=1600 даёт картинку шириной 1600 (контракт 1.4.0)', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    const pngUrl = `${created.body.wheel_png_url as string}&size=1600`;
+
+    const response = await request(ctx.app.getHttpServer())
+      .get(pngUrl)
+      .buffer(true)
+      .parse((res, done) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => done(null, Buffer.concat(chunks)));
+      })
+      .expect(200);
+
+    const png = response.body as Buffer;
+    expect(png.subarray(0, 4).toString('hex')).toBe('89504e47');
+    // Ширина PNG лежит в IHDR: байты 16…19, big-endian.
+    expect(png.readUInt32BE(16)).toBe(1600);
+    expect(png.readUInt32BE(20)).toBe(1600);
+  });
+
+  it('wheel.png: size не 1080 и не 1600 → 422, без молчаливой подмены', async () => {
+    const created = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send(BIRTH)
+      .expect(201);
+
+    const response = await request(ctx.app.getHttpServer())
+      .get(`${created.body.wheel_png_url as string}&size=1300`)
+      .expect(422);
+
+    expect(response.body.code).toBe('VALIDATION_FAILED');
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'size', message: expect.any(String) as string },
+    ]);
   });
 
   it('wheel.png без подписи → 403', async () => {

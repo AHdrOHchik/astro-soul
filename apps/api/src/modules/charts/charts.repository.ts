@@ -2,10 +2,19 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DbService } from '../../db/db.service';
 import type { AstroChartData } from '../astro/astro.client';
 
+/** Строка карты в том виде, в каком она нужна конверту ответа. */
+export interface OwnedChart {
+  readonly id: string;
+  readonly created_at: Date;
+  readonly data: AstroChartData;
+  readonly warnings: string[];
+}
+
 export interface ChartRow {
   readonly id: string;
   readonly created_at: Date;
   readonly data: AstroChartData;
+  readonly warnings: string[];
   readonly inserted: boolean;
 }
 
@@ -24,18 +33,28 @@ export class ChartsRepository {
     data: AstroChartData;
     engineVersion: string;
     timeKnown: boolean;
+    /** `ChartResponse.warnings`, посчитанные на входе (контракт 1.4.0). */
+    warnings: readonly string[];
   }): Promise<ChartRow> {
     const row = await this.db.queryOne<{
       id: string;
       created_at: Date;
       data: AstroChartData;
+      warnings: string[];
       inserted: boolean;
     }>(
-      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
-       VALUES ($1, $2, $3::jsonb, $4, $5)
+      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known, warnings)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6::text[])
        ON CONFLICT (user_id, input_hash) DO UPDATE SET input_hash = EXCLUDED.input_hash
-       RETURNING id, created_at, data, (xmax = 0) AS inserted`,
-      [input.userId, input.inputHash, JSON.stringify(input.data), input.engineVersion, input.timeKnown],
+       RETURNING id, created_at, data, warnings, (xmax = 0) AS inserted`,
+      [
+        input.userId,
+        input.inputHash,
+        JSON.stringify(input.data),
+        input.engineVersion,
+        input.timeKnown,
+        input.warnings,
+      ],
     );
 
     if (row === null) {
@@ -47,10 +66,27 @@ export class ChartsRepository {
   }
 
   /** Карта конкретного пользователя: чужая карта неотличима от несуществующей. */
-  async findOwnedBy(chartId: string, userId: string): Promise<{ id: string; created_at: Date; data: AstroChartData } | null> {
-    return this.db.queryOne<{ id: string; created_at: Date; data: AstroChartData }>(
-      `SELECT id, created_at, data FROM charts WHERE id = $1 AND user_id = $2`,
+  async findOwnedBy(chartId: string, userId: string): Promise<OwnedChart | null> {
+    return this.db.queryOne<OwnedChart>(
+      `SELECT id, created_at, data, warnings FROM charts WHERE id = $1 AND user_id = $2`,
       [chartId, userId],
+    );
+  }
+
+  /**
+   * Текущая карта пользователя для `GET /charts/current` (контракт 1.4.0).
+   *
+   * «Текущая» = последняя созданная: пересчёт с другими данными (пользователь
+   * исправил время) даёт новую строку, и возвращаться к старой он не должен.
+   */
+  async findLatestByUser(userId: string): Promise<OwnedChart | null> {
+    return this.db.queryOne<OwnedChart>(
+      `SELECT id, created_at, data, warnings
+         FROM charts
+        WHERE user_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [userId],
     );
   }
 
