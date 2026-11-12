@@ -40,3 +40,22 @@
   font-size: var(--font-size-sm);
   text-align: center;
 }
+
+/* Small print, but a full-size touch target: as wide as the footer and --size-tap tall. */
+.terms {
+  width: 100%;
+  min-height: var(--size-tap);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: center;
+  touch-action: manipulation;
+}
+
+.termsLink {
+  color: var(--color-accent);
+  text-decoration: underline;
+}

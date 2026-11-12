@@ -11,10 +11,12 @@ import {
   VisuallyHidden,
   type ScreenProps,
 } from '@astro-soul/ui';
+import { MAX_QUERY_LENGTH, MIN_QUERY_LENGTH } from '@astro-soul/shared';
 import { useEffect, useId, useRef, useState } from 'react';
+import type { Track } from '../analytics';
 import { fieldErrorsOf, type Api, type GeoPlace } from '../api';
 import { ErrorState } from '../components/ErrorState';
-import { MIN_QUERY_LENGTH, usePlaceSearch, type PlaceSearch } from '../hooks/usePlaceSearch';
+import { usePlaceSearch, type PlaceSearch } from '../hooks/usePlaceSearch';
 import { formatRegion } from '../i18n/format';
 import { ru } from '../i18n/ru';
 import type { Telegram } from '../telegram';
@@ -22,8 +24,6 @@ import styles from './BirthPlaceScreen.module.css';
 import { StepScreen } from './StepScreen';
 
 const copy = ru.birthPlace;
-/** `POST /geo/resolve`: `query` is at most 120 characters. */
-const MAX_QUERY_LENGTH = 120;
 const SKELETON_ROWS = [0, 1, 2];
 
 const placeKey = (place: GeoPlace) => `${place.name}|${String(place.lat)}|${String(place.lon)}`;
@@ -45,6 +45,8 @@ function statusText(search: PlaceSearch): string | undefined {
 export interface BirthPlaceScreenProps {
   api: Pick<Api, 'resolveGeo'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close'>;
+  /** Reports that a search ran and how it ended; the query itself is never reported. */
+  track: Track;
   query: string;
   place: GeoPlace | null;
   /** The server's text about the chosen place, when it rejected the chart request. */
@@ -59,7 +61,17 @@ export interface BirthPlaceScreenProps {
  * Screen 4. The user never types coordinates or a time zone: both come from the
  * chosen place, and the object returned by the API goes into the chart request untouched.
  */
-export function BirthPlaceScreen({ api, telegram, query, place, serverError, back, onChange, onNext }: BirthPlaceScreenProps) {
+export function BirthPlaceScreen({
+  api,
+  telegram,
+  track,
+  query,
+  place,
+  serverError,
+  back,
+  onChange,
+  onNext,
+}: BirthPlaceScreenProps) {
   const messageId = useId();
   const selectedId = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -67,7 +79,7 @@ export function BirthPlaceScreen({ api, telegram, query, place, serverError, bac
   const failure = useRef<HTMLDivElement>(null);
   const [submitted, setSubmitted] = useState(false);
   // While a place is chosen the field shows its name; that must not trigger a new search.
-  const search = usePlaceSearch(api, place === null ? query : '');
+  const search = usePlaceSearch(api, place === null ? query : '', track);
   const missing = place === null && submitted;
   // The server's own text about the query it was sent belongs at the field, like any other problem with its value.
   const queryError =

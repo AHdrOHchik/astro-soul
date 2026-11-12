@@ -47,11 +47,13 @@ function toNumber(value: string, minLength: number): number | null {
 }
 
 /**
- * `today` is read as the UTC calendar day, not the device's: the API counts age and
- * "not in the future" from the UTC day, and this check is there to give the same
- * answer before the form is sent. With the device's day the two disagree whenever
- * the dates differ: east of UTC, a user who turns 18 today would pass here and be
- * turned down by the server after the last step.
+ * The rule is the contract's (1.3.0), and the server applies the same one: a user is an
+ * adult from 00:00 UTC of the 18th birthday, `now >= Date.UTC(year + 18, month, day)`,
+ * which for a birthday on 29 February is 1 March; a date is in the future when it is
+ * after today's UTC day. So `today` is read as the UTC calendar day, not the device's.
+ * With the device's day the answers differ whenever the two dates do: east of UTC, a
+ * user who turns 18 today would pass here and be turned down by the server after the
+ * last step.
  */
 export function checkBirthDate({ day, month, year }: DateParts, today: Date): DateCheck {
   const d = toNumber(day, 1);

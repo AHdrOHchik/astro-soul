@@ -6,17 +6,17 @@ import type { PluralForm } from './format';
  * Every user-facing string of the app. Tone: «ты», gender-neutral, no pressure,
  * no promises about events, health or money (SPEC, «Генерация текста»).
  *
- * The exceptions are `consent` and `documents`: legal texts, copied from `legal.md`
- * word for word and in that document's own tone. They are never edited here. A new
- * wording comes from `legal.md` together with a new CONSENT_VERSION;
- * `tests/legal-texts.test.ts` fails until both are in place.
+ * The legal texts are not written here: `welcome.disclaimer`, `welcome.terms`,
+ * `consent` and `documents` are copied word for word from the file a human owns,
+ * `legal-texts-<CONSENT_VERSION>.md` in the repository root. A new wording comes
+ * as a new file together with a new CONSENT_VERSION; `tests/legal-texts.test.ts`
+ * fails until the texts, the file and the version agree.
  */
 
 /**
- * Version of the legal texts below, sent as `consent.version` in `POST /charts`: the
- * server stores it next to the user's consent. `legal.md` sets the format, the date of
- * the text as YYYY-MM-DD; this one is the day `legal.md` came into the repository.
- * A new date is due whenever the consent screen or a document it links to changes.
+ * Version of the legal texts below, sent as `consent.version` in `POST /charts`. The
+ * server stores it next to the user's consent and accepts no other version than its
+ * own: a release with new texts has to carry the new date here (YYYY-MM-DD).
  */
 export const CONSENT_VERSION = '2026-11-10';
 
@@ -166,54 +166,69 @@ export const ru = {
       { title: 'Солнце, Луна, Асцендент', text: 'Короткий разбор трёх главных точек карты.' },
       { title: 'Время знать не обязательно', text: 'Без него карта строится, но без Асцендента и домов.' },
     ],
-    disclaimer:
-      '18+. Это развлекательный контент: не предсказание событий и не медицинская, юридическая или финансовая консультация.',
+    /** Legal text: the short disclaimer. On screen without scrolling, next to the button. */
+    disclaimer: '18+. Это развлекательный сервис. Не медицинская, психологическая и финансовая рекомендация.',
     start: 'Начать',
+    /** Legal text: one sentence in three parts. The whole line opens the agreement; the middle part is drawn as the link. */
+    terms: { before: 'Подробнее — в ', link: 'пользовательском соглашении', after: '.' },
   },
 
-  /** `legal.md`, section 2, word for word. See the note at the top of this file before touching it. */
+  /** Legal texts of the consent screen. See the note at the top of this file before touching them. */
   consent: {
     title: 'Обработка данных',
-    lead: 'Для расчёта карты нам нужны дата, время и место вашего рождения. Это персональные данные, поэтому нужно ваше согласие.',
+    lead: 'Для расчёта карты нам нужны дата, время и место твоего рождения. Это персональные данные, поэтому нужно твоё согласие.',
     points: [
-      'Мы используем их только для расчёта карты и генерации вашего разбора.',
-      'Не передаём третьим лицам; текст разбора генерируется без вашего имени, точных координат и id.',
-      'Вы можете удалить все данные в любой момент: Настройки → «Удалить мои данные». Это необратимо.',
-      'Если вы не заходите 24 месяца, данные удаляются автоматически.',
+      'Мы используем их только для расчёта карты и генерации твоего разбора.',
+      'Не передаём третьим лицам; текст разбора генерируется без твоего имени, точных координат и id.',
+      'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Это необратимо.',
+      'Если ты не заходишь 24 месяца, данные удаляются автоматически.',
     ],
-    /** The two documents the screen links to, by the names `legal.md` gives them. */
+    /** The two documents the screen links to. */
     documents: {
       privacy: 'Политика обработки персональных данных',
       terms: 'Пользовательское соглашение и оплата',
     },
-    checkbox: 'Я согласен на обработку персональных данных',
+    checkbox: 'Я соглашаюсь на обработку персональных данных',
     submit: 'Продолжить',
+    decline: 'Не сейчас',
   },
 
   /**
-   * What the two links of the consent screen open. Neither document is written yet,
-   * so each screen shows the part of `legal.md` that belongs to it, word for word:
-   * section 1 (what is collected and why) under the policy, section 3 (the disclaimer
-   * that `legal.md` requires in the offer) under the agreement.
+   * Legal texts of the two document screens, a paragraph per entry. The full documents
+   * are not written yet: these are the short versions, shown with their version.
    */
   documents: {
+    version: (version: string) => `Версия документа: ${version}.`,
     privacy: {
-      caption: 'Что мы собираем и зачем',
-      columns: ['Данные', 'Зачем', 'Хранение'],
-      rows: [
-        ['Дата рождения', 'расчёт натальной карты', 'до удаления пользователем или 24 мес неактивности'],
-        ['Время рождения (если указано)', 'точность домов и Асцендента', 'то же'],
-        ['Место рождения (город, координаты, часовой пояс)', 'расчёт карты', 'то же'],
-        ['telegram_id, username', 'идентификация, оплата', 'пока существует аккаунт'],
-        ['Тексты вопросов к карте', 'ответ на вопрос', 'до удаления, не передаются третьим лицам'],
-        ['Платёжные идентификаторы', 'бухгалтерия, возвраты', 'по требованиям учёта, без ПДн'],
+      paragraphs: [
+        'Мы собираем только то, что нужно для расчёта карты: дату, время и место рождения. Плюс твой telegram_id, чтобы ты мог войти, и тексты вопросов, которые ты задаёшь карте.',
+        'Не собираем: телефон, email, паспортные данные, геолокацию устройства и контакты.',
+        'Данные рождения используются только для расчёта карты и генерации разбора. Текст разбора генерируется без имени, точных координат и id. Платёжные идентификаторы хранятся без персональных данных.',
+        'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Если ты не заходишь 24 месяца, данные удаляются автоматически.',
       ],
-      notCollected: 'Не собираем: паспортные данные, телефон, email, геолокацию устройства, контакты.',
     },
+    /** Without the support line of the source file: it holds a placeholder until there is a contact to show. */
     terms: {
-      disclaimer:
-        '18+. Сервис носит развлекательный и ознакомительный характер. Разборы и прогнозы не являются медицинской, психологической, юридической или финансовой рекомендацией и не предсказывают события. Решения о здоровье, деньгах и отношениях принимайте самостоятельно.',
+      paragraphs: [
+        '18+. Сервис носит развлекательный и ознакомительный характер. Разборы и прогнозы не являются медицинской, психологической, юридической или финансовой рекомендацией и не предсказывают события. Решения о здоровье, деньгах и отношениях принимай самостоятельно.',
+        'Оплата проходит звёздами Telegram. Подписка продлевается автоматически, пока ты её не отменишь; отменить можно в настройках Telegram, доступ сохраняется до конца оплаченного периода. Если товар не был предоставлен из-за технической ошибки, звёзды возвращаются автоматически.',
+        'Удалить данные: Настройки → «Удалить мои данные».',
+      ],
     },
+  },
+
+  /**
+   * The server refused the consent because the legal texts have a newer version than
+   * this build shows. Not legal texts: the app's own words about what happens next.
+   */
+  termsUpdate: {
+    /** On the consent screen, after the app reloaded itself and came back with the new texts. */
+    renewed: 'Условия обновились, подтверди ещё раз. Данные рождения нужно будет ввести заново.',
+    /** When the reload did not bring a newer build, or could not be made. */
+    outdatedTitle: 'Условия обновились',
+    outdatedText:
+      'Новая версия приложения ещё не загрузилась. Попробуй обновить сейчас или зайди чуть позже. Данные рождения нужно будет ввести заново.',
+    reload: 'Обновить приложение',
   },
 
   birthDate: {

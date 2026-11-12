@@ -20,3 +20,10 @@
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2);
 }
+
+/* The two buttons sit closer to each other than to the box above them: they are one choice. */
+.actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}

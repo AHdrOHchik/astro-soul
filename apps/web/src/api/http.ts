@@ -22,6 +22,8 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Pass false for calls that are not safe to repeat. */
   retry?: boolean;
+  /** Lets the browser finish the call after the page is gone. For the last words of a page that is being closed. */
+  keepalive?: boolean;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'DELETE';
@@ -71,7 +73,7 @@ export function createHttpClient(options: HttpClientOptions): HttpRequest {
   const doFetch: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
 
   return async function request<T>(method: HttpMethod, path: string, requestOptions: RequestOptions = {}): Promise<T> {
-    const { body, headers, signal, retry = true } = requestOptions;
+    const { body, headers, signal, retry = true, keepalive } = requestOptions;
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const controller = new AbortController();
     // `signal.reason` would tell a timeout from a caller's cancel, but Safari 15.0–15.3 lacks it.
@@ -97,6 +99,7 @@ export function createHttpClient(options: HttpClientOptions): HttpRequest {
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
+        ...(keepalive && { keepalive: true }),
       };
 
       for (let attempt = 0; ; attempt += 1) {

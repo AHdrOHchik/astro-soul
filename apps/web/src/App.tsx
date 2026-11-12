@@ -1,10 +1,12 @@
-import { Screen } from '@astro-soul/ui';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Button, InfoIcon, Screen, StateView } from '@astro-soul/ui';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { AnalyticsStep, Track } from './analytics';
 import type { Api, FieldError } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
+import type { TermsReload } from './lib/termsReload';
 import { BirthDateScreen } from './screens/BirthDateScreen';
 import { BirthPlaceScreen } from './screens/BirthPlaceScreen';
 import { BirthTimeScreen } from './screens/BirthTimeScreen';
@@ -20,21 +22,93 @@ export interface AppProps {
   telegram: Telegram;
   /** API origin without a trailing slash; '' = this page's origin. */
   apiBaseUrl: string;
+  /** Reports product events (`POST /events`). Keep the reference stable. */
+  track: Track;
+  /** Restarts the app for newer legal texts, and tells a start after such a restart from an ordinary one. */
+  termsReload: TermsReload;
   /** The current moment, the reference for the 18+ check. Tests pin it; the app reads the device clock once at start. */
   today?: Date;
 }
 
+/**
+ * Where this build stands with the version of its legal texts (`CONSENT_VERSION`):
+ *  - `current`: nothing is known against it;
+ *  - `renewed`: the server refused the texts of the build that ran a moment ago, the
+ *    app restarted itself, and this build has other texts. The user confirms them;
+ *  - `outdated`: the server refused the texts, and this build has the very same ones.
+ *    No chart can be built with it;
+ *  - `reloading`: the restart is under way.
+ */
+type TermsState = 'current' | 'renewed' | 'outdated' | 'reloading';
+
+function termsAtStart(refusedVersion: string | null): TermsState {
+  if (refusedVersion === null) return 'current';
+  return refusedVersion === CONSENT_VERSION ? 'outdated' : 'renewed';
+}
+
 /** Signs the user in (`GET /me` validates initData) before any screen is shown. */
-export function App({ api, telegram, apiBaseUrl, today }: AppProps) {
+export function App({ api, telegram, apiBaseUrl, track, termsReload, today }: AppProps) {
   const loadMe = useCallback((signal: AbortSignal) => api.getMe(signal), [api]);
   const me = useRequest(loadMe);
+  const [terms, setTerms] = useState(() => termsAtStart(termsReload.refusedVersion));
 
   useEffect(() => {
     // The first frame is drawn: Telegram may swap its placeholder for the app.
     telegram.ready();
   }, [telegram]);
 
-  if (me.status === 'loading') return <BootScreen />;
+  // Once per start. A ref, not the effect alone: a development build runs every effect twice.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (opened.current) return;
+    opened.current = true;
+    track('app_open');
+  }, [track]);
+
+  /**
+   * The server refused the consent version of this build, so its legal texts are not the
+   * current ones. They are part of the bundle: newer ones come only with a reload.
+   */
+  const handleConsentRefused = useCallback(() => {
+    // The next start has to know why it happened. If that cannot be kept, a silent
+    // restart would look like a crash: say what is going on and leave the reload to the user.
+    if (!termsReload.remember(CONSENT_VERSION)) {
+      setTerms('outdated');
+      return;
+    }
+    setTerms('reloading');
+    termsReload.reload();
+  }, [termsReload]);
+
+  if (terms === 'outdated') {
+    return (
+      <Screen>
+        <StateView role="alert" icon={<InfoIcon />} title={ru.termsUpdate.outdatedTitle} text={ru.termsUpdate.outdatedText}>
+          <Button
+            onClick={() => {
+              // Asked for by the user, so it goes ahead even when the reason cannot be kept for the next start.
+              termsReload.remember(CONSENT_VERSION);
+              setTerms('reloading');
+              termsReload.reload();
+            }}
+          >
+            {ru.termsUpdate.reload}
+          </Button>
+          {telegram.isTelegram && (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                telegram.close();
+              }}
+            >
+              {ru.common.close}
+            </Button>
+          )}
+        </StateView>
+      </Screen>
+    );
+  }
+  if (terms === 'reloading' || me.status === 'loading') return <BootScreen />;
   if (me.status === 'error') {
     return (
       <Screen>
@@ -47,15 +121,30 @@ export function App({ api, telegram, apiBaseUrl, today }: AppProps) {
       api={api}
       telegram={telegram}
       apiBaseUrl={apiBaseUrl}
+      track={track}
       today={today}
       // The contract gives no way to load an existing chart (no chart_id in Me),
       // so a returning user re-enters the data; POST /charts is idempotent by input.
       returning={me.data.has_chart === true}
+      termsRenewed={terms === 'renewed'}
+      onConsentRefused={handleConsentRefused}
     />
   );
 }
 
 type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart';
+
+/** The screens under the names the product events call them. */
+const STEP_OF: Record<Route, AnalyticsStep> = {
+  welcome: 'welcome',
+  consent: 'consent',
+  privacy: 'privacy',
+  terms: 'terms',
+  birthDate: 'birth_date',
+  birthTime: 'birth_time',
+  birthPlace: 'birth_place',
+  chart: 'chart',
+};
 
 /** The screens that collect the chart request, in the order the user passes them. */
 const FORM_ROUTES = ['consent', 'birthDate', 'birthTime', 'birthPlace'] as const;
@@ -68,6 +157,12 @@ const FIELD_ROUTES = {
   birth_time: 'birthTime',
   birth_place: 'birthPlace',
 } as const satisfies Record<string, (typeof FORM_ROUTES)[number]>;
+
+/**
+ * The field the server names when it refuses the version of the consent, not the consent
+ * itself. No screen can fix it: the texts the user agreed to are no longer the current ones.
+ */
+const CONSENT_VERSION_FIELD = 'consent.version';
 
 type ChartField = keyof typeof FIELD_ROUTES;
 /** The server's text for every field it rejected in the last chart request. */
@@ -97,28 +192,60 @@ function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors
   return { messages, stack: ['welcome', ...FORM_ROUTES.slice(0, earliest + 1)] };
 }
 
-interface OnboardingProps extends AppProps {
+interface OnboardingProps extends Omit<AppProps, 'termsReload'> {
   returning: boolean;
+  /** This start follows a restart for newer legal texts: it opens on the consent screen, which says so. */
+  termsRenewed: boolean;
+  /** The server refused the consent version. Keep the reference stable. */
+  onConsentRefused: () => void;
 }
 
 /**
  * The screens up to the chart as an in-memory stack. No router: Telegram owns the
  * URL (launch parameters live in the hash) and birth data must not end up in it.
  */
-function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }: OnboardingProps) {
+function Onboarding({
+  api,
+  telegram,
+  apiBaseUrl,
+  track,
+  today: pinnedToday,
+  returning,
+  termsRenewed,
+  onConsentRefused,
+}: OnboardingProps) {
   const [today] = useState(() => pinnedToday ?? new Date());
-  const [stack, setStack] = useState<readonly Route[]>(['welcome']);
+  const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? ['welcome', 'consent'] : ['welcome']));
   const [draft, setDraft] = useState<BirthDraft>(EMPTY_DRAFT);
   const [serverErrors, setServerErrors] = useState(NO_SERVER_ERRORS);
+  // Said until the user agrees to the new texts; after that it is no longer news.
+  const [termsNotice, setTermsNotice] = useState(termsRenewed);
   const route = stack[stack.length - 1] ?? 'welcome';
   const canGoBack = stack.length > 1;
+
+  // What is on screen, for the handlers that must keep their identity across screens.
+  const shown = useRef({ route, canGoBack });
+  useEffect(() => {
+    shown.current = { route, canGoBack };
+  });
+
+  // One event per screen opened. The ref keeps a development build, which runs effects twice, from counting it twice.
+  const viewed = useRef<Route | null>(null);
+  useEffect(() => {
+    if (viewed.current === route) return;
+    viewed.current = route;
+    track('screen_view', { step: STEP_OF[route] });
+    if (route === 'consent') track('consent_view');
+  }, [route, track]);
 
   const open = (next: Route) => {
     setStack((current) => [...current, next]);
   };
   const goBack = useCallback(() => {
+    // Reported here, not in the updater below: React may run an updater more than once.
+    if (shown.current.canGoBack) track('step_back', { step: STEP_OF[shown.current.route] });
     setStack((current) => (current.length > 1 ? current.slice(0, -1) : current));
-  }, []);
+  }, [track]);
   /** Stores what the user changed. The server's verdict on the fields behind it was about the old value: drop it. */
   const update = (changes: Partial<BirthDraft>, ...fields: ChartField[]) => {
     setDraft((current) => ({ ...current, ...changes }));
@@ -129,13 +256,21 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
       return next;
     });
   };
-  const handleRejected = useCallback((errors: readonly FieldError[]) => {
-    const rejection = routeRejection(errors);
-    // Fields no screen collects: the chart screen stays and shows the error itself.
-    if (rejection === null) return;
-    setServerErrors(rejection.messages);
-    setStack(rejection.stack);
-  }, []);
+  const handleRejected = useCallback(
+    (errors: readonly FieldError[]) => {
+      // Before any other field: with outdated texts there is nothing to correct on the screens of this build.
+      if (errors.some(({ field }) => field === CONSENT_VERSION_FIELD)) {
+        onConsentRefused();
+        return;
+      }
+      const rejection = routeRejection(errors);
+      // Fields no screen collects: the chart screen stays and shows the error itself.
+      if (rejection === null) return;
+      setServerErrors(rejection.messages);
+      setStack(rejection.stack);
+    },
+    [onConsentRefused],
+  );
 
   useEffect(() => {
     telegram.setBackHandler(canGoBack ? goBack : null);
@@ -155,8 +290,10 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
         telegram={telegram}
         request={request}
         apiBaseUrl={apiBaseUrl}
+        track={track}
         back={back}
         onEdit={() => {
+          track('step_back', { step: STEP_OF.chart });
           setStack(['welcome', 'consent', 'birthDate']);
         }}
         onRejected={handleRejected}
@@ -172,6 +309,9 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
           onStart={() => {
             open('consent');
           }}
+          onOpenTerms={() => {
+            open('terms');
+          }}
         />
       );
     case 'consent':
@@ -179,6 +319,7 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
         <ConsentScreen
           accepted={draft.consentVersion !== null}
           serverError={serverErrors.get('consent')}
+          renewed={termsNotice}
           back={back}
           onChange={(accepted) => {
             // The version recorded is the one of the text on screen at the moment of the tap.
@@ -186,7 +327,16 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
           }}
           onOpenDocument={open}
           onNext={() => {
+            track('consent_accepted', { version: CONSENT_VERSION });
+            setTermsNotice(false);
             open('birthDate');
+          }}
+          onDecline={() => {
+            // «Not now» takes the tick back and leaves nothing behind: the next visit starts from a clean form.
+            track('step_back', { step: STEP_OF.consent });
+            setDraft(EMPTY_DRAFT);
+            setServerErrors(NO_SERVER_ERRORS);
+            setStack(['welcome']);
           }}
         />
       );
@@ -204,6 +354,7 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
             update({ date }, 'birth_date');
           }}
           onNext={() => {
+            track('birth_date_done');
             open('birthTime');
           }}
         />
@@ -224,6 +375,7 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
             update({ time }, 'birth_time');
           }}
           onNext={() => {
+            track('birth_time_done');
             open('birthPlace');
           }}
         />
@@ -234,6 +386,7 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
         <BirthPlaceScreen
           api={api}
           telegram={telegram}
+          track={track}
           query={draft.placeQuery}
           place={draft.place}
           serverError={serverErrors.get('birth_place')}
@@ -242,6 +395,7 @@ function Onboarding({ api, telegram, apiBaseUrl, today: pinnedToday, returning }
             update({ placeQuery, place }, 'birth_place');
           }}
           onNext={() => {
+            track('birth_place_done');
             // A new request gets a new verdict on every field.
             setServerErrors(NO_SERVER_ERRORS);
             open('chart');

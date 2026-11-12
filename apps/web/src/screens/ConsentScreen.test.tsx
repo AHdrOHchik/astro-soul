@@ -11,14 +11,26 @@ function setup(props: Partial<ConsentScreenProps> = {}) {
   const onChange = vi.fn();
   const onOpenDocument = vi.fn();
   const onNext = vi.fn();
-  render(<ConsentScreen accepted={false} onChange={onChange} onOpenDocument={onOpenDocument} onNext={onNext} {...props} />);
+  const onDecline = vi.fn();
+  render(
+    <ConsentScreen
+      accepted={false}
+      onChange={onChange}
+      onOpenDocument={onOpenDocument}
+      onNext={onNext}
+      onDecline={onDecline}
+      {...props}
+    />,
+  );
   return {
     onChange,
     onOpenDocument,
     onNext,
+    onDecline,
     user: userEvent.setup(),
     box: screen.getByRole('checkbox', { name: copy.checkbox }),
     proceed: screen.getByRole('button', { name: copy.submit }),
+    decline: screen.getByRole('button', { name: copy.decline }),
   };
 }
 
@@ -73,8 +85,19 @@ describe('ConsentScreen', () => {
     expect(onChange).toHaveBeenCalledWith(false);
   });
 
+  it('lets the user leave without agreeing, whether the box is ticked or not', async () => {
+    const { user, decline, onDecline, onNext, onChange } = setup();
+    expect(decline).toBeEnabled();
+
+    await user.click(decline);
+
+    expect(onDecline).toHaveBeenCalledTimes(1);
+    expect(onNext).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('offers both documents by name, and reading one neither ticks the box nor moves on', async () => {
-    const { user, onOpenDocument, onChange, onNext } = setup();
+    const { user, onOpenDocument, onChange, onNext, onDecline } = setup();
 
     await user.click(screen.getByRole('button', { name: copy.documents.privacy }));
     await user.click(screen.getByRole('button', { name: copy.documents.terms }));
@@ -82,6 +105,7 @@ describe('ConsentScreen', () => {
     expect(onOpenDocument.mock.calls).toEqual([['privacy'], ['terms']]);
     expect(onChange).not.toHaveBeenCalled();
     expect(onNext).not.toHaveBeenCalled();
+    expect(onDecline).not.toHaveBeenCalled();
   });
 
   it('shows no error and marks nothing invalid until the server rejects the consent', () => {
@@ -99,6 +123,19 @@ describe('ConsentScreen', () => {
     expect(box).toHaveAttribute('aria-invalid', 'true');
     expect(box).toHaveAccessibleDescription(REJECTED);
     expect(box).toHaveFocus();
+  });
+
+  it('says that the terms changed when it shows texts newer than the ones just agreed to', () => {
+    const { box, proceed } = setup({ renewed: true });
+
+    expect(screen.getByRole('note')).toHaveTextContent(ru.termsUpdate.renewed);
+    // The title takes focus when the screen opens; a screen reader reads the reason right after it.
+    const title = screen.getByRole('heading', { level: 1, name: copy.title });
+    expect(title).toHaveFocus();
+    expect(title).toHaveAccessibleDescription(ru.termsUpdate.renewed);
+    // New texts are agreed to anew: nothing is ticked for the user.
+    expect(box).not.toBeChecked();
+    expect(proceed).toBeDisabled();
   });
 
   it('draws its own Back control when it is given one', async () => {

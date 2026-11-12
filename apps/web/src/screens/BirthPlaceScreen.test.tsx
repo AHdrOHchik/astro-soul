@@ -4,13 +4,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GeoPlace } from '../api';
 import { SEARCH_DEBOUNCE_MS } from '../hooks/usePlaceSearch';
 import { ru } from '../i18n/ru';
-import { apiError, deferred, fakeApi, fakeTelegram, kazan, kazanka, rejection, setupUser } from '../test/fixtures';
+import {
+  apiError,
+  deferred,
+  fakeAnalytics,
+  fakeApi,
+  fakeTelegram,
+  kazan,
+  kazanka,
+  rejection,
+  setupUser,
+} from '../test/fixtures';
 import { BirthPlaceScreen } from './BirthPlaceScreen';
 
 const copy = ru.birthPlace;
 
 function setup(initial: { query?: string; place?: GeoPlace | null; serverError?: string } = {}) {
   const api = fakeApi();
+  const analytics = fakeAnalytics();
   const onNext = vi.fn();
   const onChange = vi.fn();
   const user = setupUser();
@@ -21,6 +32,7 @@ function setup(initial: { query?: string; place?: GeoPlace | null; serverError?:
       <BirthPlaceScreen
         api={api}
         telegram={fakeTelegram()}
+        track={analytics.track}
         query={query}
         place={place}
         serverError={initial.serverError}
@@ -37,6 +49,7 @@ function setup(initial: { query?: string; place?: GeoPlace | null; serverError?:
   const settle = () => act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS));
   return {
     api,
+    analytics,
     user,
     onNext,
     onChange,
@@ -53,15 +66,27 @@ afterEach(() => {
 });
 
 describe('BirthPlaceScreen', () => {
-  it('does not search before three characters', async () => {
+  it('does not search for a single character: the server would refuse it', async () => {
     const { api, user, input, settle } = setup();
     expect(input).toHaveFocus();
-    expect(screen.getByText(copy.minLength(3))).toBeInTheDocument();
+    expect(screen.getByText(copy.minLength(2))).toBeInTheDocument();
+
+    await user.type(input, 'К');
+    await settle();
+
+    expect(api.resolveGeo).not.toHaveBeenCalled();
+    expect(screen.getByText(copy.minLength(2))).toBeInTheDocument();
+  });
+
+  it('searches from two characters, the shortest query the contract takes', async () => {
+    const { api, user, input, settle } = setup();
 
     await user.type(input, 'Ка');
     await settle();
 
-    expect(api.resolveGeo).not.toHaveBeenCalled();
+    expect(api.resolveGeo).toHaveBeenCalledTimes(1);
+    expect(api.resolveGeo).toHaveBeenCalledWith('Ка', expect.any(AbortSignal));
+    expect(results()).toHaveLength(2);
   });
 
   it('searches once after the user stops typing and lists the places with their time zones', async () => {
@@ -304,6 +329,40 @@ describe('BirthPlaceScreen', () => {
       const { user, submit, onNext } = setup({ query: 'Казань', place: kazan, serverError: REJECTED });
       await user.click(submit);
       expect(onNext).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('product events', () => {
+    it('reports a search when the request goes out, not on every keystroke, and nothing more when places are found', async () => {
+      const { analytics, user, input, settle } = setup();
+
+      await user.type(input, 'Каз');
+      expect(analytics.events).toEqual([]);
+
+      await settle();
+      expect(analytics.events).toEqual([{ name: 'place_search' }]);
+    });
+
+    it('never puts what was typed, found or chosen into an event', async () => {
+      const { api, analytics, user, input, settle } = setup();
+      api.resolveGeo
+        .mockResolvedValueOnce([kazan, kazanka])
+        .mockResolvedValueOnce([])
+        .mockRejectedValueOnce(rejection({ field: 'query', message: 'Слишком длинный запрос — введи название города' }));
+
+      await user.type(input, 'Казань');
+      await settle();
+      await user.click(screen.getByRole('button', { name: /Казань/ }));
+      await user.click(screen.getByRole('button', { name: copy.change }));
+      await user.type(input, 'ск');
+      await settle();
+      await user.type(input, 'ий');
+      await settle();
+
+      expect(analytics.names()).toContain('validation_failed');
+      const reported = JSON.stringify(analytics.events);
+      expect(reported).not.toMatch(/\p{Script=Cyrillic}/u);
+      expect(reported).not.toMatch(/55\.79|49\.1|Europe/);
     });
   });
 
