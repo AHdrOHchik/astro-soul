@@ -1,4 +1,4 @@
-import { ApiError, isRecord } from './errors';
+import { ApiError, isApiError, isRecord } from './errors';
 import { createHttpClient, type HttpClientOptions } from './http';
 import type { components, paths } from './schema.gen';
 
@@ -14,8 +14,25 @@ export type Chart = components['schemas']['Chart'];
 export type ChartCreateRequest = components['schemas']['ChartCreateRequest'];
 /** How well the birth time is known: `exact`, `approximate` or `unknown`. */
 export type TimePrecision = ChartCreateRequest['time_precision'];
-/** Answer of `POST /charts`: the chart, its short reading and the paths of the wheel pictures. */
-export type ChartResult = components['schemas']['ChartResponse'];
+type ChartEnvelope = components['schemas']['ChartResponse'];
+
+/**
+ * What the server may say about the quality of the birth data behind a chart: the codes this
+ * build has words for. A list of its own, not the contract's enum: the server may add a code
+ * at any time, and a build that does not know it leaves it out instead of breaking.
+ */
+export const CHART_WARNINGS = [
+  'no_birth_time',
+  'approximate_time',
+  'approximate_place',
+] as const satisfies readonly ChartEnvelope['warnings'][number][];
+export type ChartWarning = (typeof CHART_WARNINGS)[number];
+
+/**
+ * The chart as every method hands it over (`POST /charts`, `GET /charts/current`): the chart,
+ * its short reading, the warnings and the paths of the wheel pictures.
+ */
+export type ChartResult = Omit<ChartEnvelope, 'warnings'> & { warnings: ChartWarning[] };
 export type MiniReading = ChartResult['mini_reading'];
 /** A product event as `POST /events` takes it. */
 export type ClientEvent = components['schemas']['ClientEvent'];
@@ -29,6 +46,7 @@ const PATHS = {
   me: '/api/v1/me',
   geoResolve: '/api/v1/geo/resolve',
   charts: '/api/v1/charts',
+  currentChart: '/api/v1/charts/current',
   events: '/api/v1/events',
 } as const satisfies Record<string, keyof paths>;
 
@@ -39,8 +57,13 @@ export interface Api {
    * geodata provider is an error (503 `GEO_NOT_FOUND`), not an empty list.
    */
   resolveGeo(query: string, signal?: AbortSignal): Promise<GeoPlace[]>;
-  /** Idempotent on the server by input hash, so it is safe to retry. */
+  /**
+   * Idempotent on the server by input hash, so it is safe to retry. For data the user already
+   * has a chart of, the answer is that chart, with `is_restored: true`.
+   */
   createChart(input: ChartCreateRequest, signal?: AbortSignal): Promise<ChartResult>;
+  /** The chart the user already has; null when there is none yet (the server's 404 is not a failure here). */
+  getCurrentChart(signal?: AbortSignal): Promise<ChartResult | null>;
   /**
    * One batch of product events, 1 to 20 of them. Sent once and never repeated: the caller
    * has no use for the answer, and a batch that arrived twice would be counted twice.
@@ -88,6 +111,29 @@ function toMiniReading(value: unknown): MiniReading {
   return { sun: text(reading.sun), moon: text(reading.moon), asc: text(reading.asc), summary: text(reading.summary) };
 }
 
+/** The known codes in the server's order, each once; anything else in the list is skipped. */
+function toWarnings(value: unknown): ChartWarning[] {
+  if (!Array.isArray(value)) return [];
+  const known: readonly unknown[] = CHART_WARNINGS;
+  return [...new Set(value.filter((code): code is ChartWarning => known.includes(code)))];
+}
+
+/** One envelope for every method that returns a chart (contract 1.4.0), so one reader. */
+function toChartResult(result: unknown): ChartResult {
+  // Without a chart there is nothing to show; the rest of the answer degrades to "absent".
+  if (!isRecord(result) || !isRecord(result.chart) || typeof result.chart.chart_id !== 'string') throw invalid();
+  const wheelPng = text(result.wheel_png_url);
+  return {
+    chart: withContractShapes(result.chart) as Chart,
+    mini_reading: toMiniReading(result.mini_reading),
+    warnings: toWarnings(result.warnings),
+    wheel_url: text(result.wheel_url),
+    is_restored: result.is_restored === true,
+    // Optional in the contract: a server older than 1.3.0 does not send it.
+    ...(wheelPng !== '' && { wheel_png_url: wheelPng }),
+  };
+}
+
 export function createApi(options: HttpClientOptions): Api {
   const request = createHttpClient(options);
 
@@ -106,22 +152,18 @@ export function createApi(options: HttpClientOptions): Api {
     },
 
     async createChart(input, signal) {
-      const result = await request<unknown>('POST', PATHS.charts, { body: input, signal });
-      // Without a chart there is nothing to show; the rest of the answer degrades to "absent".
-      if (!isRecord(result) || !isRecord(result.chart) || typeof result.chart.chart_id !== 'string') throw invalid();
-      const wheelPng = text(result.wheel_png_url);
-      return {
-        chart: withContractShapes(result.chart) as Chart,
-        mini_reading: toMiniReading(result.mini_reading),
-        wheel_url: text(result.wheel_url),
-        // Contract 1.4.0: `warnings` is a required array and `is_restored`
-        // says whether the chart already existed. Fall back to "no warnings,
-        // new chart" when the server (or the mock plugin) omits them.
-        warnings: [],
-        is_restored: result.is_restored === true,
-        // Optional in the contract: a server older than 1.3.0 does not send it.
-        ...(wheelPng !== '' && { wheel_png_url: wheelPng }),
-      };
+      // 201 for a new chart, 200 for one that already existed: the body is the same either way.
+      return toChartResult(await request<unknown>('POST', PATHS.charts, { body: input, signal }));
+    },
+
+    async getCurrentChart(signal) {
+      try {
+        return toChartResult(await request<unknown>('GET', PATHS.currentChart, { signal }));
+      } catch (error) {
+        // The contract's way of saying «no chart yet».
+        if (isApiError(error) && error.code === 'NOT_FOUND') return null;
+        throw error;
+      }
     },
 
     async sendEvents(events, { keepalive } = {}) {
