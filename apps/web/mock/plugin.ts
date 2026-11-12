@@ -6,15 +6,29 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Connect, Plugin } from 'vite';
 import { EVENT_NAMES } from '../src/analytics/events.ts';
-import { buildChart, findPlaces, me, MOCK_CHART_ID, MOCK_CONSENT_VERSION, problem, SCENARIO } from './fixtures.ts';
-import type { ChartCreateRequest, EventsAccepted, FieldError, Problem } from './fixtures.ts';
+import {
+  buildChart,
+  buildMe,
+  findPlaces,
+  inputKey,
+  MOCK_CHART_ID,
+  MOCK_CONSENT_VERSION,
+  problem,
+  RETURNING_INPUT,
+  SCENARIO,
+} from './fixtures.ts';
+import type { ChartCreateRequest, ChartResponse, EventsAccepted, FieldError, Problem } from './fixtures.ts';
 import { renderMockWheel } from './wheel.ts';
-import { renderMockWheelPng } from './wheelPng.ts';
+import { PNG_SIZES, renderMockWheelPng } from './wheelPng.ts';
 
 export interface MockApiOptions {
   /** Artificial latency, so loading states can be seen. */
   delayMs: number;
-  /** Scenario for GET /me: `returning`, `401`, `500`; anything else is a new user. */
+  /**
+   * Scenario for GET /me: `401`, `500`, or `returning`, a user who already has a chart.
+   * Anything else is a new user. Either way the mock remembers the chart built last,
+   * until it is restarted.
+   */
   me?: string;
   /**
    * The version of the legal texts this "server" accepts in `consent.version`; any other is refused.
@@ -64,7 +78,7 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 /*
- * The user-facing texts of the mock are the ones apps/api sends at contract 1.3.0
+ * The user-facing texts of the mock are the ones apps/api sends at contract 1.4.0
  * (i18n/ru.ts, modules/charts/charts.dto.ts, modules/geo/geo.service.ts,
  * modules/events/events.dto.ts), so a screen looks in the mock the way it will
  * with the real server.
@@ -216,6 +230,10 @@ function chartRequestErrors(body: unknown, consentVersion: string): FieldError[]
 }
 
 function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_VERSION }: MockApiOptions) {
+  // All the mock keeps between requests: the user's chart and the birth data it was built from.
+  let current: { key: string; chart: ChartResponse } | null =
+    meScenario === 'returning' ? { key: inputKey(RETURNING_INPUT), chart: buildChart(RETURNING_INPUT) } : null;
+
   return async function handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const route = `${req.method ?? 'GET'} ${url.pathname.slice(PREFIX.length)}`;
     await sleep(delayMs);
@@ -236,8 +254,13 @@ function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_
         send(res, 200, renderMockWheel(theme), 'image/svg+xml');
         return;
       }
-      const size = url.searchParams.get('size');
-      sendPng(res, renderMockWheelPng(theme, size === null ? undefined : Number(size)));
+      // The default width, or one of the two the contract names; any other is refused, not replaced.
+      const size = Number(url.searchParams.get('size') ?? PNG_SIZES[0]);
+      if (!PNG_SIZES.includes(size)) {
+        sendInvalid(res, [{ field: 'size', message: 'Размер картинки — 1080 или 1600' }]);
+        return;
+      }
+      sendPng(res, renderMockWheelPng(theme, size));
       return;
     }
 
@@ -249,16 +272,26 @@ function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_
     if (route === 'GET /me') {
       if (meScenario === '401') sendProblem(res, 401, 'UNAUTHORIZED', MESSAGE.UNAUTHORIZED);
       else if (meScenario === '500') sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
-      else send(res, 200, meScenario === 'returning' ? { ...me, is_new: false, has_profile: true, has_chart: true } : me);
+      else send(res, 200, buildMe(current?.chart.chart.chart_id ?? null));
+      return;
+    }
+
+    if (route === 'GET /charts/current') {
+      // No chart is not a failure: the app takes the 404 as «go to the onboarding». The body is the one apps/api sends.
+      if (current) send(res, 200, { ...current.chart, is_restored: true });
+      else sendProblem(res, 404, 'NOT_FOUND', MESSAGE.NOT_FOUND);
       return;
     }
 
     if (route === 'POST /geo/resolve') {
       const body = await readJson(req);
       const query = isRecord(body) && typeof body.query === 'string' ? body.query.trim() : '';
-      const limit = isRecord(body) && typeof body.limit === 'number' ? Math.min(Math.max(body.limit, 1), 10) : 5;
+      const limit = isRecord(body) ? (body.limit ?? 5) : 5;
       const needle = query.toLowerCase();
-      if (query.length < QUERY_LENGTH.min) {
+      if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 10) {
+        // Refused, not cut to the nearest bound. The app sends no `limit` at all.
+        sendInvalid(res, [{ field: 'limit', message: 'limit — целое число от 1 до 10' }]);
+      } else if (query.length < QUERY_LENGTH.min) {
         // 422, not an empty list: `[]` means «no such place», not «too little typed». The app never sends a query this short.
         sendInvalid(res, [{ field: 'query', message: 'Введи хотя бы 2 буквы' }]);
       } else if (query.length > QUERY_LENGTH.max) {
@@ -324,9 +357,17 @@ function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_
         case SCENARIO.brokenWheel:
           send(res, 201, { ...created, wheel_url: '/api/v1/charts/unknown/wheel.svg?sig=broken' });
           return;
-        default:
+        default: {
+          const key = inputKey(input);
+          if (current?.key === key) {
+            // The same birth data again: the chart that is already there, with 200 instead of 201.
+            send(res, 200, { ...current.chart, is_restored: true });
+            return;
+          }
+          current = { key, chart: created };
           send(res, 201, created);
           return;
+        }
       }
     }
 
