@@ -16,6 +16,10 @@ export default tseslint.config(
       '**/src/contracts/generated.ts',
       // сам конфиг не входит ни в один tsconfig — линтить его нечем
       'eslint.config.mjs',
+      // QA-стенд (AGENTS.md §0): отдельные .mjs-утилиты вне tsconfig всех пакетов.
+      // Они не входят ни в одну сборку — как и сам конфиг выше.
+      'e2e/qa/**',
+      'scripts/qa/**',
     ],
   },
   js.configs.recommended,
