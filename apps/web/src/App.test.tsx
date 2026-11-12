@@ -134,7 +134,6 @@ describe('App: sign-in', () => {
     expect(ru.welcome.disclaimer).toMatch(/развлекательный/);
     expect(screen.getByRole('button', { name: ru.welcome.start })).toBeInTheDocument();
     expect(termsLine()).toBeInTheDocument();
-    expect(screen.queryByText(ru.welcome.returning)).not.toBeInTheDocument();
     expect(telegram.ready).toHaveBeenCalledTimes(1);
   });
 
@@ -190,10 +189,54 @@ describe('App: sign-in', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 
-  it('tells a returning user that the data has to be entered again', async () => {
-    setup({ api: (fake) => fake.getMe.mockResolvedValue({ ...me, is_new: false, has_profile: true, has_chart: true }) });
+});
+
+describe('App: a user who already has a chart', () => {
+  const returning: Me = { ...me, is_new: false, has_profile: true, has_chart: true, chart_id: chartResult.chart.chart_id };
+  const restored: ChartResult = { ...chartResult, is_restored: true };
+
+  it('opens on the chart from the server; the form is one tap away, and «Не сейчас» leads back to the chart', async () => {
+    const { api, analytics, telegram, user } = setup({
+      api: (fake) => {
+        fake.getMe.mockResolvedValue(returning);
+        fake.getCurrentChart.mockResolvedValue(restored);
+      },
+    });
+
+    expect(await screen.findByRole('region', { name: ru.chart.sun })).toBeInTheDocument();
+    expect(heading()).toHaveTextContent(ru.chart.title);
+    expect(api.createChart).not.toHaveBeenCalled();
+    expect(analytics.events).toEqual([
+      { name: 'app_open' },
+      { name: 'screen_view', props: { step: 'chart' } },
+      { name: 'chart_restored' },
+    ]);
+    // The first screen of this start: nothing to go back to.
+    expect(telegram.setBackHandler).toHaveBeenLastCalledWith(null);
+
+    await user.click(screen.getByRole('button', { name: ru.chart.enterAgain }));
+    // The consent is asked anew: the one given for the old chart was not given in this session.
+    expect(heading()).toHaveTextContent(ru.consent.title);
+    expect(consentBox()).not.toBeChecked();
+
+    await user.click(notNow());
+    expect(await screen.findByRole('region', { name: ru.chart.sun })).toBeInTheDocument();
+    expect(api.getCurrentChart).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts the onboarding when the server has no chart after all', async () => {
+    const { api } = setup({ api: (fake) => fake.getMe.mockResolvedValue(returning) });
+
+    expect(await start()).toBeInTheDocument();
+    expect(heading()).toHaveTextContent(ru.welcome.title);
+    expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask a new user\'s server for a chart it cannot have', async () => {
+    const { api } = setup();
+
     await start();
-    expect(screen.getByRole('note')).toHaveTextContent(ru.welcome.returning);
+    expect(api.getCurrentChart).not.toHaveBeenCalled();
   });
 });
 
@@ -350,7 +393,7 @@ describe('App: from the welcome screen to the chart', () => {
     expect(api.createChart).toHaveBeenCalledTimes(1);
     expect(api.createChart.mock.calls[0]?.[0]).toEqual(chartRequest);
     expect(api.createChart.mock.calls[0]?.[0].birth_place).toBe(kazan);
-    expect(screen.queryByText(ru.chart.approxTime)).not.toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
   });
 
   it('sends no time at all when the user does not know it', async () => {
@@ -382,10 +425,11 @@ describe('App: from the welcome screen to the chart', () => {
     expect(api.createChart.mock.calls[0]?.[0]).toMatchObject({ birth_time: null, time_precision: 'unknown' });
   });
 
-  it('sends a roughly known time as approximate, and the chart that echoes it carries the accuracy note', async () => {
+  it('sends a roughly known time as approximate, and shows the server\'s warning about it on the chart', async () => {
     const approximate: ChartResult = {
       ...chartResult,
       chart: { ...chartResult.chart, birth: { ...chartResult.chart.birth, time: '09:05', time_precision: 'approximate' } },
+      warnings: ['approximate_time'],
     };
     const { api, user } = setup({ api: (fake) => fake.createChart.mockResolvedValue(approximate) });
 
@@ -393,7 +437,7 @@ describe('App: from the welcome screen to the chart', () => {
     await enterTime(user, 'approximate', '0905');
     await enterPlace(user);
 
-    expect(await screen.findByText(ru.chart.approxTime)).toBeInTheDocument();
+    expect(await screen.findByText(ru.chart.warnings.approximate_time)).toBeInTheDocument();
     expect(api.createChart.mock.calls[0]?.[0]).toMatchObject({ birth_time: '09:05', time_precision: 'approximate' });
   });
 

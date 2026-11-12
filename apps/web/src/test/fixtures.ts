@@ -1,7 +1,7 @@
 /* Shared test doubles. All birth data here is invented. */
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
-import type { EventName, Track } from '../analytics';
+import type { AppEventName, Track } from '../analytics';
 import type { Api, Chart, ChartCreateRequest, ChartResult, FieldError, GeoPlace, Me } from '../api';
 import { ApiError, type ApiErrorCode } from '../api';
 import { CONSENT_VERSION } from '../i18n/ru';
@@ -119,12 +119,14 @@ export function fakeApi() {
     getMe: vi.fn<Api['getMe']>().mockResolvedValue(me),
     resolveGeo: vi.fn<Api['resolveGeo']>().mockResolvedValue([kazan, kazanka]),
     createChart: vi.fn<Api['createChart']>().mockResolvedValue(chartResult),
+    // A new user: the server has no chart to open.
+    getCurrentChart: vi.fn<Api['getCurrentChart']>().mockResolvedValue(null),
     sendEvents: vi.fn<Api['sendEvents']>().mockResolvedValue(undefined),
   };
 }
 
 export interface TrackedEvent {
-  name: EventName;
+  name: AppEventName;
   props?: object;
 }
 

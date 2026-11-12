@@ -1,4 +1,4 @@
-import { Button, Notice, Screen, ScreenHeading } from '@astro-soul/ui';
+import { Button, Screen, ScreenHeading } from '@astro-soul/ui';
 import { useId } from 'react';
 import { ru } from '../../i18n/ru';
 import { Emblem } from './Emblem';
@@ -7,8 +7,6 @@ import styles from './WelcomeScreen.module.css';
 const copy = ru.welcome;
 
 export interface WelcomeScreenProps {
-  /** `Me.has_chart`: the user already built a chart earlier. */
-  returning: boolean;
   onStart: () => void;
   /** Opens the user agreement, where the full disclaimer is. */
   onOpenTerms: () => void;
@@ -19,7 +17,7 @@ export interface WelcomeScreenProps {
  * to the main button: it is on screen without scrolling at any viewport height.
  * Under the button, in small print, is the way to the full text.
  */
-export function WelcomeScreen({ returning, onStart, onOpenTerms }: WelcomeScreenProps) {
+export function WelcomeScreen({ onStart, onOpenTerms }: WelcomeScreenProps) {
   const titleId = useId();
   return (
     <Screen
@@ -42,7 +40,6 @@ export function WelcomeScreen({ returning, onStart, onOpenTerms }: WelcomeScreen
           <Emblem />
           <ScreenHeading id={titleId} title={copy.title} text={copy.lead} focusOnMount />
         </div>
-        {returning && <Notice>{copy.returning}</Notice>}
         <ul className={styles.points}>
           {copy.points.map((point) => (
             <li key={point.title} className={styles.point}>

@@ -24,6 +24,13 @@ const termsReload = createTermsReload();
 
 createRoot(root).render(
   <StrictMode>
-    <App api={api} telegram={telegram} apiBaseUrl={config.apiBaseUrl} track={analytics.track} termsReload={termsReload} />
+    <App
+      api={api}
+      telegram={telegram}
+      apiBaseUrl={config.apiBaseUrl}
+      botUsername={config.botUsername}
+      track={analytics.track}
+      termsReload={termsReload}
+    />
   </StrictMode>,
 );
