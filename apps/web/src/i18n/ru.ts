@@ -1,4 +1,4 @@
-import type { ApiErrorCode, TimePrecision } from '../api';
+import type { ApiErrorCode, ChartWarning, TimePrecision } from '../api';
 import type { DateIssue, TimeIssue } from '../lib/birth';
 import type { PluralForm } from './format';
 
@@ -127,6 +127,17 @@ const timeOptions: Record<TimePrecision, TimeOptionCopy> = {
   },
 };
 
+/**
+ * What the server warns about (`ChartResponse.warnings`), a note per code. Positions come
+ * with minutes of arc either way; these say plainly when the input does not support that.
+ */
+const chartWarnings: Record<ChartWarning, string> = {
+  no_birth_time: 'Время рождения не указано, поэтому положение Луны приблизительное: за сутки она проходит около 13°.',
+  approximate_time: 'Время указано примерно, поэтому Асцендент и дома могут быть неточными.',
+  approximate_place:
+    'Этого места нет в нашем справочнике. Часовой пояс мог определиться по ближайшему крупному городу: если он другой, время рождения в расчёте сдвинуто на час.',
+};
+
 /** Telegram Stars, the app's only currency: «1 звезда», «2 звезды», «149 звёзд». */
 const stars: Record<PluralForm, string> = {
   one: 'звезда',
@@ -160,7 +171,6 @@ export const ru = {
   welcome: {
     title: 'Разбор личности',
     lead: 'Натальная карта и личный разбор по дате, времени и месту рождения.',
-    returning: 'Чтобы снова открыть свою карту, введи данные рождения ещё раз.',
     points: [
       { title: 'Три шага', text: 'Дата, время и место рождения — и карта готова.' },
       { title: 'Солнце, Луна, Асцендент', text: 'Короткий разбор трёх главных точек карты.' },
@@ -183,6 +193,9 @@ export const ru = {
       'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Это необратимо.',
       'Если ты не заходишь 24 месяца, данные удаляются автоматически.',
     ],
+    /** A paragraph of its own under the list: it is about usage statistics, not about the birth data. */
+    analytics:
+      'Мы собираем обезличенную статистику использования (какие экраны открываются, на каком шаге люди уходят). В ней нет того, что ты вводишь: ни даты и места рождения, ни текста вопросов.',
     /** The two documents the screen links to. */
     documents: {
       privacy: 'Политика обработки персональных данных',
@@ -193,9 +206,6 @@ export const ru = {
     decline: 'Не сейчас',
   },
 
-    /** A paragraph of its own under the list: it is about usage statistics, not about the birth data. */
-    analytics:
-      'Мы собираем обезличенную статистику использования (какие экраны открываются, на каком шаге люди уходят). В ней нет того, что ты вводишь: ни даты и места рождения, ни текста вопросов.',
   /**
    * Legal texts of the two document screens, a paragraph per entry. The full documents
    * are not written yet: these are the short versions, shown with their version.
@@ -208,6 +218,7 @@ export const ru = {
         'Не собираем: телефон, email, паспортные данные, геолокацию устройства и контакты.',
         'Данные рождения используются только для расчёта карты и генерации разбора. Текст разбора генерируется без имени, точных координат и id. Платёжные идентификаторы хранятся без персональных данных.',
         'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Если ты не заходишь 24 месяца, данные удаляются автоматически.',
+        'Аналитика: мы собираем обезличенную статистику использования. В событиях нет даты, времени и места рождения, текста вопросов и имени.',
       ],
     },
     /** Without the support line of the source file: it holds a placeholder until there is a contact to show. */
@@ -218,7 +229,6 @@ export const ru = {
         'Удалить данные: Настройки → «Удалить мои данные».',
       ],
     },
-        'Аналитика: мы собираем обезличенную статистику использования. В событиях нет даты, времени и места рождения, текста вопросов и имени.',
   },
 
   /**
@@ -300,11 +310,12 @@ export const ru = {
     noPosition: 'Положение не пришло с сервера.',
     ascUnknown: 'Не рассчитан',
     ascUnknownText: 'Асцендент и дома рассчитываются только по времени рождения, а оно не указано.',
-    approxTime: 'Время указано примерно, поэтому Асцендент и дома могут быть неточными.',
-    unknownTime: 'Время рождения не указано, поэтому положение Луны приблизительное: за сутки она проходит около 13°.',
+    warnings: chartWarnings,
     emptyTitle: 'Карта пришла пустой',
     emptyText: 'Сервер построил карту, но не прислал ни позиций, ни колеса. Попробуй ещё раз.',
     editData: 'Изменить данные рождения',
+    /** On a chart opened from the server: the form behind this button starts empty. */
+    enterAgain: 'Ввести данные рождения заново',
     teaserTitle: 'Полный разбор',
     teaserLocked: 'Продолжение закрыто',
     /** The price follows: «Открыть полностью — 149 ⭐». The space before the dash is non-breaking. */

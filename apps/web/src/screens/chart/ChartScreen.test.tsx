@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import type { Chart, ChartResult, FieldError, TimePrecision } from '../../api';
+import type { ChartResult, FieldError } from '../../api';
 import { formatCount, pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import {
@@ -32,6 +32,10 @@ const TEASER_CTA_NAME = `${TEASER_CTA} ${ru.common.stars[pluralForm(REPORT_PRICE
 interface SetupOptions {
   /** What `POST /charts` answers with; the fixture chart by default. */
   result?: ChartResult | Promise<ChartResult>;
+  /** Opens the chart the user already has instead of building one: what `GET /charts/current` answers with, null for «none». */
+  current?: ChartResult | null;
+  /** The bot named in a shared message; none by default. */
+  botUsername?: string;
   /** An API prepared by the test, e.g. one that fails first. */
   api?: ReturnType<typeof fakeApi>;
   /** False: nobody listens for the fields the server rejected. */
@@ -40,32 +44,30 @@ interface SetupOptions {
   strict?: boolean;
 }
 
-function setup({ result, api = fakeApi(), listens = true, strict = false }: SetupOptions = {}) {
+function setup({ result, current, botUsername = '', api = fakeApi(), listens = true, strict = false }: SetupOptions = {}) {
   if (result) api.createChart.mockImplementation(() => Promise.resolve(result));
+  if (current !== undefined) api.getCurrentChart.mockResolvedValue(current);
   const telegram = fakeTelegram();
   const analytics = fakeAnalytics();
   const onEdit = vi.fn();
   const onRejected = vi.fn<(errors: FieldError[]) => void>();
+  const onMissing = vi.fn();
   const chartScreen = (
     <ChartScreen
       api={api}
       telegram={telegram}
-      request={request}
+      request={current === undefined ? request : null}
       apiBaseUrl="https://api.test"
+      botUsername={botUsername}
       track={analytics.track}
       onEdit={onEdit}
       onRejected={listens ? onRejected : undefined}
+      onMissing={onMissing}
     />
   );
   const view = render(strict ? <StrictMode>{chartScreen}</StrictMode> : chartScreen);
-  return { api, telegram, analytics, onEdit, onRejected, user: userEvent.setup(), ...view };
+  return { api, telegram, analytics, onEdit, onRejected, onMissing, user: userEvent.setup(), ...view };
 }
-
-/** The fixture chart with another `birth` block. */
-const chartBornWith = (birth: Chart['birth'], rest: Partial<Chart> = {}): ChartResult => ({
-  ...chartResult,
-  chart: { ...chart, ...rest, birth },
-});
 
 /** A reading and a wheel path as the client hands them over when the answer carried neither. */
 const NOTHING_BESIDES_THE_CHART = {
@@ -123,8 +125,6 @@ describe('ChartScreen', () => {
     expect(within(card(copy.sun)).getByText('Телец, 26°17′')).toBeInTheDocument();
     expect(screen.queryByText(/-й дом/)).not.toBeInTheDocument();
     expect(screen.getByText(`17 мая 1994 г. · ${copy.timeUnknown} · Казань`)).toBeInTheDocument();
-    // The Moon is shown to the minute of arc; without a time that precision is not real.
-    expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
   });
 
   it('does not show an Ascendant the server sent by mistake for an unknown time', async () => {
@@ -146,14 +146,12 @@ describe('ChartScreen', () => {
   });
 
   describe('a chart built before `birth.time_precision` existed', () => {
-    const { time_precision: _precision, ...legacyKnown } = chart.birth;
     const { time_precision: _unknown, ...legacyUnknown } = chartWithoutTime.chart.birth;
 
     it('reads `time_known: false` as an unknown time', async () => {
       setup({ result: { ...chartWithoutTime, chart: { ...chartWithoutTime.chart, birth: legacyUnknown } } });
 
       expect(within(await screen.findByRole('region', { name: copy.asc })).getByText(copy.ascUnknown)).toBeInTheDocument();
-      expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
       expect(screen.getByText(`17 мая 1994 г. · ${copy.timeUnknown} · Казань`)).toBeInTheDocument();
     });
 
@@ -162,15 +160,6 @@ describe('ChartScreen', () => {
       setup({ result: { ...chartWithoutTime, chart: { ...chartWithoutTime.chart, birth } } });
 
       expect(within(await screen.findByRole('region', { name: copy.asc })).getByText(copy.ascUnknown)).toBeInTheDocument();
-      expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
-    });
-
-    it('claims nothing about the accuracy of a time it knows only as "known"', async () => {
-      setup({ result: chartBornWith(legacyKnown) });
-
-      expect(within(await screen.findByRole('region', { name: copy.asc })).getByText('Дева, 4°09′')).toBeInTheDocument();
-      expect(screen.queryByText(copy.approxTime)).not.toBeInTheDocument();
-      expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
     });
   });
 
@@ -180,38 +169,30 @@ describe('ChartScreen', () => {
     const asc = within(await screen.findByRole('region', { name: copy.asc }));
     expect(asc.getByText(copy.noPosition)).toBeInTheDocument();
     expect(asc.queryByText(copy.ascUnknown)).not.toBeInTheDocument();
-    expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
     expect(screen.getByText('17 мая 1994 г. · 14:30 · Казань')).toBeInTheDocument();
   });
 
-  it('reminds about the accuracy when the chart says the time was given roughly', async () => {
-    setup({ result: chartBornWith({ ...chart.birth, time_precision: 'approximate' }) });
+  it('shows what the server warns about, in its order, and adds no warning of its own', async () => {
+    // The chart says «the time is approximate»; the server warns about the place only.
+    const roughly: ChartResult = { ...chartResult, chart: { ...chart, birth: { ...chart.birth, time_precision: 'approximate' } } };
+    const { rerender } = setup({ result: { ...roughly, warnings: ['approximate_place', 'no_birth_time'] } });
 
-    expect(await screen.findByText(copy.approxTime)).toBeInTheDocument();
-    expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
+    await screen.findByRole('region', { name: copy.sun });
+    expect(screen.getAllByRole('note').map((note) => note.textContent)).toEqual([
+      copy.warnings.approximate_place,
+      copy.warnings.no_birth_time,
+    ]);
     // An approximate time is still a time: the Ascendant is shown.
     expect(within(card(copy.asc)).getByText('Дева, 4°09′')).toBeInTheDocument();
-  });
 
-  it.each<[TimePrecision, string | null]>([
-    ['exact', null],
-    ['approximate', copy.approxTime],
-    ['unknown', copy.unknownTime],
-  ])('takes the precision from the chart, not from the other signs of a time: %s', async (precision, note) => {
-    // Everything else says "the time is known".
-    setup({ result: chartBornWith({ ...chart.birth, time_precision: precision }) });
+    // The same chart from a server that warns about nothing, e.g. one built before the warnings existed.
+    const api = fakeApi();
+    api.createChart.mockResolvedValue(roughly);
+    rerender(
+      <ChartScreen api={api} telegram={fakeTelegram()} request={{ ...request }} apiBaseUrl="" botUsername="" track={vi.fn()} onEdit={vi.fn()} />,
+    );
     await screen.findByRole('region', { name: copy.sun });
-
-    for (const text of [copy.approxTime, copy.unknownTime]) {
-      expect(screen.queryAllByText(text)).toHaveLength(text === note ? 1 : 0);
-    }
-  });
-
-  it('shows no accuracy note for an exact time', async () => {
-    setup();
-    await screen.findByRole('region', { name: copy.sun });
-    expect(screen.queryByText(copy.approxTime)).not.toBeInTheDocument();
-    expect(screen.queryByText(copy.unknownTime)).not.toBeInTheDocument();
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
   });
 
   it('keeps the full report locked: a teaser, the price from the shared plans, and a button that cannot start a purchase yet', async () => {
@@ -236,6 +217,17 @@ describe('ChartScreen', () => {
     expect(telegram.share).toHaveBeenCalledWith(WHEEL_PNG_URL, copy.shareText);
     // On screen it is still the SVG.
     expect(screen.getByRole('img', { name: copy.wheelAlt })).toHaveAttribute('src', WHEEL_URL);
+  });
+
+  it('adds the link to the bot to the shared message when the bot is named: the picture stays the address', async () => {
+    const { telegram, user } = setup({ botUsername: 'astro_soul_bot' });
+
+    await user.click(await screen.findByRole('button', { name: copy.share }));
+
+    expect(telegram.share).toHaveBeenCalledWith(
+      WHEEL_PNG_URL,
+      `${copy.shareText}\nhttps://t.me/astro_soul_bot?startapp=chart_${chart.chart_id}`,
+    );
   });
 
   it('shares the SVG link when the server has no PNG to offer (a server older than contract 1.3.0)', async () => {
@@ -383,7 +375,45 @@ describe('ChartScreen', () => {
     expect(signal?.aborted).toBe(true);
   });
 
+  describe('the chart the user already has', () => {
+    it('opens it from the server without building anything, and offers the way to enter the data again', async () => {
+      const { api, analytics, onEdit, onMissing, user } = setup({ current: { ...chartWithoutTime, is_restored: true } });
+
+      expect(await screen.findByRole('img', { name: copy.wheelAlt })).toHaveAttribute('src', WHEEL_URL);
+      expect(screen.getByText(`17 мая 1994 г. · ${copy.timeUnknown} · Казань`)).toBeInTheDocument();
+      expect(screen.getByRole('note')).toHaveTextContent(copy.warnings.no_birth_time);
+      expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+      expect(api.createChart).not.toHaveBeenCalled();
+      expect(onMissing).not.toHaveBeenCalled();
+      // Not a request for a chart and not a new chart: nothing else is counted.
+      expect(analytics.events).toEqual([{ name: 'chart_restored' }]);
+
+      await user.click(screen.getByRole('button', { name: copy.enterAgain }));
+      expect(onEdit).toHaveBeenCalledTimes(1);
+    });
+
+    it('tells the caller when the server has no chart, and shows neither a chart nor an error', async () => {
+      const { analytics, onMissing } = setup({ current: null, strict: true });
+
+      await vi.waitFor(() => {
+        expect(onMissing).toHaveBeenCalledTimes(1);
+      });
+      expect(screen.getByRole('main')).toHaveAttribute('aria-busy', 'true');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(analytics.events).toEqual([]);
+    });
+  });
+
   describe('product events', () => {
+    it('reports a chart that already existed as restored, by the body of the answer', async () => {
+      const { analytics } = setup({ result: { ...chartResult, is_restored: true } });
+
+      await screen.findByRole('img', { name: copy.wheelAlt });
+      expect(analytics.events).toEqual([{ name: 'chart_requested' }, { name: 'chart_restored' }]);
+      // Built from the form: the way back to it is the back button, not a button under the chart.
+      expect(screen.queryByRole('button', { name: copy.enterAgain })).not.toBeInTheDocument();
+    });
+
     it('reports the request, then the chart', async () => {
       const pending = deferred<ChartResult>();
       const { analytics } = setup({ result: pending.promise });
@@ -426,6 +456,7 @@ describe('ChartScreen', () => {
           telegram={fakeTelegram()}
           request={{ ...request }}
           apiBaseUrl="https://api.test"
+          botUsername="astro_soul_bot"
           track={analytics.track}
           onEdit={vi.fn()}
         />,
