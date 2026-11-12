@@ -32,16 +32,21 @@ const MOCK_SIG = 'mock-signature';
 
 const SIGNS = ['Овен', 'Телец', 'Близнецы', 'Рак', 'Лев', 'Дева', 'Весы', 'Скорпион', 'Стрелец', 'Козерог', 'Водолей', 'Рыбы'];
 
-export const me: Me = {
-  user_id: '00000000-0000-4000-8000-000000000001',
-  display_name: null,
-  is_new: true,
-  has_profile: false,
-  has_chart: false,
-  subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
-  quotas: [],
-  onboarding_step: 'birth_date',
-};
+/** `GET /me` for a user with the chart `chartId`, or with none yet. */
+export function buildMe(chartId: string | null): Me {
+  const hasChart = chartId !== null;
+  return {
+    user_id: '00000000-0000-4000-8000-000000000001',
+    display_name: null,
+    is_new: !hasChart,
+    has_profile: hasChart,
+    has_chart: hasChart,
+    chart_id: chartId,
+    subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
+    quotas: [],
+    onboarding_step: hasChart ? 'done' : 'birth_date',
+  };
+}
 
 /** Places that trigger the scenarios of `POST /charts`, see apps/web/README.md. */
 export const SCENARIO = {
@@ -53,7 +58,39 @@ export const SCENARIO = {
   outdatedConsent: 'Версионово',
   emptyChart: 'Пустошь',
   brokenWheel: 'Безколёсово',
+  approximatePlace: 'Примерново',
 } as const;
+
+/** The birth data of the chart a `returning` user of the mock already has. Invented, like everything here. */
+export const RETURNING_INPUT: ChartCreateRequest = {
+  birth_date: '1994-05-17',
+  birth_time: '14:30',
+  time_precision: 'exact',
+  birth_place: { name: 'Казань', region: 'Татарстан', country: 'RU', lat: 55.7963, lon: 49.1088, tz: 'Europe/Moscow' },
+  consent: { accepted: true, version: MOCK_CONSENT_VERSION },
+};
+
+/** What makes two requests the same chart: the birth data, as in the server's input hash. The consent is not a part of it. */
+export function inputKey({ birth_date, birth_time, time_precision, birth_place }: ChartCreateRequest): string {
+  const { name, country, lat, lon, tz } = birth_place;
+  return JSON.stringify([birth_date, birth_time ?? null, time_precision, name, country, lat, lon, tz]);
+}
+
+/**
+ * `ChartResponse.warnings` by the server's rule (apps/api, `computeWarnings`): the time first,
+ * then the place. The server warns about a place its gazetteer lacks; here that is one
+ * scenario place. That place also gets a code no build knows, to show that the app skips it.
+ */
+function warningsFor(input: ChartCreateRequest): ChartResponse['warnings'] {
+  const warnings: ChartResponse['warnings'] = [];
+  if (input.time_precision === 'unknown') warnings.push('no_birth_time');
+  if (input.time_precision === 'approximate') warnings.push('approximate_time');
+  if (input.birth_place.name === SCENARIO.approximatePlace) {
+    // On purpose more than the contract lists: the list is open, and a newer server may send a code like this.
+    warnings.push('approximate_place', 'mock_code_of_a_newer_server' as ChartResponse['warnings'][number]);
+  }
+  return warnings;
+}
 
 const scenarioPlace = (name: string): GeoPlace => ({
   name,
@@ -156,9 +193,7 @@ export function buildChart(input: ChartCreateRequest): ChartResponse {
     // One signature for both addresses, as in apps/api: the SVG is for the screen, the PNG for sharing.
     wheel_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.svg?sig=${MOCK_SIG}`,
     wheel_png_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.png?sig=${MOCK_SIG}`,
-    // Contract 1.4.0: required `warnings` and `is_restored`. The mock mirrors
-    // the server rule: unknown birth time -> no_birth_time.
-    warnings: timeKnown ? [] : (['no_birth_time'] as const).slice(),
+    warnings: warningsFor(input),
     is_restored: false,
   };
 }

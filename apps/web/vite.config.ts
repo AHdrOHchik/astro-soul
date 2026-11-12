@@ -2,6 +2,7 @@ import react from '@vitejs/plugin-react';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { mockApi } from './mock/plugin.ts';
+import { botUsernameOf } from './src/lib/share.ts';
 
 /*
  * Oldest engines we promise to run on: iOS 15 (Safari 15) and the Chromium 80
@@ -21,6 +22,10 @@ export default defineConfig(({ mode, command }) => {
   // only VITE_* ones reach the client bundle.
   const env = loadEnv(mode, process.cwd(), '');
   const useMock = env.API_MOCK === '1';
+  // The app treats a value it cannot use as no value. Unnoticed, that is a release whose shared charts lead nowhere.
+  if (env.VITE_BOT_USERNAME && botUsernameOf(env.VITE_BOT_USERNAME) === '') {
+    throw new Error(`VITE_BOT_USERNAME is not a Telegram username: «${env.VITE_BOT_USERNAME}». Expected the bot's username, with or without @.`);
+  }
 
   return {
     plugins: [

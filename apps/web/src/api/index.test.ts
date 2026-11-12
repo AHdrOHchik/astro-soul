@@ -161,6 +161,18 @@ describe('createChart', () => {
     await expect(api.createChart(input)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
 
+  it('keeps the warnings it has words for, in the server\'s order, and skips the rest: the server may add codes', async () => {
+    const { api, fetchMock } = setup();
+    const warnings = ['approximate_place', 'code_of_a_newer_server', 'no_birth_time', 7, 'no_birth_time'];
+    // 200, not 201: the chart already existed. The body says the same.
+    fetchMock.mockResolvedValueOnce(json(200, { chart: { chart_id: 'c-1' }, warnings, is_restored: true }));
+    // A server older than contract 1.4.0 sends neither field.
+    fetchMock.mockResolvedValueOnce(json(201, { chart: { chart_id: 'c-1' } }));
+
+    await expect(api.createChart(input)).resolves.toMatchObject({ warnings: ['approximate_place', 'no_birth_time'], is_restored: true });
+    await expect(api.createChart(input)).resolves.toMatchObject({ warnings: [], is_restored: false });
+  });
+
   it('surfaces a validation problem with the server text and the fields it names', async () => {
     const { api, fetchMock } = setup();
     const fields = [
@@ -175,6 +187,32 @@ describe('createChart', () => {
 
     expect(error).toMatchObject({ code: 'VALIDATION_FAILED', status: 422, serverMessage: 'Сервис доступен с 18 лет', requestId: 'r-9' });
     expect(fieldErrorsOf(error)).toEqual(fields);
+  });
+});
+
+describe('getCurrentChart', () => {
+  it('reads the chart like `POST /charts` does, and takes the server\'s 404 for «no chart yet», not for a failure', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock
+      .mockResolvedValueOnce(json(200, { chart: { chart_id: 'c-1' }, warnings: ['approximate_time'], is_restored: true }))
+      .mockResolvedValueOnce(
+        // The body apps/api sends when the user has no chart.
+        json(404, { code: 'NOT_FOUND', message: 'Такой страницы нет. Обнови приложение.', request_id: 'r' }),
+      )
+      .mockResolvedValueOnce(json(500, { code: 'INTERNAL', message: 'Что-то сломалось на нашей стороне.', request_id: 'r' }));
+
+    await expect(api.getCurrentChart()).resolves.toEqual({
+      chart: { chart_id: 'c-1', birth: {}, asc: null, mc: null, houses: null, planets: [] },
+      mini_reading: { sun: '', moon: '', asc: '', summary: '' },
+      warnings: ['approximate_time'],
+      wheel_url: '',
+      is_restored: true,
+    });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect([url, init?.method, init?.body]).toEqual(['/api/v1/charts/current', 'GET', undefined]);
+
+    await expect(api.getCurrentChart()).resolves.toBeNull();
+    await expect(api.getCurrentChart()).rejects.toMatchObject({ code: 'INTERNAL', status: 500 });
   });
 });
 

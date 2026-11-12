@@ -5,6 +5,17 @@ export type ClientEvent = components['schemas']['ClientEvent'];
 export type EventName = ClientEvent['name'];
 
 /**
+ * Events the app is ready to report before the contract lists them. The owner agreed the
+ * name; the contract gets it with 1.4.1. Until then such an event stays in the app (see
+ * `isContractEvent`), and the day the contract lists it the build asks for its line in
+ * `EVENT_NAMES` — that line is what switches the event on.
+ */
+type AgreedEventName = 'validation_failed_client';
+
+/** Every event a screen may report: the contract's, and the agreed ones that wait for it. */
+export type AppEventName = EventName | AgreedEventName;
+
+/**
  * Every event of the contract. Typed against `ClientEvent.name`: an event added to
  * or removed from the contract breaks the build here. An unknown name is not a
  * small thing: the server refuses the whole batch it arrives in.
@@ -33,6 +44,11 @@ export const EVENT_NAMES: Record<EventName, true> = {
   screen_view: true,
 };
 
+/** Whether the contract lists the event. Only such an event may go to the server. */
+export function isContractEvent(name: string): name is EventName {
+  return Object.prototype.hasOwnProperty.call(EVENT_NAMES, name);
+}
+
 /** The screens, under the names the events call them. */
 export type AnalyticsStep =
   | 'welcome'
@@ -58,6 +74,9 @@ const REJECTED_FIELDS = [
 
 export type RejectedField = (typeof REJECTED_FIELDS)[number] | 'other';
 
+/** The request fields the app checks itself before anything is sent, under the same names. */
+export type ClientCheckedField = Extract<RejectedField, 'birth_date' | 'birth_time' | 'time_precision' | 'birth_place'>;
+
 /** The field name is the server's string; an event carries it only when it is one of the known ones. */
 export function rejectedFieldOf(field: string): RejectedField {
   return (REJECTED_FIELDS as readonly string[]).includes(field) ? (field as RejectedField) : 'other';
@@ -76,10 +95,12 @@ export interface EventProps {
   place_search_failed: { code: string };
   chart_failed: { code: string };
   validation_failed: { step: AnalyticsStep; code: 'VALIDATION_FAILED'; field?: RejectedField };
+  /** A check of the app's own stopped the user. Which field, never why: the reason would be a fact about the value. */
+  validation_failed_client: { step: AnalyticsStep; field: ClientCheckedField };
 }
 
 /** Reports one event. Events outside `EventProps` take no props at all. */
-export type Track = <Name extends EventName>(
+export type Track = <Name extends AppEventName>(
   name: Name,
   ...props: Name extends keyof EventProps ? [props: EventProps[Name]] : []
 ) => void;

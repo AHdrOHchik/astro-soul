@@ -1,6 +1,8 @@
 import { FieldMessage, Notice, OptionCard, SegmentedInput, Stack, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
+import type { Track } from '../analytics';
 import type { TimePrecision } from '../api';
+import { useClientCheck } from '../hooks/useClientCheck';
 import { ru } from '../i18n/ru';
 import { checkBirthTime, isTimeTyped, type TimeParts } from '../lib/birth';
 import { focusChosenOption, focusFirstOpenInput } from '../lib/focus';
@@ -22,6 +24,8 @@ export interface BirthTimeScreenProps {
   precisionError?: string;
   /** The same about the time itself (`birth_time`). */
   timeError?: string;
+  /** Reports that a check of this screen stopped the user; never the time or what was wrong with it. */
+  track: Track;
   back?: ScreenProps['back'];
   onModeChange: (mode: TimePrecision) => void;
   onTimeChange: (time: TimeParts) => void;
@@ -37,6 +41,7 @@ export function BirthTimeScreen({
   time,
   precisionError,
   timeError,
+  track,
   back,
   onModeChange,
   onTimeChange,
@@ -58,9 +63,12 @@ export function BirthTimeScreen({
   const check = checkBirthTime(time);
   const timeIssue = !needsTime || check.ok || (check.issue === 'incomplete' && !submitted) ? null : check.issue;
   const done = mode === 'unknown' || (needsTime && check.ok);
+  const unchosen = mode === null && submitted;
   // What the server said about the time is shown at the time field; without one on screen, next to the options.
-  const optionsError = mode === null && submitted ? copy.chooseOption : (precisionError ?? (needsTime ? undefined : timeError));
+  const optionsError = unchosen ? copy.chooseOption : (precisionError ?? (needsTime ? undefined : timeError));
   const timeFieldError = timeIssue ? copy.issues[timeIssue] : timeError;
+  useClientCheck(track, 'birth_time', 'time_precision', unchosen ? 'unchosen' : null);
+  useClientCheck(track, 'birth_time', 'birth_time', timeIssue);
 
   // Decided once, when the screen opens: brought back by the server's verdict, the user lands on what it is about.
   const [rejectedAtStart] = useState<'options' | 'time' | null>(() => {

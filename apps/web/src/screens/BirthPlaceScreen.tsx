@@ -16,6 +16,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../analytics';
 import { fieldErrorsOf, type Api, type GeoPlace } from '../api';
 import { ErrorState } from '../components/ErrorState';
+import { useClientCheck } from '../hooks/useClientCheck';
 import { usePlaceSearch, type PlaceSearch } from '../hooks/usePlaceSearch';
 import { formatRegion } from '../i18n/format';
 import { ru } from '../i18n/ru';
@@ -45,7 +46,7 @@ function statusText(search: PlaceSearch): string | undefined {
 export interface BirthPlaceScreenProps {
   api: Pick<Api, 'resolveGeo'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close'>;
-  /** Reports that a search ran and how it ended; the query itself is never reported. */
+  /** Reports that a search ran and how it ended, and that the user tried to go on without a place; the query itself is never reported. */
   track: Track;
   query: string;
   place: GeoPlace | null;
@@ -81,6 +82,7 @@ export function BirthPlaceScreen({
   // While a place is chosen the field shows its name; that must not trigger a new search.
   const search = usePlaceSearch(api, place === null ? query : '', track);
   const missing = place === null && submitted;
+  useClientCheck(track, 'birth_place', 'birth_place', missing ? 'missing' : null);
   // The server's own text about the query it was sent belongs at the field, like any other problem with its value.
   const queryError =
     search.status === 'error' ? fieldErrorsOf(search.error).find(({ field }) => field === 'query')?.message : undefined;

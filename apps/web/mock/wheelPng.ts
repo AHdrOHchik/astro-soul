@@ -7,8 +7,8 @@ import { crc32, deflateSync } from 'node:zlib';
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-/** The contract's limits for `size`, and its default. */
-export const PNG_SIZE = { min: 160, max: 1600, default: 1080 } as const;
+/** The widths the contract allows for `size`; the first one is the default. */
+export const PNG_SIZES: readonly number[] = [1080, 1600];
 
 /** Palette indexes: the picture needs three colours. */
 const PAPER = 0;
@@ -51,9 +51,8 @@ function colourAt(x: number, y: number, lineWidth: number): number {
 
 const rendered = new Map<string, Buffer>();
 
-/** `size` is clamped to the contract's limits, as apps/api does. */
-export function renderMockWheelPng(theme: 'dark' | 'light', size: number = PNG_SIZE.default): Buffer {
-  const width = Math.min(Math.max(Math.trunc(Number.isFinite(size) ? size : PNG_SIZE.default), PNG_SIZE.min), PNG_SIZE.max);
+/** Draws any width; which widths a request may ask for is the route's business (`PNG_SIZES`). */
+export function renderMockWheelPng(theme: 'dark' | 'light', width: number): Buffer {
   const key = `${theme}:${String(width)}`;
   const ready = rendered.get(key);
   if (ready) return ready;

@@ -22,6 +22,8 @@ export interface AppProps {
   telegram: Telegram;
   /** API origin without a trailing slash; '' = this page's origin. */
   apiBaseUrl: string;
+  /** Username of the bot for the link in a shared message, without `@`; '' = no link. */
+  botUsername?: string;
   /** Reports product events (`POST /events`). Keep the reference stable. */
   track: Track;
   /** Restarts the app for newer legal texts, and tells a start after such a restart from an ordinary one. */
@@ -47,7 +49,7 @@ function termsAtStart(refusedVersion: string | null): TermsState {
 }
 
 /** Signs the user in (`GET /me` validates initData) before any screen is shown. */
-export function App({ api, telegram, apiBaseUrl, track, termsReload, today }: AppProps) {
+export function App({ api, telegram, apiBaseUrl, botUsername = '', track, termsReload, today }: AppProps) {
   const loadMe = useCallback((signal: AbortSignal) => api.getMe(signal), [api]);
   const me = useRequest(loadMe);
   const [terms, setTerms] = useState(() => termsAtStart(termsReload.refusedVersion));
@@ -117,22 +119,25 @@ export function App({ api, telegram, apiBaseUrl, track, termsReload, today }: Ap
     );
   }
   return (
-    <Onboarding
+    <Screens
       api={api}
       telegram={telegram}
       apiBaseUrl={apiBaseUrl}
+      botUsername={botUsername}
       track={track}
       today={today}
-      // The contract gives no way to load an existing chart (no chart_id in Me),
-      // so a returning user re-enters the data; POST /charts is idempotent by input.
-      returning={me.data.has_chart === true}
+      // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
+      hasChart={me.data.has_chart === true || typeof me.data.chart_id === 'string'}
       termsRenewed={terms === 'renewed'}
       onConsentRefused={handleConsentRefused}
     />
   );
 }
 
-type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart';
+/** `current` is the chart the user already has, opened from the server; `chart` is the one built from the form. */
+type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart' | 'current';
+/** Where the stack starts: at the user's chart, or at the welcome screen while there is none. */
+type Home = Extract<Route, 'welcome' | 'current'>;
 
 /** The screens under the names the product events call them. */
 const STEP_OF: Record<Route, AnalyticsStep> = {
@@ -144,6 +149,7 @@ const STEP_OF: Record<Route, AnalyticsStep> = {
   birthTime: 'birth_time',
   birthPlace: 'birth_place',
   chart: 'chart',
+  current: 'chart',
 };
 
 /** The screens that collect the chart request, in the order the user passes them. */
@@ -175,11 +181,11 @@ function isChartField(field: string): field is ChartField {
 }
 
 /**
- * Where the user fixes what the server rejected: its texts by field, and the stack
- * that ends at the earliest screen owning one of them, so the user walks forward
+ * Where the user fixes what the server rejected: its texts by field, and the screens of
+ * the form up to the earliest one owning one of them, so the user walks forward
  * through the rest. Null when no screen owns any of the fields.
  */
-function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors; stack: readonly Route[] } | null {
+function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors; routes: readonly Route[] } | null {
   const messages = new Map<ChartField, string>();
   let earliest: number = FORM_ROUTES.length;
   for (const { field, message } of errors) {
@@ -189,11 +195,13 @@ function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors
     earliest = Math.min(earliest, FORM_ROUTES.indexOf(FIELD_ROUTES[field]));
   }
   if (messages.size === 0) return null;
-  return { messages, stack: ['welcome', ...FORM_ROUTES.slice(0, earliest + 1)] };
+  return { messages, routes: FORM_ROUTES.slice(0, earliest + 1) };
 }
 
-interface OnboardingProps extends Omit<AppProps, 'termsReload'> {
-  returning: boolean;
+interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername'> {
+  botUsername: string;
+  /** `Me` says the user has a chart: the app opens on it instead of the onboarding. */
+  hasChart: boolean;
   /** This start follows a restart for newer legal texts: it opens on the consent screen, which says so. */
   termsRenewed: boolean;
   /** The server refused the consent version. Keep the reference stable. */
@@ -201,26 +209,28 @@ interface OnboardingProps extends Omit<AppProps, 'termsReload'> {
 }
 
 /**
- * The screens up to the chart as an in-memory stack. No router: Telegram owns the
- * URL (launch parameters live in the hash) and birth data must not end up in it.
+ * The screens as an in-memory stack. No router: Telegram owns the URL (launch
+ * parameters live in the hash) and birth data must not end up in it.
  */
-function Onboarding({
+function Screens({
   api,
   telegram,
   apiBaseUrl,
+  botUsername,
   track,
   today: pinnedToday,
-  returning,
+  hasChart,
   termsRenewed,
   onConsentRefused,
-}: OnboardingProps) {
+}: ScreensProps) {
   const [today] = useState(() => pinnedToday ?? new Date());
-  const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? ['welcome', 'consent'] : ['welcome']));
+  const [home, setHome] = useState<Home>(hasChart ? 'current' : 'welcome');
+  const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? [home, 'consent'] : [home]));
   const [draft, setDraft] = useState<BirthDraft>(EMPTY_DRAFT);
   const [serverErrors, setServerErrors] = useState(NO_SERVER_ERRORS);
   // Said until the user agrees to the new texts; after that it is no longer news.
   const [termsNotice, setTermsNotice] = useState(termsRenewed);
-  const route = stack[stack.length - 1] ?? 'welcome';
+  const route = stack[stack.length - 1] ?? home;
   const canGoBack = stack.length > 1;
 
   // What is on screen, for the handlers that must keep their identity across screens.
@@ -267,10 +277,15 @@ function Onboarding({
       // Fields no screen collects: the chart screen stays and shows the error itself.
       if (rejection === null) return;
       setServerErrors(rejection.messages);
-      setStack(rejection.stack);
+      setStack([home, ...rejection.routes]);
     },
-    [onConsentRefused],
+    [onConsentRefused, home],
   );
+  /** `Me` promised a chart and the server has none: from here on the user is a new one. */
+  const handleMissing = useCallback(() => {
+    setHome('welcome');
+    setStack(['welcome']);
+  }, []);
 
   useEffect(() => {
     telegram.setBackHandler(canGoBack ? goBack : null);
@@ -283,20 +298,23 @@ function Onboarding({
   const back = canGoBack && !telegram.hasNativeBackButton ? { label: ru.common.back, onClick: goBack } : undefined;
   const request = useMemo(() => toChartRequest(draft, today), [draft, today]);
 
-  if (route === 'chart' && request !== null) {
+  if (route === 'current' || (route === 'chart' && request !== null)) {
     return (
       <ChartScreen
         api={api}
         telegram={telegram}
-        request={request}
+        request={route === 'current' ? null : request}
         apiBaseUrl={apiBaseUrl}
+        botUsername={botUsername}
         track={track}
         back={back}
         onEdit={() => {
           track('step_back', { step: STEP_OF.chart });
-          setStack(['welcome', 'consent', 'birthDate']);
+          // The form starts over: from the date while the consent given in this session stands, from the consent otherwise.
+          setStack(draft.consentVersion === null ? [home, 'consent'] : [home, 'consent', 'birthDate']);
         }}
         onRejected={handleRejected}
+        onMissing={handleMissing}
       />
     );
   }
@@ -305,7 +323,6 @@ function Onboarding({
     case 'welcome':
       return (
         <WelcomeScreen
-          returning={returning}
           onStart={() => {
             open('consent');
           }}
@@ -336,7 +353,7 @@ function Onboarding({
             track('step_back', { step: STEP_OF.consent });
             setDraft(EMPTY_DRAFT);
             setServerErrors(NO_SERVER_ERRORS);
-            setStack(['welcome']);
+            setStack([home]);
           }}
         />
       );
@@ -349,6 +366,7 @@ function Onboarding({
           value={draft.date}
           today={today}
           serverError={serverErrors.get('birth_date')}
+          track={track}
           back={back}
           onChange={(date) => {
             update({ date }, 'birth_date');
@@ -366,6 +384,7 @@ function Onboarding({
           time={draft.time}
           precisionError={serverErrors.get('time_precision')}
           timeError={serverErrors.get('birth_time')}
+          track={track}
           back={back}
           onModeChange={(timePrecision) => {
             // The option decides whether a time is sent at all, so it answers for both fields.

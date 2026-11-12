@@ -98,7 +98,7 @@ describe('legal texts of the app against the texts file', () => {
   it('consent screen: the title, the body line by line, the two documents, the box and the two buttons', () => {
     const copy = ru.consent;
     expect([[copy.title]]).toEqual(blocksOf('Экран согласия — заголовок'));
-    expect([[copy.lead, ...copy.points]]).toEqual(blocksOf('Экран согласия — тело'));
+    expect([[copy.lead, ...copy.points, copy.analytics]]).toEqual(blocksOf('Экран согласия — тело'));
     expect([[copy.documents.privacy, copy.documents.terms]]).toEqual(blocksOf('Экран согласия — ссылки'));
     expect([[copy.checkbox]]).toEqual(blocksOf('Экран согласия — подпись галочки'));
 
@@ -131,12 +131,15 @@ describe('legal texts of the app against the texts file', () => {
  * `consent_version` has to keep meaning the text the user saw, so a new wording is a
  * new line here, with a new CONSENT_VERSION, and a line is never edited.
  *
- * Edited once, on purpose: the owner re-issued the texts of 2026-11-10 before the first
- * release and kept the date (legal-texts-2026-11-10.md: «менять константу не нужно,
- * меняются только тексты»). Nobody outside the team had agreed to the earlier wording.
+ * The line of 2026-11-10 is the one exception, by the owner's decision written in the texts
+ * file itself («Ответы на вопросы агентов по текстам», п. 2): the re-issue of that date (the
+ * tone, the disclaimer, the paragraphs about usage statistics) keeps the version, and after
+ * it any change of meaning is a new version. The re-issue reached the repository in two
+ * parts, so this line was replaced twice. The app was not released in between (the same
+ * file: «до этого продукт не публикуем»).
  */
 const TEXTS_BY_VERSION: Readonly<Record<string, string>> = {
-  '2026-11-10': 'e7861a2766ac0e9579fb9d9ff31c1b18d67ec1bbc6dafb22d0d1cb8cfc033b2c',
+  '2026-11-10': 'ef14b5920bc66208d02a950204773dfb84bef558e09c1c5a68c15ff00b239770',
 };
 
 /** Every legal string of the app, in the order of the screens. */
@@ -150,6 +153,7 @@ function legalTexts(): string[] {
     consent.title,
     consent.lead,
     ...consent.points,
+    consent.analytics,
     consent.documents.privacy,
     consent.documents.terms,
     consent.checkbox,

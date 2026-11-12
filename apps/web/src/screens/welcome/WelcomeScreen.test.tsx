@@ -8,10 +8,10 @@ const copy = ru.welcome;
 /** The small print under the button, as one sentence. */
 const TERMS_LINE = `${copy.terms.before}${copy.terms.link}${copy.terms.after}`;
 
-function setup(returning = false) {
+function setup() {
   const onStart = vi.fn();
   const onOpenTerms = vi.fn();
-  render(<WelcomeScreen returning={returning} onStart={onStart} onOpenTerms={onOpenTerms} />);
+  render(<WelcomeScreen onStart={onStart} onOpenTerms={onOpenTerms} />);
   return {
     onStart,
     onOpenTerms,
