@@ -193,6 +193,9 @@ export const ru = {
     decline: 'Не сейчас',
   },
 
+    /** A paragraph of its own under the list: it is about usage statistics, not about the birth data. */
+    analytics:
+      'Мы собираем обезличенную статистику использования (какие экраны открываются, на каком шаге люди уходят). В ней нет того, что ты вводишь: ни даты и места рождения, ни текста вопросов.',
   /**
    * Legal texts of the two document screens, a paragraph per entry. The full documents
    * are not written yet: these are the short versions, shown with their version.
@@ -215,6 +218,7 @@ export const ru = {
         'Удалить данные: Настройки → «Удалить мои данные».',
       ],
     },
+        'Аналитика: мы собираем обезличенную статистику использования. В событиях нет даты, времени и места рождения, текста вопросов и имени.',
   },
 
   /**

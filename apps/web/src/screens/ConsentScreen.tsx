@@ -106,6 +106,7 @@ export function ConsentScreen({
             </li>
           ))}
         </ul>
+        <p>{copy.analytics}</p>
         <ul className={styles.documents}>
           {DOCUMENTS.map((name) => (
             <li key={name}>
