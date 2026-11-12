@@ -1,7 +1,7 @@
 import { fieldErrorsOf, isApiError, type Api } from '../api';
-import { cleanProps, rejectedFieldOf, type AnalyticsStep, type ClientEvent, type Track } from './events';
+import { cleanProps, isContractEvent, rejectedFieldOf, type AnalyticsStep, type ClientEvent, type Track } from './events';
 
-export type { AnalyticsStep, EventName, Track } from './events';
+export type { AnalyticsStep, AppEventName, ClientCheckedField, EventName, Track } from './events';
 
 /** How long events wait for company before a batch goes out. */
 export const FLUSH_DELAY_MS = 3000;
@@ -42,7 +42,8 @@ export function createAnalytics({ api, isEnabled, now = () => new Date() }: Anal
   };
 
   const track: Track = (name, ...[props]) => {
-    if (!isEnabled()) return;
+    // A name the contract does not list yet would cost the whole batch: the server refuses it for one such event.
+    if (!isEnabled() || !isContractEvent(name)) return;
     const clean = cleanProps(props);
     queue.push({ name, at: now().toISOString(), ...(clean && { props: clean }) });
     if (queue.length >= MAX_BATCH_SIZE) {

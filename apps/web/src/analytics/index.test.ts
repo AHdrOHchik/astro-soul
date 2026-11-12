@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type Api } from '../api';
-import { cleanProps, MAX_PROP_LENGTH, type ClientEvent, type Track } from './events';
+import { cleanProps, EVENT_NAMES, MAX_PROP_LENGTH, type ClientEvent, type Track } from './events';
 import { createAnalytics, FLUSH_DELAY_MS, flushWhenHidden, MAX_BATCH_SIZE, trackRejection } from './index';
 
 /** The Node process the tests run in. The app's code is typed for a browser, where there is none. */
@@ -106,6 +106,23 @@ describe('createAnalytics', () => {
 
     expect(batches).toEqual([['app_open'], ['consent_view']]);
     expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('sends an event only under a name the contract lists: one unknown name costs the whole batch on the server', () => {
+    const { analytics, sent } = setup();
+    const contract = Object.keys(EVENT_NAMES);
+
+    analytics.track('app_open');
+    // Agreed with the owner, due in the contract with 1.4.1.
+    analytics.track('validation_failed_client', { step: 'birth_date', field: 'birth_date' });
+    (analytics.track as (name: string) => void)('app_closed');
+    analytics.flush();
+
+    const names: string[] = sent().flat();
+    expect(names).toContain('app_open');
+    expect(names.filter((name) => !contract.includes(name))).toEqual([]);
+    // Holds before the contract lists the event and after: it goes out exactly when the contract knows it.
+    expect(names.includes('validation_failed_client')).toBe(contract.includes('validation_failed_client'));
   });
 
   it('lets no key through that the app does not know, whatever the caller passes', () => {
