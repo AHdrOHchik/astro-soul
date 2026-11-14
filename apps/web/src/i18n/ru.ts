@@ -150,6 +150,14 @@ interface PlanCopy {
   description: string;
 }
 
+/**
+ * The owner's rule for the subscriptions: a description names only what the app already
+ * delivers (the full forecasts, the questions). What payments.md §1 lists besides (the
+ * compatibility, the chart of the year) is named as coming, in the owner's words
+ * «появится в ближайшие дни». The day one of those is released, its sentence is reworded.
+ */
+const SOON = 'появится в ближайшие дни';
+
 const plans: Record<PaywallPlan, PlanCopy> = {
   one_149: {
     title: 'Полный разбор',
@@ -157,15 +165,15 @@ const plans: Record<PaywallPlan, PlanCopy> = {
   },
   week_149: {
     title: 'Подписка на неделю',
-    description: 'Полные прогнозы, 5 вопросов карте в день, совместимость раз в месяц.',
+    description: `Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц ${SOON}.`,
   },
   month_399: {
     title: 'Подписка на месяц',
-    description: 'Полные прогнозы, 5 вопросов карте в день, совместимость раз в месяц.',
+    description: `Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц ${SOON}.`,
   },
   year_2990: {
     title: 'Подписка на год',
-    description: 'Всё, что в подписке на месяц, и карта года.',
+    description: `Всё, что в подписке на месяц. Карта года ${SOON}.`,
   },
 };
 
@@ -600,9 +608,11 @@ export const ru = {
       confirmText: [
         'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
         'Подписка сохраняется до конца оплаченного периода.',
+        /** Owner's wording, a requirement of legal.md (§1: payment identifiers are kept for accounting, without personal data). */
+        'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
       ],
-      /** The button of the first confirmation: on to the second, nothing is deleted yet. */
-      next: 'Продолжить',
+      /** Owner's wording. The button of the first confirmation: on to the second, nothing is deleted yet. */
+      next: 'Удалить данные',
       /** The second confirmation: the last word before the deletion. */
       lastTitle: 'Точно удалить?',
       lastText: ['Это последний шаг. Отменить удаление будет нельзя.'],

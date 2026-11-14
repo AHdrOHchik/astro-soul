@@ -286,6 +286,26 @@ describe('SettingsScreen', () => {
   });
 });
 
+describe('SettingsScreen: the wording of the deletion', () => {
+  it('the first confirmation says in plain words what stays: the subscription and the anonymised payments, and its button is «Удалить данные»', async () => {
+    const { api, user } = setup();
+    await user.click(await openDeletion());
+
+    const first = within(screen.getByRole('alertdialog', { name: 'Удалить все данные?' }));
+    // What legal.md asks to say before the data goes: the payment records stay, without the person.
+    expect(first.getByText('Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.')).toBeInTheDocument();
+    expect(first.getByText('Подписка сохраняется до конца оплаченного периода.')).toBeInTheDocument();
+    expect(first.getAllByRole('button').map((button) => button.textContent)).toEqual(expect.arrayContaining(['Удалить данные', 'Не удалять']));
+    expect(first.queryByRole('button', { name: 'Продолжить' })).not.toBeInTheDocument();
+
+    // The button says what it leads to, and still deletes nothing: the last word is on the next screen.
+    await user.click(first.getByRole('button', { name: 'Удалить данные' }));
+    expect(screen.getByRole('alertdialog', { name: 'Точно удалить?' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Удалить навсегда' })).toBeDisabled();
+    expect(api.deleteMe).not.toHaveBeenCalled();
+  });
+});
+
 describe('SettingsScreen: a build that sells no subscriptions (no `onSubscribe`)', () => {
   function setupWithoutOffer(me: Me) {
     const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockResolvedValue(me);
