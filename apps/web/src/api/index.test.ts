@@ -262,6 +262,139 @@ describe('getMe', () => {
     fetchMock.mockResolvedValue(json(200, 'ok'));
     await expect(api.getMe()).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
   });
+
+  it('takes access as granted only on the server\'s exact «true»: a missing or odd answer opens nothing', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(
+      json(200, { user_id: 'u', entitlements: { is_active: 'yes', full_report: 1, plan: 'month' }, subscription: { plan: 'month', is_active: 'true' } }),
+    );
+
+    const me = await api.getMe();
+
+    expect(me.entitlements).toMatchObject({ is_active: false, full_report: false });
+    expect(me.subscription).toMatchObject({ plan: 'month', is_active: false, expires_at: null, auto_renew: false });
+    expect(me).toMatchObject({ has_chart: false, chart_id: null, latest_report_id: null, quotas: [] });
+  });
+});
+
+describe('deleteMe', () => {
+  it('sends DELETE /me once, whatever the answer: repeating it is the user\'s decision', async () => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await expect(api.deleteMe()).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect([url, init?.method]).toEqual(['/api/v1/me', 'DELETE']);
+
+    fetchMock.mockImplementation(() => Promise.resolve(json(503)));
+    await expect(api.deleteMe()).rejects.toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createInvoice', () => {
+  const invoice = { invoice_link: 'https://t.me/$abc', plan_code: 'one_149', stars: 149, is_subscription: false };
+
+  it('posts the plan and the chart, and is never repeated by the client: the server counts invoices', async () => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockResolvedValueOnce(json(201, invoice));
+
+    await expect(api.createInvoice({ plan_code: 'one_149', chart_id: 'c-1' })).resolves.toEqual(invoice);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect([url, init?.method, init?.body]).toEqual(['/api/v1/billing/invoice', 'POST', JSON.stringify({ plan_code: 'one_149', chart_id: 'c-1' })]);
+
+    fetchMock.mockImplementation(() => Promise.resolve(json(503)));
+    await expect(api.createInvoice({ plan_code: 'one_149' })).rejects.toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['no link', { ...invoice, invoice_link: '' }],
+    ['no price', { ...invoice, stars: undefined }],
+    ['a price that is not a whole number of stars', { ...invoice, stars: 149.5 }],
+  ])('does not take an answer with %s for an invoice', async (_name, body) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(201, body));
+    await expect(api.createInvoice({ plan_code: 'one_149' })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+});
+
+describe('reports', () => {
+  const chapters = [
+    { key: 'emotions', title: 'Эмоции', body_md: 'Вторая.', order: 1 },
+    { key: 'core', title: 'Ядро', body_md: 'Первая.', order: 0 },
+    { key: 'talents', title: 'Таланты', body_md: '   ', order: 2 },
+  ];
+  const body = { report_id: 'r-1', chart_id: 'c-1', type: 'full', status: 'generating', progress: 40, created_at: 'now', is_paid: true, sections: chapters };
+
+  it('orders with the chart in the body and the idempotency key in the header', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(202, { ...body, status: 'queued', progress: 0, sections: [] }));
+
+    await expect(api.orderReport({ chart_id: 'c-1', type: 'full' }, 'key-1')).resolves.toMatchObject({ report_id: 'r-1', status: 'queued' });
+
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect([url, init?.method, init?.body]).toEqual(['/api/v1/reports', 'POST', JSON.stringify({ chart_id: 'c-1', type: 'full' })]);
+    expect(init?.headers).toMatchObject({ 'Idempotency-Key': 'key-1' });
+  });
+
+  it('repeats an order after a 5xx with the same key: the second attempt is the same order', async () => {
+    const { api, fetchMock } = setup({ retries: 1 });
+    fetchMock.mockResolvedValueOnce(json(503)).mockResolvedValueOnce(json(202, body));
+
+    await api.orderReport({ chart_id: 'c-1', type: 'full' }, 'key-1');
+
+    expect(fetchMock.mock.calls.map(([, init]) => (init?.headers as Record<string, string>)['Idempotency-Key'])).toEqual(['key-1', 'key-1']);
+  });
+
+  it('reads a paid report: the chapters in the order to read them, one without a text left out, none made up', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, body));
+
+    const report = await api.getReport('r-1');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/reports/r-1');
+    expect(report.sections.map((section) => section.key)).toEqual(['core', 'emotions']);
+    expect(report).toMatchObject({ status: 'generating', progress: 40, is_paid: true, teaser: '', pdf_url: null });
+  });
+
+  it('keeps every chapter that has a text, whatever its key: an unknown key, no key, the same key twice', async () => {
+    const { api, fetchMock } = setup();
+    const odd = [
+      { key: 'karma', title: 'Карма', body_md: 'Глава под ключом, которого нет в контракте.', order: 0 },
+      { title: 'Без ключа', body_md: 'Глава без ключа.', order: 1 },
+      { key: 'karma', title: 'Карма, ещё раз', body_md: 'Вторая глава под тем же ключом.', order: 2 },
+      { key: 'last', title: 'Без номера', body_md: 'Глава без номера остаётся на своём месте в списке.' },
+    ];
+    fetchMock.mockResolvedValue(json(200, { ...body, status: 'ready', progress: 100, sections: odd }));
+
+    const { sections } = await api.getReport('r-1');
+
+    expect(sections.map((section) => section.title)).toEqual(['Карма', 'Без ключа', 'Карма, ещё раз', 'Без номера']);
+    // The screen tells chapters apart by the key: two of them must never share one.
+    expect(new Set(sections.map((section) => section.key)).size).toBe(4);
+    expect(sections[0]?.key).toBe('karma');
+  });
+
+  it('lets nothing of an unpaid report through but its opening: no chapters, no PDF, whatever the server sent', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { ...body, status: 'ready', is_paid: false, teaser: 'Начало.', pdf_url: '/pdf?sig=1' }));
+
+    await expect(api.getReport('r-1')).resolves.toMatchObject({ is_paid: false, teaser: 'Начало.', sections: [], pdf_url: null });
+
+    // «Paid» is the server's exact word, not anything truthy.
+    fetchMock.mockResolvedValue(json(200, { ...body, is_paid: 'true' }));
+    await expect(api.getReport('r-1')).resolves.toMatchObject({ is_paid: false, sections: [] });
+  });
+
+  it('does not guess at a status it does not know, and takes 402 on an order for what it is', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValueOnce(json(200, { ...body, status: 'archived' }));
+    await expect(api.getReport('r-1')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+
+    fetchMock.mockResolvedValueOnce(json(402, { code: 'PAYMENT_REQUIRED', message: 'Полный разбор — отдельная покупка.', request_id: 'r' }));
+    await expect(api.orderReport({ chart_id: 'c-1', type: 'full' }, 'key-1')).rejects.toMatchObject({ code: 'PAYMENT_REQUIRED', status: 402 });
+  });
 });
 
 describe('absoluteApiUrl', () => {

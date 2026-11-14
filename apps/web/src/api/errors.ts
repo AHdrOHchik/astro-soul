@@ -97,10 +97,55 @@ function isProblemCode(value: unknown): value is ProblemCode {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(PROBLEM_CODES, value);
 }
 
-/** Builds the error for a non-2xx answer: by `Problem.code` when present, by status otherwise. */
-export function errorFromResponse(status: number, body: unknown): ApiError {
+/**
+ * `Problem.message` is written for the user, in Russian. A text without a single
+ * Cyrillic letter is something else, e.g. what a proxy or a server framework says
+ * on its own ("Cannot POST /api/v1/…"): not for the screen.
+ */
+const RUSSIAN_TEXT = /\p{Script=Cyrillic}/u;
+
+/** The server's own words for the user, when it sent any that can be shown. */
+export function serverTextOf(error: unknown): string | undefined {
+  const text = isApiError(error) ? error.serverMessage : undefined;
+  return text !== undefined && RUSSIAN_TEXT.test(text) ? text : undefined;
+}
+
+/**
+ * What the server says about a request it rejected: its text for the first field it
+ * names, else its message. A 422 comes in either form, with `details.field_errors`
+ * or as a bare Problem, and both are read here.
+ */
+export function rejectionTextOf(error: unknown): string | undefined {
+  const [first] = fieldErrorsOf(error);
+  return first !== undefined && RUSSIAN_TEXT.test(first.message) ? first.message : serverTextOf(error);
+}
+
+/** `details.reset_at`: when the limit the request ran into lifts, if the server says so. */
+export function resetAtOf(error: unknown): Date | undefined {
+  const value = isApiError(error) ? error.details?.reset_at : undefined;
+  if (typeof value !== 'string') return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+/**
+ * What an event may say about a failure: the HTTP status when the server answered,
+ * the client's own code when it did not. Never the server's text.
+ */
+export function failureCodeOf(error: unknown): string {
+  if (!isApiError(error)) return 'INTERNAL';
+  return error.status === undefined ? error.code : String(error.status);
+}
+
+/**
+ * Builds the error for a non-2xx answer: by `Problem.code` when present, by status otherwise.
+ * `headerRequestId` is the `X-Request-Id` header: the same id as `Problem.request_id`, and
+ * the only one there is when the answer has no Problem body.
+ */
+export function errorFromResponse(status: number, body: unknown, headerRequestId?: string | null): ApiError {
   const problem = isRecord(body) ? body : {};
-  const { code, message, request_id: requestId, details } = problem;
+  const { code, message, request_id: bodyRequestId, details } = problem;
+  const requestId = typeof bodyRequestId === 'string' && bodyRequestId !== '' ? bodyRequestId : headerRequestId;
   return new ApiError(isProblemCode(code) ? code : (CODE_BY_STATUS[status] ?? 'INTERNAL'), {
     status,
     serverMessage: typeof message === 'string' && message.trim() !== '' ? message : undefined,

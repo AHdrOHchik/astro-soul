@@ -1,6 +1,8 @@
 import { ApiError, errorFromResponse } from './errors';
 
 export const INIT_DATA_HEADER = 'X-Telegram-Init-Data';
+/** On every answer of the API: the id support finds the request by. */
+export const REQUEST_ID_HEADER = 'X-Request-Id';
 
 export interface HttpClientOptions {
   /** API origin without a trailing slash; '' = same origin. */
@@ -57,7 +59,7 @@ async function readBody<T>(response: Response): Promise<T> {
   } catch {
     readable = false;
   }
-  if (!response.ok) throw errorFromResponse(response.status, body);
+  if (!response.ok) throw errorFromResponse(response.status, body, response.headers.get(REQUEST_ID_HEADER));
   if (!readable) throw new ApiError('INVALID_RESPONSE', { status: response.status });
   return body as T;
 }
