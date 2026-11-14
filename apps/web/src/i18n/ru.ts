@@ -603,11 +603,17 @@ export const ru = {
       /** What goes is the list of SPEC.md (scenario 6); «необратимо» is the word of the legal texts. */
       text: 'Удаляются профиль, карты, разборы, прогнозы и вопросы. Это необратимо.',
       open: 'Удалить мои данные',
-      /** The first confirmation: what exactly goes. */
+      /** The first confirmation: what exactly goes, what it costs and what stays. */
       confirmTitle: 'Удалить все данные?',
       confirmText: [
         'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
-        'Подписка сохраняется до конца оплаченного периода.',
+        /**
+         * Owner's wording (SPEC.md, scenario 6, and legal.md §2), to be said before the tap. Since
+         * contract 1.5.5 the server cancels the subscription together with the data; until then
+         * this line promised the opposite, that the subscription lives on to the end of its period.
+         * Said to everyone: the app does not decide by its own copy of `Me` who needs to hear it.
+         */
+        'Подписка при этом отменяется, доступ закрывается сразу, оплаченный период не возвращается.',
         /** Owner's wording, a requirement of legal.md (§1: payment identifiers are kept for accounting, without personal data). */
         'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
       ],
@@ -625,9 +631,15 @@ export const ru = {
       failedTitle: 'Данные не удалены',
       /** Owner's wording. */
       sessionExpired: 'Сессия истекла, открой приложение заново.',
-      /** Owner's wording: the screen after the deletion, the title and the text under it. */
+      /** Owner's wording: the title of the screen after the deletion. */
       doneTitle: 'Данные удалены',
-      doneText: 'Подписка сохраняется до конца оплаченного периода.',
+      /**
+       * The text under it. The owner's line for this place («Подписка сохраняется до конца
+       * оплаченного периода») stopped being true with contract 1.5.5: the deletion cancels the
+       * subscription. Until the owner words a new one, the screen repeats what stays in the
+       * owner's own words from the confirmation, and promises nothing about the subscription.
+       */
+      doneText: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
     },
   },
 

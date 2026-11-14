@@ -287,14 +287,20 @@ describe('SettingsScreen', () => {
 });
 
 describe('SettingsScreen: the wording of the deletion', () => {
-  it('the first confirmation says in plain words what stays: the subscription and the anonymised payments, and its button is «Удалить данные»', async () => {
+  /** SPEC.md, scenario 6, since contract 1.5.5: the deletion cancels the subscription, and the dialog says so before the tap. */
+  const SUBSCRIPTION_GOES = 'Подписка при этом отменяется, доступ закрывается сразу, оплаченный период не возвращается.';
+  /** What legal.md asks to say before the data goes: the payment records stay, without the person. */
+  const PAYMENTS_STAY = 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.';
+
+  it('the first confirmation says in plain words what the deletion does to the subscription and what stays, and its button is «Удалить данные»', async () => {
     const { api, user } = setup();
     await user.click(await openDeletion());
 
     const first = within(screen.getByRole('alertdialog', { name: 'Удалить все данные?' }));
-    // What legal.md asks to say before the data goes: the payment records stay, without the person.
-    expect(first.getByText('Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.')).toBeInTheDocument();
-    expect(first.getByText('Подписка сохраняется до конца оплаченного периода.')).toBeInTheDocument();
+    expect(first.getByText(SUBSCRIPTION_GOES)).toBeInTheDocument();
+    expect(first.getByText(PAYMENTS_STAY)).toBeInTheDocument();
+    // What the dialog said before contract 1.5.5 would now be a false promise about money: no word of it is left.
+    expect(screen.getByRole('alertdialog').textContent).not.toMatch(/сохраняется до конца|до конца оплаченного периода/);
     expect(first.getAllByRole('button').map((button) => button.textContent)).toEqual(expect.arrayContaining(['Удалить данные', 'Не удалять']));
     expect(first.queryByRole('button', { name: 'Продолжить' })).not.toBeInTheDocument();
 
@@ -302,6 +308,21 @@ describe('SettingsScreen: the wording of the deletion', () => {
     await user.click(first.getByRole('button', { name: 'Удалить данные' }));
     expect(screen.getByRole('alertdialog', { name: 'Точно удалить?' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Удалить навсегда' })).toBeDisabled();
+    expect(api.deleteMe).not.toHaveBeenCalled();
+  });
+
+  it('a subscriber reads that the paid period is lost on the confirmation that deletes nothing yet, above its buttons', async () => {
+    const { api, user } = setup({ me: meSubscribed });
+    await user.click(await openDeletion());
+
+    const first = within(screen.getByRole('alertdialog', { name: 'Удалить все данные?' }));
+    const text = first.getByText(SUBSCRIPTION_GOES);
+    // Above every button of this confirmation: it is read before anything can be tapped.
+    for (const button of first.getAllByRole('button')) {
+      expect(text.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    // And the button that deletes is not on this confirmation at all.
+    expect(screen.queryByRole('button', { name: 'Удалить навсегда' })).not.toBeInTheDocument();
     expect(api.deleteMe).not.toHaveBeenCalled();
   });
 });
