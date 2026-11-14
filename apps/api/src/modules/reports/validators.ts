@@ -23,10 +23,12 @@ export interface SectionRange {
 }
 
 /**
- * `structure_v1`: границы объёма из `docs/qa/reports/structure.md` §1.
- * Сумма минимумов 6 950, максимумов 8 800 знаков.
+ * `structure_v1.1`: границы объёма из `docs/qa/reports/structure.md` §1
+ * (сумма минимумов 6 950, максимумов 8 800 знаков) плюс правки приёмки QA-002:
+ * оговорка режима `unknown` проходит проверку домов, добавлен формальный
+ * контроль абзацев и повторов (QA-22). Промпты — `prompts_v1.1`.
  */
-export const STRUCTURE_VERSION = 'structure_v1';
+export const STRUCTURE_VERSION = 'structure_v1.1';
 
 export const SECTIONS: readonly SectionRange[] = [
   { key: 'core', title: 'Ядро личности', min: 1_200, max: 1_550 },
@@ -117,6 +119,103 @@ const HOUSE_REF_SOFT = /(?<![\p{L}\p{N}])в\s+доме(?![\p{L}\p{N}])|(?<![\p{L
 
 /** Маркеры честной оговорки о неполноте. */
 const INCOMPLETENESS_MARKER = /неизвестн|не рассчитан|не построен|приблизительн/iu;
+
+/**
+ * Абзацы и повторы внутри главы (QA-22). Числа — из `rubric.md` §1, пункт 7:
+ * абзацев 3–6, в абзаце 2–4 предложения. Доля самого частого слова ограничена,
+ * чтобы текст не превращался в мантру: 12 % для обычных глав, 18 % для `core`
+ * (там неизбежны повторы «Солнце», «Луна», «стихия»).
+ */
+export const PARAGRAPH_MIN = 3;
+export const PARAGRAPH_MAX = 6;
+export const SENTENCES_PER_PARAGRAPH_MIN = 2;
+export const SENTENCES_PER_PARAGRAPH_MAX = 4;
+export const WORD_SHARE_LIMIT = 0.12;
+export const CORE_WORD_SHARE_LIMIT = 0.18;
+
+/**
+ * Стоп-слова `rubric.md` §1: служебные и местоименные слова не создают
+ * «повтор» и не участвуют в доле частотного слова. Список намеренно короткий
+ * и без «своих» слов разбора («стихия», «планета»), иначе проверка потеряет
+ * смысл.
+ */
+const STOP_WORDS = new Set([
+  'а', 'без', 'более', 'больше', 'будет', 'бы', 'был', 'была', 'были', 'было', 'быть',
+  'в', 'вам', 'вас', 'весь', 'во', 'вот', 'все', 'всё', 'всегда', 'всего', 'вы', 'где',
+  'да', 'даже', 'для', 'до', 'его', 'ее', 'её', 'ей', 'если', 'ест', 'есть', 'еще', 'ещё',
+  'же', 'за', 'здесь', 'и', 'из', 'или', 'им', 'их', 'к', 'как', 'какая', 'какие', 'какой',
+  'когда', 'кто', 'ли', 'либо', 'м', 'меня', 'мне', 'может', 'можно', 'мой', 'моя', 'мы',
+  'на', 'над', 'надо', 'наш', 'не', 'него', 'нее', 'неё', 'нет', 'ни', 'них', 'но', 'ну',
+  'о', 'об', 'однако', 'он', 'она', 'они', 'оно', 'от', 'по', 'под', 'после', 'потому',
+  'при', 'про', 'с', 'сам', 'свои', 'свой', 'себе', 'себя', 'так', 'также', 'там', 'те',
+  'тем', 'то', 'того', 'тоже', 'той', 'только', 'том', 'тот', 'ту', 'ты', 'у', 'уже',
+  'хотя', 'чего', 'чем', 'через', 'что', 'чтобы', 'чуть', 'эта', 'эти', 'это', 'этот',
+  'эту', 'я',
+]);
+
+/** Абзацы по пустой строке: именно так их видит рендер (`\n\n`). */
+export function splitParagraphs(text: string): string[] {
+  return text
+    .replace(/\r\n/gu, '\n')
+    .split(/\n\s*\n/u)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== '');
+}
+
+function isListParagraph(paragraph: string): boolean {
+  const lines = paragraph.split('\n').filter((line) => line.trim() !== '');
+  const listLines = lines.filter((line) => line.trim().startsWith('—'));
+  return lines.length > 0 && listLines.length * 2 >= lines.length;
+}
+
+/** Доля самого частого слова среди значимых слов главы. */
+export function topWordShare(text: string): { readonly word: string; readonly share: number } {
+  const words = text
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length >= 2 && !STOP_WORDS.has(word));
+  if (words.length === 0) {
+    return { word: '', share: 0 };
+  }
+  const counts = new Map<string, number>();
+  for (const word of words) {
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+  }
+  let top = '';
+  let topCount = 0;
+  for (const [word, count] of counts) {
+    if (count > topCount) {
+      top = word;
+      topCount = count;
+    }
+  }
+  return { word: top, share: topCount / words.length };
+}
+
+/**
+ * Дословный повтор предложения внутри главы. Короткие реплики («Да.») не
+ * считаем: повторяются междометия, а не смысл.
+ */
+export function repeatedSentences(text: string): string[] {
+  const seen = new Set<string>();
+  const repeated: string[] = [];
+  for (const sentence of splitSentences(text)) {
+    const normalized = sentence
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    if (normalized.length < 25) {
+      continue;
+    }
+    if (seen.has(normalized)) {
+      repeated.push(sentence.slice(0, 60));
+    } else {
+      seen.add(normalized);
+    }
+  }
+  return repeated;
+}
 
 export interface ValidationInput {
   readonly key: SectionKey;
@@ -278,6 +377,41 @@ export function validateSection(input: ValidationInput): ValidationResult {
   // 9. Дисклеймер дословно — в «Итоге».
   if (input.key === 'summary' && !body.includes(DISCLAIMER)) {
     failures.push({ rule: 'disclaimer', detail: 'нет фразы дисклеймера' });
+  }
+
+  // 10. Абзацы (QA-22): 3–6 абзацев по пустой строке, 2–4 предложения в каждом.
+  const paragraphs = splitParagraphs(body);
+  if (paragraphs.length < PARAGRAPH_MIN || paragraphs.length > PARAGRAPH_MAX) {
+    failures.push({
+      rule: 'paragraphs',
+      detail: `${paragraphs.length} вне ${PARAGRAPH_MIN}–${PARAGRAPH_MAX}`,
+    });
+  }
+  paragraphs.forEach((paragraph, index) => {
+    if (isListParagraph(paragraph)) {
+      return;
+    }
+    const sentences = splitSentences(paragraph).length;
+    if (sentences < SENTENCES_PER_PARAGRAPH_MIN || sentences > SENTENCES_PER_PARAGRAPH_MAX) {
+      failures.push({
+        rule: 'paragraph_sentences',
+        detail: `абзац ${index + 1}: ${sentences} предл. вне ${SENTENCES_PER_PARAGRAPH_MIN}–${SENTENCES_PER_PARAGRAPH_MAX}`,
+      });
+    }
+  });
+
+  // 11. Частотность слова и дословный повтор внутри главы (QA-22).
+  const limit = input.key === 'core' ? CORE_WORD_SHARE_LIMIT : WORD_SHARE_LIMIT;
+  const top = topWordShare(body);
+  if (top.share > limit) {
+    failures.push({
+      rule: 'word_share',
+      detail: `«${top.word}» ${Math.round(top.share * 100)}% > ${Math.round(limit * 100)}%`,
+    });
+  }
+
+  for (const sentence of repeatedSentences(body)) {
+    failures.push({ rule: 'sentence_repeat', detail: sentence });
   }
 
   return { failures, warnings };

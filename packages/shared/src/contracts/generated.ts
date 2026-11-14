@@ -1106,7 +1106,13 @@ export interface paths {
                             conversion_to_paid?: number;
                             churn_30d?: number;
                             stars_received_30d?: number;
-                            llm_cost_usd_30d?: number;
+                            /**
+                             * @description Стоимость LLM за 30 дней в рублях — сумма `reports.llm_cost_rub`.
+                             *     Одна формула: токены × цена модели из таблицы `LLM_MODEL`
+                             *     (вход и выход по одной цене). Долларовой оценки больше нет:
+                             *     она всегда была нулём и противоречила рублёвой.
+                             */
+                            llm_cost_rub_30d?: number;
                             reports_failed_30d?: number;
                             /**
                              * @description Платежи, по которым доступ не выдан: нет серверного инвойса,
@@ -1656,6 +1662,11 @@ export interface components {
              */
             chart_id?: string;
         };
+        /**
+         * @description Инвойс, выставленный сервером. Состояния хранятся в БД
+         *     (`invoices.status`) и в ответе не отдаются: клиенту нужна ссылка,
+         *     а не бухгалтерия. Требование к коду — `x-invoice-states`.
+         */
         Invoice: {
             /** @description Ссылка на инвойс для Telegram.WebApp.openInvoice */
             invoice_link: string;

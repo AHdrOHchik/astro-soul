@@ -297,4 +297,42 @@ describe('GET /api/v1/me — данные', () => {
     // В profiles.onboarding_step по умолчанию 'done'
     expect(response.body.onboarding_step).toBe('done');
   });
+
+  it('QA-18: latest_report_id есть всегда — null без разборов, id последнего с разбором', async () => {
+    const first = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, validInitData())
+      .expect(200);
+
+    // Поле присутствует в ответе даже когда разборов нет: по нему фронт
+    // восстанавливает заказ, не заставляя платить второй раз.
+    expect(first.body).toHaveProperty('latest_report_id');
+    expect(first.body.latest_report_id).toBeNull();
+
+    const userId = userIdFromTelegramId(BigInt(FICTIONAL_USER.id), TEST_PEPPER);
+    const chart = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
+       VALUES ($1, 'latest-report-hash', '{}'::jsonb, '1.0.0', true)
+       RETURNING id`,
+      [userId],
+    );
+    const older = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO reports (chart_id, user_id, created_at)
+       VALUES ($1, $2, now() - interval '2 hours') RETURNING id`,
+      [chart?.id, userId],
+    );
+    const newer = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO reports (chart_id, user_id, created_at)
+       VALUES ($1, $2, now() - interval '1 hour') RETURNING id`,
+      [chart?.id, userId],
+    );
+
+    const second = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, validInitData())
+      .expect(200);
+
+    expect(second.body.latest_report_id).toBe(newer?.id);
+    expect(second.body.latest_report_id).not.toBe(older?.id);
+  });
 });

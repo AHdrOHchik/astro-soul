@@ -38,10 +38,44 @@ await bot.api.createInvoiceLink({
 - `amount` берётся из таблицы планов, не из запроса клиента.
 - Каждый инвойс — отдельная запись в `invoices` со статусом `created`.
 
+### Жизненный цикл инвойса (контракт 1.5.3)
+
+`invoices.status` — ровно три состояния:
+
+| Статус | Что значит | Оплата |
+|---|---|---|
+| `created` | выставлен, ждёт оплаты | принимается |
+| `paid` | оплачен, доступ выдан | повторно не принимается |
+| `invalidated` | аннулирован вместе с удалением данных | не принимается никогда |
+
+`DELETE /me` делает всё в одной транзакции, в этом порядке:
+1. разрешить/вернуть зависшие платежи (`resolvePending` → `refundStillPendingPayments`);
+2. `UPDATE invoices SET status='invalidated', invalidated_at=now()
+   WHERE user_id=$1 AND status='created'`;
+3. обезличить `payments` (`telegram_id = NULL`, `anonymized_at`);
+4. удалить квоты и `users`.
+
+Порядок именно такой: если удалить пользователя раньше инвалидации, останется
+окно, в котором пользователя уже нет, а инвойс ещё оплатим.
+
+Оплата по `invalidated` инвойсу (и по отсутствующему пользователю) не выдаёт
+доступ: `successful_payment` пишет `rejected` с
+`reject_reason = invoice_invalidated | user_deleted`, вебхук всё равно отвечает
+`200`, `refundStarPayment` вызывается автоматически, в `events` пишутся
+`payment_rejected` и `refund_issued` с тем же `props.code`. Ручной разбор
+нужен только при техническом отказе возврата: тогда `payment_rejected`
+с `code = refund_failed`, а платёж виден в `pending_payments_now`.
+
 ## 3. Обработка событий
 
 ### 3.1 `pre_checkout_query`
-Ответить `answerPreCheckoutQuery(ok=true)` в течение **10 секунд**. Перед ответом — проверить, что `payload` валиден и пользователь не заблокирован. Если товар уже выдан — всё равно `ok=true` (деньги уже списаны, разберёмся через возврат).
+Ответить `answerPreCheckoutQuery(ok=true)` в течение **10 секунд**. Перед ответом — проверить, что `payload` валиден, инвойс существует и его статус `created`, а пользователь не удалён и не заблокирован.
+
+Если товар уже выдан — всё равно `ok=true` (деньги уже списаны, разберёмся через возврат).
+
+Если инвойс `invalidated`, оплачен или пользователя нет — `ok=false`
+с текстом «Оплата больше недоступна — начни заново»: человек должен начать
+заказ заново, а не ждать возврата.
 
 ### 3.2 `successful_payment`
 Поля: `currency`, `total_amount`, `invoice_payload`, `telegram_payment_charge_id`, `provider_payment_charge_id`, `subscription_expiration_date` (для подписок, unix).

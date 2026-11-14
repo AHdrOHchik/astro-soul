@@ -9,10 +9,22 @@ export interface InvoiceRow {
   readonly idem_key: string;
   readonly payload: string;
   readonly invoice_link: string;
-  readonly status: 'created' | 'paid' | 'expired';
+  readonly status: 'created' | 'paid' | 'expired' | 'invalidated';
   readonly chart_id: string | null;
   readonly created_at: Date;
 }
+
+/**
+ * Причины отказа по деньгам (QA-11 + QA-15).
+ * Первые три — сверка платежа; `invoice_invalidated` и `user_deleted` —
+ * оплата после удаления данных.
+ */
+export type RejectReason =
+  | 'no_invoice'
+  | 'amount_mismatch'
+  | 'unknown_plan'
+  | 'invoice_invalidated'
+  | 'user_deleted';
 
 export interface NewPayment {
   readonly userId: string | null;
@@ -28,7 +40,7 @@ export interface NewPayment {
 }
 
 export interface NewRejectedPayment extends NewPayment {
-  readonly rejectReason: 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
+  readonly rejectReason: RejectReason;
 }
 
 /** Строка платежа в объёме, нужном для повторной сверки и выдачи доступа. */
@@ -161,7 +173,7 @@ export class BillingRepository {
   /** Пометить уже записанный платёж отказом: `paid` + `processed = false` → `rejected`. */
   async markPaymentRejected(
     client: PoolClient,
-    input: { chargeId: string; reason: 'no_invoice' | 'amount_mismatch' | 'unknown_plan' },
+    input: { chargeId: string; reason: RejectReason },
   ): Promise<string | null> {
     const result = await client.query<{ id: string }>(
       `UPDATE payments
@@ -210,6 +222,45 @@ export class BillingRepository {
       `UPDATE payments SET processed = true, status = 'processed', paid_at = now() WHERE id = $1`,
       [paymentId],
     );
+  }
+
+  /** Есть ли ещё пользователь: платёж после `DELETE /me` выдавать доступ не должен. */
+  async userExists(userId: string): Promise<boolean> {
+    const row = await this.db.queryOne<{ one: number }>(
+      `SELECT 1 AS one FROM users WHERE id = $1`,
+      [userId],
+    );
+    return row !== null;
+  }
+
+  /**
+   * QA-15: `DELETE /me` аннулирует живые инвойсы в той же транзакции, что и
+   * удаление. Иначе остаётся окно, в котором пользователя уже нет, а инвойс
+   * ещё принимает оплату.
+   */
+  async invalidateInvoices(client: PoolClient, userId: string): Promise<number> {
+    const result = await client.query(
+      `UPDATE invoices
+          SET status = 'invalidated', invalidated_at = now()
+        WHERE user_id = $1 AND status = 'created'`,
+      [userId],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  /**
+   * Отказ с автовозвратом: статус остаётся `rejected` (доступ не выдавался),
+   * `refunded_at` отмечает, что звёзды вернулись. Сумма при этом не «исчезает»
+   * из отчётности: строка rejected + refunded видна и в `payments_rejected_30d`,
+   * и в `refunded_30d`.
+   */
+  async markRejectedRefunded(chargeId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE payments SET refunded_at = now(), processed = false
+        WHERE telegram_payment_charge_id = $1 AND status = 'rejected' AND refunded_at IS NULL`,
+      [chargeId],
+    );
+    return result.length > 0;
   }
 
   async markInvoicePaid(client: PoolClient, userId: string, idemKey: string): Promise<void> {
@@ -388,8 +439,8 @@ export class BillingRepository {
           [row.user_id, input.chargeId],
         );
         await client.query(
-          `INSERT INTO events (user_id, name, props) VALUES ($1, 'payment_refunded', $2::jsonb)`,
-          [row.user_id, JSON.stringify({ reason: input.reason })],
+          `INSERT INTO events (user_id, name, props) VALUES ($1, 'refund_issued', $2::jsonb)`,
+          [row.user_id, JSON.stringify({ code: input.reason })],
         );
       }
     });

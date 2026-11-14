@@ -10,6 +10,7 @@ import { EventsRepository } from '../events/events.repository';
 import { PaymentsService } from '../billing/payments.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
+import { JsonLogger } from '../../common/logger';
 
 /**
  * `Entitlements` (packages/shared, camelCase) → контракт (`Me.entitlements`,
@@ -37,7 +38,17 @@ export class MeService {
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
+
+  /** Последний разбор пользователя любого незавершённого/готового статуса. */
+  private async latestReportId(userId: string): Promise<string | null> {
+    const row = await this.db.queryOne<{ id: string }>(
+      `SELECT id FROM reports WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [userId],
+    );
+    return row?.id ?? null;
+  }
 
   async getMe(auth: VerifiedInitData): Promise<Me> {
     const { userId, isNew } = await this.users.ensureUser({
@@ -45,10 +56,13 @@ export class MeService {
       languageCode: auth.user.language_code,
     });
 
-    const [profileState, entitlements, subscription] = await Promise.all([
+    const [profileState, entitlements, subscription, latestReportId] = await Promise.all([
       this.users.getProfileState(userId),
       this.entitlements.getEntitlements(userId),
       this.entitlements.getSubscriptionState(userId),
+      // QA-18: без этого поля заказ «теряется» после закрытия мини-аппа,
+      // и человек платит второй раз. Всегда есть в ответе, `null` — нет разборов.
+      this.latestReportId(userId),
     ]);
 
     const quotas = await this.quotas.listQuotas(userId, entitlements);
@@ -65,6 +79,7 @@ export class MeService {
       has_chart: profileState.hasChart,
       // Карта, к которой ведёт кнопка «моя карта» и `GET /charts/current`.
       chart_id: profileState.chartId,
+      latest_report_id: latestReportId,
       subscription,
       // Реальные права из getEntitlements(userId): фронт рисует по ним
       // пейволл, но доступ всё равно решается на сервере (payments.md §4).
@@ -102,8 +117,15 @@ export class MeService {
         [userId],
       );
 
+      // QA-15: порядок важен. Сначала разрешили/вернули зависшие платежи (выше),
+      // потом аннулируем живые инвойсы, и только затем удаляем пользователя:
+      // иначе останется окно, где пользователя уже нет, а инвойс ещё оплатим.
+      const invalidated = await this.payments.invalidateInvoices(client, userId);
+
       await client.query(`DELETE FROM quotas WHERE user_id = $1`, [userId]);
       await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
+
+      this.logger.info('account_deleted', { invoices_invalidated: invalidated });
     });
 
     await this.events.log({ name: 'account_deleted' });

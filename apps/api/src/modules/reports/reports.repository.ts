@@ -196,14 +196,27 @@ export class ReportsRepository {
   }
 
   /** Стоимость копится по факту вызовов: деньги списаны, даже если глава не прошла. */
-  async addCost(id: string, costRub: number, attempts: number): Promise<void> {
+  /**
+   * Стоимость и токены — из одного `usage` одного вызова.
+   *
+   * Раньше рядом жила `llm_cost_usd`, которая не считалась вовсе (всегда 0):
+   * две «стоимости» в одной строке противоречили друг другу. Теперь формула
+   * одна — рубли по цене модели, а `llm_tokens_in/out` объясняют сумму.
+   */
+  async addCost(
+    id: string,
+    usage: { readonly costRub: number; readonly promptTokens: number; readonly completionTokens: number },
+    attempts: number,
+  ): Promise<void> {
     await this.db.query(
       `UPDATE reports
           SET llm_cost_rub = llm_cost_rub + $2,
-              attempts = attempts + $3,
+              llm_tokens_in = llm_tokens_in + $3,
+              llm_tokens_out = llm_tokens_out + $4,
+              attempts = attempts + $5,
               updated_at = now()
         WHERE id = $1`,
-      [id, costRub, attempts],
+      [id, usage.costRub, usage.promptTokens, usage.completionTokens, attempts],
     );
   }
 

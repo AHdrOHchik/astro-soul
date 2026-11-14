@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.2
+  version: 1.5.3
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -125,6 +125,27 @@ info:
         не создаётся (`422`, `details.field_errors[{field: "chart_id"}]`),
         а `POST /reports` открывает разбор только по оплаченной карте.
         Покупки, сделанные до 1.5.2 без `chart_id`, разбор не открывают.
+
+    1.5.3 — приёмка QA-002, блокер QA-15 (оплата после удаления данных) и три
+    не-блокера. Ничего не удалено из схем, кроме имени метрики LLM:
+      • `invoices.status` — три состояния: `created | paid | invalidated`.
+        Переход `created → invalidated` делает `DELETE /me` в той же
+        транзакции, что и удаление пользователя. `successful_payment` по
+        `invalidated` инвойсу и по отсутствующему пользователю отклоняется:
+        доступ не выдаётся, звёзды возвращаются автоматически
+        (`refundStarPayment`), пишутся серверные события `payment_rejected`
+        (`props.code = invoice_invalidated | user_deleted`) и `refund_issued`
+        (`props.code` — та же причина). Если возврат технически не удался,
+        платёж остаётся `rejected`, добавляется `payment_rejected`
+        с `code = refund_failed` и он попадает в `pending_payments_now`;
+      • `pre_checkout_query` по такому инвойсу отвечает `ok=false`
+        с текстом «Оплата больше недоступна — начни заново»;
+      • `GET /me` отдаёт `latest_report_id` всегда (`null` — разборов не было);
+      • `GET /admin/metrics`: `llm_cost_usd_30d` заменён на `llm_cost_rub_30d`
+        — стоимость считается в рублях по цене модели из той же таблицы, что
+        и `LLM_MODEL`, а рядом в `reports` пишутся `llm_tokens_in/out`;
+      • `x-analytics-server-events`: канонические имена совпадают с записью
+        в `events`; `refund_issued` пишется всеми путями возврата.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -723,6 +744,10 @@ components:
 
     Invoice:
       type: object
+      description: |
+        Инвойс, выставленный сервером. Состояния хранятся в БД
+        (`invoices.status`) и в ответе не отдаются: клиенту нужна ссылка,
+        а не бухгалтерия. Требование к коду — `x-invoice-states`.
       required: [invoice_link, plan_code, stars, is_subscription]
       properties:
         invoice_link:
@@ -1297,7 +1322,13 @@ paths:
                   conversion_to_paid: { type: number }
                   churn_30d: { type: number }
                   stars_received_30d: { type: integer }
-                  llm_cost_usd_30d: { type: number }
+                  llm_cost_rub_30d:
+                    type: number
+                    description: |
+                      Стоимость LLM за 30 дней в рублях — сумма `reports.llm_cost_rub`.
+                      Одна формула: токены × цена модели из таблицы `LLM_MODEL`
+                      (вход и выход по одной цене). Долларовой оценки больше нет:
+                      она всегда была нулём и противоречила рублёвой.
                   reports_failed_30d: { type: integer }
                   payments_rejected_30d:
                     type: integer
@@ -1394,12 +1425,34 @@ x-event-aliases:
 
 # События ТОЛЬКО серверные: клиент их не отправляет (попытка отправить — 422),
 # API пишет их в таблицу events сам. В метриках видны счётчиками.
+# Состояния инвойса (требование к коду, схемой не выражается).
+# `invoices.status`: created → paid | invalidated.
+#   • created     — выставлен, оплата принимается;
+#   • paid        — оплачен, доступ выдан;
+#   • invalidated — аннулирован вместе с удалением данных (`DELETE /me`).
+#     Оплата по нему не принимается никогда: `pre_checkout_query` → ok=false,
+#     `successful_payment` → отказ, автоматический возврат звёзд, событие
+#     `refund_issued` с `props.code = invoice_invalidated`.
+# Владелец инвойса удалён, а сам инвойс ещё `created` — запрещённое состояние:
+# инвалидация идёт в одной транзакции с `DELETE users`, до неё платёж
+# отклоняется по проверке существования пользователя (`user_deleted`).
+x-invoice-states:
+  created: { payable: true, grants_access: false }
+  paid: { payable: false, grants_access: true }
+  invalidated: { payable: false, grants_access: false }
+
 x-analytics-server-events:
   - payment_rejected
   - refund_issued
   - subscription_expired
-# payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan)
-# refund_issued    — props: code (report_failed | admin | delete_with_pending)
+# payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
+#                    invoice_invalidated | user_deleted | refund_failed)
+#                    refund_failed означает: отказ записан, но звёзды вернуть
+#                    не удалось — платёж виден в pending_payments_now.
+# refund_issued    — props: code (report_failed | admin | delete_with_pending |
+#                    invoice_invalidated | user_deleted)
+#                    Одно имя для всех путей возврата: и поддержка, и
+#                    автовозврат QA-15 пишут `refund_issued`, не `payment_refunded`.
 # subscription_expired — props: last_plan
 
 # Ключи, которых не может быть в `props` события (`POST /events`).

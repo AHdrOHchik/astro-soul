@@ -538,7 +538,15 @@ export class ReportsService {
     const response = await this.llm.complete({ messages });
     budget.costRub = Math.round((budget.costRub + response.usage.costRub) * 10_000) / 10_000;
     budget.attempts += 1;
-    await this.repo.addCost(budget.reportId, response.usage.costRub, 1);
+    await this.repo.addCost(
+      budget.reportId,
+      {
+        costRub: response.usage.costRub,
+        promptTokens: response.usage.promptTokens,
+        completionTokens: response.usage.completionTokens,
+      },
+      1,
+    );
 
     if (budget.costRub > reportCap) {
       throw new ReportFailure('cost_cap');
