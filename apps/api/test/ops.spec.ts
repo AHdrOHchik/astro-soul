@@ -184,7 +184,7 @@ describe('POST /api/v1/internal/jobs/run', () => {
     expect(telegram.messages).toHaveLength(1);
   });
 
-  it('возвращает звёзды за платёж, который не удалось выдать за 10 минут', async () => {
+  it('зависший платёж без инвойса: rejected, а не автовозврат (QA-11)', async () => {
     const userId = await ensureUser();
 
     await ctx.db.query(
@@ -199,14 +199,173 @@ describe('POST /api/v1/internal/jobs/run', () => {
       .set('X-Jobs-Secret', JOBS_SECRET)
       .expect(202);
 
-    expect(response.body).toMatchObject({ refunds_attempted: 1, refunds_done: 1 });
-    expect(telegram.refunds).toEqual([
-      { userId: FICTIONAL_USER.id, chargeId: 'charge-undelivered-1' },
+    expect(response.body).toMatchObject({
+      pending_payments_rejected: 1,
+      pending_payments_processed: 0,
+      refunds_attempted: 0,
+    });
+    // Деньги не возвращаем автоматически: это решение владельца.
+    expect(telegram.refunds).toHaveLength(0);
+
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string }>(
+      `SELECT status, reject_reason FROM payments WHERE telegram_payment_charge_id = 'charge-undelivered-1'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'unknown_plan' });
+  });
+
+  it('зависший платёж по валидному инвойсу доставляется, а не возвращается', async () => {
+    const userId = await ensureUser();
+    const idemKey = '33333333-3333-4333-8333-333333333333';
+    const payload = JSON.stringify({ p: 'one_149', u: userId, k: idemKey });
+
+    await ctx.db.query(
+      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link)
+       VALUES ($1, 'one_149', $2, $3, 'https://t.me/$invoice-1')`,
+      [userId, idemKey, payload],
+    );
+    await ctx.db.query(
+      `INSERT INTO payments
+         (user_id, telegram_id, plan_code, total_amount, invoice_payload,
+          telegram_payment_charge_id, processed, paid_at)
+       VALUES ($1, $2, 'one_149', 149, $3, 'charge-delivered-1', false, now() - interval '15 minutes')`,
+      [userId, FICTIONAL_USER.id, payload],
+    );
+
+    const first = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+
+    expect(first.body).toMatchObject({ pending_payments_processed: 1, pending_payments_rejected: 0 });
+    expect(telegram.refunds).toHaveLength(0);
+
+    const payment = await ctx.db.queryOne<{ status: string; processed: boolean }>(
+      `SELECT status, processed FROM payments WHERE telegram_payment_charge_id = 'charge-delivered-1'`,
+    );
+    expect(payment).toMatchObject({ status: 'processed', processed: true });
+    expect(await ctx.db.query(`SELECT 1 FROM entitlements`)).toHaveLength(1);
+
+    // Второй запуск: работы нет, счётчики нулевые.
+    const second = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+    expect(second.body).toMatchObject({
+      pending_payments_processed: 0,
+      pending_payments_rejected: 0,
+      refunds_attempted: 0,
+    });
+  });
+
+  it('?job= запускает только названный джоб, незнакомый — 403', async () => {
+    const userId = await ensureUser();
+
+    await ctx.db.query(
+      `INSERT INTO subscriptions (user_id, plan, status, expires_at)
+       VALUES ($1, 'week', 'active', now() - interval '1 hour')`,
+      [userId],
+    );
+
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=pdn_retention_cleanup')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+
+    // Истёкшая подписка этим джобом не трогается: у него свой таймер.
+    expect(response.body).toMatchObject({ subscriptions_expired: 0 });
+    expect(telegram.messages).toHaveLength(0);
+
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=no_such_job')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(403);
+  });
+
+  it('pdn_retention_cleanup удаляет неактивных 24 месяца и идемпотентен', async () => {
+    const userId = await ensureUser();
+
+    // Последняя активность — 25 месяцев назад.
+    await ctx.db.query(
+      `INSERT INTO events (user_id, name, props, created_at)
+       VALUES ($1, 'app_open', '{}'::jsonb, now() - interval '25 months')`,
+      [userId],
+    );
+    await ctx.db.query(`UPDATE users SET created_at = now() - interval '26 months' WHERE id = $1`, [
+      userId,
     ]);
 
-    const payment = await ctx.db.queryOne<{ status: string }>(
-      `SELECT status FROM payments WHERE telegram_payment_charge_id = 'charge-undelivered-1'`,
+    const first = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=pdn_retention_cleanup')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+
+    expect(first.body).toMatchObject({ pdn_users_deleted: 1 });
+    expect(await ctx.db.query(`SELECT 1 FROM users`)).toHaveLength(0);
+
+    const second = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=pdn_retention_cleanup')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+    expect(second.body).toMatchObject({ pdn_users_deleted: 0 });
+  });
+
+  it('pdn_retention_cleanup не трогает активного пользователя', async () => {
+    await ensureUser();
+
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=pdn_retention_cleanup')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+
+    expect(response.body).toMatchObject({ pdn_users_deleted: 0 });
+    expect(await ctx.db.query(`SELECT 1 FROM users`)).toHaveLength(1);
+  });
+
+  it('report_refund возвращает звёзды за провалившийся разбор один раз', async () => {
+    const userId = await ensureUser();
+    const chart = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
+       VALUES ($1, 'hash-report-failed', '{}'::jsonb, 'test', true)
+       RETURNING id`,
+      [userId],
     );
-    expect(payment?.status).toBe('refunded');
+    const chartId = chart?.id;
+
+    const payment = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
+       VALUES ($1, $2, 'one_149', 149, 'charge-report-failed', true)
+       RETURNING id`,
+      [userId, FICTIONAL_USER.id],
+    );
+    await ctx.db.query(
+      `INSERT INTO entitlements (user_id, kind, chart_id, payment_id)
+       VALUES ($1, 'report', $2, $3)`,
+      [userId, chartId, payment?.id],
+    );
+    await ctx.db.query(
+      `INSERT INTO reports (chart_id, user_id, status) VALUES ($1, $2, 'failed')`,
+      [chartId, userId],
+    );
+
+    const first = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=report_refund')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+
+    expect(first.body).toMatchObject({ report_refunds_done: 1 });
+    expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-report-failed' }]);
+
+    const report = await ctx.db.queryOne<{ status: string; refunded_at: Date | null }>(
+      `SELECT status, refunded_at FROM reports`,
+    );
+    expect(report?.status).toBe('refunded');
+    expect(report?.refunded_at).not.toBeNull();
+
+    const second = await request(ctx.app.getHttpServer())
+      .post('/api/v1/internal/jobs/run?job=report_refund')
+      .set('X-Jobs-Secret', JOBS_SECRET)
+      .expect(202);
+    expect(second.body).toMatchObject({ report_refunds_done: 0 });
+    expect(telegram.refunds).toHaveLength(1);
   });
 });

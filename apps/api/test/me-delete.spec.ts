@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import { userIdFromTelegramId } from '../src/modules/users/pseudonym';
@@ -6,6 +6,7 @@ import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
 import { FICTIONAL_USER, TEST_BOT_TOKEN, TEST_PEPPER } from './test-env';
 import { makeFakeAstro } from './fake-astro';
+import { PaymentsService } from '../src/modules/billing/payments.service';
 
 /** Таблицы, которые обязаны опустеть после `DELETE /me` (SPEC «Сценарий 6»). */
 const PERSONAL_TABLES = ['users', 'profiles', 'charts', 'reports', 'asks', 'forecasts'] as const;
@@ -135,25 +136,92 @@ describe('DELETE /api/v1/me', () => {
     expect(me.body.user_id).toBe(userIdFromTelegramId(BigInt(FICTIONAL_USER.id), TEST_PEPPER));
   });
 
-  it('незавершённый платёж → 409 CONFLICT, ничего не удаляется', async () => {
+  it('зависший платёж без инвойса: джоб-путь разрешает его, удаление идёт (204)', async () => {
+    const { userId } = await seedPersonalData();
+
+    await ctx.db.query(
+      `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, invoice_payload,
+                             telegram_payment_charge_id, status, processed)
+       VALUES ($1, $2, 'one_149', 149,
+               '{"p":"one_149","u":"${userId}","k":"22222222-2222-4222-8222-222222222222"}',
+               'charge-pending-1', 'paid', false)`,
+      [userId, FICTIONAL_USER.id],
+    );
+
+    // QA-14: раньше это был тупик 409. Теперь платёж разрешается тем же кодом,
+    // что и вебхук: инвойса нет — отказ, доступ не выдаётся, ПДн удаляются.
+    await request(ctx.app.getHttpServer())
+      .delete('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(204);
+
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string }>(
+      `SELECT status, reject_reason FROM payments WHERE telegram_payment_charge_id = 'charge-pending-1'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'no_invoice' });
+    expect(await countRows('users')).toBe(0);
+    expect(await countRows('charts')).toBe(0);
+    expect(await countRows('profiles')).toBe(0);
+    expect(await countRows('subscriptions')).toBe(0);
+  });
+
+  it('зависший платёж по валидному инвойсу: доступ выдаётся, удаление идёт (204)', async () => {
+    const { userId } = await seedPersonalData();
+
+    await ctx.db.query(
+      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link)
+       VALUES ($1, 'one_149', '11111111-1111-4111-8111-111111111111',
+               '{"p":"one_149","u":"...","k":"11111111-1111-4111-8111-111111111111"}', 'https://t.me/$x')`,
+      [userId],
+    );
+    await ctx.db.query(
+      `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, invoice_payload,
+                             telegram_payment_charge_id, status, processed)
+       VALUES ($1, $2, 'one_149', 149,
+               '{"p":"one_149","u":"${userId}","k":"11111111-1111-4111-8111-111111111111"}',
+               'charge-pending-2', 'paid', false)`,
+      [userId, FICTIONAL_USER.id],
+    );
+
+    await request(ctx.app.getHttpServer())
+      .delete('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(204);
+
+    const payment = await ctx.db.queryOne<{ status: string; processed: boolean }>(
+      `SELECT status, processed FROM payments WHERE telegram_payment_charge_id = 'charge-pending-2'`,
+    );
+    expect(payment).toMatchObject({ status: 'processed', processed: true });
+    expect(await countRows('users')).toBe(0);
+  });
+
+  it('не удалось ни доставить, ни вернуть: 409 refund_failed с контактом поддержки', async () => {
     const { userId } = await seedPersonalData();
 
     await ctx.db.query(
       `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount,
                              telegram_payment_charge_id, status, processed)
-       VALUES ($1, $2, 'one_149', 149, 'charge-pending-1', 'paid', false)`,
-      [userId, FICTIONAL_USER.id],
+       VALUES ($1, NULL, 'one_149', 149, 'charge-pending-3', 'paid', false)`,
+      [userId],
     );
 
-    const response = await request(ctx.app.getHttpServer())
-      .delete('/api/v1/me')
-      .set(INIT_DATA_HEADER, initDataFor())
-      .expect(409);
+    // Товар не доставлен (сбой выдачи), а вернуть нельзя: у платежа нет telegram_id.
+    const payments = ctx.app.get(PaymentsService);
+    const resolve = vi.spyOn(payments, 'resolvePending').mockRejectedValue(new Error('выдача не удалась'));
 
-    expect(response.body).toMatchObject({ code: 'CONFLICT' });
-    expect(await countRows('users')).toBe(1);
-    expect(await countRows('charts')).toBe(1);
-    expect(await countRows('profiles')).toBe(1);
+    try {
+      const response = await request(ctx.app.getHttpServer())
+        .delete('/api/v1/me')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .expect(409);
+
+      expect(response.body).toMatchObject({ code: 'CONFLICT', details: { reason: 'refund_failed' } });
+      expect(response.body.message).toContain('@test_support');
+      expect(await countRows('users')).toBe(1);
+      expect(await countRows('charts')).toBe(1);
+    } finally {
+      resolve.mockRestore();
+    }
   });
 
   it('повторное удаление идемпотентно: 204 без ошибки', async () => {

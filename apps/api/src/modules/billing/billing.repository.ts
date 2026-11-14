@@ -31,6 +31,19 @@ export interface NewRejectedPayment extends NewPayment {
   readonly rejectReason: 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
 }
 
+/** Строка платежа в объёме, нужном для повторной сверки и выдачи доступа. */
+export interface PaymentForResolution {
+  readonly telegram_payment_charge_id: string;
+  readonly telegram_id: string | null;
+  readonly currency: string;
+  readonly total_amount: number;
+  readonly invoice_payload: string | null;
+  readonly subscription_expires_at: Date | null;
+  readonly provider_payment_charge_id: string | null;
+  readonly status: string;
+  readonly processed: boolean;
+}
+
 export interface GrantInput {
   readonly userId: string;
   readonly kind: 'report' | 'compat' | 'solar';
@@ -145,6 +158,22 @@ export class BillingRepository {
     return result.rows[0]?.id ?? null;
   }
 
+  /** Пометить уже записанный платёж отказом: `paid` + `processed = false` → `rejected`. */
+  async markPaymentRejected(
+    client: PoolClient,
+    input: { chargeId: string; reason: 'no_invoice' | 'amount_mismatch' | 'unknown_plan' },
+  ): Promise<string | null> {
+    const result = await client.query<{ id: string }>(
+      `UPDATE payments
+          SET status = 'rejected', reject_reason = $2
+        WHERE telegram_payment_charge_id = $1
+          AND status = 'paid' AND processed = false
+        RETURNING id`,
+      [input.chargeId, input.reason],
+    );
+    return result.rows[0]?.id ?? null;
+  }
+
   /**
    * Отказ по деньгам (QA-11): строка пишется, чтобы отказ был виден поддержке
    * и в метриках, но `processed` остаётся `false` — доступа она не даёт.
@@ -187,6 +216,50 @@ export class BillingRepository {
     await client.query(
       `UPDATE invoices SET status = 'paid' WHERE user_id = $1 AND idem_key = $2 AND status = 'created'`,
       [userId, idemKey],
+    );
+  }
+
+  /**
+   * Платёж, который можно довести до конца: `paid`, но доступ не выдан.
+   * Нужен джобу `pending_payments_resolve` и `DELETE /me` — оба разрешают его
+   * тем же путём, что и вебхук.
+   */
+  async findUnprocessedPayments(olderThanMinutes: number, limit: number): Promise<PaymentForResolution[]> {
+    return this.db.query<PaymentForResolution>(
+      `SELECT telegram_payment_charge_id, telegram_id::text AS telegram_id, currency,
+              total_amount, invoice_payload, subscription_expires_at,
+              provider_payment_charge_id, status, processed
+         FROM payments
+        WHERE processed = false
+          AND status = 'paid'
+          AND paid_at <= now() - make_interval(mins => $1::int)
+        ORDER BY paid_at
+        LIMIT $2`,
+      [olderThanMinutes, limit],
+    );
+  }
+
+  /** Все незавершённые платежи пользователя — для `DELETE /me`. */
+  async listUnprocessedPaymentsOf(userId: string): Promise<PaymentForResolution[]> {
+    return this.db.query<PaymentForResolution>(
+      `SELECT telegram_payment_charge_id, telegram_id::text AS telegram_id, currency,
+              total_amount, invoice_payload, subscription_expires_at,
+              provider_payment_charge_id, status, processed
+         FROM payments
+        WHERE user_id = $1 AND processed = false AND status = 'paid'
+        ORDER BY paid_at`,
+      [userId],
+    );
+  }
+
+  async findPaymentForResolution(chargeId: string): Promise<PaymentForResolution | null> {
+    return this.db.queryOne<PaymentForResolution>(
+      `SELECT telegram_payment_charge_id, telegram_id::text AS telegram_id, currency,
+              total_amount, invoice_payload, subscription_expires_at,
+              provider_payment_charge_id, status, processed
+         FROM payments
+        WHERE telegram_payment_charge_id = $1`,
+      [chargeId],
     );
   }
 

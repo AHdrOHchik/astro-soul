@@ -82,6 +82,16 @@ const envSchema = z.object({
     z.string().min(8).optional(),
   ),
 
+  /**
+   * Контакт поддержки для текстов, где пользователю нужно куда-то написать
+   * (`DELETE /me` при неудавшемся возврате). Пустое значение — «не задано»:
+   * текст тогда не обещает контакт, а просит написать в поддержку бота.
+   */
+  SUPPORT_CONTACT: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(2).max(64).optional(),
+  ),
+
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
 });
 

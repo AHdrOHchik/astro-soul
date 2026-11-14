@@ -38,6 +38,12 @@ export interface TelegramUpdate {
 /** Причины отказа из контракта (`payment_rejected.props.code`). */
 export type RejectCode = 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
 
+/** Что стало с платежом: доступ выдан, отказ по деньгам или повтор доставки. */
+type PaymentOutcome =
+  | { readonly kind: 'processed'; readonly plan: Plan; readonly expiresAt: Date | null; readonly renewed: boolean }
+  | { readonly kind: 'rejected'; readonly code: RejectCode }
+  | { readonly kind: 'duplicate' };
+
 type ProcessOutcome =
   | { readonly kind: 'duplicate' }
   | {
@@ -116,6 +122,27 @@ export class PaymentsService {
   }
 
   /**
+   * Апдейт `successful_payment`: сверка и выдача доступа, затем сообщение в чат.
+   * Ответ вебхука от исхода не зависит — он всегда `200` (см. `processPayment`).
+   */
+  private async handleSuccessfulPayment(
+    chatId: number | null,
+    telegramUserId: number | null,
+    payment: TelegramSuccessfulPayment,
+  ): Promise<void> {
+    const outcome = await this.processPayment({ telegramUserId, payment });
+
+    if (outcome.kind !== 'processed') {
+      return;
+    }
+
+    // П.5 из payments.md §3.2: сообщение не критично, ошибка не отменяет платёж.
+    if (chatId !== null) {
+      await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
+    }
+  }
+
+  /**
    * QA-11: доступ выдаётся только за платёж, который сервер сам выставлял.
    *
    * Проверки по порядку: (1) инвойс с таким `payload.k` существует и принадлежит
@@ -125,19 +152,30 @@ export class PaymentsService {
    * и причиной, серверное событие `payment_rejected` и счётчик в `/admin/metrics`.
    * Возврат звёзд автоматически не делаем: это реальные деньги пользователя,
    * решение принимает владелец.
+   *
+   * Один и тот же путь используют вебхук и джоб `pending_payments_resolve`:
+   * зависший платёж разрешается ровно теми же проверками, что и свежий.
    */
-  private async handleSuccessfulPayment(
-    chatId: number | null,
-    telegramUserId: number | null,
-    payment: TelegramSuccessfulPayment,
-  ): Promise<void> {
+  private async processPayment(input: {
+    readonly telegramUserId: number | null;
+    readonly payment: TelegramSuccessfulPayment;
+  }): Promise<PaymentOutcome> {
+    const { payment, telegramUserId } = input;
     const payload = parseInvoicePayload(payment.invoice_payload);
     const plan = payload === null ? undefined : PLANS[payload.p];
     const chargeId = payment.telegram_payment_charge_id;
 
     if (payment.currency !== 'XTR') {
-      this.logger.error('payment_wrong_currency', { charge: chargeId });
-      return;
+      await this.rejectPayment({
+        code: 'amount_mismatch',
+        detail: 'currency_not_xtr',
+        telegramUserId,
+        payment,
+        userId: payload?.u ?? null,
+        planCode: payload?.p ?? null,
+        expected: plan?.stars ?? null,
+      });
+      return { kind: 'rejected', code: 'amount_mismatch' };
     }
 
     if (payload === null || plan === undefined) {
@@ -150,7 +188,7 @@ export class PaymentsService {
         planCode: null,
         expected: null,
       });
-      return;
+      return { kind: 'rejected', code: 'unknown_plan' };
     }
 
     const invoice = await this.repo.findInvoiceByIdeaKey(payload.u, payload.k);
@@ -164,7 +202,7 @@ export class PaymentsService {
         planCode: payload.p,
         expected: plan.stars,
       });
-      return;
+      return { kind: 'rejected', code: 'no_invoice' };
     }
 
     if (payment.total_amount !== plan.stars) {
@@ -177,7 +215,7 @@ export class PaymentsService {
         planCode: payload.p,
         expected: plan.stars,
       });
-      return;
+      return { kind: 'rejected', code: 'amount_mismatch' };
     }
 
     const requestedExpiresAt =
@@ -187,7 +225,7 @@ export class PaymentsService {
               Math.floor(Date.now() / 1000) + plan.periodSeconds) * 1000,
           )
         : null;
-    const chartId = invoice?.chart_id ?? null;
+    const chartId = invoice.chart_id;
 
     const outcome = await this.db.withTransaction<ProcessOutcome>(async (client) => {
       const locked = await this.repo.lockPayment(client, chargeId);
@@ -242,7 +280,7 @@ export class PaymentsService {
 
     if (outcome.kind === 'duplicate') {
       this.logger.info('payment_duplicate_ignored', { charge: chargeId });
-      return;
+      return outcome;
     }
 
     await this.events.log({
@@ -257,12 +295,8 @@ export class PaymentsService {
       },
     });
 
-    // П.5 из payments.md §3.2: сообщение не критично, ошибка не отменяет платёж.
-    if (chatId !== null) {
-      await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
-    }
+    return outcome;
   }
-
   /**
    * Отказ по деньгам: платёж пишется со статусом `rejected`, доступ не выдаётся.
    *
@@ -289,8 +323,15 @@ export class PaymentsService {
       plan: input.planCode,
     });
 
-    const inserted = await this.db.withTransaction(async (client) => {
-      const paymentId = await this.repo.insertRejectedPayment(client, {
+    const recorded = await this.db.withTransaction(async (client) => {
+      // Зависший платёж (`paid`, но доступ не выдан) уже лежит в базе: его
+      // помечаем отказом, а не пытаемся вставить вторую строку с тем же charge_id.
+      const updatedId = await this.repo.markPaymentRejected(client, { chargeId, reason: input.code });
+      if (updatedId !== null) {
+        return true;
+      }
+
+      const insertedId = await this.repo.insertRejectedPayment(client, {
         userId: input.userId,
         telegramId: input.telegramUserId,
         planCode: input.planCode,
@@ -304,10 +345,10 @@ export class PaymentsService {
       });
 
       // Повторная доставка того же charge_id уже записана — второй раз не считаем.
-      return paymentId !== null;
+      return insertedId !== null;
     });
 
-    if (!inserted) {
+    if (!recorded) {
       this.logger.info('payment_rejected_duplicate_ignored', { charge: chargeId, code: input.code });
       return;
     }
@@ -318,6 +359,52 @@ export class PaymentsService {
       userId: input.userId,
       props: { code: input.code, plan: input.planCode, expected: input.expected },
     });
+  }
+
+  /**
+   * Довести зависший платёж до конца теми же проверками, что и вебхук:
+   * доступ (если инвойс и сумма в порядке) или `rejected` (если нет).
+   *
+   * Возвращает `'unresolved'`, если строка исчезла или уже разобрана, и
+   * бросает исключение, если выдача не удалась: тогда платёж остаётся
+   * `paid`/`unprocessed`, и его забирает джоб возврата.
+   */
+  async resolvePending(chargeId: string): Promise<'processed' | 'rejected' | 'unresolved'> {
+    const row = await this.repo.findPaymentForResolution(chargeId);
+
+    if (row === null || row.processed || row.status !== 'paid') {
+      return 'unresolved';
+    }
+
+    const outcome = await this.processPayment({
+      telegramUserId: row.telegram_id === null ? null : Number(row.telegram_id),
+      payment: {
+        currency: row.currency,
+        total_amount: row.total_amount,
+        invoice_payload: row.invoice_payload ?? '',
+        telegram_payment_charge_id: row.telegram_payment_charge_id,
+        ...(row.provider_payment_charge_id === null
+          ? {}
+          : { provider_payment_charge_id: row.provider_payment_charge_id }),
+        ...(row.subscription_expires_at === null
+          ? {}
+          : { subscription_expiration_date: Math.floor(row.subscription_expires_at.getTime() / 1000) }),
+      },
+    });
+
+    return outcome.kind === 'processed' ? 'processed' : outcome.kind === 'rejected' ? 'rejected' : 'unresolved';
+  }
+
+  /** Незавершённые платежи пользователя: `DELETE /me` разрешает их инлайн. */
+  async unprocessedChargesOf(userId: string): Promise<string[]> {
+    const rows = await this.repo.listUnprocessedPaymentsOf(userId);
+    return rows.map((row) => row.telegram_payment_charge_id);
+  }
+
+  /** Платежи, висящие дольше `minutes`, — вход джоба `pending_payments_resolve`. */
+  async staleCharges(minutes: number, limit: number): Promise<string[]> {
+    const rows = await this.repo.findUnprocessedPayments(minutes, limit);
+    return rows.map((row) => row.telegram_payment_charge_id);
   }
 
   private async grantOne(

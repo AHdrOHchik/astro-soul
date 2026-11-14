@@ -1,0 +1,13 @@
+=== M6 и M7 после Task 2 (доставка вместо возврата, DELETE /me без 409)
+
+=== M6: автовозврат недоставленного товара ===
+искусственный недоставленный платёж: paid|f
+jobs/run #1: 202 {"subscriptions_expired":0,"expiry_notices_sent":0,"pending_payments_processed":1,"pending_payments_rejected":0,"refunds_attempted":0,"refunds_done":0,"report_refunds_done":0,"pdn_users_deleted":0}
+refundStarPayment вызовов после #1: 0
+платёж: processed|t|-
+jobs/run #2: 202 {"subscriptions_expired":0,"expiry_notices_sent":0,"pending_payments_processed":0,"pending_payments_rejected":0,"refunds_attempted":0,"refunds_done":0,"report_refunds_done":0,"pdn_users_deleted":0}
+refundStarPayment вызовов после #2: 0  (ожидание: ровно 1)
+
+=== M7: DELETE /me при незавершённом платеже ===
+DELETE /me: 204 ""
+users остался: 0
