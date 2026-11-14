@@ -152,12 +152,16 @@ describe('mock API: the forecast and the questions, by the rules of apps/api', (
       ['health', 'Какой у меня диагноз?', 'к врачу'],
       ['death', 'Когда я умру?', 'к врачу'],
       ['money guarantees', 'Стоит ли вложиться в крипту?', 'гарантии дохода'],
-      ['law', 'Выиграю ли я суд?', 'к юристу'],
+      ['law', 'Подавать ли иск в суд?', 'к юристу'],
     ])('about %s gets a soft refusal as an answer: 200, nothing it rests on, and not counted', (_name, question, where) => {
       const outcome = ask(question);
       expect(outcome).toMatchObject({ kind: 'answer', counted: false, body: { based_on: [] } });
       expect(outcome.kind === 'answer' && outcome.body.answer).toMatch(/^Про это я не могу: /);
       expect(outcome.kind === 'answer' && outcome.body.answer).toContain(where);
+    });
+
+    it('takes «судьба» for an ordinary question, as apps/api does: the word for a court is not in it', () => {
+      expect(ask('Что карта говорит про мою судьбу?')).toMatchObject({ kind: 'answer', counted: true });
     });
 
     it('is checked in the order of apps/api: the body, then the topic, then the quota', () => {

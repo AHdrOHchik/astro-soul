@@ -77,7 +77,8 @@ const QUESTION_LENGTH = { min: 3, max: 500 } as const;
 
 /** Topics apps/api does not answer on (`ask-topics.ts`), a few words of each: enough to see a soft refusal. */
 const FORBIDDEN: readonly { pattern: RegExp; where: string }[] = [
-  { pattern: /юрист|адвокат|суд|налог|наследств/iu, where: 'С этим — к юристу.' },
+  // «иск в суд», not a bare «суд»: as in apps/api, so that «судьба» is an ordinary question here too.
+  { pattern: /юрист|адвокат|иск в суд|судебн|налог|наследств/iu, where: 'С этим — к юристу.' },
   { pattern: /разбогате|инвестиц|акци[ия]|крипт|казин/iu, where: 'Про гарантии дохода и инвестиции я не рассказываю: это не астрология.' },
   { pattern: /диагноз|болезн|здоровь|врач|смерт|умр[уёе]|беременн/iu, where: 'С этим — к врачу, и как можно скорее, если вопрос срочный.' },
 ];
