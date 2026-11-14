@@ -514,7 +514,8 @@ export const ru = {
     deletion: {
       /** Owner's wording, the name the legal texts promise. */
       title: 'Удалить мои данные',
-      text: 'Профиль, карты, разборы, прогнозы и вопросы удаляются сразу и навсегда.',
+      /** What goes is the list of SPEC.md (scenario 6); «необратимо» is the word of the legal texts. */
+      text: 'Удаляются профиль, карты, разборы, прогнозы и вопросы. Это необратимо.',
       open: 'Удалить мои данные',
       /** The first confirmation: what exactly goes. */
       confirmTitle: 'Удалить все данные?',
