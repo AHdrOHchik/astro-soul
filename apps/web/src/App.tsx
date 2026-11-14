@@ -472,6 +472,12 @@ function Screens({
     // The form starts clean as well: the consent went with the data it was given for.
     setDraft(EMPTY_DRAFT);
     setServerErrors(NO_SERVER_ERRORS);
+    // A payment still on its way that was made for a chart went with the chart: nothing will come of it now, and
+    // the chart built next is offered its own price. A subscription is about no chart: it is awaited as before.
+    if (awaited.current !== null && awaited.current.chartId !== null) {
+      awaited.current = null;
+      setAwaitedPurchase(null);
+    }
     // The chart screen may be the one on screen (it asks about the report too): it starts over like any other.
     setChartEpoch((epoch) => epoch + 1);
     setHome('current');
@@ -597,7 +603,8 @@ function Screens({
           onGone: handleReportGone,
           // Whichever chart that payment was for: while one is on its way, no price is offered anywhere.
           paymentPending: awaitedPurchase?.plan === REPORT_PLAN,
-          onCheckPayment: refreshMe,
+          // The payment was for a chart: `Me` without any says that the chart is gone, and the purchase with it.
+          onCheckPayment: refreshMeForChart,
           onBuy: (chart) => {
             setOpenChart(chart);
             setPaywall({ plan: REPORT_PLAN, offersReport: true, reportRequired: false });
@@ -622,6 +629,8 @@ function Screens({
   const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id, share: null } : null);
   // The chart the paywall sells the report for; null when the report is not on offer there.
   const paywallChartId = paywall.offersReport ? (reportChart?.chartId ?? null) : null;
+  // The chart of the payment the app is waiting for; null when there is none, or it is for a subscription.
+  const awaitedChartId = awaitedPurchase?.chartId ?? null;
 
   switch (route) {
     case 'welcome':
@@ -642,13 +651,15 @@ function Screens({
           api={api}
           telegram={telegram}
           me={me}
-          refreshMe={refreshMe}
+          // A report is paid for a chart. Where the screen sells one, or waits for a payment made for a chart, `Me`
+          // without any chart says that the chart is gone, and the purchase with it: the app starts over instead of waiting.
+          refreshMe={paywallChartId !== null || awaitedChartId !== null ? refreshMeForChart : refreshMe}
           reportChartId={paywallChartId}
           initialPlan={paywall.plan}
           subscriptions={subscriptions}
           reportRequired={paywall.reportRequired}
           awaiting={awaitedPurchase?.plan ?? null}
-          awaitingChartId={awaitedPurchase?.chartId ?? null}
+          awaitingChartId={awaitedChartId}
           onAwaiting={(plan) => {
             awaitPayment({ plan, chartId: plan === REPORT_PLAN ? paywallChartId : null });
           }}

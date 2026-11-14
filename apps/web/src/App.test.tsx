@@ -31,6 +31,7 @@ import {
   rejection,
   report,
   REPORT_ID,
+  reportInvoice,
   sections,
   setupUser,
   TODAY,
@@ -1834,6 +1835,134 @@ describe('App: the forecast and the question', () => {
         expect(heading()).toHaveTextContent(ru.settings.title);
         expect(view.forgetKeys).not.toHaveBeenCalled();
         expect(view.api.getCurrentChart).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('a payment for the report is on its way when the data goes: Telegram said «paid», the server has granted nothing', () => {
+      const price = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) });
+      const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
+      const checkAgain = () => screen.getByRole('button', { name: ru.paywall.checkAgain });
+
+      /** From the price on the chart to «Платёж обрабатывается» on the paywall: `Me`, asked twice, grants nothing. */
+      async function payUnconfirmed(user: FakeUser) {
+        await user.click(await price());
+        await user.click(await payButton());
+        await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+        expect(await screen.findByText(ru.paywall.processingTitle)).toBeInTheDocument();
+      }
+
+      it('«Проверить ещё раз» on the paywall after the deletion: the welcome screen, not «Платёж обрабатывается» with no end', async () => {
+        const view = returning(meFree);
+        await payUnconfirmed(view.user);
+
+        deleteElsewhere(view.api);
+        await view.user.click(checkAgain());
+
+        await expectFreshStart(view);
+        expect(screen.queryByText(ru.paywall.processingTitle)).not.toBeInTheDocument();
+        expect(view.api.orderReport).not.toHaveBeenCalled();
+        expect(view.analytics.names()).not.toContain('payment_succeeded');
+      });
+
+      it('the same from the chart, where the block of the report says «Платёж обрабатывается»', async () => {
+        const view = returning(meFree);
+        await payUnconfirmed(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.paywall.leave }));
+        expect(await screen.findByText(ru.chart.paymentPending)).toBeInTheDocument();
+
+        deleteElsewhere(view.api);
+        await view.user.click(checkAgain());
+
+        await expectFreshStart(view);
+        expect(view.api.createInvoice).toHaveBeenCalledTimes(1);
+      });
+
+      it('and from a paywall opened for a subscription meanwhile: it waits for that same payment, and leads the same way', async () => {
+        const view = returning(meFree, { prepare: (fake) => fake.getForecast.mockResolvedValue(freeForecast) });
+        await payUnconfirmed(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.paywall.leave }));
+        await openForecast(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.forecast.subscriptionOnly }));
+        // Nothing is sold while a payment is on its way: the paywall opens on that payment, whatever it was opened for.
+        expect(await screen.findByText(ru.paywall.processingTitle)).toBeInTheDocument();
+
+        deleteElsewhere(view.api);
+        await view.user.click(checkAgain());
+
+        await expectFreshStart(view);
+      });
+
+      it('deleted while Telegram was showing the invoice: the first question after «paid» leads to the welcome screen', async () => {
+        const view = returning(meFree);
+        view.telegram.openInvoice.mockImplementation(() => {
+          deleteElsewhere(view.api);
+          return Promise.resolve('paid');
+        });
+
+        await view.user.click(await price());
+        await view.user.click(await payButton());
+
+        await expectFreshStart(view);
+        expect(screen.queryByText(ru.paywall.processingTitle)).not.toBeInTheDocument();
+        // One question was enough: the app did not wait to ask a second time.
+        expect(view.api.getMe).toHaveBeenCalledTimes(2);
+        expect(view.api.orderReport).not.toHaveBeenCalled();
+      });
+
+      it('the chart built after that is offered its own price: the payment for the chart that is gone is awaited no more', async () => {
+        const view = returning(meFree);
+        await payUnconfirmed(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.paywall.leave }));
+        expect(await screen.findByText(ru.chart.paymentPending)).toBeInTheDocument();
+
+        // Found out by another way than the payment: the forecast is asked for (404 now), and `Me` after it.
+        deleteElsewhere(view.api);
+        view.api.getForecast.mockResolvedValue(null);
+        await openForecast(view.user);
+        expect(await start()).toBeInTheDocument();
+
+        await fillIn(view.user);
+
+        expect(await price()).toBeInTheDocument();
+        expect(screen.queryByText(ru.chart.paymentPending)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: ru.paywall.checkAgain })).not.toBeInTheDocument();
+      });
+
+      it('a subscription on its way is about no chart: it is awaited through the start over, and counted once the server grants it', async () => {
+        const monthInvoice = { ...reportInvoice, plan_code: 'month_399', stars: 399, is_subscription: true, subscription_period_sec: 2_592_000 } as const;
+        const view = returning(meFree, {
+          prepare: (fake) => {
+            fake.getForecast.mockResolvedValue(freeForecast);
+            fake.createInvoice.mockResolvedValue(monthInvoice);
+          },
+        });
+        await openForecast(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.forecast.subscriptionOnly }));
+        await view.user.click(screen.getByRole('radio', { name: new RegExp(`^${ru.paywall.plans.month_399.title} `) }));
+        await view.user.click(await payButton());
+        await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+        expect(await screen.findByText(ru.paywall.processingTitle)).toBeInTheDocument();
+
+        // «Проверить ещё раз» after the deletion: a subscription is not paid for a chart, so `Me` without one changes nothing here.
+        deleteElsewhere(view.api);
+        await view.user.click(checkAgain());
+        await settle();
+        expect(screen.getByText(ru.paywall.processingTitle)).toBeInTheDocument();
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+
+        // Back on the forecast, the question screen asks `Me` with the chart in mind: the app starts over.
+        await view.user.click(screen.getByRole('button', { name: ru.paywall.leave }));
+        await view.user.click(await askButton());
+        expect(await start()).toBeInTheDocument();
+        expect(view.analytics.names()).not.toContain('payment_succeeded');
+
+        // The payment arrives: the user the server made anew has the subscription, and the app counts it, once.
+        view.api.getMe.mockResolvedValue({ ...meSubscribed, has_chart: false, chart_id: null });
+        await view.user.click(screen.getByRole('button', { name: ru.common.settings }));
+        expect(await screen.findByRole('button', { name: ru.settings.deletion.open })).toBeInTheDocument();
+        expect(view.analytics.events.filter((event) => event.name === 'payment_succeeded')).toEqual([
+          { name: 'payment_succeeded', props: { plan_code: 'month_399' } },
+        ]);
       });
     });
 
