@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.4
+  version: 1.5.5
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -161,6 +161,15 @@ info:
         `forecast_push` (и пропущенный ранее `refund_undelivered`), в
         `JobRunResult` — счётчики удержания `forecasts_*` и `pushes_*`.
         Это внутренний маршрут для крона, клиентских изменений не несёт.
+
+    1.5.5 — удаление данных окончательное:
+      • `DELETE /me` обнуляет `user_id` в `payments`, `subscriptions`,
+        `entitlements` и `events` (схемы не менялись — это семантика маршрута).
+        Раньше оставался `user_id`, а он детерминирован из `telegram_id`:
+        вернувшийся человек получал старую подписку и права без платежа;
+      • подписка при удалении переходит в `cancelled` (не `expired`), права — в
+        `revoked`; `Me.subscription.is_active` и `Me.entitlements.full_report`
+        после удаления всегда `false`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -835,7 +844,20 @@ paths:
     delete:
       tags: [profile]
       summary: Удалить все персональные данные пользователя (ПДн)
-      description: Полное удаление профиля, карт, разборов, прогнозов и вопросов. Подписка сохраняется до конца оплаченного периода, но данные удаляются безвозвратно.
+      description: |
+        Полное удаление профиля, карт, разборов, прогнозов и вопросов.
+
+        Права и подписка отзываются в той же транзакции: после удаления
+        `Me.subscription.is_active = false`, `Me.entitlements.full_report = false`,
+        `full_report_chart_id = null`, `latest_report_id = null`. Повторный вход
+        тем же `telegram_id` создаёт нового пользователя (`is_new = true`) без
+        покупок — даже если `user_id` совпал (он детерминирован из telegram_id).
+
+        Обезличивается всё, где был `user_id`: `payments`, `subscriptions`
+        (`status = cancelled`), `entitlements` (`status = revoked`), `events`.
+        Обезличенная история платежей сохраняется для бухучёта и возвратов:
+        `telegram_payment_charge_id`, сумма и план остаются, `user_id` — нет.
+        Возврат звёзд по charge_id после удаления остаётся возможным.
       security: [{ TelegramInitData: [] }]
       responses:
         '204':

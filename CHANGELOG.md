@@ -1,5 +1,31 @@
 # Changelog
 
+## Итерация 11 — удаление данных и стаб бота
+
+- **Блокер A: «Удалить мои данные» стало окончательным.** `DELETE /me` в одной
+  транзакции отменяет подписку (`cancelled`), отзывает права (`revoked`),
+  обнуляет `user_id` в `payments`, `subscriptions`, `entitlements`, `events`
+  и `invoice_payload`. Причина: `user_id = HMAC(pepper, "telegram:<id>")`
+  детерминирован, и оставленный ключ возвращал покупки вернувшемуся человеку.
+  Миграции `0016` (значение enum `entitlement_status.revoked`) и `0017`
+  (суррогатный PK `subscriptions.id` + `UNIQUE (user_id)`, `DROP NOT NULL`
+  на `subscriptions.user_id` и `entitlements.user_id`, `anonymized_at` в трёх
+  таблицах). FK на `users` ни в одной из четырёх таблиц нет — каскадов не
+  добавилось, история платежей не удаляется.
+- **Возврат после удаления.** `payments.telegram_id` живёт окно возврата
+  (`PAYMENT_REFUND_WINDOW_DAYS = 30`), `pdn_retention_cleanup` снимает его
+  позже; `PaymentsService.refund()` принимает явный `telegramUserId`.
+  `registerRefund` больше не пропускает событие `refund_issued` при `user_id IS NULL`.
+- **Task B.** `Me.entitlements.full_report` после удаления всегда `false`,
+  `full_report_chart_id` — `null`; новая карта без оплаты отдаёт `402`.
+- **Task C.** В `.env.example` появился `TELEGRAM_API_BASE_URL`; в не-prod
+  окружении клиент пишет `telegram_api_base_default`, если переменная не задана.
+- **Task D.** `e2e/qa/bot-stub.mjs`: адресные `403`/`429` по `chat_id`,
+  настраиваемый `retryAfter` (по умолчанию `30`), `GET /__config`;
+  поведение по умолчанию — `200 {ok:true}` — не изменилось.
+- **Контракт 1.5.5** — семантика `DELETE /me` в описании маршрута и в
+  changelog; формы ответов не менялись.
+
 ## [Unreleased]
 ### Added
 - `AGENTS.md` — правила работы трёх агентов.

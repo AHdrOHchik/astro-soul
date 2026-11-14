@@ -580,14 +580,33 @@ export class PaymentsService {
    * Возврат звёзд: `refundStarPayment` + отзыв доступа (payments.md §3.5).
    * Вызывается поддержкой или джобом недоставленного товара.
    */
-  async refund(chargeId: string, reason: string): Promise<boolean> {
+  /**
+   * Возврат звёзд по charge_id.
+   *
+   * `telegramUserId` нужен, когда в строке платежа уже нет `telegram_id`:
+   * после `DELETE /me` он живёт только окно возврата, а потом снимается.
+   * Дальше человек пишет в поддержку — оператор берёт его id из чата и
+   * передаёт сюда. Bot API всё равно проверит пару (user_id, charge_id).
+   */
+  async refund(
+    chargeId: string,
+    reason: string,
+    options: { readonly telegramUserId?: number } = {},
+  ): Promise<boolean> {
     const payment = await this.repo.findRefundablePayment(chargeId);
 
-    if (payment === null || payment.status === 'refunded' || payment.telegram_id === null) {
+    if (payment === null || payment.status === 'refunded') {
       return false;
     }
 
-    const ok = await this.telegram.refundStarPayment(Number(payment.telegram_id), chargeId);
+    const telegramUserId = payment.telegram_id ?? options.telegramUserId ?? null;
+
+    if (telegramUserId === null) {
+      this.logger.warn('refund_without_telegram_id', { charge: chargeId });
+      return false;
+    }
+
+    const ok = await this.telegram.refundStarPayment(Number(telegramUserId), chargeId);
     if (!ok) {
       return false;
     }

@@ -110,9 +110,23 @@ export class MeService {
   /**
    * `DELETE /me` (SPEC «Сценарий 6», ПДн).
    *
-   * Удаляем ровно персональные данные: `users` и каскадом `profiles`, `charts`,
-   * `reports`, `forecasts`, `asks`, плюс счётчики квот. Платежи и подписки
-   * остаются (это бухгалтерия), но обезличиваются: `telegram_id = NULL`.
+   * Удаляем ПДн (`users` и каскадом `profiles`, `charts`, `reports`,
+   * `forecasts`, `asks`, плюс квоты) и **разрываем связь с деньгами**:
+   * `user_id` обнуляется в `payments`, `subscriptions`, `entitlements` и
+   * `events`, права отзываются, подписка отменяется.
+   *
+   * Почему мало `telegram_id = NULL` (блокер A): `user_id` — не случайный
+   * uuid, а `HMAC(PSEUDONYM_PEPPER, "telegram:<id>")`. Тот же человек при
+   * первом входе получает **тот же** `user_id`, и старая подписка с правами
+   * снова указывает на живую строку `users`. Поэтому обнуляем сам ключ, а не
+   * только telegram_id: возвращение начинается с чистого листа.
+   *
+   * Что остаётся: `payments` как бухгалтерия (`plan_code`, `total_amount`,
+   * `paid_at`, `telegram_payment_charge_id`) — по charge_id работает
+   * `refundStarPayment`. `payments.telegram_id` живёт ещё
+   * `PAYMENT_REFUND_WINDOW_DAYS` дней: Bot API возвращает звёзды только по
+   * паре (user_id, charge_id), и без него возврат после удаления был бы
+   * невозможен. Дальше его снимает `pdn_retention_cleanup`.
    *
    * QA-14: зависший платёж больше не тупик. Сначала его разрешает тот же код,
    * что и вебхук (`pending_payments_resolve`): доставит доступ или пометит
@@ -127,11 +141,45 @@ export class MeService {
     await this.refundStillPendingPayments(userId);
 
     await this.db.withTransaction(async (client) => {
-
-      // Платежи переживают удаление и без ПДн: charge_id нужен для возвратов.
+      // Порядок: сначала снимаем права и отменяем подписку, потом рвём связь с
+      // платежами и событиями, и только затем удаляем пользователя. Всё это
+      // одна транзакция, поэтому окна «права уже не те, а user_id ещё тот» нет.
+      //
+      // `cancelled`, а не `expired`: `expired` — «срок вышел сам», тут — воля
+      // пользователя. Метрика `subscription_expired` на удаление не пишется.
       await client.query(
-        `UPDATE payments SET telegram_id = NULL, anonymized_at = now()
+        `UPDATE subscriptions
+            SET status = 'cancelled', user_id = NULL, anonymized_at = now()
+          WHERE user_id = $1`,
+        [userId],
+      );
+
+      // Права отзываются: `revoked` — «снято волей пользователя», а не
+      // `refunded` («звёзды вернули»). `chart_id` обнуляем явно: карта уйдёт
+      // каскадом, но ссылка не должна пережить владельца ни на миг.
+      await client.query(
+        `UPDATE entitlements
+            SET status = 'revoked', user_id = NULL, chart_id = NULL,
+                partner_chart_id = NULL, anonymized_at = now()
+          WHERE user_id = $1`,
+        [userId],
+      );
+
+      // Платежи переживают удаление как бухгалтерия: charge_id нужен для
+      // возвратов. `user_id` и `invoice_payload` (в нём лежит `u=<user_id>`)
+      // обнуляем. `telegram_id` остаётся до конца окна возврата — без него
+      // Bot API не вернёт звёзды.
+      await client.query(
+        `UPDATE payments
+            SET user_id = NULL, invoice_payload = NULL, anonymized_at = now()
           WHERE user_id = $1 AND anonymized_at IS NULL`,
+        [userId],
+      );
+
+      // События: ПДн в них нет, но `user_id` детерминирован — по нему видно,
+      // что этот человек платил. Отвязываем и их.
+      await client.query(
+        `UPDATE events SET user_id = NULL, anonymized_at = now() WHERE user_id = $1`,
         [userId],
       );
 

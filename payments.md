@@ -50,10 +50,26 @@ await bot.api.createInvoiceLink({
 
 `DELETE /me` делает всё в одной транзакции, в этом порядке:
 1. разрешить/вернуть зависшие платежи (`resolvePending` → `refundStillPendingPayments`);
-2. `UPDATE invoices SET status='invalidated', invalidated_at=now()
+2. отменить подписку и обезличить её: `status='cancelled'`, `user_id=NULL`,
+   `anonymized_at=now()`;
+3. отозвать права: `entitlements.status='revoked'`, `user_id=NULL`,
+   `chart_id=NULL`, `anonymized_at=now()`;
+4. обезличить платежи: `user_id=NULL`, `invoice_payload=NULL` (в нём `u=<user_id>`),
+   `anonymized_at=now()`;
+5. отвязать события: `events.user_id=NULL`, `anonymized_at=now()`;
+6. `UPDATE invoices SET status='invalidated', invalidated_at=now()
    WHERE user_id=$1 AND status='created'`;
-3. обезличить `payments` (`telegram_id = NULL`, `anonymized_at`);
-4. удалить квоты и `users`.
+7. удалить квоты и `users`.
+
+`user_id` обнуляется обязательно: он детерминирован из `telegram_id`
+(`HMAC(pepper, "telegram:<id>")`), и оставленный ключ возвращает покупки
+вернувшемуся человеку. Всё, что остаётся от денег, — бухгалтерия без владельца.
+
+`payments.telegram_id` живёт ещё 30 дней после удаления
+(`PAYMENT_REFUND_WINDOW_DAYS`): `refundStarPayment` требует пару
+(user_id, charge_id), без неё возврат невозможен. Дальше его снимает
+`pdn_retention_cleanup`. Если возврат нужен позже, поддержка передаёт
+telegram id явно: `PaymentsService.refund(chargeId, reason, {telegramUserId})`.
 
 Порядок именно такой: если удалить пользователя раньше инвалидации, останется
 окно, в котором пользователя уже нет, а инвойс ещё оплатим.
@@ -104,7 +120,9 @@ Telegram присылает новый `successful_payment` с тем же `invo
 `refundStarPayment(user_id, telegram_payment_charge_id)`. Возврат возможен только пока платёж не выведен (в пределах разумного срока). Правила:
 - по запросу пользователя через поддержку — возвращаем, если с момента оплаты < 24 ч;
 - автоматически — если товар не был доставлен;
-- после возврата доступ отзывается, статус `refunded`, повторная покупка разрешена.
+- после возврата доступ отзывается, статус `refunded`, повторная покупка разрешена;
+- возврат по удалённому аккаунту работает: `payments.user_id` уже `NULL`, но
+  `telegram_payment_charge_id` и (в окне возврата) `telegram_id` на месте.
 
 Автовозврат за недоставленный товар (`processed = false` дольше 10 минут) — тот же джоб `POST /internal/jobs/run`. Возврат «по запросу через поддержку» делается вызовом `PaymentsService.refund(chargeId, reason)`.
 
