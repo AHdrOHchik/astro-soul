@@ -11,7 +11,7 @@ const TERMS_LINE = `${copy.terms.before}${copy.terms.link}${copy.terms.after}`;
 function setup() {
   const onStart = vi.fn();
   const onOpenTerms = vi.fn();
-  render(<WelcomeScreen onStart={onStart} onOpenTerms={onOpenTerms} />);
+  render(<WelcomeScreen onStart={onStart} onOpenTerms={onOpenTerms} onOpenSettings={vi.fn()} />);
   return {
     onStart,
     onOpenTerms,
