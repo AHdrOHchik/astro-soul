@@ -37,8 +37,63 @@ const ACCESS_MARKERS = ['entitlements', 'full_report', 'full_forecast', 'is_acti
 /** Решение — сравнение/ветвление по признаку доступа. */
 const DECISION = /\b(if|return|&&|\|\||\?|===|!==)\b/;
 
+/**
+ * QA-003, задача 4: «код есть» ≠ «включено».
+ *
+ * Прежняя версия считала решением любое ветвление рядом с признаком доступа и
+ * валила все четыре места подряд — включая те, где клиент ничего не разрешает:
+ *   • `App.tsx:313` — `plan !== null` про ожидаемый план, дальше `grants(fresh, plan)`
+ *     решает по ответу сервера: клиент лишь повторяет за ним;
+ *   • `lib/plans.ts:33` — обёртка над `me.entitlements`: единственный источник — `Me`;
+ *   • `PaywallScreen.tsx:169` — проверка режима экрана (`phase !== 'choosing'`), не доступа;
+ *   • `SettingsScreen.tsx:206` — показ подписки: что прислал сервер, то и написано.
+ *
+ * Поэтому проверяем не «есть ли `if` рядом», а два разных факта:
+ *   (а) ВКЛЮЧЕНИЕ — есть ли на клиенте хоть одно место, где платный доступ
+ *       выдаётся/разрешается без ответа сервера. Это была бы дыра;
+ *   (б) ИЗВЕСТНЫЕ МЕСТА — каждое из четырёх проверено вручную и закреплено
+ *       подписью: если подпись исчезнет или место переедет, аудит об этом скажет,
+ *       а не промолчит.
+ */
+const REVIEWED = [
+  {
+    file: 'apps/web/src/App.tsx',
+    re: /if \(plan !== null && grants\(fresh, plan\)\)/,
+    why: 'решение принимает grants(Me), клиент повторяет ответ сервера',
+    inside: 'подтверждение оплаты по ответу сервера, не по слову Telegram',
+  },
+  {
+    file: 'apps/web/src/lib/plans.ts',
+    re: /return plan === REPORT_PLAN \? me\.entitlements\.full_report : me\.entitlements\.is_active;/,
+    why: 'единственный источник — entitlements из GET /me',
+    inside: 'обёртка над ответом сервера, своего источника правды нет',
+  },
+  {
+    file: 'apps/web/src/screens/paywall/PaywallScreen.tsx',
+    re: /if \(plan === null \|\| phase !== 'choosing' \|\| signal === undefined\) return;/,
+    why: 'проверяется режим экрана, а не право доступа',
+    inside: 'защита от повторного тапа, доступ не выдаёт',
+  },
+  {
+    file: 'apps/web/src/screens/settings/SettingsScreen.tsx',
+    re: /if \(subscription\.plan === 'none' \|\| !subscription\.is_active\)/,
+    why: 'показ состояния подписки из ответа сервера',
+    inside: 'текст на экране, доступ не меняет',
+  },
+];
+
+/** Выдача доступа на клиенте: присвоение признака, а не чтение. */
+const GRANTING = [
+  /full_report\s*[:=]\s*true/,
+  /full_forecast\s*[:=]\s*true/,
+  /is_active\s*[:=]\s*true/,
+  /setEntitlements\s*\(/,
+  /localStorage\.setItem\([^)]*(?:entitle|plan|paid)/i,
+];
+
 console.log('=== 3.1 Клиент и платный доступ ===');
 console.log(`файлов вне тестов: ${files.length}`);
+
 let decisions = 0;
 for (const file of files) {
   const src = readFileSync(file, 'utf8');
@@ -53,7 +108,36 @@ for (const file of files) {
     if (decides) decisions += 1;
   });
 }
-console.log(decisions === 0 ? '  итог: решений о доступе на клиенте нет' : `  итог: ${decisions} мест(а) с решением — проверить вручную`);
+
+// (а) включение доступа на клиенте
+const grants = [];
+for (const file of files) {
+  const src = readFileSync(file, 'utf8');
+  for (const re of GRANTING) {
+    if (re.test(src)) grants.push(`${relative(ROOT, file)}  ${String(re)}`);
+  }
+}
+console.log(grants.length === 0
+  ? '  (а) включения платного доступа на клиенте нет: признак только читается'
+  : `  (а) НАХОДКА: клиент включает доступ сам:\n${grants.map((g) => `      ${g}`).join('\n')}`);
+
+// (б) известные места: сверка подписей
+console.log('  (б) проверено вручную (код есть ≠ включено):');
+let stale = 0;
+for (const item of REVIEWED) {
+  const src = readFileSync(join(ROOT, item.file), 'utf8');
+  const found = item.re.test(src);
+  if (!found) stale += 1;
+  console.log(`      ${found ? 'ок' : 'ПЕРЕЕХАЛО'}  ${item.file} — ${item.why}`);
+  if (!found) console.log(`              ожидалось: ${String(item.re)}`);
+}
+console.log(stale === 0
+  ? '      все четыре места на месте и по-прежнему не выдают доступ'
+  : `      ${stale} мест(а) не найдено — проверить вручную заново`);
+
+console.log(decisions === 0
+  ? '  итог: решений о доступе на клиенте нет'
+  : `  итог: ${decisions} мест(а) с решением; все ${REVIEWED.length} разобраны в (б), включения нет: ${grants.length === 0}`);
 
 console.log('\n=== 3.1 Обещания в текстах и их код ===');
 const ru = readFileSync(join(WEB, 'i18n/ru.ts'), 'utf8');
