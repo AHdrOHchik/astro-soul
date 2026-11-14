@@ -49,10 +49,11 @@ async function seedPersonalData(): Promise<{ userId: string; chartId: string }> 
 
   await ctx.db.query(`INSERT INTO reports (chart_id, user_id) VALUES ($1, $2)`, [chartId, userId]);
   await ctx.db.query(`INSERT INTO forecasts (chart_id, date) VALUES ($1, CURRENT_DATE)`, [chartId]);
-  await ctx.db.query(`INSERT INTO asks (user_id, chart_id, question) VALUES ($1, $2, 'вопрос')`, [
-    userId,
-    chartId,
-  ]);
+  // Текста вопроса в БД больше нет (итерация 10): только длина и тема.
+  await ctx.db.query(
+    `INSERT INTO asks (user_id, chart_id, question_length, topic) VALUES ($1, $2, 6, 'other')`,
+    [userId, chartId],
+  );
   await ctx.db.query(
     `INSERT INTO quotas (user_id, code, period_key, used, reset_at)
      VALUES ($1, 'ask_daily', '2026-11-10', 1, now() + interval '1 day')`,

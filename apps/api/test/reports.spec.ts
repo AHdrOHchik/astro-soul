@@ -175,6 +175,31 @@ describe('POST /api/v1/reports', () => {
   });
 });
 
+// Б-4 (итерация 10): повтор с известным `Idempotency-Key` — это тот же
+// объект, что `GET /reports/{id}`. Раньше повтор отдавал `is_paid:false` без
+// `sections`, и фронт показывал оплаченный разбор как пустой.
+describe('POST /api/v1/reports — повтор ключа (Б-4)', () => {
+  it('повтор после готовности совпадает с GET, включая is_paid и sections', async () => {
+    const fixture = await userWithChart();
+    await grantReport(fixture, 'charge-replay');
+
+    const first = await orderReport(fixture, 'replay-key').expect(202);
+    const reportId = first.body.report_id as string;
+    await waitFor(reportId, ['ready']);
+
+    const replay = await orderReport(fixture, 'replay-key').expect(202);
+    const fetched = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/reports/${reportId}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(replay.body).toEqual(fetched.body);
+    expect(replay.body.is_paid).toBe(true);
+    expect(Array.isArray(replay.body.sections)).toBe(true);
+    expect(replay.body.sections.length).toBeGreaterThan(0);
+  });
+});
+
 describe('GET /api/v1/reports/{report_id}', () => {
   it('собирает семь глав, отдаёт дисклеймер и тизер', async () => {
     const fixture = await userWithChart();

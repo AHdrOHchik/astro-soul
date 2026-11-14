@@ -100,6 +100,51 @@ export class TelegramClient {
     }
   }
 
+  /**
+   * Пуш с разбором результата — в отличие от `sendMessage`, который глотает
+   * ошибки ради платежа. Здесь важно знать причину:
+   *   `blocked` — 403 (бот заблокирован): карту больше не пушим;
+   *   `rate_limited` — 429: в этом прогоне не ретраим;
+   *   `failed` — всё остальное (сеть, 5xx, 400).
+   */
+  async sendPush(
+    chatId: number | string,
+    text: string,
+    options: { readonly button?: { readonly text: string; readonly webAppUrl: string } } = {},
+  ): Promise<'sent' | 'blocked' | 'rate_limited' | 'failed'> {
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+    };
+
+    if (options.button !== undefined) {
+      body['reply_markup'] = {
+        inline_keyboard: [[{ text: options.button.text, web_app: { url: options.button.webAppUrl } }]],
+      };
+    }
+
+    const response = await this.post('sendMessage', body);
+
+    if (response.status === 403) {
+      this.logger.warn('telegram_push_blocked', { reason: 'blocked' });
+      return 'blocked';
+    }
+
+    if (response.status === 429) {
+      this.logger.warn('telegram_push_rate_limited', { reason: 'rate_limited' });
+      return 'rate_limited';
+    }
+
+    if (!response.ok) {
+      this.logger.warn('telegram_push_failed', { status: response.status });
+      return 'failed';
+    }
+
+    return 'sent';
+  }
+
   /** Возврат звёзд: доступен, пока платёж не выведен (payments.md §3.5). */
   async refundStarPayment(telegramUserId: number, chargeId: string): Promise<boolean> {
     const result = await this.call<boolean>('refundStarPayment', {
@@ -109,7 +154,11 @@ export class TelegramClient {
     return result === true;
   }
 
-  private async call<T = unknown>(method: string, body: Record<string, unknown>): Promise<T> {
+  /** Сырой ответ Bot API: нужен `sendPush`, где важен HTTP-статус. */
+  private async post(
+    method: string,
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; ok: boolean; result?: unknown; description?: string }> {
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}/bot${this.token}/${method}`, {
@@ -127,19 +176,30 @@ export class TelegramClient {
     }
 
     const payload = (await response.json().catch(() => null)) as
-      | { ok?: boolean; result?: T; description?: string }
+      | { ok?: boolean; result?: unknown; description?: string }
       | null;
 
-    if (!response.ok || payload?.ok !== true) {
+    return {
+      status: response.status,
+      ok: response.ok && payload?.ok === true,
+      ...(payload?.result === undefined ? {} : { result: payload.result }),
+      ...(payload?.description === undefined ? {} : { description: payload.description }),
+    };
+  }
+
+  private async call<T = unknown>(method: string, body: Record<string, unknown>): Promise<T> {
+    const response = await this.post(method, body);
+
+    if (!response.ok) {
       this.logger.error('telegram_method_failed', {
         method,
         status: response.status,
         // description от Bot API безопасен для логов: без payload и ПДн
-        description: payload?.description ?? null,
+        description: response.description ?? null,
       });
       throw upstreamError('telegram_method_failed');
     }
 
-    return payload.result as T;
+    return response.result as T;
   }
 }

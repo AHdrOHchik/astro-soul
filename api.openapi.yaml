@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.3
+  version: 1.5.4
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -146,6 +146,21 @@ info:
         и `LLM_MODEL`, а рядом в `reports` пишутся `llm_tokens_in/out`;
       • `x-analytics-server-events`: канонические имена совпадают с записью
         в `events`; `refund_issued` пишется всеми путями возврата.
+
+    1.5.4 — удержание и карта оплаченного разбора:
+      • `Entitlements.full_report_chart_id` (uuid, `null`) — за какую карту
+        оплачен полный разбор. Поле отдаётся **всегда**, но в `required` его
+        нет: старые клиенты его не знают и не ломаются, новые — не считают
+        новую карту оплаченной. `full_report` не менялся;
+      • `POST /engagement/ask`: описаны `422` (вопрос короче 3 или длиннее
+        500 знаков) и `429` с `details.quota_code = ask_daily` и
+        `details.reset_at` (местная полночь места рождения);
+      • `GET /engagement/forecast` — только чтение кэша: `404`, если ночной
+        джоб ещё не положил строку. Прогноз никогда не генерируется по запросу;
+      • `POST /internal/jobs/run`: в `enum` добавлены `forecast_nightly` и
+        `forecast_push` (и пропущенный ранее `refund_undelivered`), в
+        `JobRunResult` — счётчики удержания `forecasts_*` и `pushes_*`.
+        Это внутренний маршрут для крона, клиентских изменений не несёт.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -335,6 +350,15 @@ components:
         full_report:
           type: boolean
           description: Куплен ли полный разбор (разово, навсегда для карты)
+        full_report_chart_id:
+          type: [string, 'null']
+          format: uuid
+          description: |
+            Карта, за которую оплачен полный разбор; `null` — оплаченного нет.
+            Производное от `full_report`: флаг остаётся «у пользователя есть
+            оплаченный разбор», а привязка к карте — здесь. Сервер отдаёт
+            поле **всегда**; в `required` его нет (nullable), но клиент вправе
+            рассчитывать на его присутствие (1.5.4).
         compat_per_month: { type: integer }
         solar_included: { type: boolean }
 
@@ -648,6 +672,13 @@ components:
         refunds_done: { type: integer }
         report_refunds_done: { type: integer }
         pdn_users_deleted: { type: integer }
+        forecasts_generated: { type: integer }
+        forecasts_skipped: { type: integer }
+        forecasts_failed: { type: integer }
+        pushes_sent: { type: integer }
+        pushes_skipped_inactive: { type: integer }
+        pushes_deferred: { type: integer }
+        pushes_failed: { type: integer }
       example:
         subscriptions_expired: 0
         expiry_notices_sent: 0
@@ -657,6 +688,13 @@ components:
         refunds_done: 0
         report_refunds_done: 0
         pdn_users_deleted: 0
+        forecasts_generated: 0
+        forecasts_skipped: 0
+        forecasts_failed: 0
+        pushes_sent: 0
+        pushes_skipped_inactive: 0
+        pushes_deferred: 0
+        pushes_failed: 0
 
     Report:
       type: object
@@ -1175,8 +1213,16 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AskResponse' }
+        '422':
+          description: |
+            `VALIDATION_FAILED` + `details.field_errors`: вопрос короче 3 или
+            длиннее 500 знаков, либо `chart_id` не uuid.
         '429':
-          description: Квота исчерпана (QUOTA_EXCEEDED), заголовки RateLimit-*
+          description: |
+            Квота исчерпана (`QUOTA_EXCEEDED`), заголовки RateLimit-*.
+            `details.quota_code = ask_daily`, `details.reset_at` — когда лимит
+            обновится (местная полночь места рождения). Проверяется **до**
+            вызова модели.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -1282,8 +1328,11 @@ paths:
             enum:
               - subscriptions_downgrade
               - pending_payments_resolve
-              - pdn_retention_cleanup
+              - refund_undelivered
               - report_refund
+              - pdn_retention_cleanup
+              - forecast_nightly
+              - forecast_push
       responses:
         '202':
           description: Работы выполнены, счётчики в теле

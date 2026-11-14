@@ -59,6 +59,11 @@ export class EntitlementsService {
       ),
     ]);
 
+    // Б-1: `full_report` отвечает на вопрос «есть ли оплаченный разбор», а
+    // `full_report_chart_id` — «по какой карте». Фронт иначе считает новую
+    // карту оплаченной и ведёт человека на 402.
+    const paidChart = await this.fullReportChartId(userId);
+
     const base =
       subscription === null
         ? FREE_ENTITLEMENTS
@@ -69,9 +74,44 @@ export class EntitlementsService {
     return {
       ...base,
       fullReport: base.fullReport || kinds.has('report') || readyReport !== null,
+      fullReportChartId: paidChart,
       compatPerMonth: Math.max(base.compatPerMonth, kinds.has('compat') ? 1 : 0),
       solarIncluded: base.solarIncluded || kinds.has('solar'),
     };
+  }
+
+  /**
+   * Карта, за которую оплачен полный разбор.
+   *
+   * Основной источник — активная запись `entitlements (kind = 'report')`:
+   * товар привязан к карте с 1.5.2. Если запись истекла/отозвана, но готовый
+   * разбор остался (он куплен навсегда), берём карту из `reports` — иначе
+   * `full_report = true` без карты снова выглядел бы как «оплачено всё».
+   */
+  async fullReportChartId(userId: string): Promise<string | null> {
+    const oneOff = await this.db.queryOne<{ chart_id: string | null }>(
+      `SELECT chart_id
+         FROM entitlements
+        WHERE user_id = $1 AND kind = 'report' AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > now())
+        ORDER BY granted_at DESC
+        LIMIT 1`,
+      [userId],
+    );
+
+    if (oneOff?.chart_id !== null && oneOff?.chart_id !== undefined) {
+      return oneOff.chart_id;
+    }
+
+    const ready = await this.db.queryOne<{ chart_id: string | null }>(
+      `SELECT chart_id FROM reports
+        WHERE user_id = $1 AND status = 'ready' AND chart_id IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId],
+    );
+
+    return ready?.chart_id ?? null;
   }
 
   /** Состояние подписки для `GET /me` (контракт `SubscriptionState`). */

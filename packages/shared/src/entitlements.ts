@@ -15,6 +15,12 @@ export interface Entitlements {
   readonly askPerDay: number;
   /** Куплен ли полный разбор (разово, навсегда для карты). */
   readonly fullReport: boolean;
+  /**
+   * Карта, за которую оплачен полный разбор; `null` — оплаченного нет.
+   * Производное от `fullReport`: сам флаг остаётся «у пользователя есть
+   * оплаченный разбор», а привязка к карте живёт здесь (контракт 1.5.4).
+   */
+  readonly fullReportChartId: string | null;
   /** Совместимостей в месяц. */
   readonly compatPerMonth: number;
   /** Карта года включена в подписку. */
@@ -28,6 +34,7 @@ export const FREE_ENTITLEMENTS: Entitlements = {
   fullForecast: false,
   askPerDay: 1,
   fullReport: false,
+  fullReportChartId: null,
   compatPerMonth: 0,
   solarIncluded: false,
 };
@@ -37,6 +44,7 @@ export function entitlementsForPlan(plan: Plan): Entitlements {
     return {
       ...FREE_ENTITLEMENTS,
       fullReport: plan.grant === 'report',
+      fullReportChartId: null,
       compatPerMonth: plan.grant === 'compat' ? 1 : 0,
       solarIncluded: plan.grant === 'solar',
     };
@@ -48,6 +56,7 @@ export function entitlementsForPlan(plan: Plan): Entitlements {
     fullForecast: plan.grants.fullForecast,
     askPerDay: plan.grants.askPerDay,
     fullReport: false,
+    fullReportChartId: null,
     compatPerMonth: plan.grants.compatPerMonth,
     solarIncluded: plan.grants.solarIncluded,
   };

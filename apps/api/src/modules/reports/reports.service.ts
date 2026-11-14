@@ -151,12 +151,16 @@ export class ReportsService {
       throw notFound({ message: 'Такой карты нет. Построй карту заново', reason: 'chart_not_found' });
     }
 
+    const entitlement = await this.entitlements.getEntitlements(userId);
+
+    // Б-4: повтор с тем же `Idempotency-Key` обязан вернуть тот же объект, что
+    // `GET /reports/{id}`. Раньше здесь жёстко стояло `is_paid: false`, и
+    // оплаченный разбор в ответе выглядел неоплаченным.
     const byKey = await this.repo.findByIdempotencyKey(userId, idempotencyKey);
     if (byKey !== null) {
-      return this.view(byKey, false);
+      return this.view(byKey, entitlement.fullReport);
     }
 
-    const entitlement = await this.entitlements.getEntitlements(userId);
     const latest = await this.repo.latestForChart(chart.id, 'report');
 
     // Пока разбор собирается (или уже собран), второй заказ бессмысленен:
@@ -531,7 +535,7 @@ export class ReportsService {
     }
 
     const monthCost = await this.repo.monthCostRub();
-    if (monthCost >= this.env.LLM_MONTHLY_CAP_RUB) {
+    if (monthCost >= this.env.LLM_MONTHLY_CAP_RUB_REPORT) {
       throw new ReportFailure('monthly_cap');
     }
 

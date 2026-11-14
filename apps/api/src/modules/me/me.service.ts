@@ -23,6 +23,7 @@ export function toEntitlementsDto(entitlements: Entitlements): NonNullable<Me['e
     full_forecast: entitlements.fullForecast,
     ask_per_day: entitlements.askPerDay as 0 | 1 | 5 | -1,
     full_report: entitlements.fullReport,
+    full_report_chart_id: entitlements.fullReportChartId,
     compat_per_month: entitlements.compatPerMonth,
     solar_included: entitlements.solarIncluded,
   };
@@ -40,6 +41,19 @@ export class MeService {
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
+
+  /** Пояс места рождения последней карты — для ключей дневных квот. */
+  private async latestChartTimeZone(userId: string): Promise<string> {
+    const row = await this.db.queryOne<{ tz: string | null }>(
+      `SELECT data -> 'chart' -> 'birth' -> 'place' ->> 'tz' AS tz
+         FROM charts
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [userId],
+    );
+    return row?.tz ?? 'UTC';
+  }
 
   /** Последний разбор пользователя любого незавершённого/готового статуса. */
   private async latestReportId(userId: string): Promise<string | null> {
@@ -65,7 +79,11 @@ export class MeService {
       this.latestReportId(userId),
     ]);
 
-    const quotas = await this.quotas.listQuotas(userId, entitlements);
+    // Местные сутки карты — та же шкала, что у квоты «спроси карту»
+    // (`/engagement/ask`). Иначе `/me` и отказ по квоте расходятся на сутки
+    // у людей в поясах, где «сегодня» уже другое.
+    const timeZone = await this.latestChartTimeZone(userId);
+    const quotas = await this.quotas.listQuotas(userId, entitlements, new Date(), timeZone);
 
     const onboardingStep: OnboardingStep =
       profileState.onboardingStep ?? (profileState.hasProfile ? 'done' : 'birth_date');

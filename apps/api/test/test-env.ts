@@ -27,6 +27,8 @@ export function applyTestEnv(): void {
   process.env['RATE_LIMIT_CHARTS_PER_MIN'] = '0';
   process.env['RATE_LIMIT_GEO_PER_MIN'] = '0';
   process.env['GEO_PROVIDER'] = 'bundled';
+  // Кнопка пуша «Открыть» ссылается на бота; без имени ссылку не построить.
+  process.env['BOT_USERNAME'] = 'astro_soul_test_bot';
 }
 
 /** Вымышленный пользователь Telegram. */

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
+import { randomUUID } from 'node:crypto';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
@@ -142,6 +143,70 @@ describe('POST /api/v1/billing/invoice', () => {
     expect(response.body.code).toBe('RATE_LIMITED');
   });
 
+  // Б-3 (итерация 10): лимит проверяется после переиспользования счёта —
+  // человек, готовый платить, не должен ждать час из-за антифрода.
+  it('при исчерпанном часовом лимите уже выставленный счёт отдаётся как 201', async () => {
+    const chartId = await createChart();
+
+    const first = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ plan_code: 'one_149', chart_id: chartId })
+      .expect(201);
+
+    // Счёт выставлен 20 минут назад: окно «двойного тапа» (5 мин) уже истекло,
+    // но счёт всё ещё не оплачен и должен переиспользоваться.
+    await ctx.db.query(`UPDATE invoices SET created_at = now() - interval '20 minutes'`);
+
+    // Добиваем часовой лимит (3 счёта) двумя другими планами.
+    for (const plan of ['compat_249', 'solar_590'] as const) {
+      await request(ctx.app.getHttpServer())
+        .post('/api/v1/billing/invoice')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .send({ plan_code: plan })
+        .expect(201);
+    }
+
+    // Тот же план в пределах 5 минут — переиспользование, а не новый счёт.
+    const again = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ plan_code: 'one_149', chart_id: chartId })
+      .expect(201);
+
+    expect(again.body.invoice_link).toBe(first.body.invoice_link);
+  });
+
+  it('429 несёт details.reset_at и текст без «через минуту»', async () => {
+    const chartId = await createChart();
+
+    for (const plan of ['one_149', 'compat_249', 'solar_590'] as const) {
+      await request(ctx.app.getHttpServer())
+        .post('/api/v1/billing/invoice')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .send({ plan_code: plan, ...(plan === 'one_149' ? { chart_id: chartId } : {}) })
+        .expect(201);
+    }
+
+    const before = Date.now();
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ plan_code: 'month_399' })
+      .expect(429);
+
+    expect(response.body.code).toBe('RATE_LIMITED');
+    const resetAt = response.body.details.reset_at as string;
+    expect(typeof resetAt).toBe('string');
+    const resetMs = Date.parse(resetAt);
+    expect(Number.isNaN(resetMs)).toBe(false);
+    // Часовой лимит: счёт можно создать в пределах часа, не «через минуту».
+    expect(resetMs).toBeGreaterThan(before);
+    expect(resetMs).toBeLessThanOrEqual(before + 60 * 60 * 1000 + 5_000);
+    expect(response.body.message).not.toMatch(/минут/iu);
+    expect(response.body.message).toMatch(/час/iu);
+  });
+
   it('неизвестный план → 422 VALIDATION_FAILED', async () => {
     const response = await request(ctx.app.getHttpServer())
       .post('/api/v1/billing/invoice')
@@ -157,16 +222,24 @@ describe('POST /api/v1/billing/invoice', () => {
     expect(response.body.details.fields).toBeUndefined();
   });
 
-  it('чужая карта в chart_id → 404', async () => {
-    const strangerChartId = '11111111-1111-4111-8111-111111111111';
+  // Б-2 (итерация 10): контракт обещает 422 с подсветкой поля, а не 404
+  // «Такой страницы нет. Обнови приложение» — приложение тут ни при чём.
+  it('чужая или несуществующая карта в chart_id → 422 VALIDATION_FAILED', async () => {
+    for (const chartId of [
+      '11111111-1111-4111-8111-111111111111',
+      randomUUID(),
+    ]) {
+      const response = await request(ctx.app.getHttpServer())
+        .post('/api/v1/billing/invoice')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .send({ plan_code: 'one_149', chart_id: chartId })
+        .expect(422);
 
-    const response = await request(ctx.app.getHttpServer())
-      .post('/api/v1/billing/invoice')
-      .set(INIT_DATA_HEADER, initDataFor())
-      .send({ plan_code: 'one_149', chart_id: strangerChartId })
-      .expect(404);
-
-    expect(response.body.code).toBe('NOT_FOUND');
+      expect(response.body.code).toBe('VALIDATION_FAILED');
+      expect(response.body.details.field_errors).toEqual([
+        { field: 'chart_id', message: 'Карта не найдена' },
+      ]);
+    }
   });
 
   it('без initData → 401', async () => {

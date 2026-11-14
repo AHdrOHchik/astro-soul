@@ -41,6 +41,32 @@ export class DbService implements OnModuleDestroy {
   }
 
   /** Для `/health`: доступна ли БД прямо сейчас. */
+  /**
+   * Сессионная advisory-блокировка на время длинной работы (джобы удержания).
+   *
+   * `withTransaction` здесь не годится: ночная генерация держит транзакцию
+   * минутами и блокирует вакуум. Соединение берём из пула на весь прогон,
+   * блокировку снимаем в `finally` — если процесс упадёт, её отпустит сервер.
+   *
+   * `null` — блокировку уже держит другой экземпляр крона: это не ошибка.
+   */
+  async withAdvisoryLock<T>(key: number, handler: () => Promise<T>): Promise<T | null> {
+    const client = await this.pool.connect();
+    try {
+      const taken = await client.query<{ locked: boolean }>('SELECT pg_try_advisory_lock($1) AS locked', [key]);
+      if (taken.rows[0]?.locked !== true) {
+        return null;
+      }
+      try {
+        return await handler();
+      } finally {
+        await client.query('SELECT pg_advisory_unlock($1)', [key]);
+      }
+    } finally {
+      client.release();
+    }
+  }
+
   async ping(): Promise<boolean> {
     try {
       await this.pool.query('SELECT 1');
