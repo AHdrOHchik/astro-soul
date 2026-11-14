@@ -108,19 +108,31 @@ describe('createAnalytics', () => {
     expect(unhandled).not.toHaveBeenCalled();
   });
 
-  it('sends an event only under a name the server takes: one unknown name costs the whole batch', () => {
+  it('sends an event only under a name the contract lists: one unknown name costs the whole batch', () => {
     const { analytics, sent } = setup();
 
     analytics.track('app_open');
-    // In the contract since 1.5.1, held back until the backend confirms that the server takes it.
+    // In the contract since 1.5.1, and the server takes it since it has reports (QA-02 of the acceptance QA-002).
     analytics.track('validation_failed_client', { step: 'birth_date', field: 'birth_date' });
     (analytics.track as (name: string) => void)('app_closed');
     // A failed deletion has no event of its own in the contract: it goes out as `error_shown`, with the status as the code.
     analytics.track('error_shown', { screen: 'settings', code: '409' });
     analytics.flush();
 
-    expect(Object.keys(EVENT_NAMES)).toContain('validation_failed_client');
-    expect(sent().flat()).toEqual(['app_open', 'error_shown']);
+    expect(Object.keys(EVENT_NAMES)).not.toContain('app_closed');
+    expect(sent().flat()).toEqual(['app_open', 'validation_failed_client', 'error_shown']);
+  });
+
+  it('says which check of the app stopped the user by the screen and the field, and never why', () => {
+    const { analytics, sendEvents } = setup();
+    const withReason = { step: 'birth_date', field: 'birth_date', reason: 'under_18', message: 'Сервис доступен с 18 лет', value: '2015-01-01' };
+
+    (analytics.track as (name: string, props: object) => void)('validation_failed_client', withReason);
+    analytics.flush();
+
+    const [event] = sendEvents.mock.calls[0]?.[0] ?? [];
+    // The reason would be a fact about the birth date: it stays in the app.
+    expect(event).toEqual({ name: 'validation_failed_client', occurred_at: NOW.toISOString(), props: { step: 'birth_date', field: 'birth_date' } });
   });
 
   it('lets no key through that the app does not know, whatever the caller passes', () => {

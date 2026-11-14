@@ -51,18 +51,11 @@ export const EVENT_NAMES: Record<EventName, true> = {
 };
 
 /**
- * Events the contract lists and the app still keeps to itself. The screens report them,
- * the queue lets none through.
- *
- * `validation_failed_client`: the contract has the name since 1.5.1, the server in `main`
- * does not take it yet, and one name a server does not know costs the whole batch (422).
- * It goes out once the backend confirms the name is accepted: by deleting the line here.
+ * Whether the event may go to the server: only under a name the contract lists. A name the
+ * server does not know is not a small thing: it refuses the whole batch for one such event.
  */
-const HELD_BACK: readonly EventName[] = ['validation_failed_client'];
-
-/** Whether the event may go to the server: the contract lists it, and nothing holds it back. */
 export function isSendable(name: string): name is EventName {
-  return Object.prototype.hasOwnProperty.call(EVENT_NAMES, name) && !(HELD_BACK as readonly string[]).includes(name);
+  return Object.prototype.hasOwnProperty.call(EVENT_NAMES, name);
 }
 
 /** The screens, under the names the events call them. */
