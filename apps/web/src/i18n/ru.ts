@@ -152,6 +152,7 @@ interface PlanCopy {
  * delivers (the full forecasts, the questions). What payments.md §1 lists besides (the
  * compatibility, the chart of the year) is named as coming, in the owner's words
  * «появится в ближайшие дни». The day one of those is released, its sentence is reworded.
+ * The descriptions below are approved by the owner as they are.
  */
 const SOON = 'появится в ближайшие дни';
 
@@ -457,7 +458,7 @@ export const ru = {
     checkAgain: 'Проверить ещё раз',
     /** Leaves the paywall for the screen it was opened from. */
     leave: 'Вернуться',
-    /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. */
+    /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. Approved by the owner. */
     nothingOnSale: 'Сейчас здесь нечего оплачивать',
   },
 
@@ -508,6 +509,7 @@ export const ru = {
     title: 'Прогноз на сегодня',
     /** Owner's wording, for a forecast of another day: «Прогноз на 14 ноября». Never «сегодня» for it. */
     titleFor: (day: string) => `Прогноз на ${day}`,
+    /** Approved by the owner. */
     loading: 'Загружаем прогноз…',
     /** «Фокус дня» is the owner's wording; the name comes from `focusNames`. */
     focus: (name: string) => `Фокус дня: ${name}`,
@@ -532,7 +534,10 @@ export const ru = {
     subscriptionOnly: 'Полный прогноз — в подписке',
   },
 
-  /** «Спроси карту»: one question, one answer. The answer is the server's text, never written or reworded here. */
+  /**
+   * «Спроси карту»: one question, one answer. The answer is the server's text, never written or reworded here.
+   * Every line of this screen is the owner's wording or approved by the owner.
+   */
   ask: {
     title: 'Спроси карту',
     fieldLabel: 'Твой вопрос',
