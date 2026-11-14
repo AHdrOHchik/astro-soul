@@ -1,6 +1,6 @@
 import { Button, Card, LockIcon, Skeleton, SkeletonGroup } from '@astro-soul/ui';
 import { useCallback, useId, useState } from 'react';
-import type { Api, Report } from '../../api';
+import { isApiError, type Api, type Report } from '../../api';
 import { Stars } from '../../components/Stars';
 import { useRequest } from '../../hooks/useRequest';
 import { ru } from '../../i18n/ru';
@@ -22,6 +22,8 @@ export interface ReportTeaserProps {
   known?: Report | null;
   /** The server's fresh word about the report. Keep the reference stable: a new function is a new request. */
   onKnown?: (report: Report) => void;
+  /** The server no longer has that report (404): the app forgets it. Keep the reference stable, like `onKnown`. */
+  onGone?: (reportId: string) => void;
   /**
    * Telegram called the report paid in this visit and the server has not granted it yet.
    * The price is not offered meanwhile: the user would pay twice for one report.
@@ -52,6 +54,7 @@ export function ReportTeaser({
   reportId,
   known = null,
   onKnown,
+  onGone,
   paymentPending = false,
   onCheckPayment,
   onBuy,
@@ -64,11 +67,19 @@ export function ReportTeaser({
   const load = useCallback(
     async (signal: AbortSignal): Promise<Report | null> => {
       if (reportId === null) return null;
-      const report = await api.getReport(reportId, signal);
-      if (!signal.aborted) onKnown?.(report);
-      return ofThisChart(report) ? report : null;
+      try {
+        const report = await api.getReport(reportId, signal);
+        if (!signal.aborted) onKnown?.(report);
+        return ofThisChart(report) ? report : null;
+      } catch (error) {
+        // `Me` named a report the server no longer has: it went with the user's data. Not a
+        // failure: there is no report, the block says what it says without one, and the app forgets the id.
+        if (!isApiError(error) || error.code !== 'NOT_FOUND') throw error;
+        if (!signal.aborted) onGone?.(reportId);
+        return null;
+      }
     },
-    [api, reportId, ofThisChart, onKnown],
+    [api, reportId, ofThisChart, onKnown, onGone],
   );
   const state = useRequest(load);
   // What the app has heard before stands in until the server answers: coming back to the chart does not blink.

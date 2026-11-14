@@ -59,6 +59,8 @@ export interface ChartReportProps {
   known?: Report | null;
   /** The server's fresh word about the report. Keep the reference stable: a new function is a new request. */
   onKnown?: (report: Report) => void;
+  /** The server no longer has that report (404): the app forgets it. Keep the reference stable too. */
+  onGone?: (reportId: string) => void;
   /** Telegram called the report paid in this visit and the server has not granted it yet: no price is offered meanwhile. */
   paymentPending?: boolean;
   /** Asks the server again whether the payment has arrived. */
@@ -414,6 +416,7 @@ function ChartView({
         reportId={report.reportId}
         known={report.known}
         onKnown={report.onKnown}
+        onGone={report.onGone}
         paymentPending={report.paymentPending}
         onCheckPayment={report.onCheckPayment}
         onBuy={() => {

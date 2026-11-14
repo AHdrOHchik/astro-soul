@@ -211,6 +211,58 @@ describe('ReportScreen: a report that is over', () => {
   });
 });
 
+describe('ReportScreen: a report that is gone', () => {
+  const gone = apiError('NOT_FOUND', { status: 404, serverMessage: 'Такой страницы нет. Обнови приложение.', requestId: 'req-404' });
+
+  it('known to the app and no longer on the server (404): no error, nothing reported, the app is told to forget it', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone);
+    const onReportGone = vi.fn();
+    const { analytics } = setup({ api, props: { onReportGone } });
+
+    // What the screen is with no report: the way to get one.
+    expect(await screen.findByRole('button', { name: copy.order })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
+    expect(onReportGone).toHaveBeenCalledTimes(1);
+    expect(onReportGone).toHaveBeenCalledWith(REPORT_ID);
+    // Not a failure: no `error_shown`, and the server is not asked about that report again.
+    expect(analytics.events).toEqual([]);
+    await pass(60_000);
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('gone while it was on screen: the same, and the chapters go with it', async () => {
+    const api = fakeApi();
+    api.getReport.mockResolvedValueOnce(generating).mockRejectedValue(gone);
+    const onReportGone = vi.fn();
+    const { analytics, container } = setup({ api, props: { onReportGone } });
+    await screen.findByRole('progressbar');
+
+    await pass(POLL_DELAYS_MS[0]);
+
+    expect(await screen.findByRole('button', { name: copy.order })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    for (const section of sections) expect(container.innerHTML).not.toContain(section.body_md);
+    expect(onReportGone).toHaveBeenCalledWith(REPORT_ID);
+    expect(analytics.names()).not.toContain('error_shown');
+  });
+
+  it('ordered on this screen and not found a moment later: that is a failure, shown with its request id and counted', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone);
+    const onReportGone = vi.fn();
+    const { analytics, user } = setup({ api, props: { reportId: null, onReportGone } });
+
+    await user.click(screen.getByRole('button', { name: copy.order }));
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText(ru.common.requestId('req-404'))).toBeInTheDocument();
+    expect(onReportGone).not.toHaveBeenCalled();
+    expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'report', code: '404' } });
+  });
+});
+
 describe('ReportScreen: the order', () => {
   const idle = { reportId: null } satisfies Partial<ReportScreenProps>;
   const order = () => screen.getByRole('button', { name: copy.order });

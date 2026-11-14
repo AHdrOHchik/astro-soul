@@ -47,6 +47,8 @@ export const me: Me = {
   has_profile: false,
   has_chart: false,
   chart_id: null,
+  // Always in the answer since contract 1.5.3: a uuid, or null while the user has ordered no report.
+  latest_report_id: null,
   subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
   entitlements,
   quotas: [],

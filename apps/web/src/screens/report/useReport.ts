@@ -52,6 +52,11 @@ export interface UseReportOptions {
   onReportId?: (reportId: string) => void;
   /** Hands over every new word of the server about the report, for whoever shows the report elsewhere. */
   onReport?: (report: Report) => void;
+  /**
+   * The report the app knew of is no longer on the server (404): it went with the user's
+   * data. Whoever remembers the report forgets it.
+   */
+  onReportGone?: (reportId: string) => void;
 }
 
 export interface ReportFlow {
@@ -97,6 +102,7 @@ export function useReport({
   onPaymentRequired,
   onReportId,
   onReport,
+  onReportGone,
 }: UseReportOptions): ReportFlow {
   const [reportId, setReportId] = useState(knownReportId);
   // The key of the first order is taken here, once: a development build runs the effect below twice, with this one key.
@@ -110,10 +116,12 @@ export function useReport({
   const [loads, setLoads] = useState(0);
 
   // The callbacks of the moment, for effects that must not start over when a parent renders.
-  const latest = useRef({ track, onPaymentRequired, onReportId, onReport, justPaid });
+  const latest = useRef({ track, onPaymentRequired, onReportId, onReport, onReportGone, justPaid });
   useEffect(() => {
-    latest.current = { track, onPaymentRequired, onReportId, onReport, justPaid };
+    latest.current = { track, onPaymentRequired, onReportId, onReport, onReportGone, justPaid };
   });
+  // The report this screen has ordered itself. Any other one the app knew of before the screen opened.
+  const orderedHere = useRef<string | null>(null);
 
   // The order.
   useEffect(() => {
@@ -128,6 +136,7 @@ export function useReport({
       (report) => {
         if (signal.aborted) return;
         // Only the id is taken from this answer: what the report is like is asked next, and at once.
+        orderedHere.current = report.report_id;
         latest.current.onReportId?.(report.report_id);
         setRun(null);
         setView({ kind: 'pending', what: 'load' });
@@ -158,6 +167,7 @@ export function useReport({
   // The answers about the report.
   useEffect(() => {
     if (reportId === null) return undefined;
+    const asked = reportId;
     const controller = new AbortController();
     const { signal } = controller;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -189,7 +199,7 @@ export function useReport({
       // Telegram is minimised all the time: nothing is asked meanwhile, `visibilitychange` picks it up.
       if (document.hidden || asking) return;
       asking = true;
-      api.getReport(reportId ?? '', signal).then(
+      api.getReport(asked, signal).then(
         (report) => {
           asking = false;
           if (signal.aborted) return;
@@ -214,6 +224,18 @@ export function useReport({
         (error: unknown) => {
           asking = false;
           if (signal.aborted || isAbortError(error)) return;
+          if (isApiError(error) && error.code === 'NOT_FOUND' && asked !== orderedHere.current) {
+            // The report the app knew of is gone: deleted with the user's data. Nothing failed, so
+            // nothing is shown and nothing is counted: the report is forgotten, and the screen is
+            // what it is with no report. One this screen has just ordered is another matter: the
+            // server took the order and then lost it, and that is a failure to show (below).
+            over = true;
+            clearTimeout(stallTimer);
+            latest.current.onReportGone?.(asked);
+            setReportId(null);
+            setView({ kind: 'idle' });
+            return;
+          }
           const passing = isApiError(error) && PASSING.includes(error.code);
           if (shown !== null && passing) {
             // A report is on screen: one lost answer does not take it away. Asked again, later.

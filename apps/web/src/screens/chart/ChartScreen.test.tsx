@@ -263,6 +263,22 @@ describe('ChartScreen', () => {
       expect(report.onOpen).toHaveBeenCalledWith(expect.objectContaining({ chartId: chart.chart_id }), REPORT_ID);
     });
 
+    it('a report the server no longer has (404): not an error, the block is what it is with no report, and the app is told to forget it', async () => {
+      const api = fakeApi();
+      api.getReport.mockRejectedValue(apiError('NOT_FOUND', { status: 404, requestId: 'req-404' }));
+      const onGone = vi.fn();
+      const { analytics } = setup({ api, report: { reportId: REPORT_ID, onGone } });
+
+      const teaser = await teaserBlock();
+      // Nothing bought and no report: the price, as for any user without a report.
+      expect(await teaser.findByRole('button', { name: TEASER_CTA_NAME })).toBeEnabled();
+      expect(onGone).toHaveBeenCalledTimes(1);
+      expect(onGone).toHaveBeenCalledWith(REPORT_ID);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
+      expect(analytics.names()).not.toContain('error_shown');
+    });
+
     it('paid, with no report known: offers to get it, and a report about another chart does not count', async () => {
       const api = fakeApi();
       api.getReport.mockResolvedValue({ ...reportFixture, status: 'ready', chart_id: '00000000-0000-4000-8000-00000000beef' });

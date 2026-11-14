@@ -58,6 +58,8 @@ export interface ReportScreenProps {
   onReportId?: (reportId: string) => void;
   /** Every new word of the server about the report: the chart screen shows the same report in short. */
   onReport?: (report: Report) => void;
+  /** The report the app knew of is no longer on the server (404): the app forgets it. */
+  onReportGone?: (reportId: string) => void;
 }
 
 /**
@@ -82,9 +84,10 @@ export function ReportScreen({
   onPaymentRequired,
   onReportId,
   onReport,
+  onReportGone,
 }: ReportScreenProps) {
   const titleId = useId();
-  const flow = useReport({ api, keys, chartId, reportId, orderAtOnce, justPaid, track, onPaymentRequired, onReportId, onReport });
+  const flow = useReport({ api, keys, chartId, reportId, orderAtOnce, justPaid, track, onPaymentRequired, onReportId, onReport, onReportGone });
   const { view } = flow;
   const report = view.kind === 'report' ? view.report : null;
 
@@ -421,7 +424,7 @@ function Failure({ view, flow, telegram, supportLink }: FailureProps) {
   if (from === 'load') {
     return (
       <ErrorState error={error} telegram={telegram} supportLink={supportLink} onRetry={flow.reload}>
-        {/* The report the app knew of is gone: the way on is a new order. */}
+        {/* The report this screen ordered is not there: the way on is a new order. (One the app knew of before never gets here: see useReport.) */}
         {code === 'NOT_FOUND' && (
           <Button
             onClick={() => {

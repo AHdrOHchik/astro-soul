@@ -290,6 +290,12 @@ function Screens({
   const [reportId, setReportId] = useState<string | null>(meAtStart.latest_report_id ?? null);
   // And the server's last word about it, so the chart screen can show it at once and ask again behind it.
   const [knownReport, setKnownReport] = useState<Report | null>(null);
+  // The server no longer has that report (404 to the id `Me` named: it went with the user's data).
+  // Nothing the app holds about it is true any more; `null` is the ordinary «no report».
+  const forgetReport = useCallback((gone: string) => {
+    setReportId((current) => (current === gone ? null : current));
+    setKnownReport((current) => (current?.report_id === gone ? null : current));
+  }, []);
   // A plan Telegram called paid in this visit and the server has not granted yet. Until it does,
   // no screen offers to pay for it again. The ref is for the moment the answer comes, the state for the screens.
   const [awaitedPlan, setAwaitedPlan] = useState<PaywallPlan | null>(null);
@@ -446,6 +452,7 @@ function Screens({
           reportId,
           known: knownReport,
           onKnown: setKnownReport,
+          onGone: forgetReport,
           paymentPending: awaitedPlan === REPORT_PLAN,
           onCheckPayment: refreshMe,
           onBuy: (chart) => {
@@ -540,6 +547,7 @@ function Screens({
           }}
           onReportId={setReportId}
           onReport={setKnownReport}
+          onReportGone={forgetReport}
         />
       );
     case 'settings':

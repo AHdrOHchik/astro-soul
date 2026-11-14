@@ -373,6 +373,34 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(api.orderReport).not.toHaveBeenCalled();
   });
 
+  it('`Me` names a report the server no longer has (404): no error anywhere, the chart is what it is with no report, and the app forgets the id', async () => {
+    const { api, analytics, telegram, user } = returning((fake) => {
+      // At start `Me` still names the report; the report itself went with the data, and the next `Me` says so: null.
+      fake.getMe.mockResolvedValueOnce({ ...mePaid, latest_report_id: REPORT_ID }).mockResolvedValue({ ...mePaid, latest_report_id: null });
+      fake.getReport.mockRejectedValue(apiError('NOT_FOUND', { status: 404, requestId: 'req-404' }));
+    });
+
+    // Paid for, and no report: the chart offers to get one, as it does when `Me` says null.
+    expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
+    expect(analytics.names()).not.toContain('error_shown');
+
+    // Forgotten: `null` in the next `Me` is the ordinary «no report», and coming back to the chart
+    // does not ask about the old id again (it would, had the app kept it).
+    await user.click(screen.getByRole('button', { name: ru.common.settings }));
+    expect(heading()).toHaveTextContent(ru.settings.title);
+    const back = telegram.setBackHandler.mock.lastCall?.[0];
+    act(() => {
+      back?.();
+    });
+
+    expect(heading()).toHaveTextContent(ru.chart.title);
+    expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+  });
+
   it('settings are a tap away from the chart; deleting the data ends the app on the screen that says so, and nothing more is reported', async () => {
     const { api, analytics, keys, telegram, user } = returning();
     // An order made earlier left its key on the device.
