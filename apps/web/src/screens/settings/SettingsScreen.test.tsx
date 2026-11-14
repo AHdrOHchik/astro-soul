@@ -287,7 +287,7 @@ describe('SettingsScreen', () => {
 });
 
 describe('SettingsScreen: the wording of the deletion', () => {
-  /** SPEC.md, scenario 6, since contract 1.5.5: the deletion cancels the subscription, and the dialog says so before the tap. */
+  /** SPEC.md, the scenario «Удаление данных», since contract 1.5.5: the deletion cancels the subscription, and the dialog says so before the tap. */
   const SUBSCRIPTION_GOES = 'Подписка при этом отменяется, доступ закрывается сразу, оплаченный период не возвращается.';
   /** What legal.md asks to say before the data goes: the payment records stay, without the person. */
   const PAYMENTS_STAY = 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.';
@@ -324,6 +324,72 @@ describe('SettingsScreen: the wording of the deletion', () => {
     // And the button that deletes is not on this confirmation at all.
     expect(screen.queryByRole('button', { name: 'Удалить навсегда' })).not.toBeInTheDocument();
     expect(api.deleteMe).not.toHaveBeenCalled();
+  });
+});
+
+describe('SettingsScreen: the last confirmation, the one whose button deletes', () => {
+  /** The owner's words for it, the three sentences in a row. */
+  const LAST_WORD =
+    'Удаляются профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Подписка отменяется сразу, оплаченный период не возвращается. Восстановить данные не получится.';
+  const PAID_PERIOD = 'Подписка отменяется сразу, оплаченный период не возвращается.';
+
+  async function openLast(me?: Me) {
+    const view = setup(me === undefined ? {} : { me });
+    await view.user.click(await openDeletion());
+    await view.user.click(continueDeletion());
+    return { ...view, dialog: screen.getByRole('alertdialog', { name: 'Точно удалить?' }) };
+  }
+
+  it('says once more what goes and what it costs, word for word, and nothing else', async () => {
+    const { dialog } = await openLast();
+
+    const paragraphs = [...dialog.querySelectorAll('p')].map((paragraph) => paragraph.textContent);
+    expect(paragraphs.join(' ')).toBe(LAST_WORD);
+    expect(paragraphs).toHaveLength(3);
+    // The text the dialog is described by is that very text: a screen reader hears it with the question.
+    const describedBy = dialog.getAttribute('aria-describedby') ?? '';
+    expect(document.getElementById(describedBy)?.textContent).toBe(paragraphs.join(''));
+  });
+
+  it('the sentence about the paid period stands out: bold, a paragraph of its own, never small print', async () => {
+    const { dialog } = await openLast();
+
+    const sentence = within(dialog).getByText(PAID_PERIOD);
+    expect(sentence.tagName).toBe('STRONG');
+    // A paragraph like the ones around it: no class that would make it smaller or paler.
+    const paragraph = sentence.closest('p');
+    expect(paragraph?.textContent).toBe(PAID_PERIOD);
+    expect(paragraph?.className).toBe('');
+    // And it is the only bold one: emphasis on everything is emphasis on nothing.
+    expect(dialog.querySelectorAll('strong')).toHaveLength(1);
+  });
+
+  it('is read before the button that deletes can be tapped: the sentence stands above it, and the button waits', async () => {
+    const { api, dialog } = await openLast(meSubscribed);
+
+    const sentence = within(dialog).getByText(PAID_PERIOD);
+    const button = confirmDeletion();
+    expect(sentence.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(button).toBeDisabled();
+    expect(api.deleteMe).not.toHaveBeenCalled();
+  });
+
+  it('is said to a user without a subscription too: the app does not decide who needs to hear it', async () => {
+    const { dialog } = await openLast(meWithChart);
+    expect(within(dialog).getByText(PAID_PERIOD)).toBeInTheDocument();
+  });
+
+  it('the first confirmation is as it was: its three sentences, and nothing bold', async () => {
+    const { user } = setup();
+    await user.click(await openDeletion());
+
+    const first = screen.getByRole('alertdialog', { name: 'Удалить все данные?' });
+    expect([...first.querySelectorAll('p')].map((paragraph) => paragraph.textContent)).toEqual([
+      'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
+      'Подписка при этом отменяется, доступ закрывается сразу, оплаченный период не возвращается.',
+      'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
+    ]);
+    expect(first.querySelector('strong')).toBeNull();
   });
 });
 

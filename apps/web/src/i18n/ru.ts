@@ -214,6 +214,9 @@ const reportStates: Record<ReportStatus, string> = {
   refunded: 'Разбор не получился, звёзды вернулись на счёт.',
 };
 
+/** Owner's wording: what deleting the data does to a subscription. The sentence of the last confirmation that stands out. */
+const SUBSCRIPTION_IS_LOST = 'Подписка отменяется сразу, оплаченный период не возвращается.';
+
 /** Telegram Stars, the app's only currency: «1 звезда», «2 звезды», «149 звёзд». */
 const stars: Record<PluralForm, string> = {
   one: 'звезда',
@@ -598,7 +601,7 @@ export const ru = {
     deletion: {
       /** Owner's wording, the name the legal texts promise. */
       title: 'Удалить мои данные',
-      /** What goes is the list of SPEC.md (scenario 6); «необратимо» is the word of the legal texts. */
+      /** What goes is the list of SPEC.md (scenario 7, «Удаление данных»). */
       text: 'Удаляются профиль, карты, разборы, прогнозы и вопросы. Это необратимо.',
       open: 'Удалить мои данные',
       /** The first confirmation: what exactly goes, what it costs and what stays. */
@@ -606,7 +609,7 @@ export const ru = {
       confirmText: [
         'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
         /**
-         * Owner's wording (SPEC.md, scenario 6, and legal.md §2), to be said before the tap. Since
+         * Owner's wording (SPEC.md, scenario 7, and legal.md §2), to be said before the tap. Since
          * contract 1.5.5 the server cancels the subscription together with the data; until then
          * this line promised the opposite, that the subscription lives on to the end of its period.
          * Said to everyone: the app does not decide by its own copy of `Me` who needs to hear it.
@@ -619,7 +622,20 @@ export const ru = {
       next: 'Удалить данные',
       /** The second confirmation: the last word before the deletion. */
       lastTitle: 'Точно удалить?',
-      lastText: ['Это последний шаг. Отменить удаление будет нельзя.'],
+      /**
+       * Owner's wording, three sentences, on the confirmation whose button deletes: a paragraph each.
+       * Said to everyone, like the same thing on the first confirmation.
+       */
+      lastText: [
+        'Удаляются профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор.',
+        SUBSCRIPTION_IS_LOST,
+        'Восстановить данные не получится.',
+      ],
+      /**
+       * The one of them that is drawn bold, at full size and never in small print: it is what keeps
+       * the user from a surprise about money, and the owner asked for it to stand out.
+       */
+      lastTextStrong: SUBSCRIPTION_IS_LOST,
       /** Owner's wording. */
       confirm: 'Удалить навсегда',
       cancel: 'Не удалять',
@@ -629,15 +645,21 @@ export const ru = {
       failedTitle: 'Данные не удалены',
       /** Owner's wording. */
       sessionExpired: 'Сессия истекла, открой приложение заново.',
-      /** Owner's wording: the title of the screen after the deletion. */
-      doneTitle: 'Данные удалены',
       /**
-       * The text under it. The owner's line for this place («Подписка сохраняется до конца
-       * оплаченного периода») stopped being true with contract 1.5.5: the deletion cancels the
-       * subscription. Until the owner words a new one, the screen repeats what stays in the
-       * owner's own words from the confirmation, and promises nothing about the subscription.
+       * Owner's wording, the screen after the deletion: «Данные удалены. Подписка отменена. Если
+       * захочешь вернуться — начнёшь с чистого листа.» The first sentence is the title, the rest
+       * the text under it. Said to everyone, as on the confirmations.
        */
-      doneText: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
+      doneTitle: 'Данные удалены',
+      doneText: 'Подписка отменена. Если захочешь вернуться — начнёшь с чистого листа.',
+      /** Under that, in small print, by the owner's order of the lines: what stays, in the words of the first confirmation. */
+      doneNote: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
+      /**
+       * Owner's wording: the link to the subscriptions in Telegram's own settings. The server cancels
+       * the subscription on its side, and nothing in apps/api tells Telegram to stop renewing it
+       * (issue #29): where the subscription lives is the one thing the user can look into and act on.
+       */
+      manageSubscriptions: 'Управлять подписками в Telegram',
     },
   },
 
