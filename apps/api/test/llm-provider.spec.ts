@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppEnv } from '../src/config/env';
 import { JsonLogger } from '../src/common/logger';
 import { GigaChatClient, LlmError } from '../src/modules/llm/llm.client';
+import { loadEnv } from '../src/config/env';
+import { applyTestEnv } from './test-env';
 
 /**
  * Тесты провайдера на локальном HTTP-сервере: сеть не нужна, деньги не
@@ -104,7 +106,6 @@ function env(overrides: Partial<AppEnv> = {}): AppEnv {
     LLM_TEMPERATURE: 0.7,
     LLM_MAX_TOKENS: 1400,
     LLM_TIMEOUT_MS: 5_000,
-    LLM_PRICE_PER_1K_RUB: 0.5,
     ...overrides,
   } as AppEnv;
 }
@@ -174,6 +175,35 @@ describe('GigaChatClient', () => {
     expect(response.usage.totalTokens).toBe(2000);
     expect(response.usage.costRub).toBe(1);
     expect(response.usage.costRub).toBeLessThan(2);
+  });
+
+  it('цена следует модели: 2-Max — 0,65 ₽, 3-Ultra — 0,5 ₽ за 1000 токенов', async () => {
+    const ultra = await client().complete(ask);
+    expect(ultra.usage.costRub).toBe(1);
+
+    const max = await client({ LLM_MODEL: 'GigaChat-2-Max' }).complete(ask);
+    expect(max.usage.costRub).toBe(1.3);
+  });
+
+  it('неизвестная модель — ошибка конфигурации, а не нулевая цена', () => {
+    expect(() => client({ LLM_MODEL: 'GigaChat-9-Unknown' })).toThrow(/нет цены/u);
+  });
+
+  it('окружение: scope по умолчанию PERS, лимиты 80 ₽ и 2000 ₽', () => {
+    applyTestEnv();
+    const source: NodeJS.ProcessEnv = { ...process.env };
+    delete source['LLM_REPORT_CAP_RUB'];
+    delete source['LLM_MONTHLY_CAP_RUB'];
+    delete source['GIGACHAT_SCOPE'];
+
+    const parsed = loadEnv(source);
+
+    expect(parsed.GIGACHAT_SCOPE).toBe('GIGACHAT_API_PERS');
+    expect(parsed.LLM_REPORT_CAP_RUB).toBe(80);
+    expect(parsed.LLM_MONTHLY_CAP_RUB).toBe(2000);
+
+    // Неизвестная модель ломает старт: цены для неё нет.
+    expect(() => loadEnv({ ...source, LLM_MODEL: 'GigaChat-9-Unknown' })).toThrow(/LLM_MODEL/u);
   });
 
   it('без CA-бандла не идёт в https и просит проверить GIGACHAT_CA_BUNDLE', async () => {

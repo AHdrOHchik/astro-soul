@@ -135,7 +135,7 @@ describe('POST /api/v1/events', () => {
       .expect(401);
   });
 
-  it('список событий в коде совпадает с контрактом 1.5.1: 37 штук без дублей', () => {
+  it('список событий в коде совпадает с контрактом 1.5.2: 37 штук без дублей', () => {
     expect(ANALYTICS_EVENTS).toHaveLength(37);
     expect(new Set(ANALYTICS_EVENTS).size).toBe(37);
     // QA: `validation_failed_client` теперь в контракте, и сервер его принимает.

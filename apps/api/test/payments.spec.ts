@@ -444,7 +444,20 @@ describe('R-1: продление без subscription_expiration_date', () => {
 
 describe('возвраты', () => {
   it('refundStarPayment + отзыв доступа', async () => {
-    const { payload } = await createInvoice('one_149');
+    // С 1.5.2 разовый разбор покупается на конкретную карту.
+    const chart = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({
+        birth_date: '1994-05-17',
+        birth_time: '14:20',
+        time_precision: 'exact',
+        birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
+        consent: { accepted: true, version: '2026-11-10' },
+      })
+      .expect(201);
+
+    const { payload } = await createInvoice('one_149', chart.body.chart.chart_id as string);
     await sendWebhook(successfulPayment({ payload, chargeId: 'charge-refund-1', amount: 149 }));
 
     const service = ctx.app.get(PaymentsService);

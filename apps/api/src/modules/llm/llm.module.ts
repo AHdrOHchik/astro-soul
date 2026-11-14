@@ -12,7 +12,7 @@ export const LLM_PROVIDER = Symbol('LLM_PROVIDER');
 /**
  * Выбор провайдера — по окружению, а не по вкусу.
  *
- * Нет `GIGACHAT_AUTH_KEY`/`GIGACHAT_SCOPE` (или явный `LLM_FAKE=1`) — работает
+ * Нет `GIGACHAT_AUTH_KEY` (или явный `LLM_FAKE=1`) — работает
  * подставной провайдер, и это **видно**: предупреждение в лог при старте и
  * `model = fake-llm` в каждом разборе. Тихой подмены модели нет.
  */
@@ -28,7 +28,7 @@ export const LLM_PROVIDER = Symbol('LLM_PROVIDER');
 
         if (forcedFake || !GigaChatClient.isConfigured(env)) {
           logger.warn('llm_fake_provider', {
-            reason: forcedFake ? 'LLM_FAKE=1' : 'нет GIGACHAT_AUTH_KEY и/или GIGACHAT_SCOPE',
+            reason: forcedFake ? 'LLM_FAKE=1' : 'нет GIGACHAT_AUTH_KEY',
             model: 'fake-llm',
             // Провайдер не тратит деньги: счётчик расходов остаётся нулевым.
             price_per_1k_rub: 0,

@@ -7,11 +7,11 @@ Task 4 — LLM-конвейер и POST/GET /reports (P0-4/P0-7, контрак�
 
 РЕЗУЛЬТАТ
   ✓ test/reports.spec.ts (8 tests) ~1.0s
-  ✓ test/llm-provider.spec.ts (6 tests) ~1.1s
+  ✓ test/llm-provider.spec.ts (9 tests) ~1.1s
   Test Files  2 passed (2)
-       Tests  14 passed (14)
+       Tests  17 passed (17)
 
-ПРОВАЙДЕР (6 тестов, локальный HTTP-заглушка-сервер, без сети и денег)
+ПРОВАЙДЕР (9 тестов, локальный HTTP-заглушка-сервер, без сети и денег)
   1. токен кэшируется: два complete() → ровно один OAuth;
      OAuth — form-urlencoded, scope из GIGACHAT_SCOPE, RqUID = uuid4;
   2. expires_at в мс: срок 30 мин → кэш; срок 30 сек (< 60 сек запаса) → новая авторизация;
@@ -19,7 +19,11 @@ Task 4 — LLM-конвейер и POST/GET /reports (P0-4/P0-7, контрак�
   4. 429 → один повтор, затем LlmError(code=rate_limited), ровно 2 chat-вызова;
   5. usage 2000 токенов × 0.5 ₽/1000 = 1 ₽ (costRub округлён до 4 знаков);
   6. https без GIGACHAT_CA_BUNDLE → LlmError(code=config),
-     текст содержит «проверь GIGACHAT_CA_BUNDLE»; TLS-проверка не отключается.
+     текст содержит «проверь GIGACHAT_CA_BUNDLE»; TLS-проверка не отключается;
+  7. цена берётся из модели: 2000 токенов = 1 ₽ для 3-Ultra и 1.3 ₽ для 2-Max;
+  8. неизвестная модель → LlmError(config), а не «0 ₽ за токен»;
+  9. окружение: scope по умолчанию PERS, лимиты 80 ₽ на разбор и 2000 ₽ в месяц,
+     неизвестная LLM_MODEL не проходит валидацию env.
 
 КОНВЕЙЕР (8 тестов)
   1. POST /reports без Idempotency-Key → 422, details.field_errors[0].field = Idempotency-Key;

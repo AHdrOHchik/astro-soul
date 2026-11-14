@@ -167,7 +167,7 @@ export class ReportsService {
 
     // Проверка доступа — по карте, а не по флагу `fullReport`: одна покупка
     // не должна открывать разборы по другим картам (деньги).
-    const owned = await this.repo.claimReportEntitlement(userId, chart.id);
+    const owned = await this.repo.hasReportEntitlement(userId, chart.id);
     if (!owned) {
       throw new ApiError('PAYMENT_REQUIRED', 402, {
         message: 'Полный разбор — отдельная покупка. Оформи её на экране разбора',
@@ -524,8 +524,9 @@ export class ReportsService {
    * перерасход останавливает разбор, повтор при этом не делается.
    */
   private async call(budget: Budget, messages: readonly LlmMessage[]): Promise<LlmResponse> {
+    // Лимит на разбор — 80 ₽ (решение владельца), значение всегда есть.
     const reportCap = this.env.LLM_REPORT_CAP_RUB;
-    if (reportCap !== undefined && budget.costRub >= reportCap) {
+    if (budget.costRub >= reportCap) {
       throw new ReportFailure('cost_cap');
     }
 
@@ -539,7 +540,7 @@ export class ReportsService {
     budget.attempts += 1;
     await this.repo.addCost(budget.reportId, response.usage.costRub, 1);
 
-    if (reportCap !== undefined && budget.costRub > reportCap) {
+    if (budget.costRub > reportCap) {
       throw new ReportFailure('cost_cap');
     }
 

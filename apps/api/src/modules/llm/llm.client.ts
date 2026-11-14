@@ -6,6 +6,7 @@ import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
+import { llmModelSpec } from '../../config/llm-models';
 import { JsonLogger } from '../../common/logger';
 
 export type LlmRole = 'system' | 'user' | 'assistant';
@@ -83,6 +84,8 @@ const RETRY_PAUSE_MS = 500;
 @Injectable()
 export class GigaChatClient implements LlmProvider {
   readonly name: string;
+  /** Рубли за 1000 токенов — из таблицы моделей, а не из отдельной переменной. */
+  private readonly pricePer1kRub: number;
   private cache: TokenCache | null = null;
   private inflight: Promise<TokenCache> | null = null;
   private caBundle: Buffer | null = null;
@@ -92,11 +95,19 @@ export class GigaChatClient implements LlmProvider {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {
     this.name = env.LLM_MODEL;
+
+    // Окружение уже проверило модель, но цена — это деньги: лучше явная
+    // ошибка конфигурации, чем 0 ₽ в `llm_cost_rub`.
+    const spec = llmModelSpec(env.LLM_MODEL);
+    if (spec === null) {
+      throw new LlmError('config', `gigachat: для модели ${env.LLM_MODEL} нет цены в config/llm-models.ts`);
+    }
+    this.pricePer1kRub = spec.pricePer1kRub;
   }
 
-  /** Разбор идёт без сети, когда ключей нет: это честный флаг, а не тишина. */
+  /** Разбор идёт без сети, когда ключа нет: это честный флаг, а не тишина. */
   static isConfigured(env: AppEnv): boolean {
-    return env.GIGACHAT_AUTH_KEY !== undefined && env.GIGACHAT_SCOPE !== undefined;
+    return env.GIGACHAT_AUTH_KEY !== undefined;
   }
 
   async complete(input: LlmRequest): Promise<LlmResponse> {
@@ -192,7 +203,7 @@ export class GigaChatClient implements LlmProvider {
         completionTokens,
         totalTokens,
         // Цена за 1000 токенов одна на вход и выход (блок владельца).
-        costRub: Math.round(((totalTokens / 1000) * this.env.LLM_PRICE_PER_1K_RUB + Number.EPSILON) * 10_000) / 10_000,
+        costRub: Math.round(((totalTokens / 1000) * this.pricePer1kRub + Number.EPSILON) * 10_000) / 10_000,
       },
     };
   }

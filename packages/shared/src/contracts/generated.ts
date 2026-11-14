@@ -666,9 +666,10 @@ export interface paths {
                     };
                 };
                 /**
-                 * @description Нет `Idempotency-Key`, некорректное тело или неподдерживаемый тип —
-                 *     `VALIDATION_FAILED` + `details.field_errors[{field, message}]`
-                 *     (поле заголовка называется `Idempotency-Key`).
+                 * @description Нет `Idempotency-Key`, некорректное или пустое тело (`chart_id`),
+                 *     неподдерживаемый тип — `VALIDATION_FAILED` +
+                 *     `details.field_errors[{field, message}]` (поле заголовка называется
+                 *     `Idempotency-Key`).
                  */
                 422: {
                     headers: {
@@ -893,6 +894,12 @@ export interface paths {
          * Создать инвойс в Stars
          * @description Для подписок передаётся subscription_period, для разовых — обычный инвойс.
          *     Ссылка открывается через Telegram.WebApp.openInvoice.
+         *
+         *     `chart_id` обязателен для `one_149` (полный разбор): товар привязан
+         *     к конкретной карте, и разбор потом открывается только по ней. Фронт
+         *     подставляет карту явно, даже если она у пользователя одна — скрытой
+         *     привязки к «первой карте» нет (1.5.2). Для остальных планов `chart_id`
+         *     необязателен; если передан — проверяется, что карта своя.
          */
         post: {
             parameters: {
@@ -916,7 +923,10 @@ export interface paths {
                         "application/json": components["schemas"]["Invoice"];
                     };
                 };
-                /** @description Неизвестный план или чужая карта (VALIDATION_FAILED / NOT_FOUND) */
+                /**
+                 * @description Неизвестный план, чужая карта или отсутствует `chart_id` у
+                 *     `one_149` — `VALIDATION_FAILED` + `details.field_errors[{field, message}]`.
+                 */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -1533,7 +1543,12 @@ export interface components {
             accepted: number;
         };
         ReportRequest: {
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Карта, по которой заказывается разбор. Обязателен и должен быть
+             *     той картой, за которую заплачено: разбор открывается по оплаченной
+             *     карте, а не по «первой» у пользователя.
+             */
             chart_id: string;
             /** @enum {string} */
             type: "full" | "compat" | "solar";
@@ -1573,7 +1588,12 @@ export interface components {
         Report: {
             /** Format: uuid */
             report_id: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Карта, по которой заказывается разбор. Обязателен и должен быть
+             *     той картой, за которую заплачено: разбор открывается по оплаченной
+             *     карте, а не по «первой» у пользователя.
+             */
             chart_id?: string;
             /** @enum {string} */
             type: "full" | "compat" | "solar";
@@ -1631,7 +1651,8 @@ export interface components {
             plan_code: components["schemas"]["PlanCode"];
             /**
              * Format: uuid
-             * @description Для разовых продуктов
+             * @description Для разовых продуктов. Обязателен для `one_149` (полный разбор):
+             *     товар привязан к карте (1.5.2).
              */
             chart_id?: string;
         };
