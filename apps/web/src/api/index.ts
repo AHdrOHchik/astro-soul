@@ -309,6 +309,7 @@ const FREE: Entitlements = {
   full_forecast: false,
   ask_per_day: 0,
   full_report: false,
+  full_report_chart_id: null,
   compat_per_month: 0,
   solar_included: false,
 };
@@ -344,6 +345,11 @@ function toMe(value: unknown): Me {
       ...(entitlements as Partial<Entitlements>),
       is_active: entitlements.is_active === true,
       full_report: entitlements.full_report === true,
+      // The chart the report is bought for: an id, or null. Whatever else arrives names no chart.
+      full_report_chart_id:
+        typeof entitlements.full_report_chart_id === 'string' && entitlements.full_report_chart_id !== ''
+          ? entitlements.full_report_chart_id
+          : null,
     },
     subscription: {
       ...NO_SUBSCRIPTION,

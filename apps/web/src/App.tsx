@@ -7,7 +7,7 @@ import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
 import type { IdempotencyKeys } from './lib/idempotency';
-import { grants, REPORT_PLAN, type PaywallPlan } from './lib/plans';
+import { grants, hasReportFor, REPORT_PLAN, type PaywallPlan } from './lib/plans';
 import type { TermsReload } from './lib/termsReload';
 import { AskScreen } from './screens/ask/AskScreen';
 import { BirthDateScreen } from './screens/BirthDateScreen';
@@ -282,6 +282,13 @@ interface PaywallEntry {
   reportRequired: boolean;
 }
 
+/** A purchase Telegram called paid and the server has not granted yet. */
+interface AwaitedPurchase {
+  plan: PaywallPlan;
+  /** The chart the report was bought for; null for a subscription, which is about no chart. */
+  chartId: string | null;
+}
+
 /** How the report screen was entered. */
 interface ReportEntry {
   /** The report to open; null when there is none known. */
@@ -340,25 +347,26 @@ function Screens({
     // «None yet» is news as well: what was known before is not shown in its place.
     setKnownForecast(forecast === null ? null : { chartId, forecast });
   }, []);
-  // A plan Telegram called paid in this visit and the server has not granted yet. Until it does,
+  // A purchase Telegram called paid in this visit and the server has not granted yet. Until it does,
   // no screen offers to pay for it again. The ref is for the moment the answer comes, the state for the screens.
-  const [awaitedPlan, setAwaitedPlan] = useState<PaywallPlan | null>(null);
-  const awaited = useRef<PaywallPlan | null>(null);
-  const awaitPayment = useCallback((plan: PaywallPlan) => {
-    awaited.current = plan;
-    setAwaitedPlan(plan);
+  const [awaitedPurchase, setAwaitedPurchase] = useState<AwaitedPurchase | null>(null);
+  const awaited = useRef<AwaitedPurchase | null>(null);
+  const awaitPayment = useCallback((purchase: AwaitedPurchase) => {
+    awaited.current = purchase;
+    setAwaitedPurchase(purchase);
   }, []);
   const refreshMe = useCallback(
     async (signal?: AbortSignal) => {
       const fresh = await api.getMe(signal);
       setMe(fresh);
       if (typeof fresh.latest_report_id === 'string') setReportId(fresh.latest_report_id);
-      const plan = awaited.current;
-      if (plan !== null && grants(fresh, plan)) {
+      const purchase = awaited.current;
+      // A report is confirmed for the chart it was bought for: a report the user has of another chart confirms nothing.
+      if (purchase !== null && grants(fresh, purchase.plan, purchase.chartId)) {
         // The one confirmation of a payment there is, counted here once, whichever screen asked the server.
         awaited.current = null;
-        setAwaitedPlan(null);
-        track('payment_succeeded', { plan_code: plan });
+        setAwaitedPurchase(null);
+        track('payment_succeeded', { plan_code: purchase.plan });
       }
       return fresh;
     },
@@ -551,12 +559,15 @@ function Screens({
           },
         }}
         report={{
-          fullReport: me.entitlements.full_report,
+          // Paid for or not is asked about the chart on screen, never about the user: `cached` is that chart
+          // from the moment the server hands it over (`onLoaded` comes before the screen draws it).
+          fullReport: cached !== null && hasReportFor(me, cached.chart.chart_id),
           reportId,
           known: knownReport,
           onKnown: setKnownReport,
           onGone: forgetReport,
-          paymentPending: awaitedPlan === REPORT_PLAN,
+          // Whichever chart that payment was for: while one is on its way, no price is offered anywhere.
+          paymentPending: awaitedPurchase?.plan === REPORT_PLAN,
           onCheckPayment: refreshMe,
           onBuy: (chart) => {
             setOpenChart(chart);
@@ -580,6 +591,8 @@ function Screens({
 
   // The chart a report can be about: the one the user came from, else the one `Me` names.
   const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id, share: null } : null);
+  // The chart the paywall sells the report for; null when the report is not on offer there.
+  const paywallChartId = paywall.offersReport ? (reportChart?.chartId ?? null) : null;
 
   switch (route) {
     case 'welcome':
@@ -601,12 +614,15 @@ function Screens({
           telegram={telegram}
           me={me}
           refreshMe={refreshMe}
-          reportChartId={paywall.offersReport ? (reportChart?.chartId ?? null) : null}
+          reportChartId={paywallChartId}
           initialPlan={paywall.plan}
           subscriptions={subscriptions}
           reportRequired={paywall.reportRequired}
-          awaiting={awaitedPlan}
-          onAwaiting={awaitPayment}
+          awaiting={awaitedPurchase?.plan ?? null}
+          awaitingChartId={awaitedPurchase?.chartId ?? null}
+          onAwaiting={(plan) => {
+            awaitPayment({ plan, chartId: plan === REPORT_PLAN ? paywallChartId : null });
+          }}
           track={track}
           back={back}
           onOpenTerms={() => {

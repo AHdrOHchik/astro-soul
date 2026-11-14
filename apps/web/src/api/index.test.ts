@@ -577,6 +577,36 @@ describe('absoluteApiUrl', () => {
   });
 });
 
+describe('getMe: the chart the full report is bought for (`entitlements.full_report_chart_id`)', () => {
+  const CHART = '00000000-0000-4000-8000-00000000c0de';
+  const entitlementsOf = async (sent: unknown) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { user_id: 'u', entitlements: sent }));
+    return (await api.getMe()).entitlements;
+  };
+
+  it('is the id the server names', async () => {
+    expect(await entitlementsOf({ full_report: true, full_report_chart_id: CHART })).toMatchObject({ full_report: true, full_report_chart_id: CHART });
+  });
+
+  it('is null when the server says null, and stays apart from `full_report`: the flag is not made false by it', async () => {
+    expect(await entitlementsOf({ full_report: true, full_report_chart_id: null })).toMatchObject({ full_report: true, full_report_chart_id: null });
+  });
+
+  it.each([
+    ['left out of the answer', { full_report: true }],
+    ['an empty string', { full_report: true, full_report_chart_id: '' }],
+    ['a number', { full_report: true, full_report_chart_id: 42 }],
+    ['`true`', { full_report: true, full_report_chart_id: true }],
+    ['a list', { full_report: true, full_report_chart_id: [CHART] }],
+  ])('names no chart when the field is %s', async (_what, sent) => {
+    const entitlements = await entitlementsOf(sent);
+    expect(entitlements.full_report_chart_id).toBeNull();
+    // Always there for the screens, as the contract promises of the server.
+    expect(Object.keys(entitlements)).toContain('full_report_chart_id');
+  });
+});
+
 describe('getForecast: the focus under the names the app gives the codes of the contract', () => {
   const CHART = '00000000-0000-4000-8000-00000000c0de';
   const body = { date: '2026-11-10', text: 'Спокойный день.', is_paid: true };

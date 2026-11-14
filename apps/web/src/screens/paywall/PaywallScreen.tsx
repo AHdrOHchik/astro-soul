@@ -60,6 +60,12 @@ export interface PaywallScreenProps {
    * one mistake a paywall can make with the user's money.
    */
   awaiting?: PaywallPlan | null;
+  /**
+   * The chart of that purchase when it is the report: the server confirms a report for the
+   * chart it was bought for, and that need not be the chart this screen sells one for.
+   * Left out, it is this screen's own chart.
+   */
+  awaitingChartId?: string | null;
   /** Telegram called the invoice of this plan paid, or about to be. The caller forgets it once the server grants the plan. */
   onAwaiting?: (plan: PaywallPlan) => void;
   track: Track;
@@ -119,6 +125,7 @@ export function PaywallScreen({
   subscriptions = false,
   reportRequired = false,
   awaiting = null,
+  awaitingChartId = null,
   onAwaiting,
   track,
   back,
@@ -142,8 +149,10 @@ export function PaywallScreen({
   // Opened while a payment is still on its way to the server: the screen starts where that payment left off.
   const [phase, setPhase] = useState<Phase>(awaiting === null ? 'choosing' : 'processing');
   const [problem, setProblem] = useState<Problem | null>(null);
-  /** The plan whose purchase the server is being asked about. */
-  const [awaited, setAwaited] = useState<PaywallPlan | null>(awaiting);
+  /** The purchase the server is being asked about: the plan, and the chart when it is the report of one. */
+  const [awaited, setAwaited] = useState<{ plan: PaywallPlan; chartId: string | null } | null>(
+    awaiting === null ? null : { plan: awaiting, chartId: awaitingChartId ?? reportChartId },
+  );
   // The invoices made on this screen. From the moment there is one, its price is the price, and a second tap opens it again.
   const [invoices, setInvoices] = useState<Partial<Record<PaywallPlan, Invoice>>>({});
   const priceOf = (code: PaywallPlan) => invoices[code]?.stars ?? expectedStars(code);
@@ -158,9 +167,9 @@ export function PaywallScreen({
     };
   }, []);
 
-  /** Asks the server whether the purchase arrived, `attempts` times at most. */
-  const confirm = async (bought: PaywallPlan, attempts: number, signal: AbortSignal) => {
-    setAwaited(bought);
+  /** Asks the server whether the purchase arrived, `attempts` times at most. `chartId` is the chart a report was bought for. */
+  const confirm = async (bought: PaywallPlan, chartId: string | null, attempts: number, signal: AbortSignal) => {
+    setAwaited({ plan: bought, chartId });
     setPhase('confirming');
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       let fresh: Me | null = null;
@@ -172,7 +181,7 @@ export function PaywallScreen({
         // A question that got no answer is a question that confirmed nothing.
       }
       if (signal.aborted) return;
-      if (fresh !== null && grants(fresh, bought)) {
+      if (fresh !== null && grants(fresh, bought, chartId)) {
         // Counted by the app, where the server's answer lands: a payment confirmed from another screen counts the same.
         if (bought === REPORT_PLAN) onReportPaid();
         else setPhase('choosing');
@@ -254,7 +263,7 @@ export function PaywallScreen({
       default:
         // Telegram's word that the invoice is paid, or about to be. It only tells when to ask the server.
         setInvoices((current) => ({ ...current, [plan]: undefined }));
-        await confirm(plan, CONFIRM_ATTEMPTS[outcome], signal);
+        await confirm(plan, plan === REPORT_PLAN ? reportChartId : null, CONFIRM_ATTEMPTS[outcome], signal);
     }
   };
 
@@ -272,7 +281,7 @@ export function PaywallScreen({
           <Button
             onClick={() => {
               const signal = life.current?.signal;
-              if (awaited !== null && signal !== undefined) void confirm(awaited, 1, signal);
+              if (awaited !== null && signal !== undefined) void confirm(awaited.plan, awaited.chartId, 1, signal);
             }}
           >
             {copy.checkAgain}

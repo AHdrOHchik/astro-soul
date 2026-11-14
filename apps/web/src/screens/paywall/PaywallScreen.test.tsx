@@ -372,3 +372,92 @@ describe('PaywallScreen: the chart the report is for is gone', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(copy.invoiceRejected);
   });
 });
+
+describe('PaywallScreen: the report is confirmed for the chart it was paid for (`full_report_chart_id`)', () => {
+  const OTHER_CHART = '00000000-0000-4000-8000-0000000000b0';
+  /** The server's word that a report is bought, and for which chart; null names none. */
+  const boughtFor = (chartId: string | null): Me => ({
+    ...meWithChart,
+    entitlements: { ...meWithChart.entitlements, full_report: true, full_report_chart_id: chartId },
+  });
+
+  it('`full_report: true` for another chart is not this purchase: nothing is unlocked, the payment is «being processed»', async () => {
+    // The user had a report of another chart before paying for this one, and the webhook is late.
+    const { refreshMe, onReportPaid, user } = setup({ me: boughtFor(OTHER_CHART), afterPayment: boughtFor(OTHER_CHART) });
+
+    await user.click(payButton());
+    await screen.findByText(copy.confirmingTitle);
+    await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+
+    expect(await screen.findByText(copy.processingTitle)).toBeInTheDocument();
+    expect(refreshMe).toHaveBeenCalledTimes(2);
+    expect(onReportPaid).not.toHaveBeenCalled();
+  });
+
+  it('nor is `full_report: true` with no chart named', async () => {
+    const { onReportPaid, user } = setup({ afterPayment: boughtFor(null) });
+
+    await user.click(payButton());
+    await screen.findByText(copy.confirmingTitle);
+    await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+
+    expect(await screen.findByText(copy.processingTitle)).toBeInTheDocument();
+    expect(onReportPaid).not.toHaveBeenCalled();
+  });
+
+  it('the server naming this chart is: on to the report', async () => {
+    const { onReportPaid, user } = setup({ me: boughtFor(OTHER_CHART), afterPayment: boughtFor(chart.chart_id) });
+
+    await user.click(payButton());
+    await screen.findByText(copy.confirmingTitle);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+
+    expect(onReportPaid).toHaveBeenCalledTimes(1);
+  });
+
+  it('opened while a payment for another chart is on its way: «Проверить ещё раз» asks about that chart, not about the one on this screen', async () => {
+    // Paid for OTHER_CHART a moment ago; this paywall was opened from the chart of the fixtures.
+    const { refreshMe, onReportPaid, user } = setup({
+      afterPayment: boughtFor(OTHER_CHART),
+      props: { awaiting: 'one_149', awaitingChartId: OTHER_CHART },
+    });
+    expect(screen.getByText(copy.processingTitle)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: copy.checkAgain }));
+
+    await waitFor(() => {
+      expect(onReportPaid).toHaveBeenCalledTimes(1);
+    });
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+  });
+
+  it('and the report this screen could sell is not taken for that payment', async () => {
+    // The server names the chart of this screen, and the payment on its way was for another one.
+    const { onReportPaid, user } = setup({
+      afterPayment: boughtFor(chart.chart_id),
+      props: { awaiting: 'one_149', awaitingChartId: OTHER_CHART },
+    });
+
+    await user.click(screen.getByRole('button', { name: copy.checkAgain }));
+
+    expect(await screen.findByText(copy.processingTitle)).toBeInTheDocument();
+    expect(onReportPaid).not.toHaveBeenCalled();
+  });
+
+  it('a subscription is confirmed by `is_active`, with no chart in the question', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockResolvedValue({ ...reportInvoice, plan_code: 'month_399', stars: 399, is_subscription: true, subscription_period_sec: 2592000 });
+    const { refreshMe, onReportPaid, user } = setup({ api, afterPayment: meSubscribed, props: { subscriptions: true, initialPlan: 'month_399' } });
+
+    await user.click(payButton());
+    await act(() => vi.advanceTimersByTimeAsync(0));
+
+    // Granted at the first question: the screen is the paywall again, with nothing «being processed». The report was not bought.
+    await waitFor(() => {
+      expect(refreshMe).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByRole('heading', { level: 1, name: copy.title })).toBeInTheDocument();
+    expect(screen.queryByText(copy.processingTitle)).not.toBeInTheDocument();
+    expect(onReportPaid).not.toHaveBeenCalled();
+  });
+});

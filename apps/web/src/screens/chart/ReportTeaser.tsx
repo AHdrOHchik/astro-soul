@@ -14,7 +14,11 @@ export interface ReportTeaserProps {
   api: Pick<Api, 'getReport'>;
   /** The chart on screen: a report about another chart is not this chart's report. */
   chartId: string;
-  /** `Me.entitlements.full_report`: the server's word that a full report is paid for. */
+  /**
+   * The server's word that the full report of this very chart is paid for (`hasReportFor`).
+   * Not `Me.entitlements.full_report`: that one is about the user, and stays true on a chart
+   * the user has bought nothing for.
+   */
   fullReport: boolean;
   /** The report the app knows of (`Me.latest_report_id`, or one met in this session); null when there is none. */
   reportId: string | null;
@@ -139,7 +143,7 @@ function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrd
     );
   }
   if (report === null && fullReport) {
-    // Paid for and not ordered yet, as far as the app knows. The server knows for sure: it answers the order.
+    // This chart's report is paid for and not ordered yet, as far as the app knows. The server knows for sure: it answers the order.
     return <Button onClick={onOrder}>{copy.orderReport}</Button>;
   }
   if (paymentPending) {
