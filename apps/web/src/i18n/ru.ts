@@ -515,6 +515,11 @@ export const ru = {
     /** Owner's wording, in two parts: the server has no forecast for today yet. Not a failure and worded as none. */
     pendingTitle: 'Сегодняшний прогноз готовится',
     pendingText: 'Загляни после 08:00',
+    /**
+     * Owner's wording, the second line under it: whose 08:00 that is. The server sends the forecast at
+     * eight by the clock of the birth place, which need not be the clock of the user's phone.
+     */
+    pendingNote: 'Время считается по месту рождения.',
     /** Owner's wording. */
     toChart: 'К карте',
     /** Owner's wording: the request itself failed. */

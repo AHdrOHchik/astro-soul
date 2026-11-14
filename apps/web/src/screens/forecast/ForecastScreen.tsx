@@ -121,7 +121,7 @@ export function ForecastScreen({
     // Not a failure: no alert, no «retry», nothing that counts down. The forecast will be there when the server has written it.
     return (
       <Screen back={back}>
-        <StateView icon={<InfoIcon />} title={copy.pendingTitle} text={copy.pendingText}>
+        <StateView icon={<InfoIcon />} title={copy.pendingTitle} text={copy.pendingText} note={copy.pendingNote}>
           <Button onClick={onClose}>{copy.toChart}</Button>
         </StateView>
       </Screen>
