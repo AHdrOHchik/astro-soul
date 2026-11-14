@@ -387,3 +387,64 @@ describe('ReportScreen: the order', () => {
     expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
   });
 });
+
+describe('ReportScreen: the chart the report is ordered for is gone', () => {
+  /** The answer of apps/api to an order for a chart it does not have (`reports.service.ts`). */
+  const chartGone = () => apiError('NOT_FOUND', { status: 404, serverMessage: 'Такой карты нет. Построй карту заново', requestId: 'req-404' });
+  /** The screen with no report yet: the order is made by the button. */
+  const idle = { reportId: null } satisfies Partial<ReportScreenProps>;
+  const order = () => screen.getByRole('button', { name: copy.order });
+
+  it('404 to the order: the app leads on, and nothing of the server\'s answer is shown', async () => {
+    const api = fakeApi();
+    api.orderReport.mockRejectedValue(chartGone());
+    const onChartGone = vi.fn();
+    const { analytics, onPaymentRequired, user } = setup({ api, props: { ...idle, onChartGone } });
+
+    await user.click(order());
+    await pass(0);
+
+    expect(onChartGone).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Такой карты нет. Построй карту заново')).not.toBeInTheDocument();
+    expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
+    expect(onPaymentRequired).not.toHaveBeenCalled();
+    // Ordered once, never repeated; and nothing failed that the user was shown.
+    expect(api.orderReport).toHaveBeenCalledTimes(1);
+    expect(analytics.names()).toEqual(['report_requested']);
+  });
+
+  it('the same when the order is made as the screen opens, right after a payment', async () => {
+    const api = fakeApi();
+    api.orderReport.mockRejectedValue(chartGone());
+    const onChartGone = vi.fn();
+    setup({ api, props: { reportId: null, orderAtOnce: true, justPaid: true, onChartGone } });
+    await pass(0);
+
+    expect(onChartGone).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.orderReport).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not read into a 404 about the report itself: that one is the report that is gone, not the chart', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(apiError('NOT_FOUND', { status: 404, serverMessage: 'Разбор не найден' }));
+    const onChartGone = vi.fn();
+    const onReportGone = vi.fn();
+    setup({ api, props: { onChartGone, onReportGone } });
+    await pass(0);
+
+    expect(onReportGone).toHaveBeenCalledWith(REPORT_ID);
+    expect(onChartGone).not.toHaveBeenCalled();
+  });
+
+  it('is shown like any failure where nobody takes it from the screen', async () => {
+    const api = fakeApi();
+    api.orderReport.mockRejectedValue(chartGone());
+    const { analytics, user } = setup({ api, props: idle });
+
+    await user.click(order());
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'report', code: '404' } });
+  });
+});

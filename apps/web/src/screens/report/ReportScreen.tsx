@@ -60,6 +60,8 @@ export interface ReportScreenProps {
   onReport?: (report: Report) => void;
   /** The report the app knew of is no longer on the server (404): the app forgets it. */
   onReportGone?: (reportId: string) => void;
+  /** The server has no such chart to make a report about (404 to the order): the app leads on, nothing is shown here. */
+  onChartGone?: () => void;
 }
 
 /**
@@ -85,9 +87,23 @@ export function ReportScreen({
   onReportId,
   onReport,
   onReportGone,
+  onChartGone,
 }: ReportScreenProps) {
   const titleId = useId();
-  const flow = useReport({ api, keys, chartId, reportId, orderAtOnce, justPaid, track, onPaymentRequired, onReportId, onReport, onReportGone });
+  const flow = useReport({
+    api,
+    keys,
+    chartId,
+    reportId,
+    orderAtOnce,
+    justPaid,
+    track,
+    onPaymentRequired,
+    onReportId,
+    onReport,
+    onReportGone,
+    onChartGone,
+  });
   const { view } = flow;
   const report = view.kind === 'report' ? view.report : null;
 

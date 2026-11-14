@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../../analytics';
 import {
   failureCodeOf,
+  fieldErrorsOf,
   isAbortError,
   isApiError,
   rejectionTextOf,
@@ -70,6 +71,12 @@ export interface PaywallScreenProps {
   onOpenReport?: () => void;
   /** Leaves the paywall for where the user came from. */
   onClose: () => void;
+  /**
+   * The server refused the invoice because the chart the report is for is not the user's
+   * (`chart_id` among the rejected fields): it went with the user's data. The caller leads
+   * on from there; without this prop the refusal is shown like any other.
+   */
+  onChartGone?: () => void;
 }
 
 /**
@@ -119,6 +126,7 @@ export function PaywallScreen({
   onReportPaid,
   onOpenReport,
   onClose,
+  onChartGone,
 }: PaywallScreenProps) {
   const titleId = useId();
   const groupName = useId();
@@ -189,13 +197,18 @@ export function PaywallScreen({
     let invoice = invoices[plan];
     if (invoice === undefined) {
       setPhase('invoicing');
+      // The report is bought for one chart, named here: the server does not guess which.
+      const forChart = plan === REPORT_PLAN && reportChartId !== null ? { chart_id: reportChartId } : null;
       try {
-        // The report is bought for one chart, named here: the server does not guess which.
-        const forChart = plan === REPORT_PLAN && reportChartId !== null ? { chart_id: reportChartId } : {};
         invoice = await api.createInvoice({ plan_code: plan, ...forChart }, signal);
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
         setPhase('choosing');
+        if (onChartGone && forChart !== null && fieldErrorsOf(error).some(({ field }) => field === 'chart_id')) {
+          // The chart the report was to be bought for is not the user's any more. Nothing to show of it: the app leads on.
+          onChartGone();
+          return;
+        }
         setProblem(problemOf(error));
         track('error_shown', { screen: 'paywall', code: failureCodeOf(error) });
         return;

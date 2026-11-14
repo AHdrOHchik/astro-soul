@@ -310,3 +310,57 @@ describe('PaywallScreen: a build that sells no subscriptions (`subscriptions: fa
     for (const code of subscriptionPlans) expect(option(copy.plans[code].title)).toBeInTheDocument();
   });
 });
+
+describe('PaywallScreen: the chart the report is for is gone', () => {
+  /** The answer of apps/api to an invoice for a chart that is not the user's (`billing.service.ts`). */
+  const chartRejected = () => rejection({ field: 'chart_id', message: 'Карта не найдена' });
+
+  it('leaves the screen to the app: no failure is shown, and not a word of the server\'s', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(chartRejected());
+    const onChartGone = vi.fn();
+    const { analytics, telegram, user } = setup({ api, props: { onChartGone } });
+    analytics.clear();
+
+    await user.click(payButton());
+    await waitFor(() => {
+      expect(onChartGone).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Карта не найдена')).not.toBeInTheDocument();
+    expect(telegram.openInvoice).not.toHaveBeenCalled();
+    expect(analytics.names()).not.toContain('error_shown');
+  });
+
+  it('is told from any other refusal by the field the server names', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(rejection({ field: 'plan_code', message: 'plan_code — один из тарифов каталога' }));
+    const onChartGone = vi.fn();
+    const { user } = setup({ api, props: { onChartGone } });
+
+    await user.click(payButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.invoiceRejected);
+    expect(onChartGone).not.toHaveBeenCalled();
+  });
+
+  it('is not read into the refusal of a subscription: that invoice names no chart', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(chartRejected());
+    const onChartGone = vi.fn();
+    const { user } = setup({ api, props: { onChartGone, initialPlan: 'month_399' } });
+
+    await user.click(payButton());
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'month_399' }, expect.any(AbortSignal));
+    expect(onChartGone).not.toHaveBeenCalled();
+  });
+
+  it('is shown like any refusal where nobody takes it from the screen', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(chartRejected());
+    const { user } = setup({ api });
+
+    await user.click(payButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.invoiceRejected);
+  });
+});
