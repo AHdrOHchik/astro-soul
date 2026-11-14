@@ -4,11 +4,14 @@
  * otherwise break it without a word: the consent version it accepts, its answer to a
  * batch of events, and the PNG it writes out byte by byte.
  */
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { crc32, inflateSync } from 'node:zlib';
+import type { Connect } from 'vite';
 import { describe, expect, it } from 'vitest';
 import { askOutcome, buildForecast, FORECAST_SCENARIOS, localDay } from '../mock/engagement.ts';
-import { MOCK_CONSENT_VERSION } from '../mock/fixtures.ts';
-import { eventsAnswer } from '../mock/plugin.ts';
+import { MOCK_CONSENT_VERSION, RETURNING_INPUT } from '../mock/fixtures.ts';
+import { eventsAnswer, mockApi } from '../mock/plugin.ts';
 import { renderMockWheelPng } from '../mock/wheelPng.ts';
 import { CONSENT_VERSION } from '../src/i18n/ru.ts';
 
@@ -182,5 +185,133 @@ describe('mock API: the forecast and the questions, by the rules of apps/api', (
     ])('starting with «%s» asks for a failure worth seeing (%s), whatever the quota', (word, scenario) => {
       expect(ask(`${word} и что будет?`, none)).toEqual({ kind: 'scenario', chartId: CHART, scenario });
     });
+  });
+});
+
+/**
+ * The mock as the dev server runs it: the plugin's middleware behind a real HTTP server,
+ * asked over HTTP the way the app asks. What the mock remembers between two requests is
+ * seen only this way.
+ */
+async function serveMock(me: string) {
+  const handlers: Connect.NextHandleFunction[] = [];
+  const { configureServer } = mockApi({ delayMs: 0, me });
+  if (typeof configureServer !== 'function') throw new Error('the mock is expected to hook into the dev server with a function');
+  // All the plugin asks of a dev server is a place for its middleware.
+  const devServer = {
+    middlewares: {
+      use(handler: Connect.NextHandleFunction) {
+        handlers.push(handler);
+      },
+    },
+  };
+  await (configureServer as unknown as (server: typeof devServer) => unknown)(devServer);
+  const [middleware] = handlers;
+  if (middleware === undefined) throw new Error('the mock registered no middleware');
+
+  const server = createServer((req, res) => {
+    middleware(req, res, () => {
+      res.statusCode = 404;
+      res.end();
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = server.address() as AddressInfo;
+
+  return {
+    async request(method: string, path: string, body?: unknown) {
+      const response = await fetch(`http://127.0.0.1:${String(port)}/api/v1${path}`, {
+        method,
+        headers: { 'X-Telegram-Init-Data': 'mock-init-data', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const text = await response.text();
+      return { status: response.status, body: text === '' ? undefined : (JSON.parse(text) as unknown) };
+    },
+    close() {
+      return new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+        // The connections `fetch` keeps open would hold the server for seconds.
+        server.closeAllConnections();
+      });
+    },
+  };
+}
+
+describe('mock API: deleting the data, as contract 1.5.5 has it', () => {
+  it('takes the subscription, the purchase and the chart with the data: whoever asks next is a new user', async () => {
+    const mock = await serveMock('subscriber,paid');
+    try {
+      expect((await mock.request('GET', '/me')).body).toMatchObject({
+        has_chart: true,
+        subscription: { plan: 'month', is_active: true },
+        entitlements: { is_active: true, full_forecast: true, full_report: true },
+      });
+
+      expect((await mock.request('DELETE', '/me')).status).toBe(204);
+
+      // Not «the subscription lives on to the end of its period», as before 1.5.5: nothing bought outlives the data.
+      expect((await mock.request('GET', '/me')).body).toMatchObject({
+        is_new: true,
+        has_chart: false,
+        chart_id: null,
+        latest_report_id: null,
+        subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
+        entitlements: { is_active: false, plan: 'none', full_forecast: false, full_report: false, ask_per_day: 1 },
+      });
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('the forecast of the night goes with the chart: the same birth data entered again are a new chart, with none yet', async () => {
+    const mock = await serveMock('subscriber');
+    try {
+      const { chart_id: chartId } = (await mock.request('GET', '/me')).body as { chart_id: string };
+      const forecast = `/engagement/forecast?chart_id=${chartId}`;
+      expect(await mock.request('GET', forecast)).toMatchObject({ status: 200, body: { is_paid: true } });
+
+      await mock.request('DELETE', '/me');
+      expect((await mock.request('GET', forecast)).status).toBe(404);
+
+      const rebuilt = await mock.request('POST', '/charts', RETURNING_INPUT);
+      // 201, not the 200 of a chart that was already there: the old one is gone.
+      expect(rebuilt.status).toBe(201);
+      const { chart_id: rebuiltId } = (rebuilt.body as { chart: { chart_id: string } }).chart;
+      // Neither the full forecast of the subscriber who is gone nor a short one: the first night is still ahead.
+      expect((await mock.request('GET', `/engagement/forecast?chart_id=${rebuiltId}`)).status).toBe(404);
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('an invoice made before the deletion is void after it: a payment that arrives late buys nothing', async () => {
+    const mock = await serveMock('returning');
+    const subscribed = async () => ((await mock.request('GET', '/me')).body as { subscription: { is_active: boolean } }).subscription.is_active;
+    /** What Telegram's webhook does on the real server. The mock applies it on a timer, so the answer is asked for after a pause. */
+    const pay = async (link: string) => {
+      expect((await mock.request('POST', '/__mock/payments', { invoice_link: link })).status).toBe(204);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    };
+    try {
+      const invoice = await mock.request('POST', '/billing/invoice', { plan_code: 'month_399' });
+      expect(invoice.status).toBe(201);
+      const { invoice_link: link } = invoice.body as { invoice_link: string };
+
+      // The payment itself works: without a deletion in between it is a subscription.
+      await pay(link);
+      expect(await subscribed()).toBe(true);
+
+      await mock.request('DELETE', '/me');
+      expect(await subscribed()).toBe(false);
+      await pay(link);
+      expect(await subscribed()).toBe(false);
+    } finally {
+      await mock.close();
+    }
   });
 });

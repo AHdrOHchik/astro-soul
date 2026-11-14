@@ -348,9 +348,10 @@ function createHandler({
    * chart the user came with, full or short by the subscription of that hour. A chart built
    * during the run has none (its first night is still ahead), and a subscription bought
    * during the run does not make today's forecast any longer: the server writes the text
-   * once, at night, and afterwards only reads it.
+   * once, at night, and afterwards only reads it. Deleting the data deletes the forecast
+   * too: the same birth data entered again are a new chart, with its first night ahead.
    */
-  const night: { key: string; paid: boolean } | null = current ? { key: current.key, paid: subscription !== null } : null;
+  let night: { key: string; paid: boolean } | null = current ? { key: current.key, paid: subscription !== null } : null;
   /** The day's questions: how many are asked, and the local day they were asked on. */
   let asked = { day: '', used: who.includes('subscriber') ? SUBSCRIBER_ASKED : 0 };
 
@@ -529,10 +530,15 @@ function createHandler({
       } else if (deletionScenario === '500') {
         sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
       } else {
-        // Everything about the user goes; the subscription lives on to the end of its period, as on the server.
+        // Everything about the user goes, and what was bought goes with it: since contract 1.5.5 the server
+        // cancels the subscription and takes the purchases back in the same step, and whoever comes next is
+        // a new user. The invoices made before are void as well: a payment of one that arrives late buys nothing.
         current = null;
+        night = null;
         asked = { day: '', used: 0 };
+        subscription = null;
         paidCharts.clear();
+        invoices.clear();
         reports.clear();
         reportKeys.clear();
         latestReportId = null;
