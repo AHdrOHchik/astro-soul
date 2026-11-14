@@ -285,3 +285,47 @@ describe('SettingsScreen', () => {
     });
   });
 });
+
+describe('SettingsScreen: a build that sells no subscriptions (no `onSubscribe`)', () => {
+  function setupWithoutOffer(me: Me) {
+    const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockResolvedValue(me);
+    return render(
+      <SettingsScreen
+        api={fakeApi()}
+        telegram={fakeTelegram()}
+        refreshMe={refreshMe}
+        supportLink=""
+        track={vi.fn()}
+        onOpenDocument={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+  }
+
+  it('has no button to subscribe with; that there is no subscription is still said', async () => {
+    setupWithoutOffer(meWithChart);
+
+    expect(await screen.findByText(copy.subscription.none)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.subscription.subscribe })).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.subscription.subscribe)).not.toBeInTheDocument();
+    // The rest of the screen is as ever.
+    expect(screen.getByRole('button', { name: copy.deletion.open })).toBeEnabled();
+  });
+
+  it('offers nothing after a subscription that has ended either', async () => {
+    const ended: Me = { ...meSubscribed, subscription: { ...meSubscribed.subscription, is_active: false } };
+    setupWithoutOffer(ended);
+
+    expect(await screen.findByText(copy.subscription.ended)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.subscription.subscribe })).not.toBeInTheDocument();
+  });
+
+  it('shows a subscription the user has in full: the plan, until when, and how to cancel it', async () => {
+    setupWithoutOffer(meSubscribed);
+
+    await screen.findByText(copy.subscription.names.month);
+    const subscription = section(copy.subscription.title);
+    expect(subscription.getByText(new RegExp(`^Действует до \\d+ декабря 2026 г\\. ${copy.subscription.renews}$`))).toBeInTheDocument();
+    expect(subscription.getByRole('link', { name: copy.subscription.openTelegram })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
+  });
+});

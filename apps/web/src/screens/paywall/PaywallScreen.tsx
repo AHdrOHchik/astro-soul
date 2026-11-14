@@ -45,6 +45,12 @@ export interface PaywallScreenProps {
   reportChartId: string | null;
   /** The plan chosen before the screen opened, e.g. by the button under the teaser. */
   initialPlan: PaywallPlan | null;
+  /**
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does unless told otherwise.
+   * With `false` the screen sells the full report alone: the plans are not in the list, and
+   * nothing on the screen speaks of a subscription the user could buy.
+   */
+  subscriptions?: boolean;
   /** The server refused to order a report and sent the user here: the screen says why it opened. */
   reportRequired?: boolean;
   /**
@@ -103,6 +109,7 @@ export function PaywallScreen({
   refreshMe,
   reportChartId,
   initialPlan,
+  subscriptions = true,
   reportRequired = false,
   awaiting = null,
   onAwaiting,
@@ -116,9 +123,12 @@ export function PaywallScreen({
   const titleId = useId();
   const groupName = useId();
   const subscribed = me.entitlements.is_active;
-  // A subscription is not sold to a subscriber; the report is sold where there is a chart to buy it for.
+  // The report is sold where there is a chart to buy it for. A subscription is not sold to a
+  // subscriber, and not at all by a build that has them switched off: then the plans are not
+  // made into options in the first place, so there is nothing to hide.
   const report: PaywallPlan[] = reportChartId === null ? [] : [REPORT_PLAN];
-  const offered: PaywallPlan[] = subscribed ? report : [...report, ...SUBSCRIPTION_PLANS];
+  const sellsSubscriptions = subscriptions && !subscribed;
+  const offered: PaywallPlan[] = sellsSubscriptions ? [...report, ...SUBSCRIPTION_PLANS] : report;
   const [chosen, setChosen] = useState<PaywallPlan | null>(initialPlan);
   const plan = chosen !== null && offered.includes(chosen) ? chosen : null;
   // Opened while a payment is still on its way to the server: the screen starts where that payment left off.
@@ -265,10 +275,10 @@ export function PaywallScreen({
   const until = me.subscription.expires_at === null ? '' : formatDay(me.subscription.expires_at);
   const activeLine = until === '' ? copy.active : copy.activeUntil(until);
   if (offered.length === 0) {
-    // Nothing to sell: the subscription is active and there is no report to buy here.
+    // Nothing to sell: there is no report to buy here, and the subscription is active, or this build sells none.
     return (
       <Screen back={back}>
-        <StateView icon={<StarsIcon />} title={activeLine}>
+        <StateView icon={<StarsIcon />} title={subscribed ? activeLine : copy.nothingOnSale}>
           {onOpenReport ? (
             <Button onClick={onOpenReport}>{ru.chart.openReport}</Button>
           ) : (
@@ -329,7 +339,7 @@ export function PaywallScreen({
             />
           ))}
         </fieldset>
-        {offersReport && !subscribed && <p className={styles.note}>{copy.reportIsSeparate}</p>}
+        {offersReport && sellsSubscriptions && <p className={styles.note}>{copy.reportIsSeparate}</p>}
         {plan !== null && plan !== REPORT_PLAN && <p className={styles.note}>{copy.renewal}</p>}
         <Button variant="ghost" onClick={onOpenTerms}>
           {copy.terms}

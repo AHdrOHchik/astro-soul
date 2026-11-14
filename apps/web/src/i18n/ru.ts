@@ -448,6 +448,8 @@ export const ru = {
     checkAgain: 'Проверить ещё раз',
     /** Leaves the paywall for the screen it was opened from. */
     leave: 'Вернуться',
+    /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. */
+    nothingOnSale: 'Сейчас здесь нечего оплачивать',
   },
 
   /** Screen 6. */

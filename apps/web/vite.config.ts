@@ -3,6 +3,7 @@ import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { mockApi } from './mock/plugin.ts';
 import { botUsernameOf } from './src/lib/share.ts';
+import { SUBSCRIPTION_MODES, subscriptionsModeOf } from './src/lib/subscriptions.ts';
 import { supportLinkOf } from './src/lib/support.ts';
 
 /*
@@ -32,6 +33,25 @@ export default defineConfig(({ mode, command }) => {
     throw new Error(`VITE_SUPPORT_CONTACT is neither a Telegram username nor an https link: «${env.VITE_SUPPORT_CONTACT}».`);
   }
 
+  // What is sold must never depend on a typo: `VITE_SUBSCRIPTIONS=of` read as «enabled» would sell what the owner switched off.
+  const subscriptions = subscriptionsModeOf(env.VITE_SUBSCRIPTIONS);
+  if (subscriptions === null) {
+    throw new Error(`VITE_SUBSCRIPTIONS is «${env.VITE_SUBSCRIPTIONS ?? ''}». Expected ${SUBSCRIPTION_MODES.join(' or ')}, or nothing (the same as enabled).`);
+  }
+
+  // Nothing in the repository sets these for a release: they come from the environment of whoever builds.
+  // A forgotten one is not an error (the app works without it), so the build says in plain words what it was given.
+  if (command === 'build') {
+    const support = supportLinkOf(env.VITE_SUPPORT_CONTACT);
+    const bot = botUsernameOf(env.VITE_BOT_USERNAME);
+    const lines = [
+      `subscriptions: ${subscriptions === 'off' ? 'not sold (VITE_SUBSCRIPTIONS=off)' : 'ON SALE'}`,
+      `support: ${support === '' ? 'NOT SET, the button is disabled (VITE_SUPPORT_CONTACT)' : support}`,
+      `bot: ${bot === '' ? 'NOT SET, a shared chart carries no link (VITE_BOT_USERNAME)' : `@${bot}`}`,
+    ];
+    process.stdout.write(`${lines.map((line) => `[web build] ${line}`).join('\n')}\n`);
+  }
+
   return {
     plugins: [
       react(),
@@ -45,6 +65,7 @@ export default defineConfig(({ mode, command }) => {
           reportChapterMs: env.API_MOCK_REPORT_CHAPTER_MS ? Number(env.API_MOCK_REPORT_CHAPTER_MS) : undefined,
           invoice: env.API_MOCK_INVOICE,
           deletion: env.API_MOCK_DELETE,
+          forecast: env.API_MOCK_FORECAST,
           pdf: env.API_MOCK_PDF === '1',
         }),
     ],
