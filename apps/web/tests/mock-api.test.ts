@@ -18,17 +18,21 @@ describe('mock API', () => {
 
   it('answers a batch of events the way the contract says: takes, refuses whole, or drops in silence', () => {
     const NOW = Date.parse('2026-11-10T12:00:00.000Z');
-    const at = new Date(NOW).toISOString();
+    const occurred_at = new Date(NOW).toISOString();
     const answer = (events: unknown) => eventsAnswer({ events }, NOW);
 
-    expect(answer([{ name: 'app_open', at }, { name: 'screen_view', at, props: { step: 'welcome' } }])).toEqual({ accepted: 2 });
+    expect(answer([{ name: 'app_open', occurred_at }, { name: 'screen_view', occurred_at, props: { step: 'welcome' } }])).toEqual({ accepted: 2 });
     // One event the contract does not have: the whole batch is refused.
-    expect(answer([{ name: 'app_open', at }, { name: 'app_closed', at }])).toEqual({
+    expect(answer([{ name: 'app_open', occurred_at }, { name: 'app_closed', occurred_at }])).toEqual({
       errors: [{ field: 'events.name', message: expect.any(String) as string }],
+    });
+    // The time under its old name, `at`: not the contract's field any more.
+    expect(answer([{ name: 'app_open', at: occurred_at }])).toEqual({
+      errors: [{ field: 'events.occurred_at', message: expect.any(String) as string }],
     });
     expect(answer([])).toHaveProperty('errors');
     // Props named like personal data: the event is dropped, the batch is not an error.
-    expect(answer([{ name: 'app_open', at }, { name: 'place_search', at, props: { query: 'x' } }])).toEqual({ accepted: 1 });
+    expect(answer([{ name: 'app_open', occurred_at }, { name: 'place_search', occurred_at, props: { query: 'x' } }])).toEqual({ accepted: 1 });
   });
 
   it('writes a PNG a viewer can open: signature, intact chunks, as many pixels as the header says', () => {

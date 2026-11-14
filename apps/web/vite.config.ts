@@ -3,6 +3,7 @@ import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { mockApi } from './mock/plugin.ts';
 import { botUsernameOf } from './src/lib/share.ts';
+import { supportLinkOf } from './src/lib/support.ts';
 
 /*
  * Oldest engines we promise to run on: iOS 15 (Safari 15) and the Chromium 80
@@ -26,6 +27,10 @@ export default defineConfig(({ mode, command }) => {
   if (env.VITE_BOT_USERNAME && botUsernameOf(env.VITE_BOT_USERNAME) === '') {
     throw new Error(`VITE_BOT_USERNAME is not a Telegram username: «${env.VITE_BOT_USERNAME}». Expected the bot's username, with or without @.`);
   }
+  // The same for the support contact: a value the app cannot turn into a link would leave «Написать в поддержку» disabled without a word.
+  if (env.VITE_SUPPORT_CONTACT && supportLinkOf(env.VITE_SUPPORT_CONTACT) === '') {
+    throw new Error(`VITE_SUPPORT_CONTACT is neither a Telegram username nor an https link: «${env.VITE_SUPPORT_CONTACT}».`);
+  }
 
   return {
     plugins: [
@@ -36,6 +41,11 @@ export default defineConfig(({ mode, command }) => {
           me: env.API_MOCK_ME,
           // Empty is the same as absent: the version of the app's own texts.
           consentVersion: env.API_MOCK_CONSENT_VERSION || undefined,
+          report: env.API_MOCK_REPORT,
+          reportChapterMs: env.API_MOCK_REPORT_CHAPTER_MS ? Number(env.API_MOCK_REPORT_CHAPTER_MS) : undefined,
+          invoice: env.API_MOCK_INVOICE,
+          deletion: env.API_MOCK_DELETE,
+          pdf: env.API_MOCK_PDF === '1',
         }),
     ],
     // @astro-soul/shared is built to CommonJS. The dev server serves workspace packages as they are,
