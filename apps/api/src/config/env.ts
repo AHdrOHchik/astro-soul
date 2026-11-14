@@ -92,6 +92,44 @@ const envSchema = z.object({
     z.string().min(2).max(64).optional(),
   ),
 
+  /**
+   * GigaChat: ключ авторизации (Basic) и параметры OAuth. Статического
+   * access_token нет: он живёт 30 минут и берётся по ключу.
+   */
+  GIGACHAT_AUTH_KEY: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(8).optional()),
+  GIGACHAT_OAUTH_URL: z.string().url().default('https://ngw.devices.sberbank.ru:9443/api/v2/oauth'),
+  GIGACHAT_BASE_URL: z.string().url().default('https://gigachat.devices.sberbank.ru/api/v1'),
+  GIGACHAT_SCOPE: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(2).optional()),
+  /**
+   * Путь к CA-бандлу НУЦ Минцифры. TLS-проверка не отключается никогда:
+   * нет файла — сервис не ходит в провайдера и пишет, что именно проверить.
+   */
+  GIGACHAT_CA_BUNDLE: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional()),
+
+  /** Модель разбора. Версия входит в имя: она же пишется в `reports.model`. */
+  LLM_MODEL: z.string().min(2).default('GigaChat-3-Ultra'),
+  LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.7),
+  LLM_MAX_TOKENS: z.coerce.number().int().min(64).max(4096).default(1400),
+  /** Время на один вызов провайдера: разбор не должен висеть минутами. */
+  LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(60_000),
+  /**
+   * Цена в рублях за 1000 токенов (вход и выход по одной цене — так в блоке
+   * владельца). Значение — бизнесовое, поэтому задаётся окружением.
+   */
+  LLM_PRICE_PER_1K_RUB: z.coerce.number().min(0).default(0.5),
+  /** Потолок расходов на LLM в месяц, рубли. */
+  LLM_MONTHLY_CAP_RUB: z.coerce.number().min(0).default(1000),
+  /**
+   * Потолок на один разбор в рублях. Не задан — действует только месячный:
+   * отдельного значения владелец не давал, придумывать его нельзя.
+   */
+  LLM_REPORT_CAP_RUB: z.coerce.number().min(0).optional(),
+  /**
+   * Подставной провайдер вместо GigaChat: включается сам, когда ключей нет,
+   * и честно пишется в логах и в ответе. Нужен для разработки и тестов.
+   */
+  LLM_FAKE: z.preprocess((value) => (value === '' ? undefined : value), z.enum(['0', '1']).optional()),
+
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
 });
 

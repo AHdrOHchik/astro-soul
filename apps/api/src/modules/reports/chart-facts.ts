@@ -49,8 +49,8 @@ const ASPECT_NAMES: Readonly<Record<string, string>> = {
  * `26°17'` — градусы без ведущего нуля (как в задании: `4°02'`), минуты двумя
  * цифрами. Пробелов нет: строка остаётся одной лексемой для модели.
  */
-function degrees(degree: number, minute: number): string {
-  return `${degree}°${String(minute).padStart(2, '0')}'`;
+function degrees(degree: number | undefined, minute: number | undefined): string {
+  return `${degree ?? 0}°${String(minute ?? 0).padStart(2, '0')}'`;
 }
 
 /** Предложный падеж знаков — для подписей вида «Солнце в Тельце». */
@@ -69,8 +69,8 @@ const SIGN_PREPOSITIONAL: Readonly<Record<string, string>> = {
   Рыбы: 'Рыбах',
 };
 
-function position(sign: string, degree: number, minute: number): string {
-  return `${sign} ${degrees(degree, minute)}`;
+function position(sign: string | undefined, degree: number | undefined, minute: number | undefined): string {
+  return `${sign ?? ''} ${degrees(degree, minute)}`;
 }
 
 function strength(value: number | undefined): string {
@@ -87,7 +87,9 @@ function share(value: number | undefined): string {
 
 /** Планеты в фиксированном порядке: незнакомые ключи в текст не попадают. */
 function planetsBlock(chart: Chart): string[] {
-  const byKey = new Map(chart.planets.map((planet) => [planet.key, planet] as const));
+  const byKey = new Map<string, Chart['planets'][number]>(
+    chart.planets.map((planet) => [planet.key as string, planet]),
+  );
   const lines: string[] = [];
 
   for (const key of PLANET_ORDER) {
@@ -106,15 +108,17 @@ function planetsBlock(chart: Chart): string[] {
 }
 
 function housesBlock(chart: Chart): string {
-  const houses = [...(chart.houses ?? [])].sort((left, right) => left.house - right.house);
+  const houses = [...(chart.houses ?? [])].sort((left, right) => (left.house ?? 0) - (right.house ?? 0));
   return houses
-    .map((house) => `${house.house} ${position(house.sign, house.degree, 0)}`)
+    .map((house) => `${house.house ?? 0} ${position(house.sign, house.degree, 0)}`)
     .join(' | ');
 }
 
 function aspectsBlock(chart: Chart): string {
-  const known = new Set(chart.planets.map((planet) => planet.key));
-  const nameOf = new Map(chart.planets.map((planet) => [planet.key, planet.name] as const));
+  const known = new Set<string>(chart.planets.map((planet) => planet.key as string));
+  const nameOf = new Map<string, string>(
+    chart.planets.map((planet) => [planet.key as string, planet.name ?? '']),
+  );
 
   const sorted = [...chart.aspects]
     .filter((aspect) => known.has(aspect.a) && known.has(aspect.b))
@@ -195,12 +199,14 @@ export function serializeChartFacts(chart: Chart): string {
 export function chartFactLabels(chart: Chart): string[] {
   const labels = chart.planets.map((planet) => {
     const house = planet.house === null || planet.house === undefined ? '' : `, ${planet.house}-й дом`;
-    const sign = SIGN_PREPOSITIONAL[planet.sign] ?? planet.sign;
+    const planetSign = planet.sign ?? '';
+    const sign = SIGN_PREPOSITIONAL[planetSign] ?? planetSign;
     return `${planet.name} в ${sign}${house}`;
   });
 
   if (chart.asc !== null && chart.asc !== undefined) {
-    labels.push(`Асцендент в ${SIGN_PREPOSITIONAL[chart.asc.sign] ?? chart.asc.sign}`);
+    const sign = chart.asc.sign ?? '';
+    labels.push(`Асцендент в ${SIGN_PREPOSITIONAL[sign] ?? sign}`);
   }
 
   return labels;
