@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countryName, formatCount, formatDate, formatPosition, formatRegion, pluralForm } from './format';
+import { countryName, formatCount, formatDate, formatDayMonth, formatPosition, formatRegion, pluralForm } from './format';
 
 describe('formatDate', () => {
   it('prints an ISO date in Russian without shifting the day', () => {
@@ -52,5 +52,18 @@ describe('pluralForm', () => {
     expect([2, 4, 23].map(pluralForm)).toEqual(['few', 'few', 'few']);
     expect([0, 5, 11, 14, 149, 399, 2990].map(pluralForm)).toEqual(['many', 'many', 'many', 'many', 'many', 'many', 'many']);
     expect(pluralForm(1.5)).toBe('other');
+  });
+});
+
+describe('formatDayMonth', () => {
+  it('prints the day and the month of an ISO date, without the year and without shifting the day', () => {
+    expect(formatDayMonth('2026-11-14')).toBe('14 ноября');
+    expect(formatDayMonth('2026-01-01')).toBe('1 января');
+    expect(formatDayMonth('2026-12-31')).toBe('31 декабря');
+  });
+
+  it('returns anything else as is', () => {
+    expect(formatDayMonth('14.11.2026')).toBe('14.11.2026');
+    expect(formatDayMonth('')).toBe('');
   });
 });

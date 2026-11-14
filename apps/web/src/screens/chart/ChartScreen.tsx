@@ -26,6 +26,7 @@ import {
   type ChartCreateRequest,
   type ChartResult,
   type FieldError,
+  type Forecast,
   type Report,
 } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
@@ -34,6 +35,8 @@ import { formatDate, formatPosition } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import { botShareLink } from '../../lib/share';
 import type { Telegram } from '../../telegram';
+import { ForecastCard } from '../forecast/ForecastCard';
+import type { KnownForecast } from '../forecast/useForecast';
 import styles from './ChartScreen.module.css';
 import { PointCard } from './PointCard';
 import { ReportTeaser } from './ReportTeaser';
@@ -42,11 +45,26 @@ import { Wheel } from './Wheel';
 const copy = ru.chart;
 const SKELETON_CARDS = [0, 1, 2];
 
-/** The chart on screen, as the screens that follow it need it: what a purchase and a report are about. */
+/** The chart on screen, as the screens that follow it need it: what a purchase, a report, a forecast and a question are about. */
 export interface OpenChart {
   chartId: string;
   /** What the share button sends: the picture and the words. Null when there is no picture to send. */
   share: { url: string; text: string } | null;
+}
+
+/** The forecast on the chart screen: the card above the chart, and where its tap leads. */
+export interface ChartForecastProps {
+  /** What the app last heard about a forecast, when it has: shown at once while the server is asked again. */
+  known?: KnownForecast | null;
+  /** The server's fresh word about the forecast of a chart. Keep the reference stable: a new function is a new request. */
+  onKnown?: (chartId: string, forecast: Forecast | null) => void;
+  /** The current moment; the device clock unless a test pins it. */
+  now?: () => Date;
+  /**
+   * The tap on the card: on to the forecast screen. `timeZone` is the IANA zone of the
+   * birth place, where the server counts the days of a forecast; null when the chart names none.
+   */
+  onOpen: (chart: OpenChart, timeZone: string | null) => void;
 }
 
 /** The full report on the chart screen: what the server says the user has, and where the buttons lead. */
@@ -74,7 +92,7 @@ export interface ChartReportProps {
 }
 
 export interface ChartScreenProps {
-  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getReport'>;
+  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getReport' | 'getForecast'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
@@ -113,6 +131,8 @@ export interface ChartScreenProps {
   scroll?: { current: number };
   /** The full report: the block under the cards. */
   report: ChartReportProps;
+  /** The forecast: the card above the chart. Without it the screen shows none and asks for none. */
+  forecast?: ChartForecastProps;
   onOpenSettings: () => void;
 }
 
@@ -135,6 +155,7 @@ export function ChartScreen({
   onLoaded,
   scroll,
   report,
+  forecast,
   onOpenSettings,
 }: ChartScreenProps) {
   const titleId = useId();
@@ -231,6 +252,7 @@ export function ChartScreen({
             telegram={telegram}
             track={track}
             report={report}
+            forecast={forecast}
             editLabel={editLabel}
             // After the form the way back to it is the back button; a chart opened at the start has only this one.
             offersEdit={request === null}
@@ -280,13 +302,14 @@ function ChartSkeleton() {
 }
 
 interface ChartViewProps {
-  api: Pick<Api, 'getReport'>;
+  api: Pick<Api, 'getReport' | 'getForecast'>;
   result: ChartResult;
   apiBaseUrl: string;
   botUsername: string;
   telegram: Pick<Telegram, 'share'>;
   track: Track;
   report: ChartReportProps;
+  forecast?: ChartForecastProps;
   editLabel: string;
   /** Whether the chart itself offers the way to the birth data, under everything else. */
   offersEdit: boolean;
@@ -302,6 +325,7 @@ function ChartView({
   telegram,
   track,
   report,
+  forecast,
   editLabel,
   offersEdit,
   onRetry,
@@ -320,6 +344,7 @@ function ChartView({
   const share = shareUrl === null ? null : { url: shareUrl, text: botLink === null ? copy.shareText : `${copy.shareText}\n${botLink}` };
   // What is shared is the picture, from the same server under the same signature: no point in sending one that does not open here.
   const open: OpenChart = { chartId: chart.chart_id, share: wheelFailed ? null : share };
+  const timeZone = chart.birth.place?.tz ?? null;
   const sun = chart.planets.find((planet) => planet.key === 'sun');
   const moon = chart.planets.find((planet) => planet.key === 'moon');
   const timeKnown = hasBirthTime(chart);
@@ -340,6 +365,21 @@ function ChartView({
 
   return (
     <>
+      {/* Above the chart, in one line: the chart stays the first thing on its own screen. */}
+      {forecast && (
+        <ForecastCard
+          api={api}
+          chartId={chart.chart_id}
+          timeZone={timeZone}
+          known={forecast.known}
+          onKnown={forecast.onKnown}
+          now={forecast.now}
+          onOpen={() => {
+            forecast.onOpen(open, timeZone);
+          }}
+        />
+      )}
+
       {wheelUrl && share ? (
         <>
           <Wheel src={wheelUrl} onFailedChange={setWheelFailed} />

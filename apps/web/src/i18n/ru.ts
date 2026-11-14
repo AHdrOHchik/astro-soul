@@ -1,4 +1,4 @@
-import type { ApiErrorCode, ChartWarning, Quota, ReportStatus, Subscription, TimePrecision } from '../api';
+import type { ApiErrorCode, ChartWarning, ForecastFocus, Quota, ReportStatus, Subscription, TimePrecision } from '../api';
 import type { DateIssue, TimeIssue } from '../lib/birth';
 import type { PaywallPlan } from '../lib/plans';
 import type { PluralForm } from './format';
@@ -183,6 +183,19 @@ const quotaNames: Record<Quota['code'], string> = {
   ask_daily: 'Вопросы карте в день',
   report_month: 'Разборы в месяц',
   compat_month: 'Совместимость в месяц',
+};
+
+/**
+ * `Forecast.focus` as a label next to the text. A code without a name here is a focus this
+ * build does not show. `health` is about energy and routine and is named so: the service
+ * gives no advice on health.
+ */
+const focusNames: Record<ForecastFocus, string> = {
+  career: 'карьера',
+  love: 'отношения',
+  money: 'деньги',
+  health: 'самочувствие',
+  self: 'внимание к себе',
 };
 
 /** One line about a report the user has, for the chart screen. */
@@ -476,6 +489,31 @@ export const ru = {
     orderRejectedTitle: 'Не удалось заказать разбор',
     /** Owner's wording. */
     rateLimited: 'Слишком часто, попробуй через минуту.',
+  },
+
+  /** Screen 8, and its card on the chart screen. The forecast itself is the server's text, never written here. */
+  forecast: {
+    /** Owner's wording: the name of the card and of the screen while the forecast is today's. */
+    title: 'Прогноз на сегодня',
+    /** Owner's wording, for a forecast of another day: «Прогноз на 14 ноября». Never «сегодня» for it. */
+    titleFor: (day: string) => `Прогноз на ${day}`,
+    loading: 'Загружаем прогноз…',
+    /** «Фокус дня» is the owner's wording; the name comes from `focusNames`. */
+    focus: (name: string) => `Фокус дня: ${name}`,
+    focusNames,
+    /** Owner's wording, in two parts: the server has no forecast for today yet. Not a failure and worded as none. */
+    pendingTitle: 'Сегодняшний прогноз готовится',
+    pendingText: 'Загляни после 08:00',
+    /** Owner's wording. */
+    toChart: 'К карте',
+    /** Owner's wording: the request itself failed. */
+    failedTitle: 'Не получилось загрузить прогноз',
+    /** Owner's wording. */
+    ask: 'Спросить карту',
+    /** Owner's wording. What goes out is the picture of the chart, never the text of the forecast. */
+    share: 'Поделиться',
+    /** Owner's wording: under the short forecast. A note, not a call to pay. */
+    subscriptionOnly: 'Полный прогноз — в подписке',
   },
 
   /** Screen 9. */

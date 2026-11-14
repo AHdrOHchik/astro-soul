@@ -13,6 +13,15 @@ export function formatDate(iso: string): string {
   return new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
 }
 
+/** `2026-11-14` → «14 ноября»: a calendar day of the current run of days, so without its year. Returns the input when it is not an ISO date. */
+export function formatDayMonth(iso: string): string {
+  const match = ISO_DATE.exec(iso);
+  if (!match) return iso;
+  const [, year, month, day] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  return new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(date);
+}
+
 /** A moment (`2026-12-12T09:00:00Z`) as a Date; null for anything that is not one. */
 function momentOf(iso: string): Date | null {
   const date = new Date(iso);

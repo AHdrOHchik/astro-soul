@@ -1,0 +1,62 @@
+.card {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--size-field);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+  text-align: left;
+  transition: background-color var(--duration-fast);
+  touch-action: manipulation;
+}
+
+.card:active {
+  background: var(--color-surface-raised);
+}
+
+.text {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.title {
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+/* The first line of the forecast and no more: the chart stays the first thing on its screen. */
+.line {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.whole {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.skeleton {
+  width: 80%;
+}
+
+.arrow {
+  display: inline-flex;
+  flex: none;
+  margin-left: var(--space-3);
+  color: var(--color-accent);
+}
+
+@media (hover: hover) {
+  .card:hover {
+    background: var(--color-surface-raised);
+  }
+}
