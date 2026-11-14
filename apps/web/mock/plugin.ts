@@ -369,6 +369,8 @@ function createHandler({
       chartId: current?.chart.chart.chart_id ?? null,
       subscription,
       fullReport: paidCharts.size > 0,
+      // The latest purchase, the one apps/api names (`entitlements.service.ts`: the newest grant first).
+      fullReportChartId: [...paidCharts].pop() ?? null,
       latestReportId,
       asked: { used: asked.used, resetAt: endsAt },
     };

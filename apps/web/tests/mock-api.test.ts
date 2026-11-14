@@ -246,10 +246,11 @@ describe('mock API: deleting the data, as contract 1.5.5 has it', () => {
   it('takes the subscription, the purchase and the chart with the data: whoever asks next is a new user', async () => {
     const mock = await serveMock('subscriber,paid');
     try {
-      expect((await mock.request('GET', '/me')).body).toMatchObject({
+      const before = (await mock.request('GET', '/me')).body as { chart_id: string };
+      expect(before).toMatchObject({
         has_chart: true,
         subscription: { plan: 'month', is_active: true },
-        entitlements: { is_active: true, full_forecast: true, full_report: true },
+        entitlements: { is_active: true, full_forecast: true, full_report: true, full_report_chart_id: before.chart_id },
       });
 
       expect((await mock.request('DELETE', '/me')).status).toBe(204);
@@ -261,7 +262,8 @@ describe('mock API: deleting the data, as contract 1.5.5 has it', () => {
         chart_id: null,
         latest_report_id: null,
         subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
-        entitlements: { is_active: false, plan: 'none', full_forecast: false, full_report: false, ask_per_day: 1 },
+        // The chart of the purchase is named as null, not left out: the server sends the field every time.
+        entitlements: { is_active: false, plan: 'none', full_forecast: false, full_report: false, full_report_chart_id: null, ask_per_day: 1 },
       });
     } finally {
       await mock.close();
@@ -310,6 +312,53 @@ describe('mock API: deleting the data, as contract 1.5.5 has it', () => {
       expect(await subscribed()).toBe(false);
       await pay(link);
       expect(await subscribed()).toBe(false);
+    } finally {
+      await mock.close();
+    }
+  });
+});
+
+describe('mock API: the chart a report is bought for (`Entitlements.full_report_chart_id`, contract 1.5.4)', () => {
+  const entitlementsOf = async (mock: Awaited<ReturnType<typeof serveMock>>) =>
+    ((await mock.request('GET', '/me')).body as { entitlements: Record<string, unknown> }).entitlements;
+
+  it('is in every answer, as apps/api sends it: null while nothing is bought, never left out', async () => {
+    const mock = await serveMock('returning');
+    try {
+      const entitlements = await entitlementsOf(mock);
+      expect(Object.keys(entitlements)).toContain('full_report_chart_id');
+      expect(entitlements).toMatchObject({ full_report: false, full_report_chart_id: null });
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('names the chart once its report is paid for, and no chart again once the purchase is taken back', async () => {
+    const mock = await serveMock('returning');
+    try {
+      const { chart_id: chartId } = (await mock.request('GET', '/me')).body as { chart_id: string };
+      const invoice = await mock.request('POST', '/billing/invoice', { plan_code: 'one_149', chart_id: chartId });
+      expect(invoice.status).toBe(201);
+      // An invoice alone buys nothing.
+      expect(await entitlementsOf(mock)).toMatchObject({ full_report: false, full_report_chart_id: null });
+
+      const { invoice_link: link } = invoice.body as { invoice_link: string };
+      expect((await mock.request('POST', '/__mock/payments', { invoice_link: link })).status).toBe(204);
+      // The mock applies a payment on a timer, as a webhook would arrive: the answer is asked for after a pause.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(await entitlementsOf(mock)).toMatchObject({ full_report: true, full_report_chart_id: chartId });
+
+      expect((await mock.request('POST', '/__mock/revoke')).status).toBe(204);
+      expect(await entitlementsOf(mock)).toMatchObject({ full_report: false, full_report_chart_id: null });
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('a subscription is not a report bought: it names no chart', async () => {
+    const mock = await serveMock('subscriber');
+    try {
+      expect(await entitlementsOf(mock)).toMatchObject({ is_active: true, full_report: false, full_report_chart_id: null });
     } finally {
       await mock.close();
     }

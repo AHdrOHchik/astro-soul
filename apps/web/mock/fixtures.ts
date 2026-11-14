@@ -45,13 +45,15 @@ export interface MockAccount {
   subscription: { plan: Exclude<Subscription['plan'], 'none' | 'trial'>; expiresAt: number } | null;
   /** The full report is bought for a chart; this is whether one is bought at all, as `Me` tells it. */
   fullReport: boolean;
+  /** The chart the report was bought for last, as `Entitlements.full_report_chart_id` names it; null when none is bought. */
+  fullReportChartId: string | null;
   latestReportId: string | null;
   /** How many of the day's questions are used, and the moment that day ends: midnight at the birth place of the chart. */
   asked: { used: number; resetAt: number };
 }
 
 /** `Entitlements` by the rules of packages/shared (`entitlementsForPlan`): a subscription does not include the full report. */
-function entitlementsOf({ subscription, fullReport }: MockAccount, now: number): Entitlements {
+function entitlementsOf({ subscription, fullReport, fullReportChartId }: MockAccount, now: number): Entitlements {
   const active = subscription !== null && subscription.expiresAt > now;
   return {
     is_active: active,
@@ -59,6 +61,8 @@ function entitlementsOf({ subscription, fullReport }: MockAccount, now: number):
     full_forecast: active,
     ask_per_day: active ? 5 : 1,
     full_report: fullReport,
+    // Optional in the schema, yet apps/api sends it every time (contract 1.5.4), null included: so does the mock.
+    full_report_chart_id: fullReportChartId,
     compat_per_month: active ? 1 : 0,
     solar_included: active && subscription.plan === 'year',
   };
