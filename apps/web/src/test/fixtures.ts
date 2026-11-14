@@ -29,14 +29,27 @@ export const kazanka: GeoPlace = {
   tz: 'Europe/Kyiv',
 };
 
+export const entitlements: Me['entitlements'] = {
+  is_active: false,
+  plan: 'none',
+  full_forecast: false,
+  ask_per_day: 0,
+  full_report: false,
+  compat_per_month: 0,
+  solar_included: false,
+};
+
 export const me: Me = {
   user_id: '00000000-0000-4000-8000-000000000001',
   display_name: null,
   is_new: true,
   has_profile: false,
   has_chart: false,
+  chart_id: null,
   subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
+  entitlements,
   quotas: [],
+  onboarding_step: 'birth_date',
 };
 
 /** A complete body of `POST /charts`: what the app sends once every step is filled in and the consent box is ticked. */

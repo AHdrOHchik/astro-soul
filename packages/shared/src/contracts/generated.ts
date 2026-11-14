@@ -539,7 +539,7 @@ export interface paths {
          *     * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
          *       рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
          *       события отбрасываются на сервере и в БД не попадают;
-         *     * `at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
+         *     * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
          *       или позже серверного времени более чем на 5 минут — отбрасывается;
          *     * лимит: общий, 60 запросов в минуту; `429` клиент игнорирует.
          */
@@ -994,7 +994,7 @@ export interface paths {
          *     Без ПДн: только агрегаты.
          *
          *     Воронка считается по `events.occurred_at` — клиентскому времени
-         *     события, — поэтому опоздавший батч (`at` до суток назад) попадает в
+         *     события, — поэтому опоздавший батч (`occurred_at` до суток назад) попадает в
          *     свой день, а не в день доставки. Окно — 30 дней, `occurred_at` не
          *     старше суток от серверного времени (см. `POST /events`).
          */
@@ -1021,6 +1021,17 @@ export interface paths {
                             stars_received_30d?: number;
                             llm_cost_usd_30d?: number;
                             reports_failed_30d?: number;
+                            /**
+                             * @description Платежи, по которым доступ не выдан: нет серверного инвойса,
+                             *     сумма не совпала с ценой плана, неизвестный план.
+                             *     Главный счётчик QA-11 — отказ по деньгам должен быть виден
+                             *     в метриках, а не только в логах.
+                             */
+                            payments_rejected_30d?: number;
+                            amount_mismatch_30d?: number;
+                            refunded_30d?: number;
+                            /** @description Платежи `processed = false` прямо сейчас */
+                            pending_payments_now?: number;
                             /**
                              * @description Счётчики событий по именам за 30 дней; считается по
                              *     `events.occurred_at`. Нулевые имена не отдаются.
@@ -1106,6 +1117,21 @@ export interface components {
                  *     Порядок отражает порядок проверки, дубликатов по `field` нет.
                  */
                 field_errors?: components["schemas"]["FieldError"][];
+                /**
+                 * @description Машинная причина, когда одного `code` мало: `signature_mismatch`,
+                 *     `auth_date_too_old`, `empty` (нет заголовка авторизации),
+                 *     `provider_timeout | provider_unavailable | not_configured` (гео),
+                 *     `no_invoice | amount_mismatch | unknown_plan` (платёж).
+                 *     Незнакомое значение клиент игнорирует.
+                 */
+                reason?: string;
+                /** @description Квота, в которую упёрлись (`QUOTA_EXCEEDED`) */
+                quota_code?: string;
+                /**
+                 * Format: date-time
+                 * @description Когда квота обнулится (`QUOTA_EXCEEDED`)
+                 */
+                reset_at?: string;
             } & {
                 [key: string]: unknown;
             };
@@ -1136,19 +1162,26 @@ export interface components {
             display_name?: string | null;
             is_new: boolean;
             has_profile: boolean;
-            has_chart?: boolean;
+            has_chart: boolean;
             /**
              * Format: uuid
              * @description Карта пользователя для `GET /charts/{chart_id}` и `/charts/current`.
              *     `null`, пока карты нет. Сервер возвращает поле всегда; в `required`
              *     не включено, чтобы не ломать уже собранный клиент.
              */
-            chart_id?: string | null;
+            chart_id: string | null;
+            /**
+             * Format: uuid
+             * @description Последний заказанный разбор (готовый или в работе) — чтобы клиент
+             *     показал «открыть разбор» без отдельного запроса. `null`, если
+             *     разборов не было.
+             */
+            latest_report_id?: string | null;
             subscription: components["schemas"]["SubscriptionState"];
-            entitlements?: components["schemas"]["Entitlements"];
+            entitlements: components["schemas"]["Entitlements"];
             quotas: components["schemas"]["Quota"][];
             /** @enum {string} */
-            onboarding_step?: "birth_date" | "birth_time" | "birth_place" | "done";
+            onboarding_step: "birth_date" | "birth_time" | "birth_place" | "done";
         };
         /**
          * @description Права доступа (`Me.entitlements`). Источник правды —
@@ -1266,7 +1299,7 @@ export interface components {
              *     Так поле можно ввести, не ломая уже собранный фронт.
              * @example /api/v1/charts/0f1c.../wheel.png?sig=1767225600.abc123
              */
-            wheel_png_url?: string;
+            wheel_png_url: string;
         };
         Chart: {
             /** Format: uuid */
@@ -1351,6 +1384,9 @@ export interface components {
              * @description Насколько известно время. Сохраняется в `profiles.time_mode` и
              *     возвращается в `Chart.birth.time_precision`.
              *     `unknown` ⇒ дома и Асцендент не рассчитываются.
+             *     Поле по-прежнему обязательное в `required`: значение по умолчанию
+             *     `exact` плата за забытое поле — неверная карта, а это молчаливая
+             *     ошибка, которую пользователь не увидит.
              * @enum {string}
              */
             time_precision: "exact" | "approximate" | "unknown";
@@ -1378,13 +1414,23 @@ export interface components {
              * @description Имя события из `x-analytics-events`
              * @enum {string}
              */
-            name: "app_open" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "validation_failed" | "paywall_view" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "share_clicked" | "screen_view";
+            name: "app_open" | "onboarding_start" | "onboarding_birth_date_set" | "onboarding_time_set" | "onboarding_place_set" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "mini_reading_view" | "wheel_shared" | "validation_failed" | "validation_failed_client" | "paywall_view" | "checkout_started" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "report_requested" | "report_ready_view" | "forecast_view" | "ask_used" | "quota_exhausted" | "subscription_expired_seen" | "data_deleted" | "error_shown" | "screen_view" | "share_clicked";
             /**
              * Format: date-time
-             * @description Время события на устройстве (ISO 8601 с часовым поясом)
+             * @description Время события на устройстве (ISO 8601 с часовым поясом). Так поле
+             *     называется везде — в запросе, в БД (`events.occurred_at`) и в
+             *     метриках: одно имя на все слои, синоним `at` отменён.
+             *     Старше суток или позже серверного времени более чем на 5 минут —
+             *     событие отбрасывается.
              * @example 2026-11-10T12:00:00.000Z
              */
-            at: string;
+            occurred_at: string;
+            /**
+             * Format: uuid
+             * @description Карта, к которой относится событие, если применимо.
+             *     Не входит в `required`: у `app_open` карты ещё нет.
+             */
+            chart_id?: string | null;
             /**
              * @description Идентификаторы, шаг, код ошибки. Строки до 64 символов.
              *     Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
@@ -1497,6 +1543,12 @@ export interface components {
     parameters: never;
     requestBodies: never;
     headers: {
+        /**
+         * @description Тот же идентификатор, что в `Problem.request_id`. Сервер отдаёт его на
+         *     любом ответе, включая ошибку разбора тела (битый JSON): без него
+         *     поддержка не найдёт запрос в логах.
+         */
+        "X-Request-Id": string;
         /** @description Остаток квоты в текущем окне */
         "RateLimit-Remaining": number;
         /** @description Unix-время сброса окна */

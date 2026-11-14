@@ -218,8 +218,8 @@ describe('getCurrentChart', () => {
 
 describe('sendEvents', () => {
   const events: ClientEvent[] = [
-    { name: 'app_open', at: '2026-11-10T12:00:00.000Z' },
-    { name: 'screen_view', at: '2026-11-10T12:00:01.000Z', props: { step: 'welcome' } },
+    { name: 'app_open', occurred_at: '2026-11-10T12:00:00.000Z' },
+    { name: 'screen_view', occurred_at: '2026-11-10T12:00:01.000Z', props: { step: 'welcome' } },
   ];
 
   it('posts the batch to the contract path under the `events` key, with the user\'s initData', async () => {

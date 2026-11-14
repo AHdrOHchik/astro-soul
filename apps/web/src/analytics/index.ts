@@ -45,7 +45,7 @@ export function createAnalytics({ api, isEnabled, now = () => new Date() }: Anal
     // A name the contract does not list yet would cost the whole batch: the server refuses it for one such event.
     if (!isEnabled() || !isContractEvent(name)) return;
     const clean = cleanProps(props);
-    queue.push({ name, at: now().toISOString(), ...(clean && { props: clean }) });
+    queue.push({ name, occurred_at: now().toISOString(), ...(clean && { props: clean }) });
     if (queue.length >= MAX_BATCH_SIZE) {
       flush();
       return;

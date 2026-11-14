@@ -73,6 +73,7 @@ function setup({ result, current, botUsername = '', api = fakeApi(), listens = t
 const NOTHING_BESIDES_THE_CHART = {
   mini_reading: { sun: '', moon: '', asc: '', summary: '' },
   wheel_url: '',
+  wheel_png_url: '',
   warnings: [],
   is_restored: false,
 };
@@ -231,7 +232,7 @@ describe('ChartScreen', () => {
   });
 
   it('shares the SVG link when the server has no PNG to offer (a server older than contract 1.3.0)', async () => {
-    const { wheel_png_url: _absent, ...withoutPng } = chartResult;
+    const withoutPng: ChartResult = { ...chartResult, wheel_png_url: '' };
     const { telegram, user } = setup({ result: withoutPng });
 
     await user.click(await screen.findByRole('button', { name: copy.share }));
