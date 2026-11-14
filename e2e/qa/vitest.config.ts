@@ -26,6 +26,10 @@ export default defineConfig({
       { find: /^react-dom$/, replacement: join(webModules, 'react-dom/index.js') },
       { find: /^@testing-library\/react$/, replacement: join(webModules, '@testing-library/react/dist/index.js') },
       { find: /^@testing-library\/dom$/, replacement: join(webModules, '@testing-library/dom/dist/index.js') },
+      {
+        find: /^@testing-library\/user-event$/,
+        replacement: join(webModules, '@testing-library/user-event/dist/esm/index.js'),
+      },
       { find: /^@astro-soul\/ui$/, replacement: join(WEB, '../../packages/ui/src/index.ts') },
       { find: /^@astro-soul\/shared$/, replacement: join(WEB, '../../packages/shared/src/index.ts') },
     ],

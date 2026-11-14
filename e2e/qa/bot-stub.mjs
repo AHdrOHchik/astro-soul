@@ -11,6 +11,16 @@
  *   GET  /__calls                  — журнал вызовов Bot API
  *   POST /__calls/reset            — очистить журнал
  *   POST /__config                 — {fail: {method: 'refundStarPayment'}} заставить метод упасть
+ *
+ * `fail` умеет три формы (QA-003/004 — нужны для пуша):
+ *   {fail: {sendMessage: 'текст'}}                     → 200 {ok:false, description}
+ *   {fail: {sendMessage: {status: 403}}}               → HTTP 403 (бот заблокирован)
+ *   {fail: {sendMessage: {status: 429}}}               → HTTP 429 + retry-after
+ *   {fail: {sendMessage: {byChat: {'<id>': 403}}}}     → адресно по chat_id, остальным — ok
+ *
+ * Почему статус, а не только `ok:false`: `TelegramClient.sendPush` различает
+ * «бот заблокирован» и «слишком часто» именно по HTTP-статусу, и на 200/ok:false
+ * обе ветки (`push_blocked_at`, `pushes_deferred`) недостижимы.
  */
 import { createServer } from 'node:http';
 import { writeFileSync } from 'node:fs';
@@ -20,7 +30,7 @@ const LOG = '/tmp/bot-stub.log';
 
 /** @type {{method: string, body: any, at: number}[]} */
 const calls = [];
-/** @type {Record<string, string>} */
+/** @type {Record<string, unknown>} */
 let failures = {};
 let invoiceSeq = 0;
 
@@ -33,6 +43,23 @@ function json(res, status, body) {
 function record(method, body) {
   calls.push({ method, body, at: Date.now() });
   writeFileSync(LOG, JSON.stringify(calls, null, 2));
+}
+
+/** Ответ с заданным HTTP-статусом: только так воспроизводятся 403 и 429. */
+function forced(res, status) {
+  if (status === 429) {
+    res.setHeader('retry-after', '30');
+    return json(res, 429, {
+      ok: false,
+      error_code: 429,
+      description: 'Too Many Requests: retry after 30',
+      parameters: { retry_after: 30 },
+    });
+  }
+  if (status === 403) {
+    return json(res, 403, { ok: false, error_code: 403, description: 'Forbidden: bot was blocked by the user' });
+  }
+  return json(res, status, { ok: false, description: `qa forced failure ${status}`, error_code: status });
 }
 
 const server = createServer((req, res) => {
@@ -74,8 +101,19 @@ const server = createServer((req, res) => {
     }
     record(method, body);
 
-    if (failures[method] !== undefined) {
-      return json(res, 200, { ok: false, description: failures[method], error_code: 400 });
+    const failure = failures[method];
+    if (failure !== undefined) {
+      // Адресный отказ: один прогон проверяет 403 и 429 на разных чатах.
+      const perChat = /** @type {{byChat?: Record<string, number>}} */ (failure).byChat;
+      if (perChat !== undefined) {
+        const status = perChat[String(body.chat_id)];
+        if (status !== undefined) return forced(res, status);
+        return json(res, 200, { ok: true, result: true });
+      }
+      if (typeof failure === 'object' && failure !== null && 'status' in failure) {
+        return forced(res, Number(/** @type {{status: number}} */ (failure).status));
+      }
+      return json(res, 200, { ok: false, description: failure, error_code: 400 });
     }
 
     switch (method) {
@@ -97,6 +135,6 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  process.stdout.write(`bot-stub listening on 127.0.0.1:${PORT}\n`);
+server.listen(PORT, '0.0.0.0', () => {
+  process.stdout.write(`bot-stub listening on 0.0.0.0:${PORT}\n`);
 });
