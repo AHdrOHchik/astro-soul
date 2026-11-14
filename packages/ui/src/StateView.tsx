@@ -7,7 +7,7 @@ export interface StateViewProps {
   text?: string;
   icon?: ReactNode;
   /** Small print under the actions, e.g. a support reference. */
-  caption?: string;
+  caption?: ReactNode;
   /** Action buttons. */
   children?: ReactNode;
   /** `alert` for errors (announced immediately), `status` for empty states. */
@@ -26,7 +26,7 @@ export function StateView({ title, text, icon, caption, children, role = 'status
         {text && <p className={styles.text}>{text}</p>}
       </div>
       {hasActions && <div className={styles.actions}>{children}</div>}
-      {caption && <p className={styles.caption}>{caption}</p>}
+      {caption && <div className={styles.caption}>{caption}</div>}
     </div>
   );
 }
