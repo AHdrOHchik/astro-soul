@@ -22,6 +22,8 @@ export function frontendLayer(tseslint) {
       rules: {
         // The strict preset resets the options set at the root; numbers stay allowed.
         '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
+        // `warn` is for a developer who opened the app where it cannot do its job, e.g. the paywall in a plain browser.
+        'no-console': ['error', { allow: ['error', 'warn'] }],
       },
     },
     {
