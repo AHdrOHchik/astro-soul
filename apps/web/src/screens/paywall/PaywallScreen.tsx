@@ -47,8 +47,8 @@ export interface PaywallScreenProps {
   /** The plan chosen before the screen opened, e.g. by the button under the teaser. */
   initialPlan: PaywallPlan | null;
   /**
-   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does unless told otherwise.
-   * With `false` the screen sells the full report alone: the plans are not in the list, and
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does not unless told to.
+   * Without `true` the screen sells the full report alone: the plans are not in the list, and
    * nothing on the screen speaks of a subscription the user could buy.
    */
   subscriptions?: boolean;
@@ -116,7 +116,7 @@ export function PaywallScreen({
   refreshMe,
   reportChartId,
   initialPlan,
-  subscriptions = true,
+  subscriptions = false,
   reportRequired = false,
   awaiting = null,
   onAwaiting,

@@ -36,8 +36,8 @@ export interface AppProps {
   /** Where the support button leads; '' = no contact yet, the button says so. */
   supportLink?: string;
   /**
-   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does unless told otherwise.
-   * With `false` nothing in the app offers one: not the paywall, not the settings, not the
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does not unless told to.
+   * Without `true` nothing in the app offers one: not the paywall, not the settings, not the
    * forecast or the question screen. A subscription the user already has is shown as ever.
    */
   subscriptions?: boolean;
@@ -74,7 +74,7 @@ export function App({
   apiBaseUrl,
   botUsername = '',
   supportLink = '',
-  subscriptions = true,
+  subscriptions = false,
   keys,
   track,
   termsReload,

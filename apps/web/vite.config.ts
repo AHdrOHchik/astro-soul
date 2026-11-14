@@ -33,10 +33,10 @@ export default defineConfig(({ mode, command }) => {
     throw new Error(`VITE_SUPPORT_CONTACT is neither a Telegram username nor an https link: «${env.VITE_SUPPORT_CONTACT}».`);
   }
 
-  // What is sold must never depend on a typo: `VITE_SUBSCRIPTIONS=of` read as «enabled» would sell what the owner switched off.
+  // What is sold must never depend on a typo: `VITE_SUBSCRIPTIONS=of` is neither «sell» nor «do not sell».
   const subscriptions = subscriptionsModeOf(env.VITE_SUBSCRIPTIONS);
   if (subscriptions === null) {
-    throw new Error(`VITE_SUBSCRIPTIONS is «${env.VITE_SUBSCRIPTIONS ?? ''}». Expected ${SUBSCRIPTION_MODES.join(' or ')}, or nothing (the same as enabled).`);
+    throw new Error(`VITE_SUBSCRIPTIONS is «${env.VITE_SUBSCRIPTIONS ?? ''}». Expected ${SUBSCRIPTION_MODES.join(' or ')}, or nothing (the same as off).`);
   }
 
   // Nothing in the repository sets these for a release: they come from the environment of whoever builds.
@@ -45,7 +45,7 @@ export default defineConfig(({ mode, command }) => {
     const support = supportLinkOf(env.VITE_SUPPORT_CONTACT);
     const bot = botUsernameOf(env.VITE_BOT_USERNAME);
     const lines = [
-      `subscriptions: ${subscriptions === 'off' ? 'not sold (VITE_SUBSCRIPTIONS=off)' : 'ON SALE'}`,
+      `subscriptions: ${subscriptions === 'off' ? 'not sold (set VITE_SUBSCRIPTIONS=enabled to sell)' : 'ON SALE'}`,
       `support: ${support === '' ? 'NOT SET, the button is disabled (VITE_SUPPORT_CONTACT)' : support}`,
       `bot: ${bot === '' ? 'NOT SET, a shared chart carries no link (VITE_BOT_USERNAME)' : `@${bot}`}`,
     ];

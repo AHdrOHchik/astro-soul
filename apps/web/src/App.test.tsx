@@ -1232,13 +1232,13 @@ describe('App: the forecast and the question', () => {
   const chartGone = () => apiError('NOT_FOUND', { status: 404, serverMessage: CHART_GONE, requestId: 'req-404' });
 
   interface RetentionOptions {
-    /** `VITE_SUBSCRIPTIONS` of the build; sold unless told otherwise, as in the app. */
+    /** Whether the build sells subscriptions (`VITE_SUBSCRIPTIONS=enabled`). The tests here are about one that does, unless they say otherwise. */
     subscriptions?: boolean;
     prepare?: (fake: ReturnType<typeof fakeApi>) => void;
   }
 
   /** A user who has a chart, in a build that sells subscriptions or does not; `prepare` sets up the rest of the server. */
-  function returning(startMe: Me, { subscriptions, prepare }: RetentionOptions = {}) {
+  function returning(startMe: Me, { subscriptions = true, prepare }: RetentionOptions = {}) {
     const api = fakeApi();
     api.getMe.mockResolvedValue(startMe);
     api.getCurrentChart.mockResolvedValue(restored);

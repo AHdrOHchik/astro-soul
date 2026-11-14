@@ -47,6 +47,8 @@ function setup({ me = meWithChart, afterPayment = me, telegram: host, api = fake
       refreshMe={refreshMe}
       reportChartId={chart.chart_id}
       initialPlan="one_149"
+      // A build that sells subscriptions (`VITE_SUBSCRIPTIONS=enabled`), unless a test says otherwise.
+      subscriptions
       track={analytics.track}
       onOpenTerms={vi.fn()}
       onReportPaid={onReportPaid}
@@ -304,8 +306,14 @@ describe('PaywallScreen: a build that sells no subscriptions (`subscriptions: fa
     expect(screen.getAllByRole('radio')).toHaveLength(1);
   });
 
-  it('sells subscriptions unless told otherwise: the prop left out is the same as `true`', () => {
-    setup();
+  it('sells none unless told to: the prop left out is the same as `false`', () => {
+    setup({ props: { subscriptions: undefined } });
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    for (const code of subscriptionPlans) expect(screen.queryByText(copy.plans[code].title)).not.toBeInTheDocument();
+  });
+
+  it('sells them when told to', () => {
+    setup({ props: { subscriptions: true } });
     expect(screen.getAllByRole('radio')).toHaveLength(4);
     for (const code of subscriptionPlans) expect(option(copy.plans[code].title)).toBeInTheDocument();
   });

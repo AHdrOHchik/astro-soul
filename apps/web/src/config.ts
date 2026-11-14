@@ -23,10 +23,11 @@ export const config = {
   /** Where the support button leads. Empty = the button is there, disabled, and says support is coming. */
   supportLink: supportLinkOf(import.meta.env.VITE_SUPPORT_CONTACT),
   /**
-   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`): yes unless the variable says `off`.
-   * With `off` nothing in the app offers one; a subscription the user already has is still shown.
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`): only when the variable says
+   * `enabled`. Unset, empty, `off` or anything else, it sells none: nothing in the app offers
+   * one then, and a subscription the user already has is still shown.
    */
-  subscriptions: subscriptionsModeOf(import.meta.env.VITE_SUBSCRIPTIONS) !== 'off',
+  subscriptions: subscriptionsModeOf(import.meta.env.VITE_SUBSCRIPTIONS) === 'enabled',
   /** Stand-in for Telegram initData in a plain browser. Not present in production builds at all. */
   devInitData: import.meta.env.DEV ? (import.meta.env.VITE_DEV_INIT_DATA ?? '') : '',
   /**
