@@ -146,6 +146,7 @@ describe('GET /api/v1/me — данные', () => {
       full_forecast: false,
       ask_per_day: 1,
       full_report: false,
+      full_report_chart_id: null,
       compat_per_month: 0,
       solar_included: false,
     });
@@ -334,5 +335,81 @@ describe('GET /api/v1/me — данные', () => {
 
     expect(second.body.latest_report_id).toBe(newer?.id);
     expect(second.body.latest_report_id).not.toBe(older?.id);
+  });
+});
+
+/**
+ * Б-1 (итерация 10): `full_report` отвечает «есть ли оплаченный разбор»,
+ * `full_report_chart_id` — «за какую карту». Без второго поля фронт считал
+ * новую карту оплаченной и вёл человека на 402.
+ */
+describe('GET /api/v1/me — full_report_chart_id (Б-1)', () => {
+  async function ensureUser(): Promise<string> {
+    const userId = userIdFromTelegramId(BigInt(FICTIONAL_USER.id), TEST_PEPPER);
+    await ctx.db.query(
+      `INSERT INTO users (id, telegram_id) VALUES ($1, $2) ON CONFLICT (telegram_id) DO NOTHING`,
+      [userId, FICTIONAL_USER.id],
+    );
+    return userId;
+  }
+
+  async function insertChart(hash: string): Promise<string> {
+    const userId = await ensureUser();
+    const row = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
+       VALUES ($1, $2, '{}'::jsonb, '1.0.0', true) RETURNING id`,
+      [userId, hash],
+    );
+    return row?.id ?? '';
+  }
+
+  it('оплачена карта A, появилась карта B → full_report:true и карта A', async () => {
+    const userId = await ensureUser();
+    const chartA = await insertChart('b1-chart-a');
+    await insertChart('b1-chart-b');
+    await ctx.db.query(
+      `INSERT INTO entitlements (user_id, kind, status, chart_id) VALUES ($1, 'report', 'active', $2)`,
+      [userId, chartA],
+    );
+
+    const response = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, validInitData())
+      .expect(200);
+
+    const me = response.body as Me;
+    expect(me.entitlements.full_report).toBe(true);
+    expect(me.entitlements.full_report_chart_id).toBe(chartA);
+  });
+
+  it('после DELETE /me и новой карты разбор не «прилипает»: null', async () => {
+    const chartA = await insertChart('b1-delete-a');
+    const userId = await ensureUser();
+    await ctx.db.query(
+      `INSERT INTO entitlements (user_id, kind, status, chart_id) VALUES ($1, 'report', 'active', $2)`,
+      [userId, chartA],
+    );
+
+    await request(ctx.app.getHttpServer())
+      .delete('/api/v1/me')
+      .set(INIT_DATA_HEADER, validInitData())
+      .expect(204);
+
+    await insertChart('b1-delete-b');
+
+    const response = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, validInitData())
+      .expect(200);
+
+    const me = response.body as Me;
+    // Поле есть всегда (контракт 1.5.4). Приёмка Б-1: после удаления и новой
+    // карты `full_report:false` **или** `full_report_chart_id:null` — фронту
+    // важно второе: оплаченной новой карты нет, вести на 402 нельзя.
+    expect(me.entitlements).toHaveProperty('full_report_chart_id');
+    expect(me.entitlements.full_report_chart_id).toBeNull();
+    expect(me.entitlements.full_report === false || me.entitlements.full_report_chart_id === null).toBe(
+      true,
+    );
   });
 });

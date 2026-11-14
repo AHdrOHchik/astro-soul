@@ -13,6 +13,7 @@ import { EventsModule } from './modules/events/events.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
 import { MeModule } from './modules/me/me.module';
+import { EngagementModule } from './modules/engagement/engagement.module';
 import { OpsModule } from './modules/ops/ops.module';
 import { ReportsModule } from './modules/reports/reports.module';
 
@@ -27,6 +28,7 @@ import { ReportsModule } from './modules/reports/reports.module';
     BillingModule,
     GeoModule,
     EventsModule,
+    EngagementModule,
     OpsModule,
     ReportsModule,
   ],

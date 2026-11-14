@@ -34,6 +34,7 @@ export type ChartCreateRequest = Schemas['ChartCreateRequest'];
 export type PlanCodeName = Schemas['PlanCode'];
 export type Invoice = Schemas['Invoice'];
 export type Forecast = Schemas['Forecast'];
+export type AskResponse = Schemas['AskResponse'];
 export type Report = Schemas['Report'];
 
 /** `GET /api/v1/health` — схема объявлена прямо в пути, не в components. */

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BillingModule } from '../billing/billing.module';
+import { EngagementModule } from '../engagement/engagement.module';
 import { EventsModule } from '../events/events.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { AdminController } from './admin.controller';
@@ -12,7 +13,7 @@ import { JobsService } from './jobs.service';
  * Доступа из мини-аппа у них нет — только admin id и секрет крона.
  */
 @Module({
-  imports: [BillingModule, EventsModule, TelegramModule],
+  imports: [BillingModule, EngagementModule, EventsModule, TelegramModule],
   controllers: [AdminController, JobsController],
   providers: [AdminMetricsService, JobsService],
 })

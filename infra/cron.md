@@ -17,6 +17,8 @@
 | `subscriptions_downgrade` | Истёкшие подписки → `expired`, одно сообщение «продлить?» (не чаще 1 раза в 30 дней) | каждые 5 минут | отметка в `events` держит троттлинг |
 | `report_refund` | Провалившийся разбор (`reports.status = 'failed'`) → возврат звёзд за него, разбор помечается `refunded` + `refunded_at` | каждые 10 минут | `refunded_at` закрывает повтор |
 | `pdn_retention_cleanup` | Пользователи без активности дольше 24 месяцев: ПДн удаляются, платежи обезличиваются (`telegram_id = NULL`). Под `pg_advisory_xact_lock` | раз в сутки, 04:00 UTC | удалённых пользователей второй запуск не находит |
+| `forecast_nightly` | Ночной прогноз: карты, у которых **местное время места рождения** 03:00 ±30 мин, получают строку `forecasts(chart_id, date)`. Подписчикам полный текст, бесплатным — урезанный и только для карт старше суток. Под `pg_advisory_lock` | каждый час (окно ±30 мин поглощает дрейф таймера) | уникальный `(chart_id, date)` + `ON CONFLICT DO NOTHING` |
+| `forecast_push` | Пуш 08:00 ±30 мин по местному времени: 1–2 предложения и кнопка «Открыть». Только тем, кто заходил за последние 7 дней. `403` → `charts.push_blocked_at`, больше не пишем; `429` → `pushes_deferred`, в этом прогоне не ретраим | каждый час | `forecasts.push_sent_at` закрывает повтор |
 
 Джоб `pdn_retention_cleanup` — это требование 152-ФЗ к сроку хранения, а не
 оптимизация: без него «удалим, когда вспомним» не выполняется.
@@ -52,6 +54,16 @@ printf '[Service]\nEnvironment=JOBS_JOB=pdn_retention_cleanup\n' \
 sudo systemctl daemon-reload
 ```
 
+Прогноз и пуш по расписанию **раз в час** (окно ±30 мин внутри джоба):
+
+```bash
+printf '[Service]\nEnvironment=JOBS_JOB=forecast_nightly\n' \
+  | sudo tee /etc/systemd/system/astro-jobs.service.d/forecast-nightly.conf
+printf '[Service]\nEnvironment=JOBS_JOB=forecast_push\n' \
+  | sudo tee /etc/systemd/system/astro-jobs.service.d/forecast-push.conf
+# плюс свой OnCalendar=hourly для каждого таймера, если пятиминутный не годится
+```
+
 ## Как проверить, что крон работает
 
 1. Ручной запуск и ответ — счётчики джобов, не «ок»:
@@ -78,8 +90,29 @@ sudo systemctl daemon-reload
    `{"msg":"pdn_retention_cleanup","deleted":N,"months":24}`; ноль в `deleted` —
    норма, если неактивных пользователей нет.
 
+## Прогноз и пуш: почему почасовой запуск
+
+Прогноз живёт по **местному времени места рождения**, а не по Москве и не по
+UTC: у человека в Новосибирске 03:00 наступает на четыре часа раньше. Поэтому
+джоб ходит каждый час и на каждом прогоне выбирает только те карты, у которых
+местные часы/минуты попадают в окно `03:00 ±30 мин` (`08:00 ±30` для пуша).
+
+Счётчики в ответе: `forecasts_generated`, `forecasts_skipped` (уже была строка
+или упёрлись в месячный лимит LLM), `forecasts_failed`, `pushes_sent`,
+`pushes_skipped_inactive`, `pushes_deferred`, `pushes_failed`.
+
+Упереться в `LLM_MONTHLY_CAP_RUB_FORECAST` можно проверить так:
+
+```bash
+curl -sS -X POST -H "X-Jobs-Secret: $ASTRO_JOBS_SECRET" "$ASTRO_JOBS_URL?job=forecast_nightly"
+# {"forecasts_generated":0,"forecasts_skipped":N,...} при исчерпанном лимите
+```
+
 ## Что крон не делает
 
 - Не возвращает звёзды за `rejected`-платежи: это реальные деньги, решение
   принимает владелец (QA-11, `docs/qa/reports/qa-001-initial.md`).
-- Не ходит в LLM: генерация разборов — отдельная очередь (см. `docs/report`).
+- Не генерирует прогноз по запросу: `GET /engagement/forecast` только читает
+  строку, которую положил `forecast_nightly`. Нет строки — `404`, а не 20
+  секунд ожидания при открытии мини-аппа.
+- Не пушит тем, кто не заходил 7 дней: это прямой путь к блокировке бота.

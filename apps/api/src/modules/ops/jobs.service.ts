@@ -4,6 +4,7 @@ import { JsonLogger } from '../../common/logger';
 import { EventsRepository } from '../events/events.repository';
 import { TelegramClient } from '../telegram/telegram.client';
 import { PaymentsService } from '../billing/payments.service';
+import { EngagementService } from '../engagement/engagement.service';
 
 /** Через сколько минут недоставленный товар считаем поводом для возврата. */
 export const REFUND_AFTER_MINUTES = 10;
@@ -11,6 +12,14 @@ export const REFUND_AFTER_MINUTES = 10;
 export const EXPIRY_NOTICE_DAYS = 30;
 /** Предел работы одного запуска: крон не должен висеть бесконечно. */
 const BATCH = 50;
+
+/**
+ * Ключи advisory-локов: один джоб — один ключ.
+ * 91_004_001 занят `pdn_retention_cleanup`; прогноз и пуш получают свои,
+ * чтобы ночная генерация и рассылка не мешали друг другу.
+ */
+export const FORECAST_LOCK = 91_004_002;
+export const PUSH_LOCK = 91_004_003;
 
 /** Сколько месяцев без активности считаем поводом удалить ПДн (152-ФЗ, §2 legal). */
 export const RETENTION_MONTHS = 24;
@@ -20,7 +29,9 @@ export type JobName =
   | 'pending_payments_resolve'
   | 'refund_undelivered'
   | 'report_refund'
-  | 'pdn_retention_cleanup';
+  | 'pdn_retention_cleanup'
+  | 'forecast_nightly'
+  | 'forecast_push';
 
 export const JOB_NAMES: readonly JobName[] = [
   'subscriptions_downgrade',
@@ -28,6 +39,8 @@ export const JOB_NAMES: readonly JobName[] = [
   'refund_undelivered',
   'report_refund',
   'pdn_retention_cleanup',
+  'forecast_nightly',
+  'forecast_push',
 ];
 
 export type MutableJobRunResult = { -readonly [K in keyof JobRunResult]: JobRunResult[K] };
@@ -41,6 +54,15 @@ export interface JobRunResult {
   readonly refunds_done: number;
   readonly report_refunds_done: number;
   readonly pdn_users_deleted: number;
+  /** Удержание: ночная генерация прогнозов. */
+  readonly forecasts_generated: number;
+  readonly forecasts_skipped: number;
+  readonly forecasts_failed: number;
+  /** Удержание: пуш 08:00 по месту рождения. */
+  readonly pushes_sent: number;
+  readonly pushes_skipped_inactive: number;
+  readonly pushes_deferred: number;
+  readonly pushes_failed: number;
 }
 
 /**
@@ -61,6 +83,7 @@ export class JobsService {
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
+    @Inject(EngagementService) private readonly engagement: EngagementService,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
@@ -82,6 +105,13 @@ export class JobsService {
       refunds_done: 0,
       report_refunds_done: 0,
       pdn_users_deleted: 0,
+      forecasts_generated: 0,
+      forecasts_skipped: 0,
+      forecasts_failed: 0,
+      pushes_sent: 0,
+      pushes_skipped_inactive: 0,
+      pushes_deferred: 0,
+      pushes_failed: 0,
     };
 
     if (pick('subscriptions_downgrade')) {
@@ -104,6 +134,33 @@ export class JobsService {
 
     if (pick('report_refund')) {
       result.report_refunds_done = await this.refundFailedReports();
+    }
+
+    if (pick('forecast_nightly')) {
+      // Ночная генерация: без лока два экземпляра крона сгенерировали бы
+      // один и тот же прогноз дважды и заплатили за это дважды.
+      const nightly = await this.db.withAdvisoryLock(FORECAST_LOCK, () => this.engagement.runNightly());
+
+      if (nightly === null) {
+        this.logger.warn('forecast_nightly_locked', { reason: 'another_run' });
+      } else {
+        result.forecasts_generated = nightly.generated;
+        result.forecasts_skipped = nightly.skipped;
+        result.forecasts_failed = nightly.failed;
+      }
+    }
+
+    if (pick('forecast_push')) {
+      const push = await this.db.withAdvisoryLock(PUSH_LOCK, () => this.engagement.runPush());
+
+      if (push === null) {
+        this.logger.warn('forecast_push_locked', { reason: 'another_run' });
+      } else {
+        result.pushes_sent = push.sent;
+        result.pushes_skipped_inactive = push.skippedInactive;
+        result.pushes_deferred = push.deferred;
+        result.pushes_failed = push.failed;
+      }
     }
 
     if (pick('pdn_retention_cleanup')) {

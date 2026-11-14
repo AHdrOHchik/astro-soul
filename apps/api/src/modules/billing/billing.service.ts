@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PLANS, type Invoice, type SubscriptionState } from '@astro-soul/shared';
-import { notFound, rateLimited } from '../../common/api-error';
+import { invalidFields, rateLimited } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import type { VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
@@ -15,7 +15,8 @@ import { buildInvoicePayload, parseInvoiceRequest } from './billing.dto';
 /** Антифрод-лимиты из payments.md §5. */
 export const INVOICES_PER_HOUR = 3;
 export const INVOICES_PER_DAY = 10;
-export const SAME_PLAN_WINDOW = '5 minutes';
+/** Счёт, выставленный за сутки, ещё не оплачен и годится для повтора. */
+export const REUSE_INVOICE_WINDOW = '1 day';
 
 @Injectable()
 export class BillingService {
@@ -46,17 +47,25 @@ export class BillingService {
     if (chartId !== null) {
       const chart = await this.charts.findOwnedBy(chartId, userId);
       if (chart === null) {
-        throw notFound({ reason: 'chart_not_found' });
+        // Б-2: контракт обещает 422 «чужая карта», а не 404 «обнови
+        // приложение». Человек ничего не обновлял — приложение исправно.
+        throw invalidFields(
+          [{ field: 'chart_id', message: 'Карта не найдена' }],
+          { reason: 'chart_not_found' },
+        );
       }
     }
 
-    await this.assertAntifraudLimits(userId);
-
-    const recent = await this.repo.findRecentInvoice(userId, planCode, SAME_PLAN_WINDOW);
+    // Б-3: сначала переиспользуем уже выставленный счёт — иначе лимит
+    // антифрода запирает человека на час ровно тогда, когда он готов платить,
+    // хотя счёт на этот план у него уже есть.
+    const recent = await this.repo.findReusableInvoice(userId, planCode, chartId, REUSE_INVOICE_WINDOW);
     if (recent !== null) {
       this.logger.info('invoice_reused', { user_id: userId, plan: planCode });
       return this.toInvoice(planCode, recent.invoice_link);
     }
+
+    await this.assertAntifraudLimits(userId);
 
     const idemKey = randomUUID();
     const payload = buildInvoicePayload({ p: planCode, u: userId, k: idemKey });
@@ -107,13 +116,28 @@ export class BillingService {
       this.repo.countInvoicesSince(userId, '1 day'),
     ]);
 
-    if (hour >= INVOICES_PER_HOUR || day >= INVOICES_PER_DAY) {
+    const byDay = day >= INVOICES_PER_DAY;
+    if (hour >= INVOICES_PER_HOUR || byDay) {
+      // Б-3: `reset_at` — когда счёт снова можно создать. Для часового лимита
+      // это момент, когда самый старый счёт выйдет из окна; для суточного —
+      // то же по суткам.
+      const resetAt = await this.repo.invoiceLimitResetAt(userId, byDay ? '1 day' : '1 hour');
       await this.events.log({
         name: 'invoice_rate_limited',
         userId,
         props: { hour, day },
       });
-      throw rateLimited({ reason: 'invoice_limits', details: { hour_limit: INVOICES_PER_HOUR } });
+      throw rateLimited({
+        message: byDay
+          ? 'Слишком много счетов за сутки. Попробуй завтра или открой уже созданный счёт'
+          : 'Слишком много счетов за час. Попробуй позже или открой уже созданный счёт',
+        reason: 'invoice_limits',
+        details: {
+          hour_limit: INVOICES_PER_HOUR,
+          day_limit: INVOICES_PER_DAY,
+          reset_at: resetAt.toISOString(),
+        },
+      });
     }
   }
 }

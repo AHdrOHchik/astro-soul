@@ -84,20 +84,49 @@ export class BillingRepository {
     return Number(row?.count ?? '0');
   }
 
-  /** Двойной тап: тот же план в пределах 5 минут отдаёт существующую ссылку. */
-  async findRecentInvoice(
+  /**
+   * Когда лимит счетов снова пропустит: момент, когда самый старый счёт
+   * выйдет из окна (`now()` — если окно уже пустое, чего быть не должно).
+   */
+  async invoiceLimitResetAt(userId: string, interval: '1 hour' | '1 day'): Promise<Date> {
+    const row = await this.db.queryOne<{ reset_at: Date }>(
+      `SELECT GREATEST(
+                COALESCE(min(created_at) + $2::interval, now()),
+                now()
+              ) AS reset_at
+         FROM invoices
+        WHERE user_id = $1 AND created_at > now() - $2::interval`,
+      [userId, interval],
+    );
+    return row?.reset_at ?? new Date();
+  }
+
+  /**
+   * Уже выставленный и **неоплаченный** счёт на тот же товар — отдаём его
+   * ссылкой, а не создаём новый.
+   *
+   * Два повода: двойной тап (иначе антифрод запирает человека, готового
+   * платить) и Б-3 — проверка переиспользования идёт **до** часового лимита.
+   *
+   * `chart_id` сравнивается через `IS NOT DISTINCT FROM`: для `one_149` счёт
+   * привязан к карте, и вернуть счёт чужой карты значило бы продать разбор не
+   * по той карте. Пустой `chart_id` тоже совпадает только с пустым.
+   */
+  async findReusableInvoice(
     userId: string,
     planCode: PlanCode,
-    interval: string,
+    chartId: string | null,
+    interval = '1 day',
   ): Promise<InvoiceRow | null> {
     return this.db.queryOne<InvoiceRow>(
       `SELECT id, plan_code, idem_key, payload, invoice_link, status, chart_id, created_at
          FROM invoices
         WHERE user_id = $1 AND plan_code = $2 AND status = 'created'
-          AND created_at > now() - $3::interval
+          AND chart_id IS NOT DISTINCT FROM $3::uuid
+          AND created_at > now() - $4::interval
         ORDER BY created_at DESC
         LIMIT 1`,
-      [userId, planCode, interval],
+      [userId, planCode, chartId, interval],
     );
   }
 

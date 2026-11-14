@@ -193,14 +193,16 @@ describe('GigaChatClient', () => {
     applyTestEnv();
     const source: NodeJS.ProcessEnv = { ...process.env };
     delete source['LLM_REPORT_CAP_RUB'];
-    delete source['LLM_MONTHLY_CAP_RUB'];
+    delete source['LLM_MONTHLY_CAP_RUB_REPORT'];
+    delete source['LLM_MONTHLY_CAP_RUB_FORECAST'];
     delete source['GIGACHAT_SCOPE'];
 
     const parsed = loadEnv(source);
 
     expect(parsed.GIGACHAT_SCOPE).toBe('GIGACHAT_API_PERS');
     expect(parsed.LLM_REPORT_CAP_RUB).toBe(80);
-    expect(parsed.LLM_MONTHLY_CAP_RUB).toBe(2000);
+    expect(parsed.LLM_MONTHLY_CAP_RUB_REPORT).toBe(2000);
+    expect(parsed.LLM_MONTHLY_CAP_RUB_FORECAST).toBe(2000);
 
     // Неизвестная модель ломает старт: цены для неё нет.
     expect(() => loadEnv({ ...source, LLM_MODEL: 'GigaChat-9-Unknown' })).toThrow(/LLM_MODEL/u);

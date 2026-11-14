@@ -828,7 +828,22 @@ export interface paths {
                         "application/json": components["schemas"]["AskResponse"];
                     };
                 };
-                /** @description Квота исчерпана (QUOTA_EXCEEDED), заголовки RateLimit-* */
+                /**
+                 * @description `VALIDATION_FAILED` + `details.field_errors`: вопрос короче 3 или
+                 *     длиннее 500 знаков, либо `chart_id` не uuid.
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /**
+                 * @description Квота исчерпана (`QUOTA_EXCEEDED`), заголовки RateLimit-*.
+                 *     `details.quota_code = ask_daily`, `details.reset_at` — когда лимит
+                 *     обновится (местная полночь места рождения). Проверяется **до**
+                 *     вызова модели.
+                 */
                 429: {
                     headers: {
                         [name: string]: unknown;
@@ -1032,7 +1047,7 @@ export interface paths {
         post: {
             parameters: {
                 query?: {
-                    job?: "subscriptions_downgrade" | "pending_payments_resolve" | "pdn_retention_cleanup" | "report_refund";
+                    job?: "subscriptions_downgrade" | "pending_payments_resolve" | "refund_undelivered" | "report_refund" | "pdn_retention_cleanup" | "forecast_nightly" | "forecast_push";
                 };
                 header: {
                     "X-Jobs-Secret": string;
@@ -1294,6 +1309,15 @@ export interface components {
             ask_per_day: 0 | 1 | 5 | -1;
             /** @description Куплен ли полный разбор (разово, навсегда для карты) */
             full_report: boolean;
+            /**
+             * Format: uuid
+             * @description Карта, за которую оплачен полный разбор; `null` — оплаченного нет.
+             *     Производное от `full_report`: флаг остаётся «у пользователя есть
+             *     оплаченный разбор», а привязка к карте — здесь. Сервер отдаёт
+             *     поле **всегда**; в `required` его нет (nullable), но клиент вправе
+             *     рассчитывать на его присутствие (1.5.4).
+             */
+            full_report_chart_id?: string | null;
             compat_per_month: number;
             solar_included: boolean;
         };
@@ -1578,7 +1602,14 @@ export interface components {
          *       "refunds_attempted": 0,
          *       "refunds_done": 0,
          *       "report_refunds_done": 0,
-         *       "pdn_users_deleted": 0
+         *       "pdn_users_deleted": 0,
+         *       "forecasts_generated": 0,
+         *       "forecasts_skipped": 0,
+         *       "forecasts_failed": 0,
+         *       "pushes_sent": 0,
+         *       "pushes_skipped_inactive": 0,
+         *       "pushes_deferred": 0,
+         *       "pushes_failed": 0
          *     }
          */
         JobRunResult: {
@@ -1590,6 +1621,13 @@ export interface components {
             refunds_done?: number;
             report_refunds_done?: number;
             pdn_users_deleted?: number;
+            forecasts_generated?: number;
+            forecasts_skipped?: number;
+            forecasts_failed?: number;
+            pushes_sent?: number;
+            pushes_skipped_inactive?: number;
+            pushes_deferred?: number;
+            pushes_failed?: number;
         };
         Report: {
             /** Format: uuid */
