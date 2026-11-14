@@ -22,12 +22,15 @@
   --color-gold: #f1c76a;
   --color-gold-soft: rgba(241, 199, 106, 0.12);
   --color-danger: #ff9a9a;
+  --color-danger-soft: rgba(255, 154, 154, 0.14);
   --color-skeleton: #231f3d;
   --color-skeleton-shine: #322c57;
   --color-focus: #ffffff;
   --gradient-page: radial-gradient(120% 55% at 50% -12%, rgba(185, 161, 255, 0.2), rgba(15, 13, 26, 0) 62%);
   /* From --color-bg at zero alpha, not `transparent`: Safari before 15.4 fades that through grey. */
   --gradient-scroll-fade: linear-gradient(to bottom, rgba(15, 13, 26, 0), var(--color-bg));
+  /* A mask, not a colour: what it covers is shown in full at the top and not at all at the bottom. */
+  --mask-fade-out: linear-gradient(to bottom, #000 40%, rgba(0, 0, 0, 0.15));
 
   /* Typography. System fonts only: nothing to download, no late reflow. */
   --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
@@ -67,6 +70,7 @@
   --size-card-skeleton: 132px;
   --size-content-max: 480px;
   --size-progress: 4px;
+  --size-meter: 8px;
   --size-skeleton-line: 0.9em;
   --size-hidden: 1px;
   --border-width: 1px;

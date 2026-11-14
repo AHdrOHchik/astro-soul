@@ -24,7 +24,8 @@ export function ScreenHeading({ id, title, text, focusOnMount, describedBy }: Sc
   // Decided once, when the screen opens: a later change of the prop must not steal focus from a control.
   const [focusAtStart] = useState(focusOnMount);
   useEffect(() => {
-    if (focusAtStart) heading.current?.focus();
+    // Without scrolling: a screen that opens where the user left it stays there.
+    if (focusAtStart) heading.current?.focus({ preventScroll: true });
   }, [focusAtStart]);
 
   return (

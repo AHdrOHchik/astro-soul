@@ -1,0 +1,31 @@
+/*
+ * The native element drawn by hand. Each engine has its own pseudo-elements for the track and
+ * the filled part, and a selector list with one it does not know is dropped whole: hence a
+ * rule per pseudo-element.
+ */
+.progress {
+  display: block;
+  width: 100%;
+  height: var(--size-meter);
+  border: 0;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  /* Firefox paints the track from here. */
+  background: var(--color-surface-raised);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.progress::-webkit-progress-bar {
+  background: var(--color-surface-raised);
+}
+
+.progress::-webkit-progress-value {
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.progress::-moz-progress-bar {
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}

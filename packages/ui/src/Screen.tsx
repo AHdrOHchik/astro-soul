@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { BackIcon } from './icons';
 import styles from './Screen.module.css';
 
@@ -10,27 +10,41 @@ export interface ScreenProps {
   footer?: ReactNode;
   /** In-app back control for clients without the native Telegram BackButton. */
   back?: { label: string; onClick: () => void };
+  /** A way out of the screen's own flow, in the top right corner, e.g. to the settings. */
+  action?: { label: string; icon?: ReactNode; onClick: () => void };
   /** id of the heading that names the screen. */
   labelledBy?: string;
   busy?: boolean;
+  /** The scrolling body, for a screen that has to put its scroll position back. */
+  bodyRef?: Ref<HTMLElement>;
 }
 
 /** Page frame: max-width column, safe-area paddings, scrollable body, pinned footer. */
-export function Screen({ children, header, footer, back, labelledBy, busy }: ScreenProps) {
+export function Screen({ children, header, footer, back, action, labelledBy, busy, bodyRef }: ScreenProps) {
   return (
     <div className={styles.screen}>
-      {(back || header) && (
+      {(back || action || header) && (
         <div className={styles.top}>
-          {back && (
-            <button type="button" className={styles.back} onClick={back.onClick}>
-              <BackIcon />
-              {back.label}
-            </button>
+          {(back || action) && (
+            <div className={styles.bar}>
+              {back && (
+                <button type="button" className={styles.back} onClick={back.onClick}>
+                  <BackIcon />
+                  {back.label}
+                </button>
+              )}
+              {action && (
+                <button type="button" className={styles.action} onClick={action.onClick}>
+                  {action.icon}
+                  <span className={styles.actionLabel}>{action.label}</span>
+                </button>
+              )}
+            </div>
           )}
           {header}
         </div>
       )}
-      <main className={styles.body} aria-labelledby={labelledBy} aria-busy={busy || undefined}>
+      <main ref={bodyRef} className={styles.body} aria-labelledby={labelledBy} aria-busy={busy || undefined}>
         {children}
       </main>
       {footer && <div className={styles.footer}>{footer}</div>}

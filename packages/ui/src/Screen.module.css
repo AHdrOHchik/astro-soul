@@ -15,20 +15,40 @@
   padding: var(--space-2) var(--space-4) 0;
 }
 
-.back {
-  display: inline-flex;
+.bar {
+  display: flex;
   align-items: center;
-  justify-self: start;
+}
+
+.back,
+.action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
   min-width: var(--size-tap);
   min-height: var(--size-tap);
-  margin-left: calc(-1 * var(--space-2));
-  padding: 0 var(--space-3) 0 var(--space-1);
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-text-muted);
   font-size: var(--font-size-md);
   touch-action: manipulation;
+}
+
+.back {
+  margin-left: calc(-1 * var(--space-2));
+  padding: 0 var(--space-3) 0 var(--space-1);
+}
+
+/* Pushed to the right edge whether or not there is a back control before it. */
+.action {
+  margin-right: calc(-1 * var(--space-2));
+  margin-left: auto;
+  padding: 0 var(--space-2) 0 var(--space-3);
+}
+
+.actionLabel {
+  margin-left: var(--space-2);
 }
 
 .body {

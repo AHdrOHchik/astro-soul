@@ -101,3 +101,16 @@ export const DocumentIcon = () => (
     <path d="M7 3h7l4 4v14H7V3ZM14 3v4h4M10 12h5M10 16h5" />
   </Icon>
 );
+
+export const GearIcon = () => (
+  <Icon>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7" />
+  </Icon>
+);
+
+export const DownloadIcon = () => (
+  <Icon>
+    <path d="M12 3v12M7.5 10.5 12 15l4.5-4.5M5 20h14" />
+  </Icon>
+);
