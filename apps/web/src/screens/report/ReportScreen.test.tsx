@@ -144,6 +144,26 @@ describe('ReportScreen: a report in work', () => {
     expect(api.getReport.mock.calls.every(([, signal]) => signal?.aborted)).toBe(true);
   });
 
+  it.each([
+    ['ready', ready],
+    ['failed', { ...report, status: 'failed', progress: 31 }],
+    ['refunded', { ...report, status: 'refunded', is_paid: false, progress: 35 }],
+  ] satisfies [string, Report][])('asks no more once the report is over (%s): not a minute on, not when the page is shown again', async (_status, answer) => {
+    const { api } = setup({ answer, manualClock: true });
+    await pass(0);
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+
+    await pass(60_000);
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+
+    // Coming back to the page is what starts the questions again while a report is in work. Not here.
+    setHidden(true);
+    await pass(1000);
+    setHidden(false);
+    await pass(60_000);
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+  });
+
   it('says so when nothing has changed for a minute, offers support, and does not offer to pay again', async () => {
     setup({ answer: generating });
     await screen.findByRole('progressbar');
