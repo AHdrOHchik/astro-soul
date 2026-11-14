@@ -2,13 +2,29 @@ import { ApiError, isApiError, isRecord } from './errors';
 import { createHttpClient, type HttpClientOptions } from './http';
 import type { components, paths } from './schema.gen';
 
-export { ApiError, fieldErrorsOf, isAbortError, isApiError, type ApiErrorCode, type FieldError } from './errors';
+export {
+  ApiError,
+  failureCodeOf,
+  fieldErrorsOf,
+  isAbortError,
+  isApiError,
+  rejectionTextOf,
+  resetAtOf,
+  serverTextOf,
+  type ApiErrorCode,
+  type FieldError,
+} from './errors';
 
 /*
  * Every type below is derived from api.openapi.yaml (see `pnpm gen:api`).
  * A field that is not in the contract does not exist for this app.
  */
 export type Me = components['schemas']['Me'];
+/** The subscription as `Me` carries it: the plan, until when, and whether Telegram renews it. */
+export type Subscription = components['schemas']['SubscriptionState'];
+/** What the user may use right now. Drawn by the app, decided by the server alone. */
+export type Entitlements = components['schemas']['Entitlements'];
+export type Quota = components['schemas']['Quota'];
 export type GeoPlace = components['schemas']['GeoPlace'];
 export type Chart = components['schemas']['Chart'];
 export type ChartCreateRequest = components['schemas']['ChartCreateRequest'];
@@ -44,6 +60,70 @@ export type ClientEvent = components['schemas']['ClientEvent'];
 type EventsBatch = components['schemas']['EventsBatch'];
 type GeoResolveRequest = paths['/api/v1/geo/resolve']['post']['requestBody']['content']['application/json'];
 
+/** What can be bought, by the codes of the contract. Prices are not here: the invoice names them. */
+export type PlanCode = components['schemas']['PlanCode'];
+export type InvoiceRequest = components['schemas']['InvoiceRequest'];
+/** A Stars invoice: the link Telegram opens, and the price the server put on it. */
+export type Invoice = components['schemas']['Invoice'];
+
+type ReportEnvelope = components['schemas']['Report'];
+export type ReportRequest = components['schemas']['ReportRequest'];
+export type ReportStatus = ReportEnvelope['status'];
+
+/** Typed against the contract: a status added to or removed from `Report.status` breaks the build here. */
+const REPORT_STATUSES: Record<ReportStatus, true> = {
+  queued: true,
+  generating: true,
+  ready: true,
+  failed: true,
+  refunded: true,
+};
+
+/**
+ * The chapters of a full report as the contract lists them. Only their number is used, for
+ * «3 of 7 chapters are ready»: a chapter under any other key is shown like the rest.
+ */
+export const REPORT_SECTION_KEYS = [
+  'core',
+  'emotions',
+  'talents',
+  'relations',
+  'money',
+  'purpose',
+  'summary',
+] as const satisfies readonly NonNullable<NonNullable<ReportEnvelope['sections']>[number]['key']>[];
+
+/** One chapter. The key is the server's string: a build that has not heard of it shows the chapter anyway. */
+export interface ReportSection {
+  /** Tells the chapters of one report apart: no two of them share it. */
+  key: string;
+  title: string;
+  /** Markdown, to be rendered as text and nothing else. */
+  body_md: string;
+  order: number;
+}
+
+/**
+ * A report as the screens get it. The envelope of the contract has every field but four
+ * optional; here each has a value, and a missing one reads as «none».
+ */
+export interface Report {
+  report_id: string;
+  /** The chart the report is about; null when the server did not say. */
+  chart_id: string | null;
+  status: ReportStatus;
+  /** 0…100, the server's number; null when it sent none. Never invented by the app. */
+  progress: number | null;
+  /** The server's word that the text is paid for. The only thing that opens the chapters. */
+  is_paid: boolean;
+  /** The opening of the first chapter, shown before the purchase; '' when there is none yet. */
+  teaser: string;
+  /** In the order to read them. Always empty unless `is_paid`. */
+  sections: ReportSection[];
+  /** A signed link that expires: kept in memory only. */
+  pdf_url: string | null;
+}
+
 /** Root of every API path; relative URLs returned by the API (`wheel_url`) resolve against it. */
 export const API_ROOT = '/api/v1/';
 
@@ -53,10 +133,21 @@ const PATHS = {
   charts: '/api/v1/charts',
   currentChart: '/api/v1/charts/current',
   events: '/api/v1/events',
+  invoice: '/api/v1/billing/invoice',
+  reports: '/api/v1/reports',
+  report: '/api/v1/reports/{report_id}',
 } as const satisfies Record<string, keyof paths>;
+
+/** The header of `POST /reports` that makes a repeated order the same order. */
+export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 
 export interface Api {
   getMe(signal?: AbortSignal): Promise<Me>;
+  /**
+   * Deletes everything the server keeps about the user. Sent once: whether to try again
+   * after a failure is the user's decision, made with a tap.
+   */
+  deleteMe(signal?: AbortSignal): Promise<void>;
   /**
    * Candidates for a birth place; an empty list when nothing matches. A failure of the
    * geodata provider is an error (503 `GEO_NOT_FOUND`), not an empty list.
@@ -75,6 +166,18 @@ export interface Api {
    * `keepalive` lets the browser deliver it while the page is being closed.
    */
   sendEvents(events: ClientEvent[], options?: { keepalive?: boolean }): Promise<void>;
+  /**
+   * Asks the server for a Stars invoice. Sent once: the server counts invoices
+   * (3 an hour), so a repeat is made by the user's tap, never by the client.
+   */
+  createInvoice(input: InvoiceRequest, signal?: AbortSignal): Promise<Invoice>;
+  /**
+   * Orders a report. `idempotencyKey` makes a repeated order the same order: the server
+   * answers a known key with the report it already has.
+   */
+  orderReport(input: ReportRequest, idempotencyKey: string, signal?: AbortSignal): Promise<Report>;
+  /** Where the report stands, and as much of it as the server gives out. */
+  getReport(reportId: string, signal?: AbortSignal): Promise<Report>;
 }
 
 function invalid(): ApiError {
@@ -139,14 +242,130 @@ function toChartResult(result: unknown): ChartResult {
   };
 }
 
+const FREE: Entitlements = {
+  is_active: false,
+  plan: 'none',
+  full_forecast: false,
+  ask_per_day: 0,
+  full_report: false,
+  compat_per_month: 0,
+  solar_included: false,
+};
+
+const NO_SUBSCRIPTION: Subscription = { plan: 'none', is_active: false, expires_at: null, auto_renew: false };
+
+function isQuota(value: unknown): value is Quota {
+  return (
+    isRecord(value) &&
+    typeof value.code === 'string' &&
+    typeof value.used === 'number' &&
+    typeof value.limit === 'number' &&
+    typeof value.reset_at === 'string'
+  );
+}
+
+/**
+ * `Me` with the parts the screens read brought to the shapes of the contract. What decides
+ * access is taken as granted only when the server says exactly `true`: a missing or
+ * malformed answer never opens anything.
+ */
+function toMe(value: unknown): Me {
+  if (!isRecord(value) || typeof value.user_id !== 'string') throw invalid();
+  const entitlements = isRecord(value.entitlements) ? value.entitlements : {};
+  const subscription = isRecord(value.subscription) ? value.subscription : {};
+  return {
+    ...(value as Me),
+    has_chart: value.has_chart === true,
+    chart_id: typeof value.chart_id === 'string' ? value.chart_id : null,
+    latest_report_id: typeof value.latest_report_id === 'string' ? value.latest_report_id : null,
+    entitlements: {
+      ...FREE,
+      ...(entitlements as Partial<Entitlements>),
+      is_active: entitlements.is_active === true,
+      full_report: entitlements.full_report === true,
+    },
+    subscription: {
+      ...NO_SUBSCRIPTION,
+      ...(subscription as Partial<Subscription>),
+      is_active: subscription.is_active === true,
+      expires_at: typeof subscription.expires_at === 'string' ? subscription.expires_at : null,
+      auto_renew: subscription.auto_renew === true,
+    },
+    quotas: Array.isArray(value.quotas) ? value.quotas.filter(isQuota) : [],
+  };
+}
+
+function toInvoice(value: unknown): Invoice {
+  // Without a link there is nothing to open, without a price nothing to show: not an invoice.
+  if (
+    !isRecord(value) ||
+    typeof value.invoice_link !== 'string' ||
+    value.invoice_link === '' ||
+    typeof value.stars !== 'number' ||
+    !Number.isInteger(value.stars) ||
+    value.stars <= 0
+  ) {
+    throw invalid();
+  }
+  return value as Invoice;
+}
+
+function isReportStatus(value: unknown): value is ReportStatus {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(REPORT_STATUSES, value);
+}
+
+/** The chapters that can be shown, in the order to read them. A chapter without a text is left out, not replaced. */
+function toSections(value: unknown): ReportSection[] {
+  if (!Array.isArray(value)) return [];
+  const sections: ReportSection[] = [];
+  const keys = new Set<string>();
+  value.forEach((item: unknown, index) => {
+    if (!isRecord(item) || typeof item.body_md !== 'string' || item.body_md.trim() === '') return;
+    let key = typeof item.key === 'string' && item.key !== '' ? item.key : `section-${String(index)}`;
+    // Two chapters under one key are two chapters: the later one gets a key of its own, and both are shown.
+    while (keys.has(key)) key = `${key}-${String(index)}`;
+    keys.add(key);
+    sections.push({
+      key,
+      title: text(item.title),
+      body_md: item.body_md,
+      // Without a number the chapter keeps the place the server gave it in the list.
+      order: typeof item.order === 'number' && Number.isFinite(item.order) ? item.order : index,
+    });
+  });
+  // The sort is stable: chapters with the same number stay as the server listed them.
+  return sections.sort((a, b) => a.order - b.order);
+}
+
+function toReport(value: unknown): Report {
+  // A status this build does not know is not guessed at: the screen would show the wrong thing with confidence.
+  if (!isRecord(value) || typeof value.report_id !== 'string' || value.report_id === '' || !isReportStatus(value.status)) throw invalid();
+  const isPaid = value.is_paid === true;
+  const progress = typeof value.progress === 'number' && Number.isFinite(value.progress) ? value.progress : null;
+  const pdfUrl = text(value.pdf_url);
+  return {
+    report_id: value.report_id,
+    chart_id: typeof value.chart_id === 'string' ? value.chart_id : null,
+    status: value.status,
+    progress: progress === null ? null : Math.min(100, Math.max(0, Math.round(progress))),
+    is_paid: isPaid,
+    teaser: text(value.teaser),
+    // Whatever came with an unpaid report goes no further than this line: not to a screen, not to the DOM.
+    sections: isPaid ? toSections(value.sections) : [],
+    pdf_url: isPaid && pdfUrl !== '' ? pdfUrl : null,
+  };
+}
+
 export function createApi(options: HttpClientOptions): Api {
   const request = createHttpClient(options);
 
   return {
     async getMe(signal) {
-      const me = await request<unknown>('GET', PATHS.me, { signal });
-      if (!isRecord(me)) throw invalid();
-      return me as Me;
+      return toMe(await request<unknown>('GET', PATHS.me, { signal }));
+    },
+
+    async deleteMe(signal) {
+      await request<unknown>('DELETE', PATHS.me, { signal, retry: false });
     },
 
     async resolveGeo(query, signal) {
@@ -174,6 +393,20 @@ export function createApi(options: HttpClientOptions): Api {
     async sendEvents(events, { keepalive } = {}) {
       const body: EventsBatch = { events };
       await request<unknown>('POST', PATHS.events, { body, keepalive, retry: false });
+    },
+
+    async createInvoice(input, signal) {
+      return toInvoice(await request<unknown>('POST', PATHS.invoice, { body: input, signal, retry: false }));
+    },
+
+    async orderReport(input, idempotencyKey, signal) {
+      // Safe to repeat after a 5xx: the key makes the second attempt the same order.
+      const headers = { [IDEMPOTENCY_HEADER]: idempotencyKey };
+      return toReport(await request<unknown>('POST', PATHS.reports, { body: input, headers, signal }));
+    },
+
+    async getReport(reportId, signal) {
+      return toReport(await request<unknown>('GET', PATHS.report.replace('{report_id}', encodeURIComponent(reportId)), { signal }));
     },
   };
 }
