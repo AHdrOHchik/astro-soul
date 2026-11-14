@@ -3,7 +3,9 @@
  * part of this package). Enabled with API_MOCK=1 for `vite` and `vite preview`;
  * it is never part of the production bundle.
  */
+import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { PLANS } from '@astro-soul/shared';
 import type { Connect, Plugin } from 'vite';
 import { EVENT_NAMES } from '../src/analytics/events.ts';
 import {
@@ -17,7 +19,8 @@ import {
   RETURNING_INPUT,
   SCENARIO,
 } from './fixtures.ts';
-import type { ChartCreateRequest, ChartResponse, EventsAccepted, FieldError, Problem } from './fixtures.ts';
+import type { ChartCreateRequest, ChartResponse, EventsAccepted, FieldError, Invoice, MockAccount, PlanCode, Problem } from './fixtures.ts';
+import { isRefunded, mockPdf, REPORT_SCENARIOS, viewOf, type MockReport, type ReportPace, type ReportScenario } from './reports.ts';
 import { renderMockWheel } from './wheel.ts';
 import { PNG_SIZES, renderMockWheelPng } from './wheelPng.ts';
 
@@ -25,9 +28,10 @@ export interface MockApiOptions {
   /** Artificial latency, so loading states can be seen. */
   delayMs: number;
   /**
-   * Scenario for GET /me: `401`, `500`, or `returning`, a user who already has a chart.
-   * Anything else is a new user. Either way the mock remembers the chart built last,
-   * until it is restarted.
+   * Who the user is, a list of words separated by commas: `401` and `500` fail GET /me;
+   * `returning` already has a chart; `paid` has, besides the chart, the full report bought
+   * for it; `subscriber` has a chart and a monthly subscription. Nothing = a new user.
+   * Either way the mock remembers what happens to its user until it is restarted.
    */
   me?: string;
   /**
@@ -36,6 +40,16 @@ export interface MockApiOptions {
    * whose texts are newer than the app's.
    */
   consentVersion?: string;
+  /** How every report of this run ends: `ready` (the default), `failed`, `refunded` or `stuck`. */
+  report?: string;
+  /** How long one chapter of a report takes, so the progress can be watched or hurried. */
+  reportChapterMs?: number;
+  /** POST /billing/invoice: `422` and `500` fail it, `price` makes the invoice dearer than the app expects. */
+  invoice?: string;
+  /** DELETE /me: `409`, `401` or `500` fail it; by default everything is deleted. */
+  deletion?: string;
+  /** A finished report has a PDF to download. Off by default, as in apps/api, which makes none yet. */
+  pdf?: boolean;
 }
 
 const PREFIX = '/api/v1';
@@ -78,15 +92,17 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 /*
- * The user-facing texts of the mock are the ones apps/api sends at contract 1.4.0
- * (i18n/ru.ts, modules/charts/charts.dto.ts, modules/geo/geo.service.ts,
- * modules/events/events.dto.ts), so a screen looks in the mock the way it will
- * with the real server.
+ * The user-facing texts of the mock are the ones apps/api sends (i18n/ru.ts,
+ * modules/charts/charts.dto.ts, modules/geo/geo.service.ts, modules/events/events.dto.ts;
+ * for reports, invoices and the deletion, the ones of the backend's pull request #20,
+ * which is where those answers are written), so a screen looks in the mock the way it
+ * will with the real server.
  */
 const MESSAGE = {
   UNAUTHORIZED: 'Не удалось подтвердить вход. Открой приложение заново из чата с ботом.',
   FORBIDDEN: 'Это действие тебе недоступно.',
   NOT_FOUND: 'Такой страницы нет. Обнови приложение.',
+  VALIDATION_FAILED: 'Проверь введённые данные.',
   RATE_LIMITED: 'Слишком много запросов. Попробуй через минуту.',
   INTERNAL: 'Что-то сломалось на нашей стороне. Мы уже разбираемся.',
   GEO_NOT_FOUND: 'Поиск городов временно недоступен. Попробуй ещё раз через минуту.',
@@ -154,7 +170,7 @@ const EVENTS = {
 const EVENT_MESSAGE = {
   events: 'События должны быть батчем от 1 до 20 штук',
   'events.name': 'Такого события нет в контракте',
-  'events.at': 'Время события — ISO 8601 с часовым поясом',
+  'events.occurred_at': 'Время события — ISO 8601 с часовым поясом',
   'events.props': 'Свойства события — короткие строки, числа или флаги',
 } as const;
 
@@ -167,8 +183,9 @@ const isEventProp = (value: unknown) =>
 function eventShapeError(event: unknown): EventField | undefined {
   if (!isRecord(event)) return 'events';
   if (typeof event.name !== 'string' || !Object.hasOwn(EVENT_NAMES, event.name)) return 'events.name';
-  if (typeof event.at !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:\d{2})$/.test(event.at) || Number.isNaN(Date.parse(event.at))) {
-    return 'events.at';
+  const { occurred_at: at } = event;
+  if (typeof at !== 'string' || !/^\d{4}-\d{2}-\d{2}T[\d:.]+(Z|[+-]\d{2}:\d{2})$/.test(at) || Number.isNaN(Date.parse(at))) {
+    return 'events.occurred_at';
   }
   if (event.props !== undefined && !(isRecord(event.props) && Object.values(event.props).every(isEventProp))) return 'events.props';
   return undefined;
@@ -191,10 +208,10 @@ export function eventsAnswer(body: unknown, now: number): { errors: FieldError[]
   }
   if (fields.size > 0) return { errors: [...fields].map((field) => ({ field, message: EVENT_MESSAGE[field] })) };
 
-  const accepted = (events as { at: string; props?: Record<string, unknown> }[]).filter((event) => {
+  const accepted = (events as { occurred_at: string; props?: Record<string, unknown> }[]).filter((event) => {
     const forbidden: readonly string[] = EVENTS.forbiddenProps;
     if (Object.keys(event.props ?? {}).some((key) => forbidden.includes(key))) return false;
-    const at = Date.parse(event.at);
+    const at = Date.parse(event.occurred_at);
     return at <= now + EVENTS.maxAheadMs && at >= now - EVENTS.maxAgeMs;
   });
   return { accepted: accepted.length };
@@ -229,14 +246,118 @@ function chartRequestErrors(body: unknown, consentVersion: string): FieldError[]
   return errors;
 }
 
-function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_VERSION }: MockApiOptions) {
-  // All the mock keeps between requests: the user's chart and the birth data it was built from.
-  let current: { key: string; chart: ChartResponse } | null =
-    meScenario === 'returning' ? { key: inputKey(RETURNING_INPUT), chart: buildChart(RETURNING_INPUT) } : null;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `Idempotency-Key` as apps/api takes it (`reports.dto.ts`). */
+const IDEMPOTENCY_KEY = /^[\w.:-]{1,64}$/;
+
+/** apps/api counts invoices: no more than three an hour for one user (payments.md §5). */
+const INVOICES_PER_HOUR = 3;
+/** What `API_MOCK_INVOICE=price` adds to the price: an invoice that is not the one the app expected. */
+const PRICE_SURPRISE = 50;
+
+/** Before a report is taken into work, and after that per chapter. */
+const REPORT_QUEUED_MS = 1500;
+const REPORT_CHAPTER_MS = 2500;
+
+const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+
+function isPlanCode(value: unknown): value is PlanCode {
+  return typeof value === 'string' && Object.hasOwn(PLANS, value);
+}
+
+function createHandler({
+  delayMs,
+  me: meScenario = '',
+  consentVersion = MOCK_CONSENT_VERSION,
+  report: reportScenario,
+  reportChapterMs = REPORT_CHAPTER_MS,
+  invoice: invoiceScenario,
+  deletion: deletionScenario,
+  pdf = false,
+}: MockApiOptions) {
+  const who = meScenario.split(',').map((word) => word.trim());
+  const startsWithChart = who.some((word) => word === 'returning' || word === 'paid' || word === 'subscriber');
+  const scenario: ReportScenario = REPORT_SCENARIOS.find((name) => name === reportScenario) ?? 'ready';
+  const pace: ReportPace = { queuedMs: REPORT_QUEUED_MS, chapterMs: reportChapterMs };
+
+  // All the mock keeps between requests: the user's chart with the birth data it was built from,
+  // what the user has bought, and the reports ordered.
+  let current: { key: string; chart: ChartResponse } | null = startsWithChart
+    ? { key: inputKey(RETURNING_INPUT), chart: buildChart(RETURNING_INPUT) }
+    : null;
+  /** The charts the full report is bought for. */
+  const paidCharts = new Set<string>(who.includes('paid') ? [MOCK_CHART_ID] : []);
+  let subscription: MockAccount['subscription'] = who.includes('subscriber') ? { plan: 'month', expiresAt: Date.now() + MONTH_MS } : null;
+  const reports = new Map<string, MockReport>();
+  /** Idempotency keys already used, with the report each one ordered. */
+  const reportKeys = new Map<string, string>();
+  let latestReportId: string | null = null;
+  /** The invoices made, by link: what a payment of each one buys. */
+  const invoices = new Map<string, { plan: PlanCode; chartId: string | null }>();
+
+  /** A refund takes the purchase back: seen here, the way the job of apps/api does it between requests. */
+  const settleRefunds = (now: number) => {
+    for (const report of reports.values()) if (isRefunded(report, pace, now)) paidCharts.delete(report.chartId);
+  };
+  const account = (): MockAccount => ({
+    chartId: current?.chart.chart.chart_id ?? null,
+    subscription,
+    fullReport: paidCharts.size > 0,
+    latestReportId,
+  });
+  const pdfUrlOf = (reportId: string) => (pdf ? `${PREFIX}/reports/${reportId}/report.pdf?sig=mock-signature` : null);
+  const reportView = (report: MockReport, now: number, paid: boolean) => viewOf(report, pace, now, paid, pdfUrlOf(report.id));
+
+  /** What Telegram's webhook does on the real server: the payment of an invoice becomes what it bought. */
+  const pay = (link: string) => {
+    const invoice = invoices.get(link);
+    if (!invoice) return;
+    const plan = PLANS[invoice.plan];
+    if (plan.kind === 'subscription') subscription = { plan: plan.subscriptionPlan as 'week' | 'month' | 'year', expiresAt: Date.now() + plan.periodSeconds * 1000 };
+    else if (plan.grant === 'report' && invoice.chartId !== null) paidCharts.add(invoice.chartId);
+  };
 
   return async function handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    const route = `${req.method ?? 'GET'} ${url.pathname.slice(PREFIX.length)}`;
+    const path = url.pathname.slice(PREFIX.length);
+    const route = `${req.method ?? 'GET'} ${path}`;
     await sleep(delayMs);
+
+    if (route === 'POST /__mock/payments') {
+      // Not a part of the API: stands in for Telegram telling the server that an invoice is paid.
+      // `delay_ms` plays a webhook that is late.
+      const body = await readJson(req);
+      const link = isRecord(body) && typeof body.invoice_link === 'string' ? body.invoice_link : '';
+      const delay = isRecord(body) && typeof body.delay_ms === 'number' ? body.delay_ms : 0;
+      setTimeout(() => {
+        pay(link);
+      }, delay);
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
+    if (route === 'POST /__mock/revoke') {
+      // Not a part of the API either: takes every purchase of the report back, the way a refund through support does.
+      // What is left of a report then is what the server shows unpaid: its opening.
+      paidCharts.clear();
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+
+    const pdfOf = /^\/reports\/([^/]+)\/report\.pdf$/.exec(path);
+    if (pdfOf && (req.method === 'GET' || req.method === 'HEAD')) {
+      // Public by signed token, like the wheel.
+      if (!pdf || !reports.has(pdfOf[1] ?? '') || !url.searchParams.get('sig')) {
+        sendProblem(res, 404, 'NOT_FOUND', MESSAGE.NOT_FOUND);
+        return;
+      }
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="report.pdf"');
+      res.end(req.method === 'HEAD' ? undefined : mockPdf());
+      return;
+    }
 
     const wheel = { svg: `GET /charts/${MOCK_CHART_ID}/wheel.svg`, png: `GET /charts/${MOCK_CHART_ID}/wheel.png` };
     if (route === wheel.svg || route === wheel.png) {
@@ -269,10 +390,121 @@ function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_
       return;
     }
 
+    const now = Date.now();
+    settleRefunds(now);
+
     if (route === 'GET /me') {
-      if (meScenario === '401') sendProblem(res, 401, 'UNAUTHORIZED', MESSAGE.UNAUTHORIZED);
-      else if (meScenario === '500') sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
-      else send(res, 200, buildMe(current?.chart.chart.chart_id ?? null));
+      if (who.includes('401')) sendProblem(res, 401, 'UNAUTHORIZED', MESSAGE.UNAUTHORIZED);
+      else if (who.includes('500')) sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
+      else send(res, 200, buildMe(account(), now));
+      return;
+    }
+
+    if (route === 'DELETE /me') {
+      if (deletionScenario === '409') {
+        // The text and the reason of apps/api (`me.service.ts`) for a refund that did not go through.
+        sendProblem(res, 409, 'CONFLICT', 'Не получилось вернуть звёзды за незавершённую оплату. Напиши в поддержку — вернём вручную.', {
+          reason: 'refund_failed',
+        });
+      } else if (deletionScenario === '401') {
+        sendProblem(res, 401, 'UNAUTHORIZED', MESSAGE.UNAUTHORIZED);
+      } else if (deletionScenario === '500') {
+        sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
+      } else {
+        // Everything about the user goes; the subscription lives on to the end of its period, as on the server.
+        current = null;
+        paidCharts.clear();
+        reports.clear();
+        reportKeys.clear();
+        latestReportId = null;
+        res.statusCode = 204;
+        res.end();
+      }
+      return;
+    }
+
+    if (route === 'POST /billing/invoice') {
+      const body = await readJson(req);
+      const plan = isRecord(body) ? body.plan_code : undefined;
+      const chartId = isRecord(body) && typeof body.chart_id === 'string' ? body.chart_id : null;
+      if (invoiceScenario === '500') {
+        sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
+      } else if (invoiceScenario === '422') {
+        // A 422 without `field_errors`: the app has to read this form too.
+        sendProblem(res, 422, 'VALIDATION_FAILED', MESSAGE.VALIDATION_FAILED);
+      } else if (!isPlanCode(plan)) {
+        sendInvalid(res, [{ field: 'plan_code', message: 'plan_code — один из тарифов каталога' }]);
+      } else if (plan === 'one_149' && chartId === null) {
+        sendInvalid(res, [{ field: 'chart_id', message: 'Выбери карту, для которой покупаешь разбор' }]);
+      } else if (chartId !== null && chartId !== current?.chart.chart.chart_id) {
+        sendProblem(res, 404, 'NOT_FOUND', MESSAGE.NOT_FOUND, { reason: 'chart_not_found' });
+      } else if (invoices.size >= INVOICES_PER_HOUR) {
+        // The limit is checked before anything else, as in apps/api: also for a plan that already has an invoice.
+        sendProblem(res, 429, 'RATE_LIMITED', MESSAGE.RATE_LIMITED, { reason: 'invoice_limits', hour_limit: INVOICES_PER_HOUR });
+      } else {
+        const { stars, kind, periodSeconds } = PLANS[plan];
+        // The same plan again gets the invoice it already has: a double tap is not a second invoice.
+        let link = [...invoices].find(([, made]) => made.plan === plan && made.chartId === chartId)?.[0];
+        if (link === undefined) {
+          link = `https://t.me/$mock${String(invoices.size + 1)}${randomUUID().slice(0, 8)}`;
+          invoices.set(link, { plan, chartId });
+        }
+        const invoice: Invoice = {
+          invoice_link: link,
+          plan_code: plan,
+          stars: invoiceScenario === 'price' ? stars + PRICE_SURPRISE : stars,
+          is_subscription: kind === 'subscription',
+          subscription_period_sec: periodSeconds,
+        };
+        send(res, 201, invoice);
+      }
+      return;
+    }
+
+    if (route === 'POST /reports') {
+      const body = await readJson(req);
+      const key = req.headers['idempotency-key'];
+      const chartId = isRecord(body) ? body.chart_id : undefined;
+      const type = isRecord(body) ? body.type : undefined;
+      if (typeof key !== 'string' || !IDEMPOTENCY_KEY.test(key)) {
+        sendInvalid(res, [{ field: 'Idempotency-Key', message: 'Повтори заказ — приложение не передало ключ идемпотентности' }]);
+      } else if (typeof chartId !== 'string' || !UUID.test(chartId)) {
+        sendInvalid(res, [{ field: 'chart_id', message: 'Выбери карту, по которой нужен разбор' }]);
+      } else if (type !== 'full') {
+        sendInvalid(res, [{ field: 'type', message: 'Пока собираю только полный разбор — совместимость и карту года сделаю позже' }]);
+      } else if (chartId !== current?.chart.chart.chart_id) {
+        sendProblem(res, 404, 'NOT_FOUND', 'Такой карты нет. Построй карту заново', { reason: 'chart_not_found' });
+      } else {
+        const known = reports.get(reportKeys.get(key) ?? '');
+        const latest = [...reports.values()].filter((report) => report.chartId === chartId).pop();
+        const latestStatus = latest && reportView(latest, now, false).status;
+        if (known) {
+          // The answer of apps/api to a key it knows carries no chapters and `is_paid: false`,
+          // whatever is bought: what the report is like is the business of GET.
+          send(res, 202, reportView(known, now, false));
+        } else if (latest && latestStatus !== 'failed' && latestStatus !== 'refunded') {
+          // A report of this chart is in work or done: a second order is that same report.
+          send(res, 202, reportView(latest, now, paidCharts.size > 0));
+        } else if (!paidCharts.has(chartId)) {
+          sendProblem(res, 402, 'PAYMENT_REQUIRED', 'Полный разбор — отдельная покупка. Оформи её на экране разбора', {
+            reason: 'report_not_paid',
+          });
+        } else {
+          const report: MockReport = { id: randomUUID(), chartId, createdAt: now, scenario };
+          reports.set(report.id, report);
+          reportKeys.set(key, report.id);
+          latestReportId = report.id;
+          send(res, 202, reportView(report, now, true));
+        }
+      }
+      return;
+    }
+
+    const reportOf = /^\/reports\/([^/]+)$/.exec(path);
+    if (reportOf && req.method === 'GET') {
+      const report = reports.get(reportOf[1] ?? '');
+      if (report) send(res, 200, reportView(report, now, paidCharts.size > 0));
+      else sendProblem(res, 404, 'NOT_FOUND', 'Такого разбора нет. Обнови приложение', { reason: 'report_not_found' });
       return;
     }
 
@@ -375,12 +607,33 @@ function createHandler({ delayMs, me: meScenario, consentVersion = MOCK_CONSENT_
   };
 }
 
+/** The scenario switches a request to the reset route may name, as the query spells them. */
+function scenarioFrom(query: URLSearchParams): Partial<MockApiOptions> {
+  const chapterMs = Number(query.get('chapter_ms'));
+  return {
+    me: query.get('me') ?? undefined,
+    report: query.get('report') ?? undefined,
+    invoice: query.get('invoice') ?? undefined,
+    deletion: query.get('delete') ?? undefined,
+    pdf: query.get('pdf') === '1',
+    ...(chapterMs > 0 && { reportChapterMs: chapterMs }),
+  };
+}
+
 export function mockApi(options: MockApiOptions): Plugin {
-  const handle = createHandler(options);
+  let handle = createHandler(options);
   const middleware: Connect.NextHandleFunction = (req, res, next) => {
     const url = new URL(req.url ?? '/', 'http://mock.invalid');
     if (!url.pathname.startsWith(`${PREFIX}/`)) {
       next();
+      return;
+    }
+    if (url.pathname === `${PREFIX}/__mock/reset`) {
+      // Not a part of the API: starts the mock over, with the user and the scenarios the query names
+      // (`?me=paid&report=failed`), so that another state of a screen is one address away, not one restart.
+      const scenario = { ...options, me: undefined, report: undefined, invoice: undefined, deletion: undefined, ...scenarioFrom(url.searchParams) };
+      handle = createHandler(scenario);
+      send(res, 200, { me: scenario.me ?? '', report: scenario.report ?? 'ready', invoice: scenario.invoice ?? '', delete: scenario.deletion ?? '', pdf: scenario.pdf });
       return;
     }
     handle(req, res, url).catch((error: unknown) => {
