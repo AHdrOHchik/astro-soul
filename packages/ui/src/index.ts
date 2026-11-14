@@ -15,5 +15,6 @@ export { Skeleton, SkeletonGroup, type SkeletonProps } from './Skeleton';
 export { Stack, type StackProps } from './Stack';
 export { StateView, type StateViewProps } from './StateView';
 export { Steps, type StepsProps } from './Steps';
+export { TextArea, type TextAreaProps } from './TextArea';
 export { TextField, type TextFieldProps } from './TextField';
 export { VisuallyHidden } from './VisuallyHidden';
