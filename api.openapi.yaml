@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.4.0
+  version: 1.5.1
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -89,6 +89,35 @@ info:
       • `GET /admin/metrics`: агрегаты по воронке считаются по
         `events.occurred_at` (клиентское время), а не по `created_at`.
 
+    1.5.0 — промежуточная версия, в `main` не попадала; её правки целиком
+    вошли в 1.5.1.
+
+    1.5.1 — сведение ветвей контракта по итогам приёмки QA-001. Правки против
+    1.4.0, ничего не удалено:
+      • `ClientEvent.occurred_at` — каноническое имя клиентского времени (было
+        `at`). Так поле называлось в БД, метриках и задании приёмки; теперь
+        одно имя на всех слоях. Добавлено необязательное `ClientEvent.chart_id`;
+      • `x-analytics-events` — объединение двух наборов имён: фронт вёл
+        `onboarding_*`/`mini_reading_view`/`wheel_shared`/`checkout_started`,
+        бэк — `consent_view`/`birth_date_done`/`screen_view`/`share_clicked`/
+        `checkout_opened`. Оба набора приняты, пары зафиксированы в
+        `x-event-aliases`, сведение в один набор — в 1.6.0;
+      • `x-analytics-server-events` — события, которые пишет только сервер
+        (`payment_rejected`, `refund_issued`, `subscription_expired`);
+      • `Me` в `required`: `has_chart`, `chart_id`, `entitlements`,
+        `onboarding_step` — по ним клиент уже решает, какой экран показать;
+        добавлен `Me.latest_report_id`;
+      • `ChartResponse.wheel_png_url` в `required`;
+      • `GET /admin/metrics`: `payments_rejected_30d`, `amount_mismatch_30d`,
+        `refunded_30d`, `pending_payments_now` — отказ по деньгам обязан быть
+        виден в метриках, а не только в логах (QA-11);
+      • `Problem.details`: `reason` (машинная причина), `quota_code`,
+        `reset_at`; заголовок `X-Request-Id` обязателен и на ошибках разбора
+        тела (QA-12b);
+      • требования к коду, не выразимые схемой: `successful_payment` обязан
+        сверять наличие инвойса, сумму и владельца; при отсутствии
+        `subscription_expiration_date` продление идёт от текущего `expires_at`.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
@@ -117,6 +146,12 @@ components:
       description: Сырая строка initData из Telegram.WebApp
 
   headers:
+    X-Request-Id:
+      schema: { type: string }
+      description: |
+        Тот же идентификатор, что в `Problem.request_id`. Сервер отдаёт его на
+        любом ответе, включая ошибку разбора тела (битый JSON): без него
+        поддержка не найдёт запрос в логах.
     RateLimit-Remaining:
       schema: { type: integer }
       description: Остаток квоты в текущем окне
@@ -169,6 +204,21 @@ components:
                 Заполняется для `VALIDATION_FAILED`: список полей с ошибками.
                 Порядок отражает порядок проверки, дубликатов по `field` нет.
               items: { $ref: '#/components/schemas/FieldError' }
+            reason:
+              type: string
+              description: |
+                Машинная причина, когда одного `code` мало: `signature_mismatch`,
+                `auth_date_too_old`, `empty` (нет заголовка авторизации),
+                `provider_timeout | provider_unavailable | not_configured` (гео),
+                `no_invoice | amount_mismatch | unknown_plan` (платёж).
+                Незнакомое значение клиент игнорирует.
+            quota_code:
+              type: string
+              description: Квота, в которую упёрлись (`QUOTA_EXCEEDED`)
+            reset_at:
+              type: string
+              format: date-time
+              description: Когда квота обнулится (`QUOTA_EXCEEDED`)
 
     SubscriptionState:
       type: object
@@ -201,7 +251,9 @@ components:
 
     Me:
       type: object
-      required: [user_id, is_new, subscription, quotas, has_profile]
+      required:
+        [user_id, is_new, has_profile, has_chart, chart_id, subscription,
+         entitlements, quotas, onboarding_step]
       properties:
         user_id: { type: string, description: Внутренний UUID, не telegram_id }
         display_name: { type: [string, 'null'] }
@@ -215,6 +267,13 @@ components:
             Карта пользователя для `GET /charts/{chart_id}` и `/charts/current`.
             `null`, пока карты нет. Сервер возвращает поле всегда; в `required`
             не включено, чтобы не ломать уже собранный клиент.
+        latest_report_id:
+          type: [string, 'null']
+          format: uuid
+          description: |
+            Последний заказанный разбор (готовый или в работе) — чтобы клиент
+            показал «открыть разбор» без отдельного запроса. `null`, если
+            разборов не было.
         subscription: { $ref: '#/components/schemas/SubscriptionState' }
         entitlements: { $ref: '#/components/schemas/Entitlements' }
         quotas:
@@ -289,7 +348,7 @@ components:
         Единый конверт карты (1.4.0). Один и тот же объект отдают
         `POST /charts` (201 и 200), `GET /charts/{chart_id}` и
         `GET /charts/current` — никаких отдельных конвертов под метод.
-      required: [chart, mini_reading, warnings, wheel_url, is_restored]
+      required: [chart, mini_reading, warnings, wheel_url, wheel_png_url, is_restored]
       properties:
         chart: { $ref: '#/components/schemas/Chart' }
         is_restored:
@@ -445,6 +504,9 @@ components:
             Насколько известно время. Сохраняется в `profiles.time_mode` и
             возвращается в `Chart.birth.time_precision`.
             `unknown` ⇒ дома и Асцендент не рассчитываются.
+            Поле по-прежнему обязательное в `required`: значение по умолчанию
+            `exact` плата за забытое поле — неверная карта, а это молчаливая
+            ошибка, которую пользователь не увидит.
         birth_place: { $ref: '#/components/schemas/GeoPlace' }
         consent:
           type: object
@@ -470,38 +532,28 @@ components:
 
     ClientEvent:
       type: object
-      required: [name, at]
+      required: [name, occurred_at]
       properties:
         name:
           type: string
           description: Имя события из `x-analytics-events`
-          enum:
-            - app_open
-            - consent_view
-            - consent_accepted
-            - birth_date_done
-            - birth_time_done
-            - birth_place_done
-            - step_back
-            - place_search
-            - place_search_empty
-            - place_search_failed
-            - chart_requested
-            - chart_created
-            - chart_failed
-            - chart_restored
-            - validation_failed
-            - paywall_view
-            - checkout_opened
-            - payment_succeeded
-            - payment_cancelled
-            - share_clicked
-            - screen_view
-        at:
+          enum: [app_open, onboarding_start, onboarding_birth_date_set, onboarding_time_set, onboarding_place_set, consent_view, consent_accepted, birth_date_done, birth_time_done, birth_place_done, step_back, place_search, place_search_empty, place_search_failed, chart_requested, chart_created, chart_failed, chart_restored, mini_reading_view, wheel_shared, validation_failed, validation_failed_client, paywall_view, checkout_started, checkout_opened, payment_succeeded, payment_cancelled, report_requested, report_ready_view, forecast_view, ask_used, quota_exhausted, subscription_expired_seen, data_deleted, error_shown, screen_view, share_clicked]
+        occurred_at:
           type: string
           format: date-time
-          description: Время события на устройстве (ISO 8601 с часовым поясом)
+          description: |
+            Время события на устройстве (ISO 8601 с часовым поясом). Так поле
+            называется везде — в запросе, в БД (`events.occurred_at`) и в
+            метриках: одно имя на все слои, синоним `at` отменён.
+            Старше суток или позже серверного времени более чем на 5 минут —
+            событие отбрасывается.
           example: "2026-11-10T12:00:00.000Z"
+        chart_id:
+          type: [string, 'null']
+          format: uuid
+          description: |
+            Карта, к которой относится событие, если применимо.
+            Не входит в `required`: у `app_open` карты ещё нет.
         props:
           type: object
           additionalProperties:
@@ -894,7 +946,7 @@ paths:
         * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
           рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
           события отбрасываются на сервере и в БД не попадают;
-        * `at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
+        * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
           или позже серверного времени более чем на 5 минут — отбрасывается;
         * лимит: общий, 60 запросов в минуту; `429` клиент игнорирует.
       security: [{ TelegramInitData: [] }]
@@ -1083,7 +1135,7 @@ paths:
         Без ПДн: только агрегаты.
 
         Воронка считается по `events.occurred_at` — клиентскому времени
-        события, — поэтому опоздавший батч (`at` до суток назад) попадает в
+        события, — поэтому опоздавший батч (`occurred_at` до суток назад) попадает в
         свой день, а не в день доставки. Окно — 30 дней, `occurred_at` не
         старше суток от серверного времени (см. `POST /events`).
       security: [{ TelegramInitData: [] }]
@@ -1102,6 +1154,18 @@ paths:
                   stars_received_30d: { type: integer }
                   llm_cost_usd_30d: { type: number }
                   reports_failed_30d: { type: integer }
+                  payments_rejected_30d:
+                    type: integer
+                    description: |
+                      Платежи, по которым доступ не выдан: нет серверного инвойса,
+                      сумма не совпала с ценой плана, неизвестный план.
+                      Главный счётчик QA-11 — отказ по деньгам должен быть виден
+                      в метриках, а не только в логах.
+                  amount_mismatch_30d: { type: integer }
+                  refunded_30d: { type: integer }
+                  pending_payments_now:
+                    type: integer
+                    description: Платежи `processed = false` прямо сейчас
                   events_30d:
                     type: object
                     description: |
@@ -1122,11 +1186,22 @@ paths:
                       payment_succeeded: { type: integer }
         '403': { description: FORBIDDEN }
 
-# Закрытый список событий продукта (контракт 1.4.0). Совпадает с
-# ANALYTICS_EVENTS в apps/api/src/modules/events/events.dto.ts: новое событие
-# добавляется здесь и в коде одним PR, иначе сервер его отбросит.
+# Закрытый список событий, которые отправляет КЛИЕНТ (контракт 1.5.1).
+# Совпадает с ANALYTICS_EVENTS в apps/api/src/modules/events/events.dto.ts и с
+# enum ClientEvent.name: новое имя добавляется здесь и в коде ОДНИМ PR, иначе
+# сервер отбросит весь батч (422) и данные потеряются молча.
+#
+# Почему имён больше, чем экранов: до 1.5.1 фронт и бэк вели два разных набора
+# имён для одних и тех же шагов. Оба приняты, чтобы не терять события, и оба
+# помечены в x-event-aliases. В 1.6.0 останется по одному имени на шаг, второй
+# будет удалён — это отдельный PR, после того как фронт подтвердит фактические
+# имена в отчёте.
 x-analytics-events:
   - app_open
+  - onboarding_start
+  - onboarding_birth_date_set
+  - onboarding_time_set
+  - onboarding_place_set
   - consent_view
   - consent_accepted
   - birth_date_done
@@ -1140,13 +1215,47 @@ x-analytics-events:
   - chart_created
   - chart_failed
   - chart_restored
+  - mini_reading_view
+  - wheel_shared
   - validation_failed
+  - validation_failed_client
   - paywall_view
+  - checkout_started
   - checkout_opened
   - payment_succeeded
   - payment_cancelled
-  - share_clicked
+  - report_requested
+  - report_ready_view
+  - forecast_view
+  - ask_used
+  - quota_exhausted
+  - subscription_expired_seen
+  - data_deleted
+  - error_shown
   - screen_view
+  - share_clicked
+
+# Пары «одно и то же событие под двумя именами»: слева — имя, справа — синоним.
+# Живут только до 1.6.0. Считать воронку по объединению пар, а не выборочно.
+x-event-aliases:
+  onboarding_start: [app_open]
+  onboarding_birth_date_set: [birth_date_done]
+  onboarding_time_set: [birth_time_done]
+  onboarding_place_set: [birth_place_done]
+  mini_reading_view: [screen_view]
+  wheel_shared: [share_clicked]
+  checkout_started: [checkout_opened]
+  validation_failed_client: [validation_failed]
+
+# События ТОЛЬКО серверные: клиент их не отправляет (попытка отправить — 422),
+# API пишет их в таблицу events сам. В метриках видны счётчиками.
+x-analytics-server-events:
+  - payment_rejected
+  - refund_issued
+  - subscription_expired
+# payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan)
+# refund_issued    — props: code (report_failed | admin | delete_with_pending)
+# subscription_expired — props: last_plan
 
 # Ключи, которых не может быть в `props` события (`POST /events`).
 # Совпадает с BANNED_PROP_KEYS в apps/api/src/modules/events/events.dto.ts:
