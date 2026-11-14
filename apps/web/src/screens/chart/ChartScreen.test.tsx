@@ -17,8 +17,11 @@ import {
   fakeApi,
   fakeTelegram,
   rejection,
+  report as reportFixture,
+  REPORT_ID,
+  sections,
 } from '../../test/fixtures';
-import { ChartScreen } from './ChartScreen';
+import { ChartScreen, type ChartReportProps } from './ChartScreen';
 
 const copy = ru.chart;
 const WHEEL_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`;
@@ -42,9 +45,14 @@ interface SetupOptions {
   listens?: boolean;
   /** Renders as a development build does: every effect runs twice, the first run cancelled at once. */
   strict?: boolean;
+  /** What the app knows about the user's full report; by default nothing is bought and no report is known. */
+  report?: Partial<ChartReportProps>;
 }
 
-function setup({ result, current, botUsername = '', api = fakeApi(), listens = true, strict = false }: SetupOptions = {}) {
+/** The full report as the chart screen of a user who has bought nothing sees it. */
+const NO_REPORT: ChartReportProps = { fullReport: false, reportId: null, onBuy: vi.fn(), onOrder: vi.fn(), onOpen: vi.fn() };
+
+function setup({ result, current, botUsername = '', api = fakeApi(), listens = true, strict = false, report }: SetupOptions = {}) {
   if (result) api.createChart.mockImplementation(() => Promise.resolve(result));
   if (current !== undefined) api.getCurrentChart.mockResolvedValue(current);
   const telegram = fakeTelegram();
@@ -52,6 +60,7 @@ function setup({ result, current, botUsername = '', api = fakeApi(), listens = t
   const onEdit = vi.fn();
   const onRejected = vi.fn<(errors: FieldError[]) => void>();
   const onMissing = vi.fn();
+  const reportProps = { ...NO_REPORT, onBuy: vi.fn<ChartReportProps['onBuy']>(), ...report };
   const chartScreen = (
     <ChartScreen
       api={api}
@@ -63,10 +72,12 @@ function setup({ result, current, botUsername = '', api = fakeApi(), listens = t
       onEdit={onEdit}
       onRejected={listens ? onRejected : undefined}
       onMissing={onMissing}
+      report={reportProps}
+      onOpenSettings={vi.fn()}
     />
   );
   const view = render(strict ? <StrictMode>{chartScreen}</StrictMode> : chartScreen);
-  return { api, telegram, analytics, onEdit, onRejected, onMissing, user: userEvent.setup(), ...view };
+  return { api, telegram, analytics, onEdit, onRejected, onMissing, report: reportProps, user: userEvent.setup(), ...view };
 }
 
 /** A reading and a wheel path as the client hands them over when the answer carried neither. */
@@ -190,23 +201,78 @@ describe('ChartScreen', () => {
     const api = fakeApi();
     api.createChart.mockResolvedValue(roughly);
     rerender(
-      <ChartScreen api={api} telegram={fakeTelegram()} request={{ ...request }} apiBaseUrl="" botUsername="" track={vi.fn()} onEdit={vi.fn()} />,
+      <ChartScreen
+        api={api}
+        telegram={fakeTelegram()}
+        request={{ ...request }}
+        apiBaseUrl=""
+        botUsername=""
+        track={vi.fn()}
+        onEdit={vi.fn()}
+        report={NO_REPORT}
+        onOpenSettings={vi.fn()}
+      />,
     );
     await screen.findByRole('region', { name: copy.sun });
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
   });
 
-  it('keeps the full report locked: a teaser, the price from the shared plans, and a button that cannot start a purchase yet', async () => {
-    setup();
+  describe('the full report', () => {
+    const teaserBlock = async () => within(await screen.findByRole('region', { name: copy.teaserTitle }));
 
-    const teaser = within(await screen.findByRole('region', { name: copy.teaserTitle }));
-    expect(teaser.getByText('Начало полного разбора.')).toBeInTheDocument();
-    expect(teaser.getByText(copy.teaserLocked)).toBeInTheDocument();
-    const cta = teaser.getByRole('button', { name: TEASER_CTA_NAME });
-    expect(cta).toBeDisabled();
-    // What is on the screen. Read from the node: toHaveTextContent replaces non-breaking spaces with plain ones.
-    expect(cta.textContent).toContain(`${TEASER_CTA} ${ru.common.starSign}`);
-    expect(cta).toHaveAccessibleDescription(copy.teaserSoon);
+    it('before a purchase: no text of the report at all, the price from the shared plans, and the way to the paywall for this chart', async () => {
+      const { api, report, user } = setup();
+
+      const teaser = await teaserBlock();
+      expect(teaser.getByText(copy.teaserLocked)).toBeInTheDocument();
+      const cta = teaser.getByRole('button', { name: TEASER_CTA_NAME });
+      // What is on the screen. Read from the node: toHaveTextContent replaces non-breaking spaces with plain ones.
+      expect(cta.textContent).toContain(`${TEASER_CTA} ${ru.common.starSign}`);
+      // No report is known: the server is not asked about one.
+      expect(api.getReport).not.toHaveBeenCalled();
+
+      await user.click(cta);
+      expect(report.onBuy).toHaveBeenCalledWith({ chartId: chart.chart_id, share: { url: WHEEL_PNG_URL, text: copy.shareText } });
+    });
+
+    it('unpaid: shows the opening the server gives out, and nothing of the chapters is in the DOM, hidden or not', async () => {
+      const api = fakeApi();
+      // More than the server ever sends for an unpaid report: chapters. The screen must not draw them even so.
+      api.getReport.mockResolvedValue({ ...reportFixture, status: 'ready', progress: 100, is_paid: false, teaser: 'Начало первой главы.', sections });
+      const { container } = setup({ api, report: { reportId: REPORT_ID } });
+
+      const teaser = await teaserBlock();
+      expect(await teaser.findByText('Начало первой главы.')).toBeInTheDocument();
+      expect(api.getReport).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
+      expect(teaser.getByRole('button', { name: TEASER_CTA_NAME })).toBeEnabled();
+      for (const section of sections) {
+        expect(container.innerHTML).not.toContain(section.body_md);
+        expect(container.innerHTML).not.toContain(section.title);
+      }
+    });
+
+    it('paid and known: says where the report stands and leads to it', async () => {
+      const api = fakeApi();
+      api.getReport.mockResolvedValue({ ...reportFixture, status: 'generating', progress: 40, sections });
+      const { report, user } = setup({ api, report: { fullReport: true, reportId: REPORT_ID, onOpen: vi.fn() } });
+
+      const teaser = await teaserBlock();
+      expect(await teaser.findByText(copy.reportStates.generating)).toBeInTheDocument();
+      expect(teaser.queryByRole('button', { name: TEASER_CTA_NAME })).not.toBeInTheDocument();
+      await user.click(teaser.getByRole('button', { name: copy.openReport }));
+      expect(report.onOpen).toHaveBeenCalledWith(expect.objectContaining({ chartId: chart.chart_id }), REPORT_ID);
+    });
+
+    it('paid, with no report known: offers to get it, and a report about another chart does not count', async () => {
+      const api = fakeApi();
+      api.getReport.mockResolvedValue({ ...reportFixture, status: 'ready', chart_id: '00000000-0000-4000-8000-00000000beef' });
+      const { report, user } = setup({ api, report: { fullReport: true, reportId: REPORT_ID, onOrder: vi.fn() } });
+
+      const teaser = await teaserBlock();
+      await user.click(await teaser.findByRole('button', { name: copy.orderReport }));
+      expect(report.onOrder).toHaveBeenCalledTimes(1);
+      expect(teaser.queryByText(copy.reportStates.ready)).not.toBeInTheDocument();
+    });
   });
 
   it('shares the wheel as a PNG through Telegram: a chat shows that as a picture', async () => {
@@ -335,7 +401,7 @@ describe('ChartScreen', () => {
     expect(await screen.findByText(copy.wheelMissing)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.share })).not.toBeInTheDocument();
     expect(within(card(copy.sun)).getByText(/Телец, 26°17′/)).toBeInTheDocument();
-    expect(within(card(copy.teaserTitle)).getByRole('button', { name: TEASER_CTA_NAME })).toBeDisabled();
+    expect(within(card(copy.teaserTitle)).getByRole('button', { name: TEASER_CTA_NAME })).toBeInTheDocument();
   });
 
   it('says when a headline planet is missing from the response', async () => {
@@ -460,6 +526,8 @@ describe('ChartScreen', () => {
           botUsername="astro_soul_bot"
           track={analytics.track}
           onEdit={vi.fn()}
+          report={NO_REPORT}
+          onOpenSettings={vi.fn()}
         />,
       );
       await user.click(await screen.findByRole('button', { name: copy.share }));
