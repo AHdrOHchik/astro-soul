@@ -11,6 +11,8 @@
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-tight);
   text-align: center;
+  /* The same class dresses a link (ButtonLink). */
+  text-decoration: none;
   transition: background-color var(--duration-fast);
   touch-action: manipulation;
   user-select: none;
@@ -52,6 +54,16 @@
 
 .ghost:active:not(:disabled) {
   background: var(--color-accent-soft);
+}
+
+.danger {
+  border-color: var(--color-danger);
+  background: transparent;
+  color: var(--color-danger);
+}
+
+.danger:active:not(:disabled) {
+  background: var(--color-danger-soft);
 }
 
 .icon {

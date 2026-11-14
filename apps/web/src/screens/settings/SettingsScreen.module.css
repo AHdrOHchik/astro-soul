@@ -1,0 +1,102 @@
+.content,
+.sections {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+.section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.subtitle {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-tight);
+}
+
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.quotas {
+  display: grid;
+  gap: var(--space-3);
+}
+
+/* The name on the left, what is left of the quota on the right, when it renews underneath. */
+.quota {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-3);
+  align-items: baseline;
+}
+
+.quotaValue {
+  font-weight: var(--font-weight-medium);
+  text-align: right;
+}
+
+.quotaNote {
+  grid-column: 1 / -1;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.blockSkeleton {
+  height: var(--size-card-skeleton);
+}
+
+.dialog {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+  align-content: center;
+  min-height: 100%;
+  padding: var(--space-6) 0;
+}
+
+.dialogIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  width: var(--size-control);
+  height: var(--size-control);
+  border-radius: 50%;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.dialogTitle {
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  text-align: center;
+}
+
+/* A focus target for screen readers, not a control: a ring here would only confuse. */
+.dialogTitle:focus {
+  outline: none;
+}
+
+.dialogText {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.dialogActions,
+.failure {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}

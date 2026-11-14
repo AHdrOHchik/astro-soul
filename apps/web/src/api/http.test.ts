@@ -148,6 +148,20 @@ describe('errors', () => {
   });
 });
 
+describe('request id', () => {
+  it('is taken from the X-Request-Id header when the answer has no Problem body to carry it', async () => {
+    const { fetchMock, request } = setup();
+    fetchMock.mockResolvedValueOnce(new Response('Bad Gateway', { status: 502, headers: { 'X-Request-Id': 'req-header' } }));
+    expect(await errorOf(request('GET', '/api/v1/me', { retry: false }))).toMatchObject({ status: 502, requestId: 'req-header' });
+
+    // The body's own id wins: it is the same id, said by the API itself.
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: 'CONFLICT', message: 'Нельзя', request_id: 'req-body' }), { status: 409, headers: { 'X-Request-Id': 'req-header' } }),
+    );
+    expect(await errorOf(request('GET', '/api/v1/me'))).toMatchObject({ requestId: 'req-body' });
+  });
+});
+
 describe('retry', () => {
   it('retries 5xx with backoff and succeeds', async () => {
     const { fetchMock, request } = setup({ retryDelayMs: () => 1000 });

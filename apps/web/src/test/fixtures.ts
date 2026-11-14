@@ -1,12 +1,13 @@
 /* Shared test doubles. All birth data here is invented. */
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
-import type { AppEventName, Track } from '../analytics';
-import type { Api, Chart, ChartCreateRequest, ChartResult, FieldError, GeoPlace, Me } from '../api';
+import type { EventName, Track } from '../analytics';
+import type { Api, Chart, ChartCreateRequest, ChartResult, FieldError, GeoPlace, Invoice, Me, Report, ReportSection } from '../api';
 import { ApiError, type ApiErrorCode } from '../api';
 import { CONSENT_VERSION } from '../i18n/ru';
+import type { IdempotencyKeys } from '../lib/idempotency';
 import type { TermsReload } from '../lib/termsReload';
-import type { Telegram } from '../telegram';
+import type { InvoiceOutcome, Telegram } from '../telegram';
 
 /** Noon UTC: the app reads the UTC day, so the tests give the same result in any time zone. */
 export const TODAY = new Date(Date.UTC(2026, 10, 10, 12));
@@ -46,6 +47,8 @@ export const me: Me = {
   has_profile: false,
   has_chart: false,
   chart_id: null,
+  // Always in the answer since contract 1.5.3: a uuid, or null while the user has ordered no report.
+  latest_report_id: null,
   subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
   entitlements,
   quotas: [],
@@ -113,6 +116,48 @@ export const chartWithoutTime: ChartResult = {
   is_restored: false,
 };
 
+/** `Me` of a user who has the fixture chart and nothing bought. */
+export const meWithChart: Me = { ...me, is_new: false, has_profile: true, has_chart: true, chart_id: chart.chart_id, onboarding_step: 'done' };
+
+/** The same user with the full report bought. */
+export const mePaid: Me = { ...meWithChart, entitlements: { ...entitlements, full_report: true } };
+
+/** The same user with a monthly subscription that renews. */
+export const meSubscribed: Me = {
+  ...meWithChart,
+  subscription: { plan: 'month', is_active: true, expires_at: '2026-12-10T09:00:00Z', auto_renew: true },
+  entitlements: { ...entitlements, is_active: true, plan: 'month', full_forecast: true, ask_per_day: 5, compat_per_month: 1 },
+};
+
+/** A Stars invoice for the full report at its usual price. */
+export const reportInvoice: Invoice = {
+  invoice_link: 'https://t.me/$test-invoice',
+  plan_code: 'one_149',
+  stars: 149,
+  is_subscription: false,
+  subscription_period_sec: null,
+};
+
+export const REPORT_ID = '00000000-0000-4000-8000-0000000000aa';
+
+/** Two chapters, the way a report in work has them: the first two of seven. */
+export const sections: ReportSection[] = [
+  { key: 'core', title: 'Ядро личности', body_md: 'Текст первой главы.', order: 0 },
+  { key: 'emotions', title: 'Эмоции и внутренний мир', body_md: 'Текст второй главы.', order: 1 },
+];
+
+/** A paid report, queued: what the server knows right after the order. Tests spread it into the state they need. */
+export const report: Report = {
+  report_id: REPORT_ID,
+  chart_id: chart.chart_id,
+  status: 'queued',
+  progress: 0,
+  is_paid: true,
+  teaser: '',
+  sections: [],
+  pdf_url: null,
+};
+
 export function apiError(code: ApiErrorCode, info: ConstructorParameters<typeof ApiError>[1] = {}): ApiError {
   return new ApiError(code, info);
 }
@@ -135,11 +180,34 @@ export function fakeApi() {
     // A new user: the server has no chart to open.
     getCurrentChart: vi.fn<Api['getCurrentChart']>().mockResolvedValue(null),
     sendEvents: vi.fn<Api['sendEvents']>().mockResolvedValue(undefined),
+    deleteMe: vi.fn<Api['deleteMe']>().mockResolvedValue(undefined),
+    createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),
+    orderReport: vi.fn<Api['orderReport']>().mockResolvedValue(report),
+    getReport: vi.fn<Api['getReport']>().mockResolvedValue(report),
+  };
+}
+
+/** Idempotency keys that are easy to tell apart: `key-1`, `key-2`, … Kept per chart and kind, like the real ones. */
+export function fakeKeys(): IdempotencyKeys {
+  const kept = new Map<string, string>();
+  let made = 0;
+  const create = (name: string) => {
+    made += 1;
+    const key = `key-${String(made)}`;
+    kept.set(name, key);
+    return key;
+  };
+  return {
+    current: (chartId, type) => kept.get(`${type}.${chartId}`) ?? create(`${type}.${chartId}`),
+    renew: (chartId, type) => create(`${type}.${chartId}`),
+    forgetAll: () => {
+      kept.clear();
+    },
   };
 }
 
 export interface TrackedEvent {
-  name: AppEventName;
+  name: EventName;
   props?: object;
 }
 
@@ -153,6 +221,8 @@ export function fakeAnalytics() {
     track,
     events,
     names: () => events.map((event) => event.name),
+    /** The event reported last. */
+    last: () => events[events.length - 1],
     /** Forgets what was reported so far, to look only at what follows. */
     clear: () => {
       events.length = 0;
@@ -173,18 +243,23 @@ export function fakeTermsReload(options: { refusedVersion?: string | null; stora
 }
 
 /** Where the app runs; the methods are always spies. */
-type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton'>;
+type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay'>;
 
-export function fakeTelegram(host: Partial<Host> = {}) {
+/** `invoice`: how Telegram closes every invoice it is asked to open; «paid» unless the test says otherwise. */
+export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | Promise<InvoiceOutcome> } = {}) {
+  const { invoice = 'paid', ...where } = host;
   return {
     isTelegram: true,
     initData: 'query_id=test',
     hasNativeBackButton: true,
-    ...host,
+    canPay: true,
+    ...where,
     setBackHandler: vi.fn<Telegram['setBackHandler']>(),
     ready: vi.fn<Telegram['ready']>(),
     share: vi.fn<Telegram['share']>(),
     close: vi.fn<Telegram['close']>(),
+    openInvoice: vi.fn<Telegram['openInvoice']>().mockImplementation(() => Promise.resolve(invoice)),
+    openLink: vi.fn<Telegram['openLink']>(),
   };
 }
 
@@ -202,8 +277,14 @@ export function deferred<T>() {
 /**
  * user-event on fake timers, so the search debounce can be stepped through.
  * `shouldAdvanceTime` keeps Testing Library's own polling (findBy*, waitFor) alive.
+ *
+ * `manual`: a clock that moves only when the test moves it. For a test that says «not yet»
+ * to the millisecond: the other clock also runs with the real one, and on a busy machine a
+ * timer fires before the test expects it. Such a test must not wait with findBy* or waitFor
+ * (they poll on a clock that now stands still): it lets time pass inside `act` and looks.
  */
-export function setupUser() {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+export function setupUser({ manual = false }: { manual?: boolean } = {}) {
+  if (manual) vi.useFakeTimers();
+  else vi.useFakeTimers({ shouldAdvanceTime: true });
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
 }

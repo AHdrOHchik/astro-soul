@@ -45,7 +45,7 @@ function statusText(search: PlaceSearch): string | undefined {
 
 export interface BirthPlaceScreenProps {
   api: Pick<Api, 'resolveGeo'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Reports that a search ran and how it ended, and that the user tried to go on without a place; the query itself is never reported. */
   track: Track;
   query: string;
