@@ -94,7 +94,19 @@ export interface paths {
         post?: never;
         /**
          * Удалить все персональные данные пользователя (ПДн)
-         * @description Полное удаление профиля, карт, разборов, прогнозов и вопросов. Подписка сохраняется до конца оплаченного периода, но данные удаляются безвозвратно.
+         * @description Полное удаление профиля, карт, разборов, прогнозов и вопросов.
+         *
+         *     Права и подписка отзываются в той же транзакции: после удаления
+         *     `Me.subscription.is_active = false`, `Me.entitlements.full_report = false`,
+         *     `full_report_chart_id = null`, `latest_report_id = null`. Повторный вход
+         *     тем же `telegram_id` создаёт нового пользователя (`is_new = true`) без
+         *     покупок — даже если `user_id` совпал (он детерминирован из telegram_id).
+         *
+         *     Обезличивается всё, где был `user_id`: `payments`, `subscriptions`
+         *     (`status = cancelled`), `entitlements` (`status = revoked`), `events`.
+         *     Обезличенная история платежей сохраняется для бухучёта и возвратов:
+         *     `telegram_payment_charge_id`, сумма и план остаются, `user_id` — нет.
+         *     Возврат звёзд по charge_id после удаления остаётся возможным.
          */
         delete: {
             parameters: {

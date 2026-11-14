@@ -467,11 +467,15 @@ export class BillingRepository {
             WHERE user_id = $1 AND telegram_payment_charge_id = $2`,
           [row.user_id, input.chargeId],
         );
-        await client.query(
-          `INSERT INTO events (user_id, name, props) VALUES ($1, 'refund_issued', $2::jsonb)`,
-          [row.user_id, JSON.stringify({ code: input.reason })],
-        );
       }
+
+      // Событие пишется всегда, в том числе по обезличенному платежу: у
+      // удалённого пользователя `user_id` уже NULL, но факт возврата обязан
+      // быть виден поддержке и метрикам (`refund_issued` без владельца).
+      await client.query(
+        `INSERT INTO events (user_id, name, props) VALUES ($1, 'refund_issued', $2::jsonb)`,
+        [row.user_id, JSON.stringify({ code: input.reason })],
+      );
     });
   }
 }

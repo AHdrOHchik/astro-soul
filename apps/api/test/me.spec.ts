@@ -403,13 +403,11 @@ describe('GET /api/v1/me — full_report_chart_id (Б-1)', () => {
       .expect(200);
 
     const me = response.body as Me;
-    // Поле есть всегда (контракт 1.5.4). Приёмка Б-1: после удаления и новой
-    // карты `full_report:false` **или** `full_report_chart_id:null` — фронту
-    // важно второе: оплаченной новой карты нет, вести на 402 нельзя.
+    // Итерация 11: после удаления права отзываются (`revoked`), поэтому
+    // `full_report` — именно `false`, а не «true без карты». Фронт по нему
+    // рисует «Получить разбор», и `true` вёл человека на 402.
     expect(me.entitlements).toHaveProperty('full_report_chart_id');
     expect(me.entitlements.full_report_chart_id).toBeNull();
-    expect(me.entitlements.full_report === false || me.entitlements.full_report_chart_id === null).toBe(
-      true,
-    );
+    expect(me.entitlements.full_report).toBe(false);
   });
 });

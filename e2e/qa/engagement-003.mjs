@@ -191,8 +191,11 @@ async function resurrect(telegramId) {
     subscriptionAfterDelete === '' ? 'строк нет' : subscriptionAfterDelete,
   );
 
+  // Смотрим на строку платежа целиком, а не на «строки, где telegram_id уже
+  // обнулён»: после итерации 11 он живёт окно возврата, и старый запрос врал бы
+  // («тот же uuid» при пустом результате).
   const paymentUserId = sql(
-    `select coalesce(user_id::text, 'NULL') from payments where telegram_id is null and user_id = '${userId}'`,
+    `select coalesce(user_id::text, 'NULL') from payments order by paid_at desc limit 1`,
   );
   console.log(
     `  ФАКТ: payments.user_id после удаления = ${paymentUserId === 'NULL' ? 'NULL' : 'тот же uuid'}`,

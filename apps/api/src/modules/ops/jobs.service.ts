@@ -21,6 +21,17 @@ const BATCH = 50;
 export const FORECAST_LOCK = 91_004_002;
 export const PUSH_LOCK = 91_004_003;
 
+/**
+ * Сколько дней после `DELETE /me` храним `payments.telegram_id`.
+ *
+ * Bot API возвращает звёзды только по паре (user_id, charge_id), поэтому без
+ * telegram_id возврат удалённому человеку невозможен. Окно — с запасом над
+ * 21 днём, которые Telegram держит звёзды в балансе бота. После окна
+ * идентификатор снимается: строка платежа остаётся бухгалтерией, но уже без
+ * связи с человеком.
+ */
+export const PAYMENT_REFUND_WINDOW_DAYS = 30;
+
 /** Сколько месяцев без активности считаем поводом удалить ПДн (152-ФЗ, §2 legal). */
 export const RETENTION_MONTHS = 24;
 
@@ -275,7 +286,9 @@ export class JobsService {
    * Активность — последнее событие, а если событий не было — дата создания
    * пользователя. Удаление идёт под advisory lock: два экземпляра крона
    * (например, при деплое) не будут удалять одни и те же строки. Платёж
-   * остаётся бухгалтерией, но обезличивается — как в `DELETE /me`.
+   * остаётся бухгалтерией, но обезличивается — как в `DELETE /me`. Заодно
+   * джоб снимает `payments.telegram_id` у платежей, у которых истекло окно
+   * возврата (`PAYMENT_REFUND_WINDOW_DAYS`).
    *
    * Повторный запуск идемпотентен: удалённых пользователей он уже не находит.
    */
@@ -310,8 +323,28 @@ export class JobsService {
       return candidates.rows.length;
     });
 
+    // Окно возврата истекло — снимаем telegram_id у уже обезличенных платежей.
+    // Отдельным запросом, а не внутри транзакции выше: это не удаление ПДн, а
+    // досрочное снятие идентификатора, и оно не должно зависать на блокировке.
+    const cleared = await this.db.query<{ id: string }>(
+      `UPDATE payments
+          SET telegram_id = NULL
+        WHERE telegram_id IS NOT NULL
+          AND anonymized_at IS NOT NULL
+          AND anonymized_at <= now() - make_interval(days => $1::int)
+        RETURNING id`,
+      [PAYMENT_REFUND_WINDOW_DAYS],
+    );
+
     if (deleted > 0) {
       this.logger.info('pdn_retention_cleanup', { deleted, months: RETENTION_MONTHS });
+    }
+
+    if (cleared.length > 0) {
+      this.logger.info('payments_telegram_ids_cleared', {
+        cleared: cleared.length,
+        days: PAYMENT_REFUND_WINDOW_DAYS,
+      });
     }
 
     return deleted;
