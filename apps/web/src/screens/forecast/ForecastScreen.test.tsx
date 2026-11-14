@@ -197,7 +197,7 @@ describe('ForecastScreen', () => {
     ['career', 'Фокус дня: карьера'],
     ['love', 'Фокус дня: отношения'],
     ['money', 'Фокус дня: деньги'],
-    ['health', 'Фокус дня: самочувствие'],
+    ['wellbeing', 'Фокус дня: самочувствие'],
     ['self', 'Фокус дня: внимание к себе'],
   ] as const)('names the focus %s in words: «%s»', async (focus, label) => {
     setup({ answer: { ...forecast, focus } });

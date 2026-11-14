@@ -576,3 +576,25 @@ describe('absoluteApiUrl', () => {
     expect(absoluteApiUrl('http://', '', origin)).toBeNull();
   });
 });
+
+describe('getForecast: the focus under the names the app gives the codes of the contract', () => {
+  const CHART = '00000000-0000-4000-8000-00000000c0de';
+  const body = { date: '2026-11-10', text: 'Спокойный день.', is_paid: true };
+  const focusOf = async (code: unknown) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { ...body, focus: code }));
+    return (await api.getForecast(CHART))?.focus;
+  };
+
+  it('the server\'s `health` is `wellbeing` in the app: the word of the wire goes no further than the API client', async () => {
+    expect(await focusOf('health')).toBe('wellbeing');
+  });
+
+  it.each(['career', 'love', 'money', 'self'])('`%s` keeps its name', async (code) => {
+    expect(await focusOf(code)).toBe(code);
+  });
+
+  it.each(['wellbeing', 'Health', 'toString', 'constructor', '__proto__', ''])('%j is not a code of the server: no focus', async (code) => {
+    expect(await focusOf(code)).toBeNull();
+  });
+});

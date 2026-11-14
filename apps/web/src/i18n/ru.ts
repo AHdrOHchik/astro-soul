@@ -191,15 +191,16 @@ const quotaNames: Record<Quota['code'], string> = {
 };
 
 /**
- * `Forecast.focus` as a label next to the text. A code without a name here is a focus this
- * build does not show. `health` is about energy and routine and is named so: the service
- * gives no advice on health.
+ * The focus of a forecast as a label next to the text, under the names the app gives the
+ * server's codes (src/api). The focus on energy and routine is `wellbeing` here and
+ * «самочувствие» on screen: the service gives no advice on the other word, and the key is
+ * named so that nobody writes that word in. The labels are approved by the owner.
  */
 const focusNames: Record<ForecastFocus, string> = {
   career: 'карьера',
   love: 'отношения',
   money: 'деньги',
-  health: 'самочувствие',
+  wellbeing: 'самочувствие',
   self: 'внимание к себе',
 };
 

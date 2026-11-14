@@ -73,13 +73,22 @@ export type ReportStatus = ReportEnvelope['status'];
 type ForecastEnvelope = components['schemas']['Forecast'];
 
 /**
- * What a forecast may be about (`Forecast.focus`): the codes this build has a label for.
- * A list of its own, like `CHART_WARNINGS`: a code a newer server adds is left out, not shown raw.
+ * What a forecast may be about: the codes of the contract (`Forecast.focus`) this build has a
+ * label for, each under the name the app calls it. A list of its own, like `CHART_WARNINGS`:
+ * a code a newer server adds is left out, not shown raw.
+ *
+ * The contract's `health` is `wellbeing` from this line on. That focus is about energy and
+ * routine, and the service gives no advice on health: the word stays here, on the wire side,
+ * and does not travel into the texts.
  */
-export const FORECAST_FOCUSES = ['career', 'love', 'money', 'health', 'self'] as const satisfies readonly NonNullable<
-  ForecastEnvelope['focus']
->[];
-export type ForecastFocus = (typeof FORECAST_FOCUSES)[number];
+const FOCUS_BY_CODE = {
+  career: 'career',
+  love: 'love',
+  money: 'money',
+  health: 'wellbeing',
+  self: 'self',
+} as const satisfies Partial<Record<NonNullable<ForecastEnvelope['focus']>, string>>;
+export type ForecastFocus = (typeof FOCUS_BY_CODE)[keyof typeof FOCUS_BY_CODE];
 
 /**
  * The forecast of a day as the screens get it. Prepared by the server at night and only
@@ -408,9 +417,10 @@ function toReport(value: unknown): Report {
   };
 }
 
-function isForecastFocus(value: unknown): value is ForecastFocus {
-  const known: readonly unknown[] = FORECAST_FOCUSES;
-  return known.includes(value);
+/** The app's name for a focus code of the server; null for anything this build has no label for. */
+function focusOf(code: unknown): ForecastFocus | null {
+  if (typeof code !== 'string' || !Object.prototype.hasOwnProperty.call(FOCUS_BY_CODE, code)) return null;
+  return FOCUS_BY_CODE[code as keyof typeof FOCUS_BY_CODE];
 }
 
 function toForecast(value: unknown): Forecast {
@@ -419,7 +429,7 @@ function toForecast(value: unknown): Forecast {
   return {
     date: value.date,
     text: value.text,
-    focus: isForecastFocus(value.focus) ? value.focus : null,
+    focus: focusOf(value.focus),
     // Full only when the server says exactly `true`, like everything that is about access.
     is_paid: value.is_paid === true,
   };
