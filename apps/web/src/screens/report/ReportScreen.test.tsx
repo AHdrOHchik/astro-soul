@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Report } from '../../api';
 import { ru } from '../../i18n/ru';
@@ -304,6 +304,25 @@ describe('ReportScreen: the order', () => {
     // The answer to the order gives the id; what the report is like is asked next, at once.
     expect(api.getReport).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
     expect(analytics.names()).toEqual(['report_requested', 'error_shown', 'report_requested']);
+  });
+
+  it('a double tap on the order button is one order: one request, one key, and nothing left to tap', async () => {
+    const api = fakeApi();
+    // The server is slow to answer: both taps land before it does.
+    api.orderReport.mockImplementation(() => new Promise<never>(() => undefined));
+    setup({ api, props: idle });
+
+    const button = order();
+    // Two taps in one tick, before the screen has drawn anything in answer to the first.
+    act(() => {
+      fireEvent.click(button);
+      fireEvent.click(button);
+    });
+    await pass(0);
+
+    expect(api.orderReport).toHaveBeenCalledTimes(1);
+    expect(api.orderReport).toHaveBeenCalledWith({ chart_id: chart.chart_id, type: 'full' }, 'key-1', expect.any(AbortSignal));
+    expect(screen.queryByRole('button', { name: copy.order })).not.toBeInTheDocument();
   });
 
   it('takes a new key only when the user orders again after a failed report', async () => {
