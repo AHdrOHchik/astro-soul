@@ -10,13 +10,18 @@
  * Управление:
  *   GET  /__calls                  — журнал вызовов Bot API
  *   POST /__calls/reset            — очистить журнал
+ *   GET  /__config                 — что сейчас задано
  *   POST /__config                 — {fail: {method: 'refundStarPayment'}} заставить метод упасть
  *
  * `fail` умеет три формы (QA-003/004 — нужны для пуша):
  *   {fail: {sendMessage: 'текст'}}                     → 200 {ok:false, description}
  *   {fail: {sendMessage: {status: 403}}}               → HTTP 403 (бот заблокирован)
- *   {fail: {sendMessage: {status: 429}}}               → HTTP 429 + retry-after
+ *   {fail: {sendMessage: {status: 429, retryAfter: 5}}} → HTTP 429 + retry-after
  *   {fail: {sendMessage: {byChat: {'<id>': 403}}}}     → адресно по chat_id, остальным — ok
+ *
+ * Совместимость: без `/__config` стаб отвечает 200 `{ok:true}` на всё, как
+ * раньше; старые прогоны (`acceptance-002.mjs`) не знают про статусы и
+ * продолжают работать.
  *
  * Почему статус, а не только `ok:false`: `TelegramClient.sendPush` различает
  * «бот заблокирован» и «слишком часто» именно по HTTP-статусу, и на 200/ok:false
@@ -46,14 +51,14 @@ function record(method, body) {
 }
 
 /** Ответ с заданным HTTP-статусом: только так воспроизводятся 403 и 429. */
-function forced(res, status) {
+function forced(res, status, retryAfter = 30) {
   if (status === 429) {
-    res.setHeader('retry-after', '30');
+    res.setHeader('retry-after', String(retryAfter));
     return json(res, 429, {
       ok: false,
       error_code: 429,
-      description: 'Too Many Requests: retry after 30',
-      parameters: { retry_after: 30 },
+      description: `Too Many Requests: retry after ${retryAfter}`,
+      parameters: { retry_after: retryAfter },
     });
   }
   if (status === 403) {
@@ -75,6 +80,9 @@ const server = createServer((req, res) => {
       calls.length = 0;
       failures = {};
       return json(res, 200, { ok: true });
+    }
+    if (url.pathname === '/__config' && req.method === 'GET') {
+      return json(res, 200, { failures, calls: calls.length });
     }
     if (url.pathname === '/__config' && req.method === 'POST') {
       try {
@@ -111,7 +119,8 @@ const server = createServer((req, res) => {
         return json(res, 200, { ok: true, result: true });
       }
       if (typeof failure === 'object' && failure !== null && 'status' in failure) {
-        return forced(res, Number(/** @type {{status: number}} */ (failure).status));
+        const spec = /** @type {{status: number, retryAfter?: number}} */ (failure);
+        return forced(res, Number(spec.status), spec.retryAfter);
       }
       return json(res, 200, { ok: false, description: failure, error_code: 400 });
     }

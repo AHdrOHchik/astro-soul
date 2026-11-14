@@ -43,6 +43,13 @@ export class TelegramClient {
   ) {
     this.token = env.TELEGRAM_BOT_TOKEN;
     this.baseUrl = env.TELEGRAM_API_BASE_URL ?? TELEGRAM_API_BASE;
+
+    // Молчаливый уход в api.telegram.org на стенде уже стоил одного невалидного
+    // прогона приёмки: `POST /billing/invoice` отвечал 502 и не создавал ни
+    // одного инвойса. В непроизводственном окружении об этом пишем в лог.
+    if (env.TELEGRAM_API_BASE_URL === undefined && env.NODE_ENV !== 'production') {
+      this.logger.warn('telegram_api_base_default', { url: this.baseUrl, env: env.NODE_ENV });
+    }
   }
 
   async createInvoiceLink(params: InvoiceLinkParams): Promise<string> {
