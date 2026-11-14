@@ -8,9 +8,12 @@
  *  - every legal string of the app is the text of that file, in the same order, and
  *    nothing of the file is left out, except the one line named below;
  *  - the version sent to the server as `consent.version` changes whenever the texts do.
- * A new wording comes as a new file, `legal-texts-<new date>.md`. With that date in
+ * A new version comes as a new file, `legal-texts-<new date>.md`. With that date in
  * CONSENT_VERSION the first groups fail until src/i18n/ru.ts repeats the new wording;
  * then the last one fails until the new texts are recorded under the new version.
+ * A wording the owner changes within a version (legal.md §6) arrives in the file of that
+ * version: the same groups fail until the app repeats it, and the last one until its
+ * record is replaced, so that no text of these screens changes without anyone noticing.
  */
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -128,18 +131,25 @@ describe('legal texts of the app against the texts file', () => {
 
 /**
  * SHA-256 of the legal texts under every version the app has sent. A stored
- * `consent_version` has to keep meaning the text the user saw, so a new wording is a
- * new line here, with a new CONSENT_VERSION, and a line is never edited.
+ * `consent_version` has to keep meaning the text the user saw, so a line here is replaced
+ * only by the owner's decision, written down where the texts are, and never in passing.
  *
- * The line of 2026-11-10 is the one exception, by the owner's decision written in the texts
- * file itself («Ответы на вопросы агентов по текстам», п. 2): the re-issue of that date (the
- * tone, the disclaimer, the paragraphs about usage statistics) keeps the version, and after
- * it any change of meaning is a new version. The re-issue reached the repository in two
- * parts, so this line was replaced twice. The app was not released in between (the same
- * file: «до этого продукт не публикуем»).
+ * When a wording is a new version is the owner's rule (legal.md §6): the version changes
+ * with what is processed or on what ground, and not with what the deletion of the data
+ * does, the terms of a subscription or a rewording. A change of the first kind is a new
+ * line here with a new CONSENT_VERSION; one of the second kind replaces the line of its version.
+ *
+ * The line of 2026-11-10 was replaced three times, each time by such a decision:
+ *  - twice for the re-issue of that date (the tone, the disclaimer, the paragraphs about
+ *    usage statistics), which reached the repository in two parts (the texts file, «Ответы
+ *    на вопросы агентов по текстам», п. 2). The app was not released in between;
+ *  - on 2026-11-14, when deleting the data began to cancel the subscription (contract
+ *    1.5.5): the point about deletion in the consent, the same paragraph of the policy and
+ *    the paragraph about payment in the agreement (the texts file, «Что изменилось
+ *    2026-11-14 (без смены версии)»: «Хэш теста-охранника пересчитывается один раз»).
  */
 const TEXTS_BY_VERSION: Readonly<Record<string, string>> = {
-  '2026-11-10': 'ef14b5920bc66208d02a950204773dfb84bef558e09c1c5a68c15ff00b239770',
+  '2026-11-10': '031d18762f346975a5b6f951e8efa8e298342441aa45e12d1fb5611036a3be5c',
 };
 
 /** Every legal string of the app, in the order of the screens. */
