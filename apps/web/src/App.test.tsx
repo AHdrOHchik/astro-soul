@@ -1624,7 +1624,7 @@ describe('App: the forecast and the question', () => {
     });
   });
 
-  it('reports nothing of the forecast, the question or the answer: in the events and in the bodies of POST /events', async () => {
+  it('reports nothing of the forecast, the question or the answer', async () => {
     const { analytics, user } = returning(meAsking());
     await openAsk(user);
     await sendQuestion(user, 'Вопрос про работу и деньги?');
