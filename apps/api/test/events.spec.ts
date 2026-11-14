@@ -15,7 +15,7 @@ function initData(): string {
 }
 
 function event(name: string, props?: Record<string, string | number | boolean>) {
-  return { name, at: new Date().toISOString(), ...(props === undefined ? {} : { props }) };
+  return { name, occurred_at: new Date().toISOString(), ...(props === undefined ? {} : { props }) };
 }
 
 beforeAll(async () => {
@@ -108,7 +108,7 @@ describe('POST /api/v1/events', () => {
   it('время старше суток отбрасывается; батч только из таких — 422', async () => {
     const stale = {
       name: 'app_open',
-      at: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
+      occurred_at: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
     };
 
     await request(ctx.app.getHttpServer())
@@ -125,7 +125,7 @@ describe('POST /api/v1/events', () => {
       .set(INIT_DATA_HEADER, initData())
       .send({ events: [stale] })
       .expect(422);
-    expect(response.body.details.field_errors[0].field).toBe('events.at');
+    expect(response.body.details.field_errors[0].field).toBe('events.occurred_at');
   });
 
   it('без initData → 401', async () => {
@@ -135,8 +135,29 @@ describe('POST /api/v1/events', () => {
       .expect(401);
   });
 
-  it('список событий в коде — 21 штука и без дублей', () => {
-    expect(ANALYTICS_EVENTS).toHaveLength(21);
-    expect(new Set(ANALYTICS_EVENTS).size).toBe(21);
+  it('список событий в коде совпадает с контрактом 1.5.1: 37 штук без дублей', () => {
+    expect(ANALYTICS_EVENTS).toHaveLength(37);
+    expect(new Set(ANALYTICS_EVENTS).size).toBe(37);
+    // QA: `validation_failed_client` теперь в контракте, и сервер его принимает.
+    expect(ANALYTICS_EVENTS).toContain('validation_failed_client');
+  });
+
+  it('validation_failed_client принимается, а серверное событие — нет', async () => {
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ events: [event('validation_failed_client', { field: 'birth_date' })] })
+      .expect(202);
+
+    const names = await ctx.db.query<{ name: string }>('SELECT name FROM events');
+    expect(names.map((row) => row.name)).toEqual(['validation_failed_client']);
+
+    // `payment_rejected` пишет только сервер: клиентский батч с ним — 422.
+    const rejected = await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ events: [event('payment_rejected')] })
+      .expect(422);
+    expect(rejected.body.details.field_errors[0].field).toBe('events.name');
   });
 });

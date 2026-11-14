@@ -294,7 +294,13 @@ export class BillingRepository {
     input: {
       userId: string;
       plan: 'trial' | 'week' | 'month' | 'year';
-      expiresAt: Date;
+      /**
+       * Срок из `subscription_expiration_date` Telegram. `null` — Telegram его
+       * не прислал (R-1): тогда период прибавляется к текущему сроку, а не
+       * к «сейчас», иначе продление съедало бы остаток оплаченного времени.
+       */
+      requestedExpiresAt: Date | null;
+      periodSeconds: number;
       chargeId: string;
     },
   ): Promise<{ expiresAt: Date; previousExpiresAt: Date | null }> {
@@ -304,10 +310,17 @@ export class BillingRepository {
     );
     const previousExpiresAt = existing.rows[0]?.expires_at ?? null;
 
-    const nextExpiresAt =
-      previousExpiresAt !== null && previousExpiresAt.getTime() > input.expiresAt.getTime()
+    const now = new Date();
+    const base =
+      previousExpiresAt !== null && previousExpiresAt.getTime() > now.getTime()
         ? previousExpiresAt
-        : input.expiresAt;
+        : now;
+    const requested = input.requestedExpiresAt ?? new Date(base.getTime() + input.periodSeconds * 1000);
+
+    const nextExpiresAt =
+      previousExpiresAt !== null && previousExpiresAt.getTime() > requested.getTime()
+        ? previousExpiresAt
+        : requested;
 
     const result = await client.query<{ expires_at: Date }>(
       `INSERT INTO subscriptions (user_id, plan, status, expires_at, auto_renew, telegram_payment_charge_id)

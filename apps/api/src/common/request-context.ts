@@ -33,3 +33,8 @@ export function runWithRequestContext<T>(context: RequestContext, handler: () =>
 export function currentRequestId(): string {
   return storage.getStore()?.requestId ?? 'no-request-context';
 }
+
+/** `undefined`, если контекста нет: нужно, чтобы не сгенерировать второй id. */
+export function peekRequestId(): string | undefined {
+  return storage.getStore()?.requestId;
+}

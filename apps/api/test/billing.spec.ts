@@ -113,6 +113,11 @@ describe('POST /api/v1/billing/invoice', () => {
       .expect(422);
 
     expect(response.body.code).toBe('VALIDATION_FAILED');
+    // QA-8: фронт подсвечивает поле по `field_errors`, `details.fields` больше нет.
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'plan_code', message: 'plan_code — один из тарифов каталога' },
+    ]);
+    expect(response.body.details.fields).toBeUndefined();
   });
 
   it('чужая карта в chart_id → 404', async () => {

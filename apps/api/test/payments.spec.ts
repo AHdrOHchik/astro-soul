@@ -424,6 +424,24 @@ describe('QA-11: доступ только за платёж, который в�
   });
 });
 
+describe('R-1: продление без subscription_expiration_date', () => {
+  it('три оплаты без даты от Telegram дают три периода, а не один', async () => {
+    const { payload } = await createInvoice('month_399');
+
+    for (const n of [1, 2, 3]) {
+      expect(
+        await sendWebhook(successfulPayment({ payload, chargeId: `charge-no-expiry-${n}`, amount: 399 })),
+      ).toBe(200);
+    }
+
+    const subscription = await ctx.db.queryOne<{ expires_at: Date }>(`SELECT expires_at FROM subscriptions`);
+    const days = (subscription!.expires_at.getTime() - Date.now()) / (24 * 3600 * 1000);
+    // 3 × 30 дней, допуск на часы прогона: раньше было бы ровно 30.
+    expect(days).toBeGreaterThan(89);
+    expect(days).toBeLessThan(91);
+  });
+});
+
 describe('возвраты', () => {
   it('refundStarPayment + отзыв доступа', async () => {
     const { payload } = await createInvoice('one_149');

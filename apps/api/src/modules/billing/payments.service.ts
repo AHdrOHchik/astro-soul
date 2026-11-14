@@ -113,7 +113,7 @@ export class PaymentsService {
       await this.telegram.answerPreCheckoutQuery(
         query.id,
         false,
-        'Товар недоступен, попробуйте ещё раз',
+        'Товар недоступен, попробуй ещё раз',
       );
       return;
     }
@@ -218,12 +218,12 @@ export class PaymentsService {
       return { kind: 'rejected', code: 'amount_mismatch' };
     }
 
+    // Срок из Telegram — когда он есть. Если поля нет, период прибавит
+    // `upsertSubscription` к текущему `expires_at` (R-1): три оплаты подряд
+    // дают три периода, а не один и тот же «сейчас + период».
     const requestedExpiresAt =
-      plan.kind === 'subscription'
-        ? new Date(
-            (payment.subscription_expiration_date ??
-              Math.floor(Date.now() / 1000) + plan.periodSeconds) * 1000,
-          )
+      plan.kind === 'subscription' && payment.subscription_expiration_date !== undefined
+        ? new Date(payment.subscription_expiration_date * 1000)
         : null;
     const chartId = invoice.chart_id;
 
@@ -422,7 +422,8 @@ export class PaymentsService {
       const subscription = await this.repo.upsertSubscription(client, {
         userId: input.userId,
         plan: input.plan.subscriptionPlan as 'week' | 'month' | 'year',
-        expiresAt: input.subscriptionExpiresAt ?? new Date(Date.now() + input.plan.periodSeconds * 1000),
+        requestedExpiresAt: input.subscriptionExpiresAt,
+        periodSeconds: input.plan.periodSeconds,
         chargeId: input.chargeId,
       });
 

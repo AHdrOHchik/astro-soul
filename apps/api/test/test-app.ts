@@ -4,6 +4,7 @@ import { AppModule } from '../src/app.module';
 import { AstroClient } from '../src/modules/astro/astro.client';
 import { TelegramClient } from '../src/modules/telegram/telegram.client';
 import { DbService } from '../src/db/db.service';
+import { applyRequestContext } from '../src/common/request-id.middleware';
 import { applyTestEnv } from './test-env';
 
 export interface TestContext {
@@ -44,6 +45,8 @@ export async function createTestContext(options: TestContextOptions = {}): Promi
   const app = moduleRef.createNestApplication({ logger: false });
 
   app.setGlobalPrefix('api/v1');
+  // Как в main.ts: request_id появляется до разбора тела (QA-12b).
+  applyRequestContext(app);
   await app.init();
 
   const db = app.get(DbService);

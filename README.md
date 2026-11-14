@@ -139,7 +139,7 @@ DejaVu Sans и Segoe UI Symbol, поэтому `<text>` там превраща�
 ## Астро-движок
 
 `packages/astro` — Python-пакет с публичным API `calcChart`, `transitsFor`,
-`llmContext`, `renderWheel`, `hashInput` (порт `astro/engine.py`). Подробности,
+`llmContext`, `renderWheel`, `hashInput`. Подробности,
 режимы `ASTRO_ENGINE` и ограничения — в [`packages/astro/README.md`](./packages/astro/README.md).
 
 API ходит в движок по HTTP, а не через subprocess:
