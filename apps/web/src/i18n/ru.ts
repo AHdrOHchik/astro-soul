@@ -1,5 +1,6 @@
-import type { ApiErrorCode, ChartWarning, TimePrecision } from '../api';
+import type { ApiErrorCode, ChartWarning, Quota, ReportStatus, Subscription, TimePrecision } from '../api';
 import type { DateIssue, TimeIssue } from '../lib/birth';
+import type { PaywallPlan } from '../lib/plans';
 import type { PluralForm } from './format';
 
 /*
@@ -11,6 +12,9 @@ import type { PluralForm } from './format';
  * `legal-texts-<CONSENT_VERSION>.md` in the repository root. A new wording comes
  * as a new file together with a new CONSENT_VERSION; `tests/legal-texts.test.ts`
  * fails until the texts, the file and the version agree.
+ *
+ * Texts about money, refunds and the deletion of data that the owner worded are
+ * marked «owner's wording»: they are not to be rephrased in passing either.
  */
 
 /**
@@ -39,9 +43,11 @@ const errors: Record<ApiErrorCode, ErrorCopy> = {
     title: 'Запрос не выполнен',
     text: 'Сервер не нашёл то, что мы запросили. Попробуй зайти позже.',
   },
+  // The server words a 409 itself and its text is shown as it is; this one is for a 409 that came without any.
+  // No word about support in the app's own texts: whether there is anyone to write to is what the button says.
   CONFLICT: {
-    title: 'Есть незавершённая оплата',
-    text: 'Дождись, пока платёж завершится, и попробуй снова.',
+    title: 'Сейчас не получится',
+    text: 'Мешает незавершённая операция. Попробуй позже.',
   },
   VALIDATION_FAILED: {
     title: 'Проверь данные',
@@ -138,6 +144,57 @@ const chartWarnings: Record<ChartWarning, string> = {
     'Этого места нет в нашем справочнике. Часовой пояс мог определиться по ближайшему крупному городу: если он другой, время рождения в расчёте сдвинуто на час.',
 };
 
+interface PlanCopy {
+  title: string;
+  /** What the purchase gives, by payments.md §1. */
+  description: string;
+}
+
+const plans: Record<PaywallPlan, PlanCopy> = {
+  one_149: {
+    title: 'Полный разбор',
+    description: 'Все главы разбора по этой карте. Разовая покупка, без подписки.',
+  },
+  week_149: {
+    title: 'Подписка на неделю',
+    description: 'Полные прогнозы, 5 вопросов карте в день, совместимость раз в месяц.',
+  },
+  month_399: {
+    title: 'Подписка на месяц',
+    description: 'Полные прогнозы, 5 вопросов карте в день, совместимость раз в месяц.',
+  },
+  year_2990: {
+    title: 'Подписка на год',
+    description: 'Всё, что в подписке на месяц, и карта года.',
+  },
+};
+
+/** `SubscriptionState.plan` as the settings name it; `none` has no name: there is nothing to name. */
+const subscriptionNames: Record<Exclude<Subscription['plan'], 'none'>, string> = {
+  trial: 'Пробный период',
+  week: 'Подписка на неделю',
+  month: 'Подписка на месяц',
+  year: 'Подписка на год',
+};
+
+/** The quotas of `Me.quotas`, by code. A code without a name here is a quota this build does not show. */
+const quotaNames: Record<Quota['code'], string> = {
+  forecast_daily: 'Прогнозы на день',
+  ask_daily: 'Вопросы карте в день',
+  report_month: 'Разборы в месяц',
+  compat_month: 'Совместимость в месяц',
+};
+
+/** One line about a report the user has, for the chart screen. */
+const reportStates: Record<ReportStatus, string> = {
+  queued: 'Разбор в очереди.',
+  generating: 'Разбор пишется.',
+  ready: 'Разбор готов.',
+  failed: 'Разбор не получился.',
+  // Owner's wording.
+  refunded: 'Разбор не получился, звёзды вернулись на счёт.',
+};
+
 /** Telegram Stars, the app's only currency: «1 звезда», «2 звезды», «149 звёзд». */
 const stars: Record<PluralForm, string> = {
   one: 'звезда',
@@ -157,6 +214,9 @@ export const ru = {
     loading: 'Загружаем…',
     step: (current: number, total: number) => `Шаг ${String(current)} из ${String(total)}`,
     requestId: (id: string) => `Код обращения: ${id}`,
+    /** Said for a moment after the code above was copied by a tap. */
+    copied: 'Скопировано',
+    settings: 'Настройки',
     /** Shown next to a price; screen readers get the word from `stars` instead. */
     starSign: '⭐',
     stars,
@@ -320,6 +380,172 @@ export const ru = {
     teaserLocked: 'Продолжение закрыто',
     /** The price follows: «Открыть полностью — 149 ⭐». The space before the dash is non-breaking. */
     teaserCta: 'Открыть полностью\u00a0—',
-    teaserSoon: 'Покупка полного разбора появится в следующем обновлении.',
+    /** While the app asks the server about a report the user already has. */
+    reportLoading: 'Проверяем разбор…',
+    reportStates,
+    /** The user has paid for a report and no report is known yet: this tap orders it. Owner's wording. */
+    orderReport: 'Получить разбор',
+    /** Telegram called the report paid and the server has not confirmed it yet: said in place of the price. */
+    paymentPending: 'Платёж обрабатывается.',
+    /** Owner's wording. */
+    openReport: 'К разбору',
+  },
+
+  /** Screen 7. Prices are never written here: they come with the plan, see lib/plans.ts. */
+  paywall: {
+    title: 'Тарифы',
+    lead: 'Оплата проходит звёздами Telegram.',
+    optionsLabel: 'Что оплатить',
+    plans,
+    /** Under the list when it offers both the report and a subscription: one does not include the other. */
+    reportIsSeparate: 'Полный разбор в подписку не входит: он покупается отдельно.',
+    /** Under the list while a subscription is chosen. */
+    renewal: 'Подписка продлевается автоматически. Отменить её можно в настройках Telegram.',
+    terms: 'Пользовательское соглашение и оплата',
+    /** The price follows: «Оплатить 149 ⭐». */
+    pay: 'Оплатить',
+    choose: 'Выбери, что оплатить',
+    creating: 'Создаём счёт…',
+    paying: 'Ждём оплату в Telegram…',
+    /** Why the paywall opened after the server refused to order a report; the price follows. Owner's wording. */
+    reportRequired: 'Разбор по этой карте уже использован — открой полностью за',
+    /** Owner's wording. No full stop of its own: the date ends with «г.». */
+    activeUntil: (date: string) => `Подписка активна до ${date}`,
+    active: 'Подписка активна.',
+    /** The invoice named another price than the list did; the price follows, then `priceChangedAction`. */
+    priceChanged: 'Цена на сервере другая:',
+    priceChangedAction: 'Проверь её и нажми «Оплатить» ещё раз.',
+    /** Owner's wording. */
+    unsupported: 'Оплата доступна в Telegram.',
+    /** Inside Telegram, in a client too old to open an invoice (before Mini Apps 6.1). */
+    outdated: 'Эта версия Telegram не открывает оплату звёздами. Обнови Telegram и попробуй снова.',
+    /** Owner's wording. */
+    failed: 'Платёж не прошёл. Попробуй ещё раз или выбери другой способ.',
+    /** Owner's wording. */
+    rateLimited: 'Слишком много попыток оплаты. Попробуй через час.',
+    /** After `rateLimited`, when the server says when the limit lifts. */
+    rateLimitedUntil: (when: string) => `Снова можно будет после ${when}.`,
+    /** Owner's wording. */
+    invoiceRejected: 'Не удалось создать счёт.',
+    confirmingTitle: 'Проверяем оплату',
+    confirmingText: 'Это займёт несколько секунд.',
+    /** Owner's wording, in two parts. */
+    processingTitle: 'Платёж обрабатывается',
+    processingText: 'Открой приложение через минуту.',
+    checkAgain: 'Проверить ещё раз',
+    /** Leaves the paywall for the screen it was opened from. */
+    leave: 'Вернуться',
+  },
+
+  /** Screen 6. */
+  report: {
+    title: 'Полный разбор',
+    idleText: 'Разбор пишется по твоей карте, глава за главой. Обычно это занимает 30–90 секунд.',
+    /** Owner's wording. */
+    order: 'Получить разбор',
+    ordering: 'Отправляем заказ…',
+    loading: 'Загружаем разбор…',
+    /** Owner's wording. */
+    queuedTitle: 'Разбор в очереди',
+    /** Owner's wording. */
+    queuedText: 'Обычно это занимает 30–90 секунд.',
+    /** Owner's wording. */
+    generatingTitle: 'Пишем разбор',
+    progressLabel: 'Готовность разбора',
+    /** Owner's wording: «Готово 3 из 7 глав». */
+    chaptersReady: (ready: number, total: number, form: PluralForm) =>
+      `Готово ${String(ready)} из ${String(total)} ${form === 'one' ? 'главы' : 'глав'}`,
+    /** Owner's wording. */
+    stalled: 'Это дольше обычного, но разбор ещё готовится.',
+    contents: 'Оглавление',
+    /** Owner's wording. */
+    pdf: 'Скачать PDF',
+    pdfUnavailable: 'Ссылка на PDF сейчас недоступна. Попробуй чуть позже.',
+    /** Owner's wording. */
+    failedTitle: 'Не получилось',
+    failedText: 'Разбор не собрался. Можно попробовать снова.',
+    /** For support: which report it was. A failed report has no request to name. */
+    reportId: (id: string) => `Номер разбора: ${id}`,
+    /** Owner's wording. */
+    refundedTitle: 'Разбор не получился, звёзды вернулись на счёт.',
+    refundedText: 'Можно попробовать снова.',
+    /** Owner's wording. */
+    retry: 'Попробовать снова',
+    /** The report is there and is not paid for: its opening, and the way to the rest. */
+    lockedText: 'Остальной текст откроется после оплаты.',
+    orderRejectedTitle: 'Не удалось заказать разбор',
+    /** Owner's wording. */
+    rateLimited: 'Слишком часто, попробуй через минуту.',
+  },
+
+  /** Screen 9. */
+  settings: {
+    title: 'Настройки',
+    loading: 'Загружаем настройки…',
+    subscription: {
+      title: 'Подписка',
+      names: subscriptionNames,
+      none: 'Подписки нет.',
+      ended: 'Подписка закончилась.',
+      /** No full stop of its own: the date ends with «г.». */
+      until: (date: string) => `Действует до ${date}`,
+      renews: 'Продлится автоматически.',
+      noRenewal: 'Автопродление отключено.',
+      subscribe: 'Оформить подписку',
+      /** Owner's wording. */
+      cancelTitle: 'Как отменить',
+      cancelText: 'Отменить подписку можно в настройках Telegram. Доступ сохранится до конца оплаченного периода.',
+      openTelegram: 'Открыть подписки в Telegram',
+    },
+    quotas: {
+      title: 'Лимиты',
+      names: quotaNames,
+      /** Owner's wording: «Осталось 3 из 5». */
+      left: (left: number, limit: number) => `Осталось ${String(left)} из ${String(limit)}`,
+      /** Owner's wording. For a limit of -1: never «-1». */
+      unlimited: 'Без ограничений',
+      /** For a limit of 0: the plan does not include it. */
+      unavailable: 'Недоступно',
+      resets: (when: string) => `Обновится ${when}`,
+      empty: 'Лимитов пока нет.',
+    },
+    documents: 'Документы',
+    support: 'Поддержка',
+    deletion: {
+      /** Owner's wording, the name the legal texts promise. */
+      title: 'Удалить мои данные',
+      text: 'Профиль, карты, разборы, прогнозы и вопросы удаляются сразу и навсегда.',
+      open: 'Удалить мои данные',
+      /** The first confirmation: what exactly goes. */
+      confirmTitle: 'Удалить все данные?',
+      confirmText: [
+        'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
+        'Подписка сохраняется до конца оплаченного периода.',
+      ],
+      /** The button of the first confirmation: on to the second, nothing is deleted yet. */
+      next: 'Продолжить',
+      /** The second confirmation: the last word before the deletion. */
+      lastTitle: 'Точно удалить?',
+      lastText: ['Это последний шаг. Отменить удаление будет нельзя.'],
+      /** Owner's wording. */
+      confirm: 'Удалить навсегда',
+      cancel: 'Не удалять',
+      deleting: 'Удаляем…',
+      /** For a 409 that came without the server's own text. */
+      conflict: 'Удалить данные сейчас не получилось: мешает незавершённая оплата.',
+      failedTitle: 'Данные не удалены',
+      /** Owner's wording. */
+      sessionExpired: 'Сессия истекла, открой приложение заново.',
+      /** Owner's wording: the screen after the deletion, the title and the text under it. */
+      doneTitle: 'Данные удалены',
+      doneText: 'Подписка сохраняется до конца оплаченного периода.',
+    },
+  },
+
+  support: {
+    /** Owner's wording. */
+    write: 'Написать в поддержку',
+    /** Owner's wording: the button while there is no contact to lead to. */
+    soon: 'Поддержка скоро появится',
   },
 } as const;

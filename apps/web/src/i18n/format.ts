@@ -13,6 +13,25 @@ export function formatDate(iso: string): string {
   return new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
 }
 
+/** A moment (`2026-12-12T09:00:00Z`) as a Date; null for anything that is not one. */
+function momentOf(iso: string): Date | null {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** «12 декабря 2026 г.»: the day a moment falls on where the user is. '' when it is not a moment. */
+export function formatDay(iso: string): string {
+  const date = momentOf(iso);
+  return date ? new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' }).format(date) : '';
+}
+
+/** «12 декабря в 09:00»: a moment by the user's clock, the way the device's locale data writes it. '' when it is not a moment. */
+export function formatMoment(iso: string | Date): string {
+  const date = typeof iso === 'string' ? momentOf(iso) : iso;
+  if (!date) return '';
+  return new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
 /** «Телец, 26°07′» from the localized sign and the degrees inside it. */
 export function formatPosition(sign: string, degree?: number, minute?: number): string {
   if (degree === undefined) return sign;

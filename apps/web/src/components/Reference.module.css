@@ -1,0 +1,36 @@
+/* Small print, but a full-size touch target. The text stays selectable for a client without a clipboard. */
+.reference {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: center;
+  width: 100%;
+  min-height: var(--size-tap);
+  padding: var(--space-1) 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+  touch-action: manipulation;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Keeps its line whether or not it says anything, so the button does not jump. */
+.copied {
+  min-height: calc(var(--font-size-xs) * var(--line-height-normal));
+  color: var(--color-accent);
+}
+
+/* The field the fallback copies from: in the document for an instant, never seen and never in the way. */
+.clipboard {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--size-hidden);
+  height: var(--size-hidden);
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}

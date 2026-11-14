@@ -1,0 +1,4 @@
+/* The amount and its star stay together when the text around them wraps. */
+.stars {
+  white-space: nowrap;
+}
