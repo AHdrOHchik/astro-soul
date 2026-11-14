@@ -14,7 +14,7 @@ import {
   StateView,
   type ScreenProps,
 } from '@astro-soul/ui';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import type { Track } from '../../analytics';
 import { absoluteApiUrl, isApiError, rejectionTextOf, REPORT_SECTION_KEYS, type Api, type Report, type ReportSection } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
@@ -170,7 +170,7 @@ export function ReportScreen({
   if (view.kind === 'error') {
     return (
       <Screen back={back}>
-        <Failure view={view} flow={flow} telegram={telegram} support={support} />
+        <Failure view={view} flow={flow} telegram={telegram} supportLink={supportLink} />
       </Screen>
     );
   }
@@ -410,17 +410,17 @@ function Download({ report, apiBaseUrl, telegram, refresh }: DownloadProps) {
 interface FailureProps {
   view: Extract<ReportFlow['view'], { kind: 'error' }>;
   flow: ReportFlow;
-  telegram: Pick<Telegram, 'isTelegram' | 'close'>;
-  support: ReactNode;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
+  supportLink: string;
 }
 
 /** A request that failed: the order, or the first question about a report. */
-function Failure({ view, flow, telegram, support }: FailureProps) {
+function Failure({ view, flow, telegram, supportLink }: FailureProps) {
   const { error, from } = view;
   const code = isApiError(error) ? error.code : 'INTERNAL';
   if (from === 'load') {
     return (
-      <ErrorState error={error} telegram={telegram} onRetry={flow.reload}>
+      <ErrorState error={error} telegram={telegram} supportLink={supportLink} onRetry={flow.reload}>
         {/* The report the app knew of is gone: the way on is a new order. */}
         {code === 'NOT_FOUND' && (
           <Button
@@ -442,19 +442,15 @@ function Failure({ view, flow, telegram, support }: FailureProps) {
       // Our bug or an outdated build, not the user's doing: the server's words about the field, and the way to support.
       return (
         <ErrorState error={error} telegram={telegram} title={copy.orderRejectedTitle} text={rejectionTextOf(error)}>
-          {support}
+          <SupportButton link={supportLink} telegram={telegram} />
         </ErrorState>
       );
     case 'CONFLICT':
-      // The server's message as it is.
-      return (
-        <ErrorState error={error} telegram={telegram} title={copy.orderRejectedTitle}>
-          {support}
-        </ErrorState>
-      );
+      // The server's message as it is. The way to support comes with every conflict.
+      return <ErrorState error={error} telegram={telegram} supportLink={supportLink} title={copy.orderRejectedTitle} />;
     case 'RATE_LIMITED':
       return <ErrorState error={error} telegram={telegram} text={copy.rateLimited} onRetry={retry} />;
     default:
-      return <ErrorState error={error} telegram={telegram} onRetry={retry} />;
+      return <ErrorState error={error} telegram={telegram} supportLink={supportLink} onRetry={retry} />;
   }
 }

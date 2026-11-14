@@ -73,7 +73,7 @@ export interface ChartReportProps {
 
 export interface ChartScreenProps {
   api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getReport'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
    * Keep the reference stable: a new object is a new request.

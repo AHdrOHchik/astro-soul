@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ru } from '../i18n/ru';
 import { apiError, fakeTelegram } from '../test/fixtures';
@@ -48,5 +49,34 @@ describe('ErrorState', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent(ru.errors.VALIDATION_FAILED.text);
     expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
+  });
+
+  describe('a conflict (409)', () => {
+    const conflict = apiError('CONFLICT', { status: 409, serverMessage: 'Разбор по этой карте уже заказан.', requestId: 'req-409' });
+
+    it('never leaves the user with a text alone: the server\'s words, the way to support, and no «retry»', async () => {
+      const telegram = fakeTelegram();
+      render(<ErrorState error={conflict} telegram={telegram} supportLink="https://t.me/astro_soul_help" onRetry={vi.fn()} />);
+
+      expect(screen.getByRole('alert')).toHaveTextContent('Разбор по этой карте уже заказан.');
+      // Waiting does not move what is in the way: the same request would fail the same way.
+      expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: ru.support.write }));
+      expect(telegram.openLink).toHaveBeenCalledWith('https://t.me/astro_soul_help');
+    });
+
+    it('without a contact the button is there all the same, disabled and saying that support is coming', () => {
+      // No link named: the one the app was built with, and a test build has none.
+      render(<ErrorState error={conflict} telegram={fakeTelegram()} />);
+
+      expect(screen.getByRole('button', { name: ru.support.soon })).toBeDisabled();
+      expect(screen.queryByRole('button', { name: ru.support.write })).not.toBeInTheDocument();
+    });
+
+    it('is the only failure that gets the support button by itself', () => {
+      render(<ErrorState error={apiError('INTERNAL', { status: 500 })} telegram={fakeTelegram()} supportLink="https://t.me/astro_soul_help" />);
+
+      expect(screen.queryByRole('button', { name: ru.support.write })).not.toBeInTheDocument();
+    });
   });
 });

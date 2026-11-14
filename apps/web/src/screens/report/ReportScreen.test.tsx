@@ -287,5 +287,8 @@ describe('ReportScreen: the order', () => {
     await conflict.user.click(order());
     expect(await screen.findByRole('alert')).toHaveTextContent('Разбор по этой карте уже заказан.');
     expect(conflict.onPaymentRequired).not.toHaveBeenCalled();
+    // A conflict comes with the way to support, once, and without «retry».
+    expect(screen.getAllByRole('button', { name: ru.support.soon })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
   });
 });

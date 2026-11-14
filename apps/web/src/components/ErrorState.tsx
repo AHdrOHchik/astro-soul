@@ -1,9 +1,11 @@
 import { AlertIcon, Button, StateView } from '@astro-soul/ui';
 import type { ReactNode } from 'react';
 import { isApiError, serverTextOf, type ApiErrorCode } from '../api';
+import { config } from '../config';
 import { ru } from '../i18n/ru';
 import type { Telegram } from '../telegram';
 import { Reference } from './Reference';
+import { SupportButton } from './SupportButton';
 
 /** Failures where the same request may succeed a moment later. `GEO_NOT_FOUND` is one: the geodata provider is down. */
 const RETRYABLE: readonly ApiErrorCode[] = [
@@ -18,9 +20,11 @@ const RETRYABLE: readonly ApiErrorCode[] = [
 
 export interface ErrorStateProps {
   error: unknown;
-  telegram: Pick<Telegram, 'isTelegram' | 'close'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Offered only for failures worth repeating. */
   onRetry?: () => void;
+  /** Where the support button of a conflict leads; the contact the app was built with when the screen names none. */
+  supportLink?: string;
   /** In place of the title the error code has: for a screen that knows what exactly failed. */
   title?: string;
   /** In place of the text of the server and of the code: for a failure the screen has its own words for. */
@@ -33,8 +37,12 @@ export interface ErrorStateProps {
  * The error state of a screen. Prefers the server's own message when it is the
  * Russian text the contract promises, and shows the request id so support can
  * find the call: in small print, copied by a tap.
+ *
+ * A conflict (409) always comes with the way to support: something on the server
+ * is in the way, repeating the request does not move it, and the user must not be
+ * left with a text alone.
  */
-export function ErrorState({ error, telegram, onRetry, title, text, children }: ErrorStateProps) {
+export function ErrorState({ error, telegram, onRetry, supportLink = config.supportLink, title, text, children }: ErrorStateProps) {
   const apiError = isApiError(error) ? error : null;
   const code = apiError?.code ?? 'INTERNAL';
   const unauthorized = code === 'UNAUTHORIZED';
@@ -64,6 +72,7 @@ export function ErrorState({ error, telegram, onRetry, title, text, children }: 
           {ru.common.close}
         </Button>
       )}
+      {code === 'CONFLICT' && <SupportButton link={supportLink} telegram={telegram} />}
       {children}
     </StateView>
   );
