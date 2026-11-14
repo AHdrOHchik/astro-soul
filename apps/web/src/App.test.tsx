@@ -10,6 +10,7 @@ import { DELETE_GUARD_MS } from './screens/settings/SettingsScreen';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import {
   apiError,
+  askAnswer,
   chartRequest,
   chartResult,
   deferred,
@@ -18,8 +19,11 @@ import {
   fakeKeys,
   fakeTelegram,
   fakeTermsReload,
+  forecast,
+  freeForecast,
   kazan,
   me,
+  meAsking,
   mePaid,
   meWithChart,
   rejection,
@@ -1215,5 +1219,419 @@ describe('App: going back', () => {
     unmount();
 
     expect(backHandler(telegram)).toBeNull();
+  });
+});
+
+describe('App: the forecast and the question', () => {
+  const restored: ChartResult = { ...chartResult, is_restored: true };
+  const chartId = chartResult.chart.chart_id;
+  /** A user without a subscription: one question a day, none asked yet. */
+  const meFree = meAsking({ used: 0, limit: 1 }, meWithChart);
+  /** The texts of apps/api about a chart it does not have. */
+  const CHART_GONE = 'Такой карты нет. Построй карту заново';
+  const chartGone = () => apiError('NOT_FOUND', { status: 404, serverMessage: CHART_GONE, requestId: 'req-404' });
+
+  interface RetentionOptions {
+    /** `VITE_SUBSCRIPTIONS` of the build; sold unless told otherwise, as in the app. */
+    subscriptions?: boolean;
+    prepare?: (fake: ReturnType<typeof fakeApi>) => void;
+  }
+
+  /** A user who has a chart, in a build that sells subscriptions or does not; `prepare` sets up the rest of the server. */
+  function returning(startMe: Me, { subscriptions, prepare }: RetentionOptions = {}) {
+    const api = fakeApi();
+    api.getMe.mockResolvedValue(startMe);
+    api.getCurrentChart.mockResolvedValue(restored);
+    api.getForecast.mockResolvedValue(forecast);
+    prepare?.(api);
+    const telegram = fakeTelegram();
+    const analytics = fakeAnalytics();
+    const keys = fakeKeys();
+    const forgetKeys = vi.spyOn(keys, 'forgetAll');
+    const user = setupUser();
+    const view = render(
+      <App
+        api={api}
+        telegram={telegram}
+        apiBaseUrl="https://api.test"
+        keys={keys}
+        track={analytics.track}
+        termsReload={fakeTermsReload()}
+        today={TODAY}
+        subscriptions={subscriptions}
+      />,
+    );
+    return { api, telegram, analytics, keys, forgetKeys, user, ...view };
+  }
+
+  const forecastCard = () => screen.findByRole('button', { name: /^Прогноз на / });
+  const askButton = () => screen.findByRole('button', { name: ru.forecast.ask });
+  const questionField = () => screen.getByRole('textbox', { name: ru.ask.fieldLabel });
+  const sendButton = () => screen.getByRole('button', { name: ru.ask.submit });
+  const settle = () => act(async () => {});
+
+  async function openForecast(user: FakeUser) {
+    await user.click(await forecastCard());
+    await settle();
+  }
+  async function openAsk(user: FakeUser) {
+    await openForecast(user);
+    await user.click(await askButton());
+    await settle();
+  }
+  async function sendQuestion(user: FakeUser, text = 'На что опереться в работе?') {
+    await user.type(questionField(), text);
+    await user.click(sendButton());
+    await settle();
+  }
+
+  it('from the card on the chart to the forecast, and on to a question and its answer', async () => {
+    const { api, analytics, telegram, user } = returning(meAsking());
+
+    // On the chart: the name of the forecast and its first sentence, in one card.
+    const card = await forecastCard();
+    expect(card).toHaveTextContent('Прогноз на сегодня');
+    await waitFor(() => {
+      expect(card).toHaveTextContent('Первое предложение прогноза.');
+    });
+    expect(card).not.toHaveTextContent('Второе предложение');
+    expect(api.getForecast).toHaveBeenCalledTimes(1);
+    expect(api.getForecast.mock.calls[0]?.[0]).toBe(chartId);
+    analytics.clear();
+
+    await user.click(card);
+    expect(heading()).toHaveTextContent('Прогноз на сегодня');
+    // The whole text is there from the first frame: the card has heard it already.
+    expect(screen.getByText(forecast.text)).toBeInTheDocument();
+    expect(screen.getByText('Фокус дня: карьера')).toBeInTheDocument();
+    expect(backHandler(telegram)).not.toBeNull();
+    await settle();
+    // One more question to the server for the opening of the screen, and no other.
+    expect(api.getForecast).toHaveBeenCalledTimes(2);
+    // Both belong to the same moment: the screen opened with the forecast already on it.
+    expect(analytics.events).toHaveLength(2);
+    expect(analytics.events).toContainEqual({ name: 'screen_view', props: { step: 'forecast' } });
+    expect(analytics.events).toContainEqual({ name: 'forecast_view' });
+
+    await user.click(await askButton());
+    await settle();
+    expect(heading()).toHaveTextContent('Спроси карту');
+    expect(screen.getByText('Сегодня осталось 3 вопроса из 5')).toBeInTheDocument();
+
+    // The server counts the question, and the screen shows what the server says after it.
+    api.getMe.mockResolvedValue(meAsking({ used: 3 }));
+    await sendQuestion(user);
+
+    expect(api.ask).toHaveBeenCalledTimes(1);
+    expect(api.ask).toHaveBeenCalledWith({ chart_id: chartId, question: 'На что опереться в работе?' }, expect.any(AbortSignal));
+    expect(screen.getByText(askAnswer.answer)).toBeInTheDocument();
+    expect(screen.getByText('Сегодня осталось 2 вопроса из 5')).toBeInTheDocument();
+    expect(analytics.events.slice(2)).toEqual([{ name: 'screen_view', props: { step: 'ask' } }, { name: 'ask_used' }]);
+
+    // Back leads to the forecast, then to the chart, each named by its own step.
+    analytics.clear();
+    act(() => backHandler(telegram)?.());
+    expect(heading()).toHaveTextContent('Прогноз на сегодня');
+    act(() => backHandler(telegram)?.());
+    expect(await screen.findByRole('region', { name: ru.chart.sun })).toBeInTheDocument();
+    expect(analytics.events.filter(({ name }) => name === 'step_back')).toEqual([
+      { name: 'step_back', props: { step: 'ask' } },
+      { name: 'step_back', props: { step: 'forecast' } },
+    ]);
+    // The chart was kept: the way back asked the server for no chart.
+    expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the card on a chart just built from the form as well, for the chart the server made', async () => {
+    const api = fakeApi();
+    // A new user at the start; once the chart is built, `Me` names it.
+    api.getMe.mockResolvedValueOnce(me).mockResolvedValue(meWithChart);
+    // A chart of this minute has no forecast yet: the server prepares one overnight.
+    api.getForecast.mockResolvedValue(null);
+    const analytics = fakeAnalytics();
+    const user = setupUser();
+    render(
+      <App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={fakeKeys()} track={analytics.track} termsReload={fakeTermsReload()} today={TODAY} />,
+    );
+    await fillIn(user);
+
+    const card = await forecastCard();
+    await waitFor(() => {
+      expect(card).toHaveTextContent('Сегодняшний прогноз готовится. Загляни после 08:00');
+    });
+    expect(api.getForecast).toHaveBeenCalledTimes(1);
+    expect(api.getForecast.mock.calls[0]?.[0]).toBe(chartId);
+
+    await user.click(card);
+    expect(await screen.findByRole('heading', { name: 'Сегодняшний прогноз готовится' })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'К карте' }));
+    expect(await screen.findByRole('region', { name: ru.chart.sun })).toBeInTheDocument();
+    // The chart was built once.
+    expect(api.createChart).toHaveBeenCalledTimes(1);
+  });
+
+  describe('the way to a subscription', () => {
+    it('under the short forecast: a quiet note that leads to the paywall with the subscriptions', async () => {
+      const { api, analytics, user } = returning(meFree, { prepare: (fake) => fake.getForecast.mockResolvedValue(freeForecast) });
+      await openForecast(user);
+
+      expect(screen.getByText(freeForecast.text)).toBeInTheDocument();
+      analytics.clear();
+      await user.click(screen.getByRole('button', { name: 'Полный прогноз — в подписке' }));
+
+      expect(heading()).toHaveTextContent(ru.paywall.title);
+      // The subscriptions alone: the note was not about the report.
+      expect(screen.getAllByRole('radio')).toHaveLength(3);
+      expect(screen.getAllByRole('radio').some((radio) => (radio as HTMLInputElement).checked)).toBe(false);
+      expect(analytics.names()).toEqual(['screen_view', 'paywall_view']);
+      expect(api.createInvoice).not.toHaveBeenCalled();
+    });
+
+    it('where the day\'s questions are used up: «В подписке 5 вопросов в день» leads to the same paywall', async () => {
+      const { user } = returning(meAsking({ used: 1, limit: 1 }, meWithChart));
+      await openAsk(user);
+
+      expect(screen.getByText('Вопросы на сегодня закончились. Новые — после полуночи.')).toBeInTheDocument();
+      expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'В подписке 5 вопросов в день' }));
+      expect(heading()).toHaveTextContent(ru.paywall.title);
+      expect(screen.getAllByRole('radio')).toHaveLength(3);
+    });
+
+    it('is not shown to a subscriber: not under a short forecast, not where the questions are used up', async () => {
+      const { user } = returning(meAsking({ used: 5 }), { prepare: (fake) => fake.getForecast.mockResolvedValue(freeForecast) });
+      await openForecast(user);
+      expect(screen.getByText(freeForecast.text)).toBeInTheDocument();
+      expect(screen.queryByText(ru.forecast.subscriptionOnly)).not.toBeInTheDocument();
+
+      await user.click(await askButton());
+      await settle();
+      expect(screen.getByText(ru.ask.exhausted)).toBeInTheDocument();
+      expect(screen.queryByText(ru.ask.subscriptionOffer)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('a build that sells no subscriptions (`subscriptions: false`)', () => {
+    const off = { subscriptions: false } as const;
+
+    it('offers none anywhere: the forecast, the used-up questions, the settings and the paywall say nothing of buying one', async () => {
+      const { api, telegram, user } = returning(meAsking({ used: 1, limit: 1 }, meWithChart), {
+        ...off,
+        prepare: (fake) => fake.getForecast.mockResolvedValue(freeForecast),
+      });
+
+      // The short forecast: the text, and no note under it.
+      await openForecast(user);
+      expect(screen.getByText(freeForecast.text)).toBeInTheDocument();
+      expect(screen.queryByText(ru.forecast.subscriptionOnly)).not.toBeInTheDocument();
+      expect(screen.getByRole('main')).not.toHaveTextContent(/подписк/i);
+
+      // The questions are used up: said calmly, with no offer.
+      await user.click(await askButton());
+      await settle();
+      expect(screen.getByText(ru.ask.exhausted)).toBeInTheDocument();
+      expect(screen.queryByText(ru.ask.subscriptionOffer)).not.toBeInTheDocument();
+      expect(screen.getByRole('main')).not.toHaveTextContent(/подписк/i);
+
+      // The settings: that there is no subscription is a fact and is said; the button to get one is not there.
+      act(() => backHandler(telegram)?.());
+      act(() => backHandler(telegram)?.());
+      await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+      expect(await screen.findByText(ru.settings.subscription.none)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: ru.settings.subscription.subscribe })).not.toBeInTheDocument();
+
+      // The paywall, reached for the report: the report alone.
+      act(() => backHandler(telegram)?.());
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) }));
+      expect(heading()).toHaveTextContent(ru.paywall.title);
+      expect(screen.getAllByRole('radio')).toHaveLength(1);
+      for (const code of ['week_149', 'month_399', 'year_2990'] as const) {
+        expect(screen.queryByText(ru.paywall.plans[code].title)).not.toBeInTheDocument();
+      }
+      expect(api.createInvoice).not.toHaveBeenCalled();
+    });
+
+    it('still sells the report: the invoice asked for is the report\'s, for this chart', async () => {
+      const { api, user } = returning(meWithChart, {
+        ...off,
+        prepare: (fake) => fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(mePaid),
+      });
+
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) }));
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
+
+      expect(await screen.findByRole('heading', { level: 1, name: ru.report.queuedTitle })).toBeInTheDocument();
+      expect(api.createInvoice).toHaveBeenCalledTimes(1);
+      expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'one_149', chart_id: chartId }, expect.any(AbortSignal));
+    });
+
+    it('shows a subscriber what they have as ever: the full forecast, five questions, the plan in the settings', async () => {
+      const { telegram, user } = returning(meAsking(), off);
+      await openAsk(user);
+      expect(screen.getByText('Сегодня осталось 3 вопроса из 5')).toBeInTheDocument();
+
+      act(() => backHandler(telegram)?.());
+      act(() => backHandler(telegram)?.());
+      await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+      expect(await screen.findByText(ru.settings.subscription.names.month)).toBeInTheDocument();
+    });
+  });
+
+  describe('the chart is gone from the server (the data was deleted elsewhere while this page stayed open)', () => {
+    /** `Me` after the deletion: a user with nothing. */
+    const meDeleted: Me = { ...me, is_new: false };
+
+    /** The server from the moment of the deletion on: no chart, and a user without one. */
+    function deleteElsewhere(api: ReturnType<typeof fakeApi>) {
+      api.getMe.mockResolvedValue(meDeleted);
+      api.getCurrentChart.mockResolvedValue(null);
+    }
+
+    /** What must hold however the app found out. */
+    async function expectFreshStart(view: ReturnType<typeof returning>) {
+      expect(await start()).toBeInTheDocument();
+      expect(heading()).toHaveTextContent(ru.welcome.title);
+      // Not a word of the server's about the chart, and nothing shown as a failure.
+      expect(screen.queryByText(CHART_GONE)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Построй карту заново|Карта не найдена/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(view.analytics.names()).not.toContain('error_shown');
+      // The first screen again: nothing to go back to, and the keys of the old chart's orders are dropped.
+      expect(view.telegram.setBackHandler).toHaveBeenLastCalledWith(null);
+      expect(view.forgetKeys).toHaveBeenCalled();
+      // The form starts clean: the consent went with the data it was given for.
+      await view.user.click(await start());
+      expect(consentBox()).not.toBeChecked();
+    }
+
+    it('404 to a question: the welcome screen, as for a new user', async () => {
+      const view = returning(meAsking(), { prepare: (fake) => fake.ask.mockRejectedValue(chartGone()) });
+      await openAsk(view.user);
+
+      deleteElsewhere(view.api);
+      await sendQuestion(view.user);
+
+      await expectFreshStart(view);
+      expect(view.api.ask).toHaveBeenCalledTimes(1);
+      // Asked which chart the user has, as at a start: the one at launch and the one now.
+      expect(view.api.getCurrentChart).toHaveBeenCalledTimes(2);
+    });
+
+    it('404 to the order of a report: the same', async () => {
+      const view = returning(mePaid, { prepare: (fake) => fake.orderReport.mockRejectedValue(chartGone()) });
+      const order = await screen.findByRole('button', { name: ru.chart.orderReport });
+
+      deleteElsewhere(view.api);
+      await view.user.click(order);
+
+      await expectFreshStart(view);
+      expect(view.api.orderReport).toHaveBeenCalledTimes(1);
+    });
+
+    it('422 about `chart_id` to an invoice for the report: the same', async () => {
+      const view = returning(meWithChart, {
+        prepare: (fake) => fake.createInvoice.mockRejectedValue(rejection({ field: 'chart_id', message: 'Карта не найдена' })),
+      });
+      await view.user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) }));
+
+      deleteElsewhere(view.api);
+      await view.user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
+
+      await expectFreshStart(view);
+      expect(view.telegram.openInvoice).not.toHaveBeenCalled();
+    });
+
+    it('404 to a forecast, and `Me` with no chart: the same. The 404 alone says «none yet», `Me` says which it is', async () => {
+      const view = returning(meAsking());
+      const card = await forecastCard();
+      await waitFor(() => {
+        expect(card).toHaveTextContent('Первое предложение прогноза.');
+      });
+
+      view.api.getForecast.mockResolvedValue(null);
+      deleteElsewhere(view.api);
+      await view.user.click(card);
+
+      await expectFreshStart(view);
+      expect(screen.queryByText(ru.forecast.pendingTitle)).not.toBeInTheDocument();
+    });
+
+    it('404 to a forecast while `Me` still names the chart: «готовится» and nothing else. One question to `Me`, no more', async () => {
+      const view = returning(meAsking(), { prepare: (fake) => fake.getForecast.mockResolvedValue(null) });
+      await openForecast(view.user);
+
+      expect(screen.getByRole('heading', { name: 'Сегодняшний прогноз готовится' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: ru.welcome.start })).not.toBeInTheDocument();
+      // `Me` at the start, and once for this «none yet».
+      expect(view.api.getMe).toHaveBeenCalledTimes(2);
+      expect(view.forgetKeys).not.toHaveBeenCalled();
+
+      // And it stays one, however long the screen is open.
+      await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
+      expect(view.api.getMe).toHaveBeenCalledTimes(2);
+      expect(view.api.getForecast).toHaveBeenCalledTimes(2);
+    });
+
+    it('the question screen opened after the deletion: `Me` says there is no chart, and no question is ever sent', async () => {
+      const view = returning(meAsking());
+      await openForecast(view.user);
+
+      deleteElsewhere(view.api);
+      await view.user.click(await askButton());
+
+      await expectFreshStart(view);
+      expect(view.api.ask).not.toHaveBeenCalled();
+    });
+
+    it('a chart built in this session goes: what the user typed into the form is not kept either, and the consent is asked anew', async () => {
+      const api = fakeApi();
+      api.getMe.mockResolvedValueOnce(me).mockResolvedValue(meWithChart);
+      api.createInvoice.mockRejectedValue(rejection({ field: 'chart_id', message: 'Карта не найдена' }));
+      const user = setupUser();
+      render(
+        <App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={fakeKeys()} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} />,
+      );
+      // The whole form, with the consent given, and the chart built from it.
+      await fillIn(user);
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) }));
+
+      deleteElsewhere(api);
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
+
+      // The welcome screen, and behind it a form as empty as a new user's.
+      await user.click(await start());
+      expect(heading()).toHaveTextContent(ru.consent.title);
+      expect(consentBox()).not.toBeChecked();
+      await user.click(consentBox());
+      await user.click(proceed());
+      expect(heading()).toHaveTextContent(ru.birthDate.title);
+      expect(screen.getByLabelText(ru.birthDate.day)).toHaveValue('');
+      expect(screen.getByLabelText(ru.birthDate.year)).toHaveValue('');
+      expect(screen.queryByText('Карта не найдена')).not.toBeInTheDocument();
+      // One chart was built, and none is built again by itself.
+      expect(api.createChart).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failure to ask `Me` is not «no chart»: the screens stay where they are', async () => {
+      const view = returning(meAsking(), { prepare: (fake) => fake.getForecast.mockResolvedValue(null) });
+      await forecastCard();
+      view.api.getMe.mockRejectedValue(apiError('NETWORK'));
+      await openForecast(view.user);
+
+      expect(screen.getByRole('heading', { name: 'Сегодняшний прогноз готовится' })).toBeInTheDocument();
+      expect(view.forgetKeys).not.toHaveBeenCalled();
+    });
+  });
+
+  it('reports nothing of the forecast, the question or the answer: in the events and in the bodies of POST /events', async () => {
+    const { analytics, user } = returning(meAsking());
+    await openAsk(user);
+    await sendQuestion(user, 'Вопрос про работу и деньги?');
+
+    expect([...analytics.names()].sort()).toEqual(
+      ['app_open', 'screen_view', 'chart_restored', 'screen_view', 'forecast_view', 'screen_view', 'ask_used'].sort(),
+    );
+    expect(JSON.stringify(analytics.events)).not.toMatch(/[А-Яа-яЁё]/);
   });
 });

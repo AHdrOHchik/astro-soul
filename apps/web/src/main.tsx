@@ -48,6 +48,7 @@ createRoot(root).render(
       apiBaseUrl={config.apiBaseUrl}
       botUsername={config.botUsername}
       supportLink={config.supportLink}
+      subscriptions={config.subscriptions}
       keys={keys}
       track={analytics.track}
       termsReload={termsReload}
