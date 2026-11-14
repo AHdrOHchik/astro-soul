@@ -1,4 +1,4 @@
-import { Button, Screen, ScreenHeading } from '@astro-soul/ui';
+import { Button, GearIcon, Screen, ScreenHeading } from '@astro-soul/ui';
 import { useId } from 'react';
 import { ru } from '../../i18n/ru';
 import { Emblem } from './Emblem';
@@ -10,6 +10,8 @@ export interface WelcomeScreenProps {
   onStart: () => void;
   /** Opens the user agreement, where the full disclaimer is. */
   onOpenTerms: () => void;
+  /** Opens the settings: the way to delete one's data is there for a user without a chart too. */
+  onOpenSettings: () => void;
 }
 
 /**
@@ -17,11 +19,12 @@ export interface WelcomeScreenProps {
  * to the main button: it is on screen without scrolling at any viewport height.
  * Under the button, in small print, is the way to the full text.
  */
-export function WelcomeScreen({ onStart, onOpenTerms }: WelcomeScreenProps) {
+export function WelcomeScreen({ onStart, onOpenTerms, onOpenSettings }: WelcomeScreenProps) {
   const titleId = useId();
   return (
     <Screen
       labelledBy={titleId}
+      action={{ label: ru.common.settings, icon: <GearIcon />, onClick: onOpenSettings }}
       footer={
         <>
           <p className={styles.disclaimer}>{copy.disclaimer}</p>

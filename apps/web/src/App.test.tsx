@@ -5,6 +5,8 @@ import { createAnalytics } from './analytics';
 import type { ChartResult, Me, TimePrecision } from './api';
 import { App } from './App';
 import { SEARCH_DEBOUNCE_MS } from './hooks/usePlaceSearch';
+import { CONFIRM_INTERVAL_MS } from './screens/paywall/PaywallScreen';
+import { DELETE_GUARD_MS } from './screens/settings/SettingsScreen';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import {
   apiError,
@@ -13,11 +15,17 @@ import {
   deferred,
   fakeAnalytics,
   fakeApi,
+  fakeKeys,
   fakeTelegram,
   fakeTermsReload,
   kazan,
   me,
+  mePaid,
+  meWithChart,
   rejection,
+  report,
+  REPORT_ID,
+  sections,
   setupUser,
   TODAY,
 } from './test/fixtures';
@@ -45,6 +53,7 @@ function setup(options: SetupOptions = {}) {
       api={api}
       telegram={telegram}
       apiBaseUrl="https://api.test"
+      keys={fakeKeys()}
       track={analytics.track}
       termsReload={termsReload}
       today={TODAY}
@@ -219,9 +228,12 @@ describe('App: a user who already has a chart', () => {
     expect(heading()).toHaveTextContent(ru.consent.title);
     expect(consentBox()).not.toBeChecked();
 
+    analytics.clear();
     await user.click(notNow());
     expect(await screen.findByRole('region', { name: ru.chart.sun })).toBeInTheDocument();
-    expect(api.getCurrentChart).toHaveBeenCalledTimes(2);
+    // The chart the screen already showed: the server is not asked again, and nothing is counted as restored twice.
+    expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+    expect(analytics.names()).not.toContain('chart_restored');
   });
 
   it('starts the onboarding when the server has no chart after all', async () => {
@@ -237,6 +249,162 @@ describe('App: a user who already has a chart', () => {
 
     await start();
     expect(api.getCurrentChart).not.toHaveBeenCalled();
+  });
+});
+
+describe('App: the full report, the paywall and the settings', () => {
+  const restored: ChartResult = { ...chartResult, is_restored: true };
+  const chartId = chartResult.chart.chart_id;
+  const teaserCta = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) });
+  const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
+
+  /** A user who has a chart; `fake` prepares the rest of the server. */
+  const returning = (prepare?: (fake: ReturnType<typeof fakeApi>) => void) =>
+    setup({
+      api: (fake) => {
+        fake.getMe.mockResolvedValue(meWithChart);
+        fake.getCurrentChart.mockResolvedValue(restored);
+        prepare?.(fake);
+      },
+    });
+
+  it('from the teaser to the report: the paywall opens with the report chosen for this chart, and the order follows the server\'s word', async () => {
+    const { api, analytics, user } = returning((fake) => {
+      // Before the purchase the server grants nothing; asked after it, it does.
+      fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(mePaid);
+    });
+
+    await user.click(await teaserCta());
+    expect(heading()).toHaveTextContent(ru.paywall.title);
+    expect(screen.getByRole('radio', { name: new RegExp(`^${ru.paywall.plans.one_149.title} `) })).toBeChecked();
+
+    await user.click(await payButton());
+
+    expect(await screen.findByRole('heading', { level: 1, name: ru.report.queuedTitle })).toBeInTheDocument();
+    expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'one_149', chart_id: chartId }, expect.any(AbortSignal));
+    expect(api.orderReport).toHaveBeenCalledTimes(1);
+    expect(api.orderReport).toHaveBeenCalledWith({ chart_id: chartId, type: 'full' }, 'key-1', expect.any(AbortSignal));
+    expect(analytics.names()).toEqual([
+      'app_open',
+      'screen_view',
+      'chart_restored',
+      'screen_view',
+      'paywall_view',
+      'checkout_started',
+      'checkout_opened',
+      'payment_succeeded',
+      'screen_view',
+      'report_requested',
+    ]);
+  });
+
+  it('the way back from the report is the chart itself: not the paywall, and no second request for the chart', async () => {
+    const { api, telegram, user } = returning((fake) => {
+      fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(mePaid);
+    });
+    await user.click(await teaserCta());
+    await user.click(await payButton());
+    await screen.findByRole('heading', { level: 1, name: ru.report.queuedTitle });
+
+    const back = telegram.setBackHandler.mock.lastCall?.[0];
+    act(() => {
+      back?.();
+    });
+
+    expect(heading()).toHaveTextContent(ru.chart.title);
+    expect(await screen.findByRole('region', { name: ru.chart.sun })).toBeInTheDocument();
+    expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+    // The server says the report is paid for now, and names it: the chart offers the way to it instead of the price.
+    expect(await screen.findByRole('button', { name: ru.chart.openReport })).toBeInTheDocument();
+    expect(api.getReport).toHaveBeenLastCalledWith(REPORT_ID, expect.any(AbortSignal));
+  });
+
+  it('a payment the server has not confirmed is not offered a second time: the chart says it is being processed', async () => {
+    const { api, analytics, user } = returning();
+
+    await user.click(await teaserCta());
+    await user.click(await payButton());
+    // Telegram said «paid»; the server, asked twice, grants nothing yet.
+    await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+    await user.click(await screen.findByRole('button', { name: ru.paywall.leave }));
+
+    expect(await screen.findByText(ru.chart.paymentPending)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) })).not.toBeInTheDocument();
+
+    // The server has it now: the next question brings the way to the report, and still no price.
+    api.getMe.mockResolvedValue(mePaid);
+    await user.click(screen.getByRole('button', { name: ru.paywall.checkAgain }));
+
+    expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+    expect(screen.queryByText(ru.chart.paymentPending)).not.toBeInTheDocument();
+    expect(api.createInvoice).toHaveBeenCalledTimes(1);
+    // Confirmed late and from another screen: the payment is counted all the same, once.
+    expect(analytics.events.filter((event) => event.name === 'payment_succeeded')).toEqual([
+      { name: 'payment_succeeded', props: { plan_code: 'one_149' } },
+    ]);
+  });
+
+  it('a refused order (402) leads to the paywall, which says why it opened, with the report chosen', async () => {
+    const { user } = returning((fake) => {
+      fake.getMe.mockResolvedValue(mePaid);
+      fake.orderReport.mockRejectedValue(apiError('PAYMENT_REQUIRED', { status: 402 }));
+    });
+
+    await user.click(await screen.findByRole('button', { name: ru.chart.orderReport }));
+
+    expect(await screen.findByRole('heading', { level: 1, name: ru.paywall.title })).toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent(ru.paywall.reportRequired);
+    expect(screen.getByRole('radio', { name: new RegExp(`^${ru.paywall.plans.one_149.title} `) })).toBeChecked();
+  });
+
+  it('opens the report the server names in `Me` without waiting to be asked', async () => {
+    const { api, user } = returning((fake) => {
+      fake.getMe.mockResolvedValue({ ...mePaid, latest_report_id: REPORT_ID });
+      fake.getReport.mockResolvedValue({ ...report, status: 'ready', progress: 100, sections });
+    });
+
+    expect(await screen.findByText(ru.chart.reportStates.ready)).toBeInTheDocument();
+    expect(api.getReport).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
+
+    await user.click(screen.getByRole('button', { name: ru.chart.openReport }));
+
+    expect(await screen.findByRole('region', { name: sections[0]?.title })).toBeInTheDocument();
+    expect(api.orderReport).not.toHaveBeenCalled();
+  });
+
+  it('settings are a tap away from the chart; deleting the data ends the app on the screen that says so, and nothing more is reported', async () => {
+    const { api, analytics, telegram, user } = returning();
+
+    await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+    expect(heading()).toHaveTextContent(ru.settings.title);
+    // The settings show the user as the server has them now, not as the app remembers.
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+
+    // The button, then two confirmations: only the second one deletes, and not in its first second.
+    await user.click(await screen.findByRole('button', { name: ru.settings.deletion.open }));
+    await user.click(screen.getByRole('button', { name: ru.settings.deletion.next }));
+    await act(() => vi.advanceTimersByTimeAsync(DELETE_GUARD_MS));
+    expect(api.deleteMe).not.toHaveBeenCalled();
+    analytics.clear();
+    await user.click(screen.getByRole('button', { name: ru.settings.deletion.confirm }));
+
+    expect(await screen.findByRole('heading', { name: ru.settings.deletion.doneTitle })).toBeInTheDocument();
+    expect(screen.getByText(ru.settings.deletion.doneText)).toBeInTheDocument();
+    expect(api.deleteMe).toHaveBeenCalledTimes(1);
+    expect(analytics.names()).toEqual(['data_deleted']);
+    // Nothing of the old user is left to go back to.
+    expect(telegram.setBackHandler).toHaveBeenLastCalledWith(null);
+    await user.click(screen.getByRole('button', { name: ru.common.close }));
+    expect(telegram.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('a new user reaches the settings from the welcome screen', async () => {
+    const { user } = setup();
+
+    await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+
+    expect(heading()).toHaveTextContent(ru.settings.title);
+    expect(await screen.findByRole('button', { name: ru.settings.deletion.open })).toBeInTheDocument();
   });
 });
 
@@ -897,7 +1065,15 @@ describe('App: product events', () => {
       const telegram = fakeTelegram();
       const user = setupUser();
       render(
-        <App api={api} telegram={telegram} apiBaseUrl="https://api.test" track={sent.track} termsReload={fakeTermsReload()} today={TODAY} />,
+        <App
+          api={api}
+          telegram={telegram}
+          apiBaseUrl="https://api.test"
+          keys={fakeKeys()}
+          track={sent.track}
+          termsReload={fakeTermsReload()}
+          today={TODAY}
+        />,
       );
       await eventfulPass({ api, telegram, user } as ReturnType<typeof setup>);
       act(() => {

@@ -1,19 +1,25 @@
 import { Button, InfoIcon, Screen, StateView } from '@astro-soul/ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AnalyticsStep, Track } from './analytics';
-import type { Api, FieldError } from './api';
+import type { Api, ChartCreateRequest, ChartResult, FieldError, Me, Report } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
+import type { IdempotencyKeys } from './lib/idempotency';
+import { grants, REPORT_PLAN, type PaywallPlan } from './lib/plans';
 import type { TermsReload } from './lib/termsReload';
 import { BirthDateScreen } from './screens/BirthDateScreen';
 import { BirthPlaceScreen } from './screens/BirthPlaceScreen';
 import { BirthTimeScreen } from './screens/BirthTimeScreen';
 import { BootScreen } from './screens/BootScreen';
-import { ChartScreen } from './screens/chart/ChartScreen';
+import { ChartScreen, type OpenChart } from './screens/chart/ChartScreen';
 import { ConsentScreen, type LegalDocument } from './screens/ConsentScreen';
 import { DocumentScreen } from './screens/DocumentScreen';
+import { PaywallScreen } from './screens/paywall/PaywallScreen';
+import { ReportScreen } from './screens/report/ReportScreen';
+import { DeletedScreen } from './screens/settings/DeletedScreen';
+import { SettingsScreen } from './screens/settings/SettingsScreen';
 import { WelcomeScreen } from './screens/welcome/WelcomeScreen';
 import type { Telegram } from './telegram';
 
@@ -24,6 +30,10 @@ export interface AppProps {
   apiBaseUrl: string;
   /** Username of the bot for the link in a shared message, without `@`; '' = no link. */
   botUsername?: string;
+  /** Where the support button leads; '' = no contact yet, the button says so. */
+  supportLink?: string;
+  /** The idempotency keys of report orders, kept across a reload of the page. */
+  keys: IdempotencyKeys;
   /** Reports product events (`POST /events`). Keep the reference stable. */
   track: Track;
   /** Restarts the app for newer legal texts, and tells a start after such a restart from an ordinary one. */
@@ -49,10 +59,15 @@ function termsAtStart(refusedVersion: string | null): TermsState {
 }
 
 /** Signs the user in (`GET /me` validates initData) before any screen is shown. */
-export function App({ api, telegram, apiBaseUrl, botUsername = '', track, termsReload, today }: AppProps) {
+export function App({ api, telegram, apiBaseUrl, botUsername = '', supportLink = '', keys, track, termsReload, today }: AppProps) {
   const loadMe = useCallback((signal: AbortSignal) => api.getMe(signal), [api]);
   const me = useRequest(loadMe);
   const [terms, setTerms] = useState(() => termsAtStart(termsReload.refusedVersion));
+  // The server has deleted everything about the user: nothing the app holds is true any more.
+  const [deleted, setDeleted] = useState(false);
+  const handleDeleted = useCallback(() => {
+    setDeleted(true);
+  }, []);
 
   useEffect(() => {
     // The first frame is drawn: Telegram may swap its placeholder for the app.
@@ -82,6 +97,7 @@ export function App({ api, telegram, apiBaseUrl, botUsername = '', track, termsR
     termsReload.reload();
   }, [termsReload]);
 
+  if (deleted) return <DeletedScreen telegram={telegram} />;
   if (terms === 'outdated') {
     return (
       <Screen>
@@ -124,18 +140,23 @@ export function App({ api, telegram, apiBaseUrl, botUsername = '', track, termsR
       telegram={telegram}
       apiBaseUrl={apiBaseUrl}
       botUsername={botUsername}
+      supportLink={supportLink}
+      keys={keys}
       track={track}
       today={today}
-      // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
-      hasChart={me.data.has_chart === true || typeof me.data.chart_id === 'string'}
+      me={me.data}
       termsRenewed={terms === 'renewed'}
       onConsentRefused={handleConsentRefused}
+      onDeleted={handleDeleted}
     />
   );
 }
 
-/** `current` is the chart the user already has, opened from the server; `chart` is the one built from the form. */
-type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart' | 'current';
+/**
+ * `current` is the chart the user already has, opened from the server; `chart` is the one
+ * built from the form. `paywall`, `report` and `settings` open over either.
+ */
+type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart' | 'current' | 'paywall' | 'report' | 'settings';
 /** Where the stack starts: at the user's chart, or at the welcome screen while there is none. */
 type Home = Extract<Route, 'welcome' | 'current'>;
 
@@ -150,6 +171,9 @@ const STEP_OF: Record<Route, AnalyticsStep> = {
   birthPlace: 'birth_place',
   chart: 'chart',
   current: 'chart',
+  paywall: 'paywall',
+  report: 'report',
+  settings: 'settings',
 };
 
 /** The screens that collect the chart request, in the order the user passes them. */
@@ -198,14 +222,45 @@ function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors
   return { messages, routes: FORM_ROUTES.slice(0, earliest + 1) };
 }
 
-interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername'> {
+interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 'supportLink'> {
   botUsername: string;
-  /** `Me` says the user has a chart: the app opens on it instead of the onboarding. */
-  hasChart: boolean;
+  supportLink: string;
+  /** Who the user is, as the server said when the app started. */
+  me: Me;
   /** This start follows a restart for newer legal texts: it opens on the consent screen, which says so. */
   termsRenewed: boolean;
   /** The server refused the consent version. Keep the reference stable. */
   onConsentRefused: () => void;
+  /** The server has deleted everything about the user. */
+  onDeleted: () => void;
+}
+
+/** What the paywall was opened for. */
+interface PaywallEntry {
+  /** The plan already chosen for the user, e.g. by the button under the teaser. */
+  plan: PaywallPlan | null;
+  /** The full report is on offer: the paywall was opened for it. */
+  offersReport: boolean;
+  /** The server refused to order a report and that is why the paywall is open. */
+  reportRequired: boolean;
+}
+
+/** How the report screen was entered. */
+interface ReportEntry {
+  /** The report to open; null when there is none known. */
+  reportId: string | null;
+  /** The tap that led to the screen asked for the report: it is ordered at once. */
+  orderAtOnce: boolean;
+  /** The report was bought a moment ago, in this visit. */
+  justPaid: boolean;
+}
+
+/** The charts the chart screen has shown, so that coming back to it asks the server nothing. */
+interface ShownCharts {
+  /** The user's chart, opened from the server. */
+  current: ChartResult | null;
+  /** The chart built from the form, and the request it answers. */
+  built: { request: ChartCreateRequest; result: ChartResult } | null;
 }
 
 /**
@@ -217,19 +272,59 @@ function Screens({
   telegram,
   apiBaseUrl,
   botUsername,
+  supportLink,
+  keys,
   track,
   today: pinnedToday,
-  hasChart,
+  me: meAtStart,
   termsRenewed,
   onConsentRefused,
+  onDeleted,
 }: ScreensProps) {
   const [today] = useState(() => pinnedToday ?? new Date());
-  const [home, setHome] = useState<Home>(hasChart ? 'current' : 'welcome');
+  // What the server last said about the user. Access is read from here and from nowhere else.
+  const [me, setMe] = useState(meAtStart);
+  // The report the app knows of: the one `Me` names, then whichever the report screen meets.
+  const [reportId, setReportId] = useState<string | null>(meAtStart.latest_report_id ?? null);
+  // And the server's last word about it, so the chart screen can show it at once and ask again behind it.
+  const [knownReport, setKnownReport] = useState<Report | null>(null);
+  // A plan Telegram called paid in this visit and the server has not granted yet. Until it does,
+  // no screen offers to pay for it again. The ref is for the moment the answer comes, the state for the screens.
+  const [awaitedPlan, setAwaitedPlan] = useState<PaywallPlan | null>(null);
+  const awaited = useRef<PaywallPlan | null>(null);
+  const awaitPayment = useCallback((plan: PaywallPlan) => {
+    awaited.current = plan;
+    setAwaitedPlan(plan);
+  }, []);
+  const refreshMe = useCallback(
+    async (signal?: AbortSignal) => {
+      const fresh = await api.getMe(signal);
+      setMe(fresh);
+      if (typeof fresh.latest_report_id === 'string') setReportId(fresh.latest_report_id);
+      const plan = awaited.current;
+      if (plan !== null && grants(fresh, plan)) {
+        // The one confirmation of a payment there is, counted here once, whichever screen asked the server.
+        awaited.current = null;
+        setAwaitedPlan(null);
+        track('payment_succeeded', { plan_code: plan });
+      }
+      return fresh;
+    },
+    [api, track],
+  );
+  // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
+  const [home, setHome] = useState<Home>(meAtStart.has_chart || typeof meAtStart.chart_id === 'string' ? 'current' : 'welcome');
   const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? [home, 'consent'] : [home]));
   const [draft, setDraft] = useState<BirthDraft>(EMPTY_DRAFT);
   const [serverErrors, setServerErrors] = useState(NO_SERVER_ERRORS);
   // Said until the user agrees to the new texts; after that it is no longer news.
   const [termsNotice, setTermsNotice] = useState(termsRenewed);
+  const [shownCharts, setShownCharts] = useState<ShownCharts>({ current: null, built: null });
+  const chartScroll = useRef(0);
+  // The chart the paywall and the report screen were opened from.
+  const [openChart, setOpenChart] = useState<OpenChart | null>(null);
+  const [paywall, setPaywall] = useState<PaywallEntry>({ plan: null, offersReport: false, reportRequired: false });
+  const [reportEntry, setReportEntry] = useState<ReportEntry>({ reportId: null, orderAtOnce: false, justPaid: false });
   const route = stack[stack.length - 1] ?? home;
   const canGoBack = stack.length > 1;
 
@@ -246,10 +341,15 @@ function Screens({
     viewed.current = route;
     track('screen_view', { step: STEP_OF[route] });
     if (route === 'consent') track('consent_view');
+    if (route === 'paywall') track('paywall_view');
   }, [route, track]);
 
   const open = (next: Route) => {
     setStack((current) => [...current, next]);
+  };
+  /** Puts `next` in place of the screen on top: the back button then leads past the replaced one. */
+  const replace = (next: Route) => {
+    setStack((current) => [...current.slice(0, -1), next]);
   };
   const goBack = useCallback(() => {
     // Reported here, not in the updater below: React may run an updater more than once.
@@ -286,6 +386,9 @@ function Screens({
     setHome('welcome');
     setStack(['welcome']);
   }, []);
+  const openSettings = () => {
+    open('settings');
+  };
 
   useEffect(() => {
     telegram.setBackHandler(canGoBack ? goBack : null);
@@ -298,9 +401,26 @@ function Screens({
   const back = canGoBack && !telegram.hasNativeBackButton ? { label: ru.common.back, onClick: goBack } : undefined;
   const request = useMemo(() => toChartRequest(draft, today), [draft, today]);
 
+  // A chart that came from the server is kept, so the way back to the chart screen costs no request.
+  const rememberCurrent = useCallback((result: ChartResult) => {
+    chartScroll.current = 0;
+    setShownCharts((shown) => ({ ...shown, current: result }));
+  }, []);
+  const rememberBuilt = useCallback(
+    (result: ChartResult) => {
+      chartScroll.current = 0;
+      // The user's chart on the server may be this one now: the one kept from before is no longer vouched for.
+      if (request !== null) setShownCharts({ current: null, built: { request, result } });
+    },
+    [request],
+  );
+
   if (route === 'current' || (route === 'chart' && request !== null)) {
+    const cached = route === 'current' ? shownCharts.current : shownCharts.built?.request === request ? shownCharts.built.result : null;
     return (
       <ChartScreen
+        // A screen of its own per chart: the one from the server and the one from the form share nothing.
+        key={route}
         api={api}
         telegram={telegram}
         request={route === 'current' ? null : request}
@@ -315,9 +435,39 @@ function Screens({
         }}
         onRejected={handleRejected}
         onMissing={handleMissing}
+        cached={cached}
+        onLoaded={route === 'current' ? rememberCurrent : rememberBuilt}
+        scroll={chartScroll}
+        onOpenSettings={openSettings}
+        report={{
+          fullReport: me.entitlements.full_report,
+          reportId,
+          known: knownReport,
+          onKnown: setKnownReport,
+          paymentPending: awaitedPlan === REPORT_PLAN,
+          onCheckPayment: refreshMe,
+          onBuy: (chart) => {
+            setOpenChart(chart);
+            setPaywall({ plan: REPORT_PLAN, offersReport: true, reportRequired: false });
+            open('paywall');
+          },
+          onOrder: (chart) => {
+            setOpenChart(chart);
+            setReportEntry({ reportId: null, orderAtOnce: true, justPaid: false });
+            open('report');
+          },
+          onOpen: (chart, known) => {
+            setOpenChart(chart);
+            setReportEntry({ reportId: known, orderAtOnce: false, justPaid: false });
+            open('report');
+          },
+        }}
       />
     );
   }
+
+  // The chart a report can be about: the one the user came from, else the one `Me` names.
+  const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id, share: null } : null);
 
   switch (route) {
     case 'welcome':
@@ -329,6 +479,82 @@ function Screens({
           onOpenTerms={() => {
             open('terms');
           }}
+          onOpenSettings={openSettings}
+        />
+      );
+    case 'paywall':
+      return (
+        <PaywallScreen
+          api={api}
+          telegram={telegram}
+          me={me}
+          refreshMe={refreshMe}
+          reportChartId={paywall.offersReport ? (reportChart?.chartId ?? null) : null}
+          initialPlan={paywall.plan}
+          reportRequired={paywall.reportRequired}
+          awaiting={awaitedPlan}
+          onAwaiting={awaitPayment}
+          track={track}
+          back={back}
+          onOpenTerms={() => {
+            open('terms');
+          }}
+          onReportPaid={() => {
+            // Paid for, by the server's word. The user asked for the report with the purchase: it is ordered at once.
+            setReportEntry({ reportId: null, orderAtOnce: true, justPaid: true });
+            replace('report');
+          }}
+          onOpenReport={
+            reportChart === null
+              ? undefined
+              : () => {
+                  setReportEntry({ reportId, orderAtOnce: false, justPaid: false });
+                  replace('report');
+                }
+          }
+          onClose={goBack}
+        />
+      );
+    case 'report':
+      // Not reachable without a chart; if it ever is, the screen under this one is the place to be.
+      if (reportChart === null) return <BootScreen />;
+      return (
+        <ReportScreen
+          api={api}
+          telegram={telegram}
+          keys={keys}
+          chartId={reportChart.chartId}
+          reportId={reportEntry.reportId}
+          orderAtOnce={reportEntry.orderAtOnce}
+          justPaid={reportEntry.justPaid}
+          apiBaseUrl={apiBaseUrl}
+          supportLink={supportLink}
+          share={reportChart.share}
+          track={track}
+          back={back}
+          onPaymentRequired={(explain) => {
+            setPaywall({ plan: REPORT_PLAN, offersReport: true, reportRequired: explain });
+            replace('paywall');
+          }}
+          onReportId={setReportId}
+          onReport={setKnownReport}
+        />
+      );
+    case 'settings':
+      return (
+        <SettingsScreen
+          api={api}
+          telegram={telegram}
+          refreshMe={refreshMe}
+          supportLink={supportLink}
+          track={track}
+          back={back}
+          onOpenDocument={open}
+          onSubscribe={() => {
+            setPaywall({ plan: null, offersReport: false, reportRequired: false });
+            open('paywall');
+          }}
+          onDeleted={onDeleted}
         />
       );
     case 'consent':
