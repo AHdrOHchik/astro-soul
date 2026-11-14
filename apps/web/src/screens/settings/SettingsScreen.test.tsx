@@ -220,6 +220,29 @@ describe('SettingsScreen', () => {
       expect(analytics.events).toEqual([{ name: 'error_shown', props: { screen: 'settings', code: '409' } }]);
     });
 
+    // `details.reason` of a 409 is `refund_failed` today; the server's events know more codes (`invoice_invalidated`,
+    // `user_deleted`) and will know others. The screen draws no text by any of them: it shows the server's message.
+    it.each(['refund_failed', 'invoice_invalidated', 'user_deleted', 'a_reason_of_next_year', undefined])(
+      '409 reads the same whatever `details.reason` says (%s)',
+      async (reason) => {
+        const api = fakeApi();
+        const serverText = 'Не получилось вернуть звёзды за незавершённую оплату. Напиши в поддержку — вернём вручную.';
+        api.deleteMe.mockRejectedValue(apiError('CONFLICT', { status: 409, serverMessage: serverText, details: reason === undefined ? undefined : { reason } }));
+        const { analytics, onDeleted, user } = setup({ api });
+
+        await toLastConfirmation(user);
+        await user.click(confirmDeletion());
+
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent(serverText);
+        expect(within(alert).getByRole('button', { name: ru.support.soon })).toBeInTheDocument();
+        // Nothing deleted, and the way to try again is still there.
+        expect(onDeleted).not.toHaveBeenCalled();
+        expect(confirmDeletion()).toBeEnabled();
+        expect(analytics.events).toEqual([{ name: 'error_shown', props: { screen: 'settings', code: '409' } }]);
+      },
+    );
+
     it('409 without a support contact: the button is there, disabled, and says so', async () => {
       const api = fakeApi();
       api.deleteMe.mockRejectedValue(apiError('CONFLICT', { status: 409 }));
