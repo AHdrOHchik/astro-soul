@@ -36,18 +36,20 @@ if (total > BUDGET_BYTES) {
 // Dev-only settings must not reach users (a developer's .env may hold the init data of an account).
 // Two ways they can get in: `import.meta.env` inlined as a whole object, which leaves the variable
 // name in the output, or a read outside an `import.meta.env.DEV` branch, which leaves the value.
-const DEV_ONLY = ['VITE_DEV_INIT_DATA'];
+const DEV_ONLY = ['VITE_DEV_INIT_DATA', 'VITE_DEV_INVOICE'];
+// Code that exists for development alone: the address the pretended payment of a dev build reports to (src/main.tsx).
+const DEV_CODE = ['/__mock/'];
 const MIN_VALUE_LENGTH = 8; // shorter values would match unrelated code
 const env = loadEnv(process.argv[2] ?? 'production', join(import.meta.dirname, '..'), 'VITE_');
 const needles = DEV_ONLY.flatMap((name) => {
   const value = env[name] ?? '';
   return value.length >= MIN_VALUE_LENGTH ? [name, value] : [name];
-});
+}).concat(DEV_CODE);
 const leaks = files.filter((file) => {
   const text = readFileSync(file, 'utf8');
   return needles.some((needle) => text.includes(needle));
 });
 if (leaks.length > 0) {
-  console.error(`Dev-only settings (${DEV_ONLY.join(', ')}) are in the bundle: ${leaks.map((file) => relative(dist, file)).join(', ')}`);
+  console.error(`Dev-only settings (${DEV_ONLY.join(', ')}) or dev-only code (${DEV_CODE.join(', ')}) are in the bundle: ${leaks.map((file) => relative(dist, file)).join(', ')}`);
   process.exit(1);
 }
