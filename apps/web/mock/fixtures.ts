@@ -46,6 +46,8 @@ export interface MockAccount {
   /** The full report is bought for a chart; this is whether one is bought at all, as `Me` tells it. */
   fullReport: boolean;
   latestReportId: string | null;
+  /** How many of the day's questions are used, and the moment that day ends: midnight at the birth place of the chart. */
+  asked: { used: number; resetAt: number };
 }
 
 /** `Entitlements` by the rules of packages/shared (`entitlementsForPlan`): a subscription does not include the full report. */
@@ -62,19 +64,33 @@ function entitlementsOf({ subscription, fullReport }: MockAccount, now: number):
   };
 }
 
-/** The four quotas apps/api always sends, with the limits it derives from the entitlements (`quotaLimits`). */
-function quotasOf(entitlements: Entitlements, now: number): Quota[] {
+/** The day's questions as `Quota`: the count the mock keeps, the limit of the entitlements. */
+export function askQuotaOf({ asked }: MockAccount, entitlements: Pick<Entitlements, 'ask_per_day'>): Quota {
+  return { code: 'ask_daily', used: asked.used, limit: entitlements.ask_per_day, reset_at: new Date(asked.resetAt).toISOString() };
+}
+
+/**
+ * The four quotas apps/api always sends, with the limits it derives from the entitlements
+ * (`quotaLimits`). The daily ones end where the server ends them: at midnight of the birth
+ * place of the user's chart, which is rarely midnight on the device.
+ */
+function quotasOf(account: MockAccount, entitlements: Entitlements, now: number): Quota[] {
   const day = new Date(now);
   day.setUTCHours(24, 0, 0, 0);
   const month = new Date(Date.UTC(day.getUTCFullYear(), new Date(now).getUTCMonth() + 1, 1));
-  const tomorrow = day.toISOString();
+  const tomorrow = new Date(account.asked.resetAt).toISOString();
   const nextMonth = month.toISOString();
   return [
     { code: 'forecast_daily', used: 0, limit: entitlements.full_forecast ? -1 : 1, reset_at: tomorrow },
-    { code: 'ask_daily', used: entitlements.is_active ? 2 : 0, limit: entitlements.ask_per_day, reset_at: tomorrow },
+    askQuotaOf(account, entitlements),
     { code: 'report_month', used: 0, limit: entitlements.full_report ? -1 : 0, reset_at: nextMonth },
     { code: 'compat_month', used: 0, limit: entitlements.compat_per_month, reset_at: nextMonth },
   ];
+}
+
+/** What the mock's user may do, as `Me.entitlements` says it. */
+export function buildEntitlements(account: MockAccount, now: number): Entitlements {
+  return entitlementsOf(account, now);
 }
 
 /** `GET /me` for the mock's user as it stands at `now`. */
@@ -95,7 +111,7 @@ export function buildMe(account: MockAccount, now: number): Me {
         ? { plan: 'none', is_active: false, expires_at: null, auto_renew: false }
         : { plan: subscription.plan, is_active: entitlements.is_active, expires_at: new Date(subscription.expiresAt).toISOString(), auto_renew: true },
     entitlements,
-    quotas: quotasOf(entitlements, now),
+    quotas: quotasOf(account, entitlements, now),
     onboarding_step: hasChart ? 'done' : 'birth_date',
   };
 }

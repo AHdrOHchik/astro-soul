@@ -70,6 +70,45 @@ type ReportEnvelope = components['schemas']['Report'];
 export type ReportRequest = components['schemas']['ReportRequest'];
 export type ReportStatus = ReportEnvelope['status'];
 
+type ForecastEnvelope = components['schemas']['Forecast'];
+
+/**
+ * What a forecast may be about (`Forecast.focus`): the codes this build has a label for.
+ * A list of its own, like `CHART_WARNINGS`: a code a newer server adds is left out, not shown raw.
+ */
+export const FORECAST_FOCUSES = ['career', 'love', 'money', 'health', 'self'] as const satisfies readonly NonNullable<
+  ForecastEnvelope['focus']
+>[];
+export type ForecastFocus = (typeof FORECAST_FOCUSES)[number];
+
+/**
+ * The forecast of a day as the screens get it. Prepared by the server at night and only
+ * read here: there is no request that makes one.
+ */
+export interface Forecast {
+  /** `YYYY-MM-DD`: the day the forecast is for, by the calendar of the birth place. */
+  date: string;
+  /** As much of the text as the server gives out: all of it, or its short version. */
+  text: string;
+  /** What the day is about; null when the server named nothing, or something this build has no label for. */
+  focus: ForecastFocus | null;
+  /** The server's word that this is the full forecast. Decides nothing here but what stands under the text. */
+  is_paid: boolean;
+}
+
+/** `POST /engagement/ask`: the chart and the question, 3 to 500 characters of it. */
+export type AskRequest = components['schemas']['AskRequest'];
+
+/** The answer to a question about the chart. A refusal to answer comes in this very shape and is shown the same way. */
+export interface AskAnswer {
+  answer: string;
+  /** The positions of the chart the answer rests on; empty when the server named none. */
+  based_on: string[];
+}
+
+/** The limit of the contract for a question, counted like the server counts it: in UTF-16 units, after trimming. */
+export const QUESTION_MAX_LENGTH = 500;
+
 /** Typed against the contract: a status added to or removed from `Report.status` breaks the build here. */
 const REPORT_STATUSES: Record<ReportStatus, true> = {
   queued: true,
@@ -136,6 +175,8 @@ const PATHS = {
   invoice: '/api/v1/billing/invoice',
   reports: '/api/v1/reports',
   report: '/api/v1/reports/{report_id}',
+  forecast: '/api/v1/engagement/forecast',
+  ask: '/api/v1/engagement/ask',
 } as const satisfies Record<string, keyof paths>;
 
 /** The header of `POST /reports` that makes a repeated order the same order. */
@@ -178,6 +219,17 @@ export interface Api {
   orderReport(input: ReportRequest, idempotencyKey: string, signal?: AbortSignal): Promise<Report>;
   /** Where the report stands, and as much of it as the server gives out. */
   getReport(reportId: string, signal?: AbortSignal): Promise<Report>;
+  /**
+   * The forecast the server has prepared for the chart; null while there is none for today
+   * (the contract's 404: a nightly job writes them, a request never does). A read of a cache:
+   * there is nothing to wait for, so nobody asks twice in a row.
+   */
+  getForecast(chartId: string, signal?: AbortSignal): Promise<Forecast | null>;
+  /**
+   * Asks a question about the chart. Sent once: every question that reaches the server may
+   * cost one of the day's few, so a repeat is made by the user's tap, never by the client.
+   */
+  ask(input: AskRequest, signal?: AbortSignal): Promise<AskAnswer>;
 }
 
 function invalid(): ApiError {
@@ -356,6 +408,32 @@ function toReport(value: unknown): Report {
   };
 }
 
+function isForecastFocus(value: unknown): value is ForecastFocus {
+  const known: readonly unknown[] = FORECAST_FOCUSES;
+  return known.includes(value);
+}
+
+function toForecast(value: unknown): Forecast {
+  // Without a text there is nothing to read, without a date nothing says which day it is about: not a forecast.
+  if (!isRecord(value) || typeof value.text !== 'string' || value.text.trim() === '' || typeof value.date !== 'string') throw invalid();
+  return {
+    date: value.date,
+    text: value.text,
+    focus: isForecastFocus(value.focus) ? value.focus : null,
+    // Full only when the server says exactly `true`, like everything that is about access.
+    is_paid: value.is_paid === true,
+  };
+}
+
+function toAskAnswer(value: unknown): AskAnswer {
+  if (!isRecord(value) || typeof value.answer !== 'string' || value.answer.trim() === '') throw invalid();
+  const basedOn: unknown[] = Array.isArray(value.based_on) ? value.based_on : [];
+  return {
+    answer: value.answer,
+    based_on: basedOn.filter((item): item is string => typeof item === 'string' && item.trim() !== ''),
+  };
+}
+
 export function createApi(options: HttpClientOptions): Api {
   const request = createHttpClient(options);
 
@@ -407,6 +485,21 @@ export function createApi(options: HttpClientOptions): Api {
 
     async getReport(reportId, signal) {
       return toReport(await request<unknown>('GET', PATHS.report.replace('{report_id}', encodeURIComponent(reportId)), { signal }));
+    },
+
+    async getForecast(chartId, signal) {
+      try {
+        return toForecast(await request<unknown>('GET', `${PATHS.forecast}?chart_id=${encodeURIComponent(chartId)}`, { signal }));
+      } catch (error) {
+        // The contract's way of saying «not prepared yet».
+        if (isApiError(error) && error.code === 'NOT_FOUND') return null;
+        throw error;
+      }
+    },
+
+    async ask(input, signal) {
+      // The quota that comes with the answer is not read: the screens show the one of `Me`, asked anew after every answer.
+      return toAskAnswer(await request<unknown>('POST', PATHS.ask, { body: input, signal, retry: false }));
     },
   };
 }

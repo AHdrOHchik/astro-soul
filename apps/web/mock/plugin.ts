@@ -8,8 +8,11 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { PLANS } from '@astro-soul/shared';
 import type { Connect, Plugin } from 'vite';
 import { EVENT_NAMES } from '../src/analytics/events.ts';
+import { askOutcome, buildForecast, FORECAST_SCENARIOS, localDay, type ForecastScenario } from './engagement.ts';
 import {
+  askQuotaOf,
   buildChart,
+  buildEntitlements,
   buildMe,
   findPlaces,
   inputKey,
@@ -48,6 +51,11 @@ export interface MockApiOptions {
   invoice?: string;
   /** DELETE /me: `409`, `401` or `500` fail it; by default everything is deleted. */
   deletion?: string;
+  /**
+   * GET /engagement/forecast: `auto` (the default) answers as apps/api would, `ready` always
+   * has today's forecast, `pending` never has one, `stale` has yesterday's, `500` fails.
+   */
+  forecast?: string;
   /** A finished report has a PDF to download. Off by default, as in apps/api, which makes none yet. */
   pdf?: boolean;
 }
@@ -261,6 +269,45 @@ const REPORT_CHAPTER_MS = 2500;
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 
+/** The zone apps/api counts the days in for a user without a chart, or with a chart that names none. */
+const FALLBACK_ZONE = 'UTC';
+/** How many of the day's questions a `subscriber` of the mock has already asked, so the counter has something to show. */
+const SUBSCRIBER_ASKED = 2;
+
+/** The texts of apps/api (`engagement.service.ts`). */
+const ENGAGEMENT_MESSAGE = {
+  chartRequired: 'Нужна карта, для которой показываем прогноз',
+  chartField: 'Выбери карту',
+  chartGone: 'Такой карты нет. Построй карту заново',
+  forecastPending: 'Прогноз на сегодня ещё готовится. Загляни чуть позже',
+  askExhausted: 'На сегодня вопросы закончились. Лимит обновится в полночь по месту рождения',
+  askUnavailable: 'Вопросы временно недоступны. Попробуй позже',
+} as const;
+
+/** «Солнце в Тельце»: the case apps/api puts a sign in for `AskResponse.based_on` (`chartFactLabels`). */
+const SIGN_PREPOSITIONAL: Record<string, string> = {
+  Овен: 'Овне',
+  Телец: 'Тельце',
+  Близнецы: 'Близнецах',
+  Рак: 'Раке',
+  Лев: 'Льве',
+  Дева: 'Деве',
+  Весы: 'Весах',
+  Скорпион: 'Скорпионе',
+  Стрелец: 'Стрельце',
+  Козерог: 'Козероге',
+  Водолей: 'Водолее',
+  Рыбы: 'Рыбах',
+};
+
+/** The Sun and the Moon of a chart the way apps/api names the positions an answer rests on. */
+function basisOf({ chart }: ChartResponse): string[] {
+  return chart.planets.slice(0, 2).map((planet) => {
+    const house = typeof planet.house === 'number' ? `, ${String(planet.house)}-й дом` : '';
+    return `${planet.name} в ${SIGN_PREPOSITIONAL[planet.sign] ?? planet.sign}${house}`;
+  });
+}
+
 function isPlanCode(value: unknown): value is PlanCode {
   return typeof value === 'string' && Object.hasOwn(PLANS, value);
 }
@@ -273,11 +320,13 @@ function createHandler({
   reportChapterMs = REPORT_CHAPTER_MS,
   invoice: invoiceScenario,
   deletion: deletionScenario,
+  forecast: forecastOption,
   pdf = false,
 }: MockApiOptions) {
   const who = meScenario.split(',').map((word) => word.trim());
   const startsWithChart = who.some((word) => word === 'returning' || word === 'paid' || word === 'subscriber');
   const scenario: ReportScenario = REPORT_SCENARIOS.find((name) => name === reportScenario) ?? 'ready';
+  const forecastScenario: ForecastScenario = FORECAST_SCENARIOS.find((name) => name === forecastOption) ?? 'auto';
   const pace: ReportPace = { queuedMs: REPORT_QUEUED_MS, chapterMs: reportChapterMs };
 
   // All the mock keeps between requests: the user's chart with the birth data it was built from,
@@ -294,17 +343,35 @@ function createHandler({
   let latestReportId: string | null = null;
   /** The invoices made, by link: what a payment of each one buys. */
   const invoices = new Map<string, { plan: PlanCode; chartId: string | null }>();
+  /**
+   * What the nightly job of apps/api left behind before this run began: a forecast for the
+   * chart the user came with, full or short by the subscription of that hour. A chart built
+   * during the run has none (its first night is still ahead), and a subscription bought
+   * during the run does not make today's forecast any longer: the server writes the text
+   * once, at night, and afterwards only reads it.
+   */
+  const night: { key: string; paid: boolean } | null = current ? { key: current.key, paid: subscription !== null } : null;
+  /** The day's questions: how many are asked, and the local day they were asked on. */
+  let asked = { day: '', used: who.includes('subscriber') ? SUBSCRIBER_ASKED : 0 };
 
   /** A refund takes the purchase back: seen here, the way the job of apps/api does it between requests. */
   const settleRefunds = (now: number) => {
     for (const report of reports.values()) if (isRefunded(report, pace, now)) paidCharts.delete(report.chartId);
   };
-  const account = (): MockAccount => ({
-    chartId: current?.chart.chart.chart_id ?? null,
-    subscription,
-    fullReport: paidCharts.size > 0,
-    latestReportId,
-  });
+  /** Where the server counts the user's days: the zone of the birth place of the chart. */
+  const zone = () => current?.chart.chart.birth.place?.tz ?? FALLBACK_ZONE;
+  const account = (now: number): MockAccount => {
+    const { date, endsAt } = localDay(zone(), now);
+    // A new day at the birth place: yesterday's questions do not count. The first look only notes the day.
+    if (asked.day !== date) asked = { day: date, used: asked.day === '' ? asked.used : 0 };
+    return {
+      chartId: current?.chart.chart.chart_id ?? null,
+      subscription,
+      fullReport: paidCharts.size > 0,
+      latestReportId,
+      asked: { used: asked.used, resetAt: endsAt },
+    };
+  };
   const pdfUrlOf = (reportId: string) => (pdf ? `${PREFIX}/reports/${reportId}/report.pdf?sig=mock-signature` : null);
   const reportView = (report: MockReport, now: number, paid: boolean) => viewOf(report, pace, now, paid, pdfUrlOf(report.id));
 
@@ -396,7 +463,58 @@ function createHandler({
     if (route === 'GET /me') {
       if (who.includes('401')) sendProblem(res, 401, 'UNAUTHORIZED', MESSAGE.UNAUTHORIZED);
       else if (who.includes('500')) sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
-      else send(res, 200, buildMe(account(), now));
+      else send(res, 200, buildMe(account(now), now));
+      return;
+    }
+
+    if (route === 'GET /engagement/forecast') {
+      // Read, never made: what the night left is all there is. The checks go in the order of apps/api.
+      const chartId = url.searchParams.get('chart_id') ?? '';
+      if (chartId === '') {
+        sendProblem(res, 422, 'VALIDATION_FAILED', ENGAGEMENT_MESSAGE.chartRequired, {
+          field_errors: [{ field: 'chart_id', message: ENGAGEMENT_MESSAGE.chartField }],
+        });
+      } else if (current === null || chartId !== current.chart.chart.chart_id) {
+        sendProblem(res, 404, 'NOT_FOUND', ENGAGEMENT_MESSAGE.chartGone);
+      } else if (forecastScenario === '500') {
+        sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
+      } else {
+        const subscribed = buildEntitlements(account(now), now).full_forecast;
+        // `auto`: the forecast of the night, for the chart that was there at night. The other scenarios write one on the spot.
+        const written = forecastScenario === 'auto' ? (night !== null && night.key === current.key ? night.paid : null) : subscribed;
+        if (forecastScenario === 'pending' || written === null) {
+          // The same 404 as for a chart that is not there, with other words: the contract tells them apart by nothing else.
+          sendProblem(res, 404, 'NOT_FOUND', ENGAGEMENT_MESSAGE.forecastPending);
+        } else {
+          send(res, 200, buildForecast(localDay(zone(), now).date, written, now, forecastScenario === 'stale'));
+        }
+      }
+      return;
+    }
+
+    if (route === 'POST /engagement/ask') {
+      const state = account(now);
+      const quota = askQuotaOf(state, buildEntitlements(state, now));
+      const outcome = askOutcome(await readJson(req), quota, current ? basisOf(current.chart) : []);
+      const limit = { quota_code: quota.code, reset_at: quota.reset_at };
+      if (outcome.kind === 'invalid') {
+        sendInvalid(res, outcome.errors);
+      } else if (current === null || outcome.chartId !== current.chart.chart.chart_id) {
+        sendProblem(res, 404, 'NOT_FOUND', ENGAGEMENT_MESSAGE.chartGone);
+      } else if (outcome.kind === 'scenario' && outcome.scenario === 'error') {
+        sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
+      } else if (outcome.kind === 'scenario' && outcome.scenario === 'cap') {
+        // The month's budget of the service is spent: the code of a used-up quota, and a quota that is not used up.
+        sendProblem(res, 429, 'QUOTA_EXCEEDED', ENGAGEMENT_MESSAGE.askUnavailable, limit);
+      } else if (outcome.kind === 'scenario') {
+        // Not an answer apps/api gives to a question today: here to see what the app does if it ever comes.
+        sendProblem(res, 402, 'PAYMENT_REQUIRED', 'Вопросы карте — в подписке');
+      } else if (outcome.kind === 'exhausted') {
+        sendProblem(res, 429, 'QUOTA_EXCEEDED', ENGAGEMENT_MESSAGE.askExhausted, { ...limit, unlimited: false });
+      } else {
+        if (outcome.counted) asked = { ...asked, used: asked.used + 1 };
+        send(res, 200, { ...outcome.body, quota: { ...quota, used: asked.used } });
+      }
       return;
     }
 
@@ -413,6 +531,7 @@ function createHandler({
       } else {
         // Everything about the user goes; the subscription lives on to the end of its period, as on the server.
         current = null;
+        asked = { day: '', used: 0 };
         paidCharts.clear();
         reports.clear();
         reportKeys.clear();
@@ -437,7 +556,8 @@ function createHandler({
       } else if (plan === 'one_149' && chartId === null) {
         sendInvalid(res, [{ field: 'chart_id', message: 'Выбери карту, для которой покупаешь разбор' }]);
       } else if (chartId !== null && chartId !== current?.chart.chart.chart_id) {
-        sendProblem(res, 404, 'NOT_FOUND', MESSAGE.NOT_FOUND, { reason: 'chart_not_found' });
+        // A chart that is not the user's, or is not there any more: apps/api names the field (`billing.service.ts`).
+        sendInvalid(res, [{ field: 'chart_id', message: 'Карта не найдена' }]);
       } else if (invoices.size >= INVOICES_PER_HOUR) {
         // The limit is checked before anything else, as in apps/api: also for a plan that already has an invoice.
         sendProblem(res, 429, 'RATE_LIMITED', MESSAGE.RATE_LIMITED, { reason: 'invoice_limits', hour_limit: INVOICES_PER_HOUR });
@@ -615,6 +735,7 @@ function scenarioFrom(query: URLSearchParams): Partial<MockApiOptions> {
     report: query.get('report') ?? undefined,
     invoice: query.get('invoice') ?? undefined,
     deletion: query.get('delete') ?? undefined,
+    forecast: query.get('forecast') ?? undefined,
     pdf: query.get('pdf') === '1',
     ...(chapterMs > 0 && { reportChapterMs: chapterMs }),
   };
@@ -631,9 +752,24 @@ export function mockApi(options: MockApiOptions): Plugin {
     if (url.pathname === `${PREFIX}/__mock/reset`) {
       // Not a part of the API: starts the mock over, with the user and the scenarios the query names
       // (`?me=paid&report=failed`), so that another state of a screen is one address away, not one restart.
-      const scenario = { ...options, me: undefined, report: undefined, invoice: undefined, deletion: undefined, ...scenarioFrom(url.searchParams) };
+      const scenario = {
+        ...options,
+        me: undefined,
+        report: undefined,
+        invoice: undefined,
+        deletion: undefined,
+        forecast: undefined,
+        ...scenarioFrom(url.searchParams),
+      };
       handle = createHandler(scenario);
-      send(res, 200, { me: scenario.me ?? '', report: scenario.report ?? 'ready', invoice: scenario.invoice ?? '', delete: scenario.deletion ?? '', pdf: scenario.pdf });
+      send(res, 200, {
+        me: scenario.me ?? '',
+        report: scenario.report ?? 'ready',
+        invoice: scenario.invoice ?? '',
+        delete: scenario.deletion ?? '',
+        forecast: scenario.forecast ?? 'auto',
+        pdf: scenario.pdf,
+      });
       return;
     }
     handle(req, res, url).catch((error: unknown) => {

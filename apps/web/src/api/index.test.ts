@@ -397,6 +397,169 @@ describe('reports', () => {
   });
 });
 
+describe('getForecast', () => {
+  const CHART = '00000000-0000-4000-8000-00000000c0de';
+  const body = { date: '2026-11-10', text: 'Спокойный день. Доделай начатое.', focus: 'career', is_paid: true, generated_at: '2026-11-10T00:02:11.000Z' };
+
+  it('reads the forecast of the chart named in the query, and keeps only what the screens show', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValueOnce(json(200, body));
+
+    await expect(api.getForecast(CHART)).resolves.toEqual({ date: '2026-11-10', text: 'Спокойный день. Доделай начатое.', focus: 'career', is_paid: true });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect([url, init?.method, init?.body]).toEqual([`/api/v1/engagement/forecast?chart_id=${CHART}`, 'GET', undefined]);
+  });
+
+  it('writes the chart into the query as a value, not as a part of the address', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValueOnce(json(200, body));
+    await api.getForecast('a b&x=1');
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/v1/engagement/forecast?chart_id=a%20b%26x%3D1');
+  });
+
+  it.each([
+    // The words of apps/api for a forecast its nightly job has not written yet.
+    ['the Problem of apps/api', json(404, { code: 'NOT_FOUND', message: 'Прогноз на сегодня ещё готовится. Загляни чуть позже', request_id: 'r' })],
+    ['a bare 404', json(404)],
+  ])('takes %s for «none yet», not for a failure', async (_name, response) => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockResolvedValue(response);
+    await expect(api.getForecast(CHART)).resolves.toBeNull();
+    // An answer, not a failure to try again: asked once.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps real failures as errors', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock
+      .mockResolvedValueOnce(json(500, { code: 'INTERNAL', message: 'Что-то сломалось на нашей стороне.', request_id: 'r' }))
+      .mockResolvedValueOnce(json(401))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    await expect(api.getForecast(CHART)).rejects.toMatchObject({ code: 'INTERNAL', status: 500 });
+    await expect(api.getForecast(CHART)).rejects.toMatchObject({ code: 'UNAUTHORIZED', status: 401 });
+    await expect(api.getForecast(CHART)).rejects.toMatchObject({ code: 'NETWORK' });
+  });
+
+  it.each([
+    ['a focus this build has no word for', { ...body, focus: 'travel' }],
+    ['no focus', { ...body, focus: null }],
+    ['a focus that is not a code', { ...body, focus: 7 }],
+    ['the field left out', { date: body.date, text: body.text, is_paid: true }],
+  ])('has no focus for %s: a code is never shown raw', async (_name, answer) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, answer));
+    await expect(api.getForecast(CHART)).resolves.toMatchObject({ focus: null, text: body.text });
+  });
+
+  it.each([
+    ['true', true, true],
+    ['false', false, false],
+    ['the field left out', undefined, false],
+    ['the word "true"', 'true', false],
+    ['1', 1, false],
+  ])('is the full forecast only when the server says exactly `true` (is_paid: %s)', async (_name, isPaid, expected) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { ...body, is_paid: isPaid }));
+    await expect(api.getForecast(CHART)).resolves.toMatchObject({ is_paid: expected });
+  });
+
+  it.each([
+    ['no text', { ...body, text: undefined }],
+    ['an empty text', { ...body, text: '  ' }],
+    ['no date', { ...body, date: undefined }],
+    ['a list', [body]],
+    ['nothing', null],
+  ])('does not take an answer with %s for a forecast', async (_name, answer) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, answer));
+    await expect(api.getForecast(CHART)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+});
+
+describe('ask', () => {
+  const input = { chart_id: '00000000-0000-4000-8000-00000000c0de', question: 'На что опереться в работе?' };
+  const quota = { code: 'ask_daily', used: 3, limit: 5, reset_at: '2026-11-10T21:00:00.000Z' };
+
+  it('posts the chart and the question, and returns the answer with what it rests on', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValueOnce(json(200, { answer: 'Опора — в привычке доводить начатое.', based_on: ['Солнце в Тельце', 'Луна в Раке'], quota }));
+
+    await expect(api.ask(input)).resolves.toEqual({ answer: 'Опора — в привычке доводить начатое.', based_on: ['Солнце в Тельце', 'Луна в Раке'] });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect([url, init?.method, init?.body]).toEqual(['/api/v1/engagement/ask', 'POST', JSON.stringify(input)]);
+  });
+
+  it.each([
+    ['a 503', () => Promise.resolve(json(503))],
+    ['a 500', () => Promise.resolve(json(500, { code: 'INTERNAL', message: 'Что-то сломалось на нашей стороне.', request_id: 'r' }))],
+    ['a lost connection', () => Promise.reject(new TypeError('Failed to fetch'))],
+  ])('is never repeated by the client after %s: a question that got through may already be counted', async (_name, answer) => {
+    const { api, fetchMock } = setup({ retries: 3 });
+    fetchMock.mockImplementation(answer);
+    await expect(api.ask(input)).rejects.toBeDefined();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes a refusal to speak on a topic for what the server sent it as: an answer', async () => {
+    const { api, fetchMock } = setup();
+    const refusal = 'Про это я не могу: здоровье, смерть, гарантии денег и юридические вопросы — не моя роль.';
+    fetchMock.mockResolvedValueOnce(json(200, { answer: refusal, based_on: [], quota }));
+    await expect(api.ask(input)).resolves.toEqual({ answer: refusal, based_on: [] });
+  });
+
+  it.each([
+    ['left out', undefined],
+    ['null', null],
+    ['not a list', 'Солнце в Тельце'],
+  ])('rests on nothing when `based_on` is %s', async (_name, basedOn) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { answer: 'Ответ.', based_on: basedOn }));
+    await expect(api.ask(input)).resolves.toEqual({ answer: 'Ответ.', based_on: [] });
+  });
+
+  it('drops from `based_on` what is not a line of text', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { answer: 'Ответ.', based_on: ['Солнце в Тельце', '', '  ', 7, null, { name: 'Луна' }, 'Луна в Раке'] }));
+    await expect(api.ask(input)).resolves.toEqual({ answer: 'Ответ.', based_on: ['Солнце в Тельце', 'Луна в Раке'] });
+  });
+
+  it.each([
+    ['no answer', { based_on: [] }],
+    ['an empty answer', { answer: '   ', based_on: [] }],
+    ['an answer that is not a text', { answer: { text: 'Ответ.' }, based_on: [] }],
+    ['nothing', null],
+  ])('does not take a body with %s for an answer', async (_name, body) => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, body));
+    await expect(api.ask(input)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('passes on what the server refused the question with: the used-up limit with its reset, the rejected field, a missing chart', async () => {
+    const { api, fetchMock } = setup();
+    const exhausted = 'На сегодня вопросы закончились. Лимит обновится в полночь по месту рождения';
+    fetchMock
+      .mockResolvedValueOnce(
+        json(429, { code: 'QUOTA_EXCEEDED', message: exhausted, request_id: 'r-429', details: { quota_code: 'ask_daily', reset_at: '2026-11-10T21:00:00.000Z', unlimited: false } }),
+      )
+      .mockResolvedValueOnce(
+        json(422, { code: 'VALIDATION_FAILED', message: 'Вопрос — от 3 до 500 знаков', request_id: 'r-422', details: { field_errors: [{ field: 'question', message: 'Вопрос — от 3 до 500 знаков' }] } }),
+      )
+      .mockResolvedValueOnce(json(404, { code: 'NOT_FOUND', message: 'Такой карты нет. Построй карту заново', request_id: 'r-404' }));
+
+    await expect(api.ask(input)).rejects.toMatchObject({
+      code: 'QUOTA_EXCEEDED',
+      status: 429,
+      serverMessage: exhausted,
+      details: { quota_code: 'ask_daily', reset_at: '2026-11-10T21:00:00.000Z' },
+    });
+    const rejected: unknown = await api.ask(input).catch((error: unknown) => error);
+    expect(rejected).toMatchObject({ code: 'VALIDATION_FAILED', status: 422, requestId: 'r-422' });
+    expect(fieldErrorsOf(rejected)).toEqual([{ field: 'question', message: 'Вопрос — от 3 до 500 знаков' }]);
+    // Unlike a forecast, a question has no «none yet»: a 404 here is an error for the screen to read.
+    await expect(api.ask(input)).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+});
+
 describe('absoluteApiUrl', () => {
   const origin = 'https://app.test';
 

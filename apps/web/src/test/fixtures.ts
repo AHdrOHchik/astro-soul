@@ -2,7 +2,21 @@
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 import type { EventName, Track } from '../analytics';
-import type { Api, Chart, ChartCreateRequest, ChartResult, FieldError, GeoPlace, Invoice, Me, Report, ReportSection } from '../api';
+import type {
+  Api,
+  AskAnswer,
+  Chart,
+  ChartCreateRequest,
+  ChartResult,
+  FieldError,
+  Forecast,
+  GeoPlace,
+  Invoice,
+  Me,
+  Quota,
+  Report,
+  ReportSection,
+} from '../api';
 import { ApiError, type ApiErrorCode } from '../api';
 import { CONSENT_VERSION } from '../i18n/ru';
 import type { IdempotencyKeys } from '../lib/idempotency';
@@ -158,6 +172,30 @@ export const report: Report = {
   pdf_url: null,
 };
 
+/** The full forecast of `TODAY`, as a subscriber gets it. The fixture chart was born in Kazan: there it is 10 November. */
+export const forecast: Forecast = {
+  date: '2026-11-10',
+  text: 'Первое предложение прогноза. Второе предложение. Третье предложение.',
+  focus: 'career',
+  is_paid: true,
+};
+
+/** The same day without a subscription: the short text, and no focus. */
+export const freeForecast: Forecast = { date: '2026-11-10', text: 'Короткий прогноз на день.', focus: null, is_paid: false };
+
+/** The day's questions of a subscriber: two of five asked. The limit lifts at midnight in Kazan. */
+export const askQuota: Quota = { code: 'ask_daily', used: 2, limit: 5, reset_at: '2026-11-10T21:00:00Z' };
+
+/** `Me` with a quota of questions, by default the one above. */
+export function meAsking(quota: Partial<Quota> = {}, base: Me = meSubscribed): Me {
+  return { ...base, quotas: [{ ...askQuota, ...quota }] };
+}
+
+export const askAnswer: AskAnswer = {
+  answer: 'Ответ карты на вопрос.',
+  based_on: ['Солнце в Тельце', 'Луна в Раке'],
+};
+
 export function apiError(code: ApiErrorCode, info: ConstructorParameters<typeof ApiError>[1] = {}): ApiError {
   return new ApiError(code, info);
 }
@@ -184,6 +222,9 @@ export function fakeApi() {
     createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),
     orderReport: vi.fn<Api['orderReport']>().mockResolvedValue(report),
     getReport: vi.fn<Api['getReport']>().mockResolvedValue(report),
+    // The server has prepared no forecast yet: so it is for every chart on its first day.
+    getForecast: vi.fn<Api['getForecast']>().mockResolvedValue(null),
+    ask: vi.fn<Api['ask']>().mockResolvedValue(askAnswer),
   };
 }
 
