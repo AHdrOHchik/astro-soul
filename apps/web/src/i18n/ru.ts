@@ -516,6 +516,44 @@ export const ru = {
     subscriptionOnly: 'Полный прогноз — в подписке',
   },
 
+  /** «Спроси карту»: one question, one answer. The answer is the server's text, never written or reworded here. */
+  ask: {
+    title: 'Спроси карту',
+    fieldLabel: 'Твой вопрос',
+    placeholder: 'Например: на что мне опереться в работе?',
+    /** Under the field: «120 / 500». */
+    counter: (length: number, max: number) => `${String(length)} / ${String(max)}`,
+    /** The same for a screen reader. */
+    counterLabel: (length: number, max: number) => `Набрано знаков: ${String(length)} из ${String(max)}`,
+    /** Owner's wording. */
+    submit: 'Спросить',
+    sending: 'Спрашиваем карту…',
+    /** Owner's wording: «Сегодня осталось 3 вопроса из 5». */
+    left: (left: number, limit: number, form: PluralForm) => {
+      const verb = form === 'one' ? 'остался' : 'осталось';
+      const noun = form === 'one' ? 'вопрос' : form === 'few' || form === 'other' ? 'вопроса' : 'вопросов';
+      return `Сегодня ${verb} ${String(left)} ${noun} из ${String(limit)}`;
+    },
+    /** Owner's wording. For a limit of -1: never «-1». */
+    unlimited: 'Без ограничений',
+    /** Owner's wording: the day's questions are used up. Not a failure and worded as none. */
+    exhausted: 'Вопросы на сегодня закончились. Новые — после полуночи.',
+    /** After `exhausted`: the moment by the user's own clock. */
+    resets: (when: string) => `Обновится ${when}.`,
+    /** After `resets`, when that moment is not midnight where the user is: whose midnight it is. */
+    resetsElsewhere: 'Полночь считается по месту рождения.',
+    /** Owner's wording: the quiet way to the paywall. */
+    subscriptionOffer: 'В подписке 5 вопросов в день',
+    /** Above the question the answer on screen belongs to. */
+    asked: 'Твой вопрос',
+    answer: 'Ответ карты',
+    /** Owner's wording. */
+    basedOn: 'На чём основано',
+    /** For a 422 that came without the server's own words about the question. */
+    rejected: 'Сервер не принял вопрос.',
+    failedTitle: 'Ответ не получен',
+  },
+
   /** Screen 9. */
   settings: {
     title: 'Настройки',
