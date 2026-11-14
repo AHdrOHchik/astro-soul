@@ -4,16 +4,6 @@ import type { components } from '../api/schema.gen';
 export type ClientEvent = components['schemas']['ClientEvent'];
 export type EventName = ClientEvent['name'];
 
-/**
- * Events the app is ready to report before the contract lists them. The owner agreed the
- * name; the contract gets it with 1.4.1. Until then such an event stays in the app (see
- * `isContractEvent`), and the day the contract lists it the build asks for its line in
- * `EVENT_NAMES` — that line is what switches the event on.
- */
-type AgreedEventName = 'validation_failed_client';
-
-/** Every event a screen may report: the contract's, and the agreed ones that wait for it. */
-export type AppEventName = EventName | AgreedEventName;
 
 /**
  * Every event of the contract. Typed against `ClientEvent.name`: an event added to
@@ -60,9 +50,19 @@ export const EVENT_NAMES: Record<EventName, true> = {
   screen_view: true,
 };
 
-/** Whether the contract lists the event. Only such an event may go to the server. */
-export function isContractEvent(name: string): name is EventName {
-  return Object.prototype.hasOwnProperty.call(EVENT_NAMES, name);
+/**
+ * Events the contract lists and the app still keeps to itself. The screens report them,
+ * the queue lets none through.
+ *
+ * `validation_failed_client`: the contract has the name since 1.5.1, the server in `main`
+ * does not take it yet, and one name a server does not know costs the whole batch (422).
+ * It goes out once the backend confirms the name is accepted: by deleting the line here.
+ */
+const HELD_BACK: readonly EventName[] = ['validation_failed_client'];
+
+/** Whether the event may go to the server: the contract lists it, and nothing holds it back. */
+export function isSendable(name: string): name is EventName {
+  return Object.prototype.hasOwnProperty.call(EVENT_NAMES, name) && !(HELD_BACK as readonly string[]).includes(name);
 }
 
 /** The screens, under the names the events call them. */
@@ -74,7 +74,10 @@ export type AnalyticsStep =
   | 'birth_date'
   | 'birth_time'
   | 'birth_place'
-  | 'chart';
+  | 'chart'
+  | 'paywall'
+  | 'report'
+  | 'settings';
 
 /** Request fields the server may reject, as `details.field_errors` names them. */
 const REJECTED_FIELDS = [
@@ -98,11 +101,15 @@ export function rejectedFieldOf(field: string): RejectedField {
   return (REJECTED_FIELDS as readonly string[]).includes(field) ? (field as RejectedField) : 'other';
 }
 
+/** What was being bought: a code of the contract's `PlanCode`. */
+type PlanCode = components['schemas']['PlanCode'];
+
 /**
  * What an event says besides its name. Every value comes from a closed list in the
- * code: a screen, an error code, the name of a request field, the version of the
- * legal texts. Nothing the user typed, chose or was shown is ever a value here:
- * events must not carry personal data (the contract, AGENTS.md §8).
+ * code (a screen, an error code, the name of a request field, the version of the
+ * legal texts, a plan) or is an id the server gave out (a report). Nothing the user
+ * typed, chose or was shown is ever a value here: events must not carry personal
+ * data (the contract, AGENTS.md §8).
  */
 export interface EventProps {
   consent_accepted: { version: string };
@@ -113,10 +120,26 @@ export interface EventProps {
   validation_failed: { step: AnalyticsStep; code: 'VALIDATION_FAILED'; field?: RejectedField };
   /** A check of the app's own stopped the user. Which field, never why: the reason would be a fact about the value. */
   validation_failed_client: { step: AnalyticsStep; field: ClientCheckedField };
+  /** The user tapped «pay»: before the server is asked for an invoice. */
+  checkout_started: { plan_code: PlanCode };
+  /** The invoice exists and Telegram is showing it. */
+  checkout_opened: { plan_code: PlanCode };
+  /** The server confirmed the purchase. Telegram's own «paid» is not this event. */
+  payment_succeeded: { plan_code: PlanCode };
+  payment_cancelled: { plan_code: PlanCode };
+  /** A finished report is on screen. */
+  report_ready_view: { report_id: string };
+  /** The server would not give something out for free any more; the paywall follows. */
+  quota_exhausted: { step: AnalyticsStep };
+  /**
+   * A failure was shown. `code` is the HTTP status when the server answered, the client's
+   * own code when it did not, or the name of a failure that is not a request at all.
+   */
+  error_shown: { screen: AnalyticsStep; code: string };
 }
 
 /** Reports one event. Events outside `EventProps` take no props at all. */
-export type Track = <Name extends AppEventName>(
+export type Track = <Name extends EventName>(
   name: Name,
   ...props: Name extends keyof EventProps ? [props: EventProps[Name]] : []
 ) => void;
@@ -125,7 +148,7 @@ export type Track = <Name extends AppEventName>(
  * The only keys an event of this app may carry. The check is repeated at run time, when an
  * event is queued: the types above do not stop a value that was cast on its way here.
  */
-export const PROP_KEYS = ['step', 'code', 'field', 'version'] as const;
+export const PROP_KEYS = ['step', 'code', 'field', 'version', 'screen', 'plan_code', 'report_id'] as const;
 
 /** The contract's limit for a string value; a longer one makes the server refuse the whole batch. */
 export const MAX_PROP_LENGTH = 64;
