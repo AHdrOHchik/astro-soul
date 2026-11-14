@@ -28,14 +28,16 @@ interface SetupOptions {
   /** What every answer about the report is; queued by default. */
   answer?: Report;
   props?: Partial<ReportScreenProps>;
+  /** A clock only the test moves: for the tests that count the questions to the millisecond. */
+  manualClock?: boolean;
 }
 
-function setup({ api = fakeApi(), answer, props }: SetupOptions = {}) {
+function setup({ api = fakeApi(), answer, props, manualClock = false }: SetupOptions = {}) {
   if (answer) api.getReport.mockResolvedValue(answer);
   const telegram = fakeTelegram();
   const analytics = fakeAnalytics();
   const onPaymentRequired = vi.fn<ReportScreenProps['onPaymentRequired']>();
-  const user = setupUser();
+  const user = setupUser({ manual: manualClock });
   const view = render(
     <ReportScreen
       api={api}
@@ -92,7 +94,7 @@ describe('ReportScreen: a report in work', () => {
   });
 
   it('asks at once, then after 2 s, and twice as rarely while nothing changes, up to 10 s', async () => {
-    const { api } = setup();
+    const { api } = setup({ manualClock: true });
 
     await pass(0);
     expect(api.getReport).toHaveBeenCalledTimes(1);
@@ -116,7 +118,7 @@ describe('ReportScreen: a report in work', () => {
   });
 
   it('asks nothing while the page is hidden, and at once when it is back', async () => {
-    const { api } = setup();
+    const { api } = setup({ manualClock: true });
     await pass(0);
     expect(api.getReport).toHaveBeenCalledTimes(1);
 
@@ -173,6 +175,8 @@ describe('ReportScreen: a report that is over', () => {
     expect(within(screen.getByRole('navigation', { name: copy.contents })).getAllByRole('button')).toHaveLength(3);
     // No link, no button: the server gave no PDF.
     expect(screen.queryByRole('button', { name: copy.pdf })).not.toBeInTheDocument();
+    // Counted in an effect, which may run a moment after the chapters are on screen.
+    await pass(0);
     expect(analytics.events).toEqual([{ name: 'report_ready_view', props: { report_id: REPORT_ID } }]);
   });
 

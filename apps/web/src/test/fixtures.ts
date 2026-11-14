@@ -275,8 +275,14 @@ export function deferred<T>() {
 /**
  * user-event on fake timers, so the search debounce can be stepped through.
  * `shouldAdvanceTime` keeps Testing Library's own polling (findBy*, waitFor) alive.
+ *
+ * `manual`: a clock that moves only when the test moves it. For a test that says «not yet»
+ * to the millisecond: the other clock also runs with the real one, and on a busy machine a
+ * timer fires before the test expects it. Such a test must not wait with findBy* or waitFor
+ * (they poll on a clock that now stands still): it lets time pass inside `act` and looks.
  */
-export function setupUser() {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+export function setupUser({ manual = false }: { manual?: boolean } = {}) {
+  if (manual) vi.useFakeTimers();
+  else vi.useFakeTimers({ shouldAdvanceTime: true });
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime.bind(vi) });
 }

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Me } from '../../api';
 import { ru } from '../../i18n/ru';
@@ -12,9 +12,11 @@ interface SetupOptions {
   me?: Me | Promise<Me>;
   api?: ReturnType<typeof fakeApi>;
   supportLink?: string;
+  /** A clock only the test moves: for the tests of the wait before the last button takes taps. */
+  manualClock?: boolean;
 }
 
-function setup({ me = meWithChart, api = fakeApi(), supportLink = '' }: SetupOptions = {}) {
+function setup({ me = meWithChart, api = fakeApi(), supportLink = '', manualClock = false }: SetupOptions = {}) {
   const telegram = fakeTelegram();
   const analytics = fakeAnalytics();
   const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockImplementation(() => Promise.resolve(me));
@@ -22,7 +24,7 @@ function setup({ me = meWithChart, api = fakeApi(), supportLink = '' }: SetupOpt
   const onSubscribe = vi.fn();
   const onOpenDocument = vi.fn();
   // On fake timers: the last confirmation of the deletion takes its time.
-  const user = setupUser();
+  const user = setupUser({ manual: manualClock });
   const view = render(
     <SettingsScreen
       api={api}
@@ -47,6 +49,8 @@ const pass = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 
 const section = (title: string) => within(screen.getByRole('region', { name: title }));
 const openDeletion = () => screen.findByRole('button', { name: copy.deletion.open });
+/** The same button, for a test on a clock that stands still: looked for after the settings have loaded. */
+const deletionButton = () => screen.getByRole('button', { name: copy.deletion.open });
 const continueDeletion = () => screen.getByRole('button', { name: copy.deletion.next });
 const confirmDeletion = () => screen.getByRole('button', { name: copy.deletion.confirm });
 const cancelDeletion = () => screen.getByRole('button', { name: copy.deletion.cancel });
@@ -148,43 +152,49 @@ describe('SettingsScreen', () => {
       expect(analytics.events).toEqual([{ name: 'data_deleted' }]);
     });
 
+    // The two tests below count the wait to the millisecond, so their clock moves only when they move it.
+    // user-event waits on timers after every action and would hang on such a clock: the taps are plain clicks.
     it('a tap repeated by accident never deletes: the last button takes none until it has been on screen for a second', async () => {
-      const { api, user } = setup();
+      const { api } = setup({ manualClock: true });
+      await pass(0);
 
-      await user.click(await openDeletion());
-      await user.click(continueDeletion());
+      fireEvent.click(deletionButton());
+      fireEvent.click(continueDeletion());
 
       // The second half of a double tap, wherever the layout puts the button by then.
       expect(confirmDeletion()).toBeDisabled();
-      await user.click(confirmDeletion());
-      // Half of the wait, not all but a millisecond: the clock of these tests also moves with the real one.
-      await pass(DELETE_GUARD_MS / 2);
+      fireEvent.click(confirmDeletion());
+      await pass(DELETE_GUARD_MS - 1);
       expect(confirmDeletion()).toBeDisabled();
-      await user.click(confirmDeletion());
+      fireEvent.click(confirmDeletion());
       expect(api.deleteMe).not.toHaveBeenCalled();
       // «Keep» needs no waiting: it is safe at any moment.
       expect(cancelDeletion()).toBeEnabled();
 
-      await pass(DELETE_GUARD_MS / 2);
+      await pass(1);
       expect(confirmDeletion()).toBeEnabled();
-      await user.click(confirmDeletion());
+      fireEvent.click(confirmDeletion());
       expect(api.deleteMe).toHaveBeenCalledTimes(1);
     });
 
     it('can be backed out of at either confirmation, and starts from the first one again', async () => {
-      const { api, user } = setup();
+      const { api } = setup({ manualClock: true });
+      await pass(0);
 
-      await user.click(await openDeletion());
-      await user.click(cancelDeletion());
+      fireEvent.click(deletionButton());
+      fireEvent.click(cancelDeletion());
 
-      await user.click(await openDeletion());
-      await user.click(continueDeletion());
-      await user.click(cancelDeletion());
+      fireEvent.click(deletionButton());
+      fireEvent.click(continueDeletion());
+      await pass(DELETE_GUARD_MS);
+      fireEvent.click(cancelDeletion());
 
-      await user.click(await openDeletion());
+      fireEvent.click(deletionButton());
       expect(screen.getByRole('alertdialog', { name: copy.deletion.confirmTitle })).toBeInTheDocument();
       // Opened anew, the last confirmation waits anew.
-      await user.click(continueDeletion());
+      fireEvent.click(continueDeletion());
+      expect(confirmDeletion()).toBeDisabled();
+      await pass(DELETE_GUARD_MS - 1);
       expect(confirmDeletion()).toBeDisabled();
       expect(api.deleteMe).not.toHaveBeenCalled();
     });
