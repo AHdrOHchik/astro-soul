@@ -10,13 +10,18 @@
   line-height: var(--line-height-tight);
 }
 
-/* Exactly three lines; the standard property is not available in the oldest WebViews yet. */
-.summary {
+/*
+ * The opening of the report: exactly three lines (the standard property is not available in
+ * the oldest WebViews yet), the last of them fading into the shapes below.
+ */
+.opening {
   display: -webkit-box;
   overflow: hidden;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+  -webkit-mask-image: var(--mask-fade-out);
+  mask-image: var(--mask-fade-out);
 }
 
 .locked {
@@ -61,15 +66,4 @@
 .badgeText {
   margin-left: var(--space-2);
   color: var(--color-text);
-}
-
-/* The amount and its star stay together when the button text wraps. */
-.price {
-  white-space: nowrap;
-}
-
-.note {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  text-align: center;
 }

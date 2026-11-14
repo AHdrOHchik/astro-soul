@@ -1,6 +1,7 @@
 import {
   AscendantIcon,
   Button,
+  GearIcon,
   InfoIcon,
   MoonIcon,
   Notice,
@@ -14,7 +15,7 @@ import {
   VisuallyHidden,
   type ScreenProps,
 } from '@astro-soul/ui';
-import { useCallback, useId, useState } from 'react';
+import { useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
 import { errorCodeOf, trackRejection, type Track } from '../../analytics';
 import {
   absoluteApiUrl,
@@ -25,6 +26,7 @@ import {
   type ChartCreateRequest,
   type ChartResult,
   type FieldError,
+  type Report,
 } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
 import { useRequest } from '../../hooks/useRequest';
@@ -34,14 +36,43 @@ import { botShareLink } from '../../lib/share';
 import type { Telegram } from '../../telegram';
 import styles from './ChartScreen.module.css';
 import { PointCard } from './PointCard';
-import { Teaser } from './Teaser';
+import { ReportTeaser } from './ReportTeaser';
 import { Wheel } from './Wheel';
 
 const copy = ru.chart;
 const SKELETON_CARDS = [0, 1, 2];
 
+/** The chart on screen, as the screens that follow it need it: what a purchase and a report are about. */
+export interface OpenChart {
+  chartId: string;
+  /** What the share button sends: the picture and the words. Null when there is no picture to send. */
+  share: { url: string; text: string } | null;
+}
+
+/** The full report on the chart screen: what the server says the user has, and where the buttons lead. */
+export interface ChartReportProps {
+  /** `Me.entitlements.full_report`. */
+  fullReport: boolean;
+  /** `Me.latest_report_id`, or a report met in this session; null when the app knows of none. */
+  reportId: string | null;
+  /** What the server last said about that report, when the app has already heard it. */
+  known?: Report | null;
+  /** The server's fresh word about the report. Keep the reference stable: a new function is a new request. */
+  onKnown?: (report: Report) => void;
+  /** Telegram called the report paid in this visit and the server has not granted it yet: no price is offered meanwhile. */
+  paymentPending?: boolean;
+  /** Asks the server again whether the payment has arrived. */
+  onCheckPayment?: () => Promise<unknown>;
+  /** The button under the locked opening: on to the paywall. */
+  onBuy: (chart: OpenChart) => void;
+  /** The tap that orders the report. */
+  onOrder: (chart: OpenChart) => void;
+  /** Opens the report the app knows of. */
+  onOpen: (chart: OpenChart, reportId: string) => void;
+}
+
 export interface ChartScreenProps {
-  api: Pick<Api, 'createChart' | 'getCurrentChart'>;
+  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getReport'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
@@ -68,6 +99,19 @@ export interface ChartScreenProps {
    * the onboarding. Keep the reference stable: a new function is a new request.
    */
   onMissing?: () => void;
+  /**
+   * The chart this screen showed on an earlier visit, while it is still the one to show.
+   * It is drawn at once: nothing is asked of the server and nothing is counted a second
+   * time. Read when the screen opens; a later change of the prop changes nothing.
+   */
+  cached?: ChartResult | null;
+  /** A chart came from the server, not from `cached`. Keep the reference stable: a new function is a new request. */
+  onLoaded?: (result: ChartResult) => void;
+  /** Where the screen is scrolled to. Kept by the caller, so a return from another screen lands where the user left. */
+  scroll?: { current: number };
+  /** The full report: the block under the cards. */
+  report: ChartReportProps;
+  onOpenSettings: () => void;
 }
 
 /**
@@ -85,16 +129,28 @@ export function ChartScreen({
   onEdit,
   onRejected,
   onMissing,
+  cached,
+  onLoaded,
+  scroll,
+  report,
+  onOpenSettings,
 }: ChartScreenProps) {
   const titleId = useId();
+  const [remembered] = useState(cached ?? null);
   const load = useCallback(
     async (signal: AbortSignal): Promise<ChartResult | null> => {
+      // Shown on an earlier visit: the user came back to the screen, the server is not asked again.
+      if (remembered !== null) return remembered;
       if (request === null) {
         const current = await api.getCurrentChart(signal);
         // An answer nobody waits for any more is neither counted nor acted on.
         if (signal.aborted) return current;
-        if (current === null) onMissing?.();
-        else track('chart_restored');
+        if (current === null) {
+          onMissing?.();
+        } else {
+          track('chart_restored');
+          onLoaded?.(current);
+        }
         return current;
       }
       // Counted a moment later, and only if still wanted: a development build runs every
@@ -105,7 +161,10 @@ export function ChartScreen({
       try {
         const result = await api.createChart(request, signal);
         // The body, not the status, tells a chart that already existed from a new one.
-        if (!signal.aborted) track(result.is_restored ? 'chart_restored' : 'chart_created');
+        if (!signal.aborted) {
+          track(result.is_restored ? 'chart_restored' : 'chart_created');
+          onLoaded?.(result);
+        }
         return result;
       } catch (error) {
         // An answer nobody waits for any more (the screen was left) is neither counted nor acted on.
@@ -118,17 +177,39 @@ export function ChartScreen({
         throw error;
       }
     },
-    [api, request, onRejected, onMissing, track],
+    [api, request, onRejected, onMissing, onLoaded, track, remembered],
   );
   const state = useRequest(load);
-  const result = state.status === 'ready' ? state.data : null;
+  // A remembered chart is on screen from the first frame: there is nothing to wait for.
+  const result = remembered ?? (state.status === 'ready' ? state.data : null);
   // An answer without a chart is the caller's cue to lead elsewhere; until it does, the screen keeps waiting.
   const waiting = state.status !== 'error' && result === null;
   // A chart opened from the server has no form behind it: the way to the birth data starts from an empty one.
   const editLabel = request === null ? copy.enterAgain : copy.editData;
 
+  // Back from another screen, the chart is where the user left it, not at its top.
+  const body = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const element = body.current;
+    if (element === null || scroll === undefined) return undefined;
+    if (remembered !== null) element.scrollTop = scroll.current;
+    const remember = () => {
+      scroll.current = element.scrollTop;
+    };
+    element.addEventListener('scroll', remember, { passive: true });
+    return () => {
+      element.removeEventListener('scroll', remember);
+    };
+  }, [scroll, remembered]);
+
   return (
-    <Screen labelledBy={titleId} back={back} busy={waiting}>
+    <Screen
+      labelledBy={titleId}
+      back={back}
+      busy={waiting}
+      bodyRef={body}
+      action={{ label: ru.common.settings, icon: <GearIcon />, onClick: onOpenSettings }}
+    >
       <div className={styles.content}>
         <ScreenHeading id={titleId} title={copy.title} text={result ? birthLine(result.chart) : undefined} focusOnMount />
         {waiting && <ChartSkeleton />}
@@ -141,11 +222,13 @@ export function ChartScreen({
         )}
         {result && (
           <ChartView
+            api={api}
             result={result}
             apiBaseUrl={apiBaseUrl}
             botUsername={botUsername}
             telegram={telegram}
             track={track}
+            report={report}
             editLabel={editLabel}
             // After the form the way back to it is the back button; a chart opened at the start has only this one.
             offersEdit={request === null}
@@ -195,11 +278,13 @@ function ChartSkeleton() {
 }
 
 interface ChartViewProps {
+  api: Pick<Api, 'getReport'>;
   result: ChartResult;
   apiBaseUrl: string;
   botUsername: string;
   telegram: Pick<Telegram, 'share'>;
   track: Track;
+  report: ChartReportProps;
   editLabel: string;
   /** Whether the chart itself offers the way to the birth data, under everything else. */
   offersEdit: boolean;
@@ -207,7 +292,19 @@ interface ChartViewProps {
   onEdit: () => void;
 }
 
-function ChartView({ result, apiBaseUrl, botUsername, telegram, track, editLabel, offersEdit, onRetry, onEdit }: ChartViewProps) {
+function ChartView({
+  api,
+  result,
+  apiBaseUrl,
+  botUsername,
+  telegram,
+  track,
+  report,
+  editLabel,
+  offersEdit,
+  onRetry,
+  onEdit,
+}: ChartViewProps) {
   const cardsTitleId = useId();
   const [wheelFailed, setWheelFailed] = useState(false);
   const { chart, mini_reading: reading, warnings, wheel_url: wheelPath, wheel_png_url: wheelPngPath } = result;
@@ -215,6 +312,12 @@ function ChartView({ result, apiBaseUrl, botUsername, telegram, track, editLabel
   // What goes to a chat: there a PNG is shown as a picture, an SVG as a bare link.
   // A server older than contract 1.3.0 has only the SVG.
   const wheelPngUrl = wheelPngPath ? absoluteApiUrl(wheelPngPath, apiBaseUrl, window.location.origin) : null;
+  // The picture stays the address of the message, so the chat previews it; the way to the bot goes with the words.
+  const botLink = botShareLink(botUsername, chart.chart_id);
+  const shareUrl = wheelPngUrl ?? wheelUrl;
+  const share = shareUrl === null ? null : { url: shareUrl, text: botLink === null ? copy.shareText : `${copy.shareText}\n${botLink}` };
+  // What is shared is the picture, from the same server under the same signature: no point in sending one that does not open here.
+  const open: OpenChart = { chartId: chart.chart_id, share: wheelFailed ? null : share };
   const sun = chart.planets.find((planet) => planet.key === 'sun');
   const moon = chart.planets.find((planet) => planet.key === 'moon');
   const timeKnown = hasBirthTime(chart);
@@ -235,20 +338,16 @@ function ChartView({ result, apiBaseUrl, botUsername, telegram, track, editLabel
 
   return (
     <>
-      {wheelUrl ? (
+      {wheelUrl && share ? (
         <>
           <Wheel src={wheelUrl} onFailedChange={setWheelFailed} />
           <Button
             variant="secondary"
             icon={<ShareIcon />}
-            // What is shared is this picture, from the same server under the same signature:
-            // no point in sending one that does not open here.
             disabled={wheelFailed}
             onClick={() => {
               track('share_clicked');
-              // The picture stays the address of the message, so the chat previews it; the way to the bot goes with the words.
-              const link = botShareLink(botUsername, chart.chart_id);
-              telegram.share(wheelPngUrl ?? wheelUrl, link === null ? copy.shareText : `${copy.shareText}\n${link}`);
+              telegram.share(share.url, share.text);
             }}
           >
             {copy.share}
@@ -308,7 +407,25 @@ function ChartView({ result, apiBaseUrl, botUsername, telegram, track, editLabel
         )}
       </section>
 
-      <Teaser summary={reading.summary} />
+      <ReportTeaser
+        api={api}
+        chartId={chart.chart_id}
+        fullReport={report.fullReport}
+        reportId={report.reportId}
+        known={report.known}
+        onKnown={report.onKnown}
+        paymentPending={report.paymentPending}
+        onCheckPayment={report.onCheckPayment}
+        onBuy={() => {
+          report.onBuy(open);
+        }}
+        onOrder={() => {
+          report.onOrder(open);
+        }}
+        onOpen={(reportId) => {
+          report.onOpen(open, reportId);
+        }}
+      />
 
       {offersEdit && (
         <Button variant="ghost" onClick={onEdit}>
