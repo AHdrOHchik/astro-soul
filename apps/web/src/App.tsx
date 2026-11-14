@@ -335,9 +335,13 @@ function Screens({
   const [reportId, setReportId] = useState<string | null>(meAtStart.latest_report_id ?? null);
   // And the server's last word about it, so the chart screen can show it at once and ask again behind it.
   const [knownReport, setKnownReport] = useState<Report | null>(null);
+  // The reports the server has said it does not have. An id never comes back: should `Me` go on naming one,
+  // the app does not take it up again, or it would ask about it, hear 404 and ask `Me` once more, without end.
+  const goneReports = useRef(new Set<string>());
   // The server no longer has that report (404 to the id `Me` named: it went with the user's data).
   // Nothing the app holds about it is true any more; `null` is the ordinary «no report».
   const forgetReport = useCallback((gone: string) => {
+    goneReports.current.add(gone);
     setReportId((current) => (current === gone ? null : current));
     setKnownReport((current) => (current?.report_id === gone ? null : current));
   }, []);
@@ -359,7 +363,7 @@ function Screens({
     async (signal?: AbortSignal) => {
       const fresh = await api.getMe(signal);
       setMe(fresh);
-      if (typeof fresh.latest_report_id === 'string') setReportId(fresh.latest_report_id);
+      if (typeof fresh.latest_report_id === 'string' && !goneReports.current.has(fresh.latest_report_id)) setReportId(fresh.latest_report_id);
       const purchase = awaited.current;
       // A report is confirmed for the chart it was bought for: a report the user has of another chart confirms nothing.
       if (purchase !== null && grants(fresh, purchase.plan, purchase.chartId)) {
@@ -380,6 +384,8 @@ function Screens({
   // Said until the user agrees to the new texts; after that it is no longer news.
   const [termsNotice, setTermsNotice] = useState(termsRenewed);
   const [shownCharts, setShownCharts] = useState<ShownCharts>({ current: null, built: null });
+  // Counts the times the app has dropped a chart: the chart screen of before is not the chart screen of after.
+  const [chartEpoch, setChartEpoch] = useState(0);
   const chartScroll = useRef(0);
   // The chart the paywall and the report screen were opened from.
   const [openChart, setOpenChart] = useState<OpenChart | null>(null);
@@ -466,6 +472,8 @@ function Screens({
     // The form starts clean as well: the consent went with the data it was given for.
     setDraft(EMPTY_DRAFT);
     setServerErrors(NO_SERVER_ERRORS);
+    // The chart screen may be the one on screen (it asks about the report too): it starts over like any other.
+    setChartEpoch((epoch) => epoch + 1);
     setHome('current');
     setStack(['current']);
   }, [keys]);
@@ -488,6 +496,26 @@ function Screens({
       return fresh;
     },
     [refreshMe, forgetChart],
+  );
+  /**
+   * Is the chart still on the server? Asked of `Me` when the server has no such report (404):
+   * a report goes with the user's data and in no other way. Without a chart the app has
+   * started over by the time this says so.
+   */
+  const isChartThere = useCallback(
+    async (signal?: AbortSignal) => {
+      const fresh = await refreshMeForChart(signal);
+      return fresh.has_chart || typeof fresh.chart_id === 'string';
+    },
+    [refreshMeForChart],
+  );
+  /** The report `Me` named is not on the server (404 on the chart screen): forgotten, and `Me` is asked whether the chart went with it. */
+  const handleReportGone = useCallback(
+    (gone: string) => {
+      forgetReport(gone);
+      void refreshMeForChart().catch(() => undefined);
+    },
+    [forgetReport, refreshMeForChart],
   );
   const openSettings = () => {
     open('settings');
@@ -528,8 +556,9 @@ function Screens({
     const cached = route === 'current' ? shownCharts.current : shownCharts.built?.request === request ? shownCharts.built.result : null;
     return (
       <ChartScreen
-        // A screen of its own per chart: the one from the server and the one from the form share nothing.
-        key={route}
+        // A screen of its own per chart: the one from the server and the one from the form share nothing,
+        // and neither does the screen of a chart the server turned out not to have.
+        key={`${route}:${String(chartEpoch)}`}
         api={api}
         telegram={telegram}
         request={route === 'current' ? null : request}
@@ -565,7 +594,7 @@ function Screens({
           reportId,
           known: knownReport,
           onKnown: setKnownReport,
-          onGone: forgetReport,
+          onGone: handleReportGone,
           // Whichever chart that payment was for: while one is on its way, no price is offered anywhere.
           paymentPending: awaitedPurchase?.plan === REPORT_PLAN,
           onCheckPayment: refreshMe,
@@ -709,6 +738,7 @@ function Screens({
           onReport={setKnownReport}
           onReportGone={forgetReport}
           onChartGone={handleChartGone}
+          isChartThere={isChartThere}
         />
       );
     case 'settings':
@@ -716,7 +746,9 @@ function Screens({
         <SettingsScreen
           api={api}
           telegram={telegram}
-          refreshMe={refreshMe}
+          // Opened from a chart, the settings ask `Me` like every screen that works with one: an answer without
+          // a chart says the data was deleted elsewhere. A user who has built none yet has nothing to lose that way.
+          refreshMe={home === 'current' || shownCharts.built !== null ? refreshMeForChart : refreshMe}
           supportLink={supportLink}
           track={track}
           back={back}

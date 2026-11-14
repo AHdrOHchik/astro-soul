@@ -62,6 +62,8 @@ export interface ReportScreenProps {
   onReportGone?: (reportId: string) => void;
   /** The server has no such chart to make a report about (404 to the order): the app leads on, nothing is shown here. */
   onChartGone?: () => void;
+  /** Asked when the server has no such report (404): is the chart still there? `false`: the caller leads on, nothing is shown here. */
+  isChartThere?: (signal?: AbortSignal) => Promise<boolean>;
 }
 
 /**
@@ -88,6 +90,7 @@ export function ReportScreen({
   onReport,
   onReportGone,
   onChartGone,
+  isChartThere,
 }: ReportScreenProps) {
   const titleId = useId();
   const flow = useReport({
@@ -103,6 +106,7 @@ export function ReportScreen({
     onReport,
     onReportGone,
     onChartGone,
+    isChartThere,
   });
   const { view } = flow;
   const report = view.kind === 'report' ? view.report : null;

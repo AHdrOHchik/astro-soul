@@ -6,6 +6,7 @@ import type { ChartResult, Me, TimePrecision } from './api';
 import { App } from './App';
 import { SEARCH_DEBOUNCE_MS } from './hooks/usePlaceSearch';
 import { CONFIRM_INTERVAL_MS } from './screens/paywall/PaywallScreen';
+import { POLL_DELAYS_MS } from './screens/report/useReport';
 import { DELETE_GUARD_MS } from './screens/settings/SettingsScreen';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import {
@@ -25,6 +26,7 @@ import {
   me,
   meAsking,
   mePaid,
+  meSubscribed,
   meWithChart,
   rejection,
   report,
@@ -1621,6 +1623,249 @@ describe('App: the forecast and the question', () => {
 
       expect(screen.getByRole('heading', { name: 'Сегодняшний прогноз готовится' })).toBeInTheDocument();
       expect(view.forgetKeys).not.toHaveBeenCalled();
+    });
+
+    describe('the report went with the data: the server has no such report (404), and `Me` says whether the chart is gone too', () => {
+      /** The words of apps/api about a report it does not have (`reports.service.ts`). */
+      const REPORT_GONE = 'Такого разбора нет. Обнови приложение';
+      /**
+       * From now on the server has no such report: 404 to every question about it. Past any sane
+       * number of questions the fake throws instead: an app that goes round in a circle of
+       * requests must fail its test, not hang it.
+       */
+      function loseReport(api: ReturnType<typeof fakeApi>) {
+        let asked = 0;
+        api.getReport.mockImplementation(() => {
+          asked += 1;
+          if (asked > 20) throw new Error('the app keeps asking about a report it was told is gone');
+          return Promise.reject(apiError('NOT_FOUND', { status: 404, serverMessage: REPORT_GONE, requestId: 'req-404' }));
+        });
+      }
+      /** A user whose report of the chart is paid for and written. */
+      const meWithReport: Me = { ...mePaid, latest_report_id: REPORT_ID };
+      const written = { ...report, status: 'ready', progress: 100, sections } as const;
+
+      async function expectFreshStartWithoutAWordOfTheReport(view: ReturnType<typeof returning>) {
+        await expectFreshStart(view);
+        expect(screen.queryByText(REPORT_GONE)).not.toBeInTheDocument();
+        expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
+      }
+
+      it('404 to the report `Me` named, asked about from the chart screen: the welcome screen, as for a new user', async () => {
+        // Deleted between two questions of one launch: the chart was still handed over, the report no longer is.
+        const view = returning(meWithReport, {
+          prepare: (fake) => {
+            fake.getMe.mockResolvedValueOnce(meWithReport).mockResolvedValue(meDeleted);
+            fake.getCurrentChart.mockResolvedValueOnce(restored).mockResolvedValue(null);
+            loseReport(fake);
+          },
+        });
+
+        await expectFreshStartWithoutAWordOfTheReport(view);
+        expect(view.api.getReport).toHaveBeenCalledTimes(1);
+        // No report was ordered in place of the lost one.
+        expect(view.api.orderReport).not.toHaveBeenCalled();
+      });
+
+      it('404 to that report on the report screen: the same, and the report screen says nothing on the way', async () => {
+        const view = returning(meWithReport, { prepare: (fake) => fake.getReport.mockResolvedValue(written) });
+        const open = await screen.findByRole('button', { name: ru.chart.openReport });
+
+        deleteElsewhere(view.api);
+        loseReport(view.api);
+        await view.user.click(open);
+
+        await expectFreshStartWithoutAWordOfTheReport(view);
+        expect(view.api.orderReport).not.toHaveBeenCalled();
+      });
+
+      it('a report ordered here and deleted with the data while it was being written: the same. The server\'s «Такого разбора нет» is never shown', async () => {
+        const view = returning(mePaid, {
+          prepare: (fake) => {
+            fake.orderReport.mockResolvedValue(report);
+            fake.getReport.mockResolvedValue({ ...report, status: 'generating', progress: 40 });
+          },
+        });
+        await view.user.click(await screen.findByRole('button', { name: ru.chart.orderReport }));
+        await screen.findByRole('progressbar');
+
+        deleteElsewhere(view.api);
+        loseReport(view.api);
+        await act(() => vi.advanceTimersByTimeAsync(POLL_DELAYS_MS[0]));
+
+        await expectFreshStartWithoutAWordOfTheReport(view);
+        expect(view.api.orderReport).toHaveBeenCalledTimes(1);
+      });
+
+      it('404 to a report while `Me` still names the chart: the report alone is forgotten. One question to `Me`, no more', async () => {
+        const view = returning(meWithReport, { prepare: loseReport });
+
+        // Paid for, and no report: the chart offers to get one.
+        expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+        await settle();
+        expect(heading()).toHaveTextContent(ru.chart.title);
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        // `Me` at the start, and once for this 404.
+        expect(view.api.getMe).toHaveBeenCalledTimes(2);
+        expect(view.api.getCurrentChart).toHaveBeenCalledTimes(1);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+      });
+
+      it('`Me` that goes on naming the report the server does not have starts no circle of questions: one about the report, one to `Me`', async () => {
+        // A server at odds with itself: `Me` names the report in every answer, and every question about it is a 404.
+        const view = returning(meWithReport, { prepare: loseReport });
+
+        expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+        await act(() => vi.advanceTimersByTimeAsync(60_000));
+        expect(view.api.getReport).toHaveBeenCalledTimes(1);
+        expect(view.api.getMe).toHaveBeenCalledTimes(2);
+
+        // Not on the way back to the chart either: the settings ask `Me` again, and it names that report again.
+        await view.user.click(screen.getByRole('button', { name: ru.common.settings }));
+        expect(await screen.findByRole('button', { name: ru.settings.deletion.open })).toBeInTheDocument();
+        act(() => {
+          view.telegram.setBackHandler.mock.lastCall?.[0]?.();
+        });
+        expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+        await settle();
+        expect(view.api.getReport).toHaveBeenCalledTimes(1);
+        expect(view.api.getMe).toHaveBeenCalledTimes(3);
+      });
+
+      it('a server at odds with itself (`Me`: no chart; `GET /charts/current`: a chart) is asked once more and no further: the app stays on the chart it is handed', async () => {
+        const view = returning(meWithReport, {
+          prepare: (fake) => {
+            fake.getMe.mockResolvedValueOnce(meWithReport).mockResolvedValue(meDeleted);
+            let handed = 0;
+            // Every time it is asked, the chart is there. Asked without end, the fake throws: the test must fail, not hang.
+            fake.getCurrentChart.mockImplementation(() => {
+              handed += 1;
+              if (handed > 20) throw new Error('the app keeps asking for the chart');
+              return Promise.resolve(restored);
+            });
+            loseReport(fake);
+          },
+        });
+
+        // The chart is asked for a second time, once `Me` has said there is none: only what is drawn after that
+        // is where the app ends up. (The price is on screen for a moment before it too, between the two answers.)
+        await waitFor(() => {
+          expect(view.api.getCurrentChart).toHaveBeenCalledTimes(2);
+        });
+        await act(() => vi.advanceTimersByTimeAsync(60_000));
+        expect(heading()).toHaveTextContent(ru.chart.title);
+        // `Me` grants nothing any more: the chart the app was handed offers the price.
+        expect(screen.getByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) })).toBeInTheDocument();
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        // At launch, and once after `Me` said there was no chart.
+        expect(view.api.getCurrentChart).toHaveBeenCalledTimes(2);
+        expect(view.api.getMe).toHaveBeenCalledTimes(2);
+        expect(view.api.getReport).toHaveBeenCalledTimes(1);
+      });
+
+      it('a failure to ask `Me` then is not «no chart»: the chart stays, the report is forgotten', async () => {
+        const view = returning(meWithReport, {
+          prepare: (fake) => {
+            fake.getMe.mockResolvedValueOnce(meWithReport).mockRejectedValue(apiError('NETWORK'));
+            loseReport(fake);
+          },
+        });
+
+        expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+        await settle();
+        expect(heading()).toHaveTextContent(ru.chart.title);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('the settings', () => {
+      it('opened after the deletion: `Me` says there is no chart, and the app starts over instead of showing the settings of nobody', async () => {
+        const view = returning(meSubscribed);
+        const gear = await screen.findByRole('button', { name: ru.common.settings });
+
+        deleteElsewhere(view.api);
+        await view.user.click(gear);
+
+        await expectFreshStart(view);
+        expect(screen.queryByRole('heading', { name: ru.settings.title })).not.toBeInTheDocument();
+        expect(view.api.deleteMe).not.toHaveBeenCalled();
+      });
+
+      it('opened from a chart built in this session, after the deletion: the same', async () => {
+        const api = fakeApi();
+        api.getMe.mockResolvedValueOnce(me).mockResolvedValue(meWithChart);
+        const user = setupUser();
+        render(
+          <App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={fakeKeys()} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} />,
+        );
+        await fillIn(user);
+        const gear = await screen.findByRole('button', { name: ru.common.settings });
+
+        deleteElsewhere(api);
+        await user.click(gear);
+
+        await user.click(await start());
+        expect(heading()).toHaveTextContent(ru.consent.title);
+        expect(consentBox()).not.toBeChecked();
+        // Asked which chart the user has, once: this session had not asked before, it built its chart from the form.
+        expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+      });
+
+      it('of a user who has built no chart yet stay open: `Me` without a chart is no news about them', async () => {
+        const api = fakeApi();
+        const user = setupUser();
+        render(
+          <App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={fakeKeys()} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} />,
+        );
+
+        await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+
+        expect(await screen.findByRole('button', { name: ru.settings.deletion.open })).toBeInTheDocument();
+        expect(heading()).toHaveTextContent(ru.settings.title);
+        expect(api.getMe).toHaveBeenCalledTimes(2);
+        expect(api.getCurrentChart).not.toHaveBeenCalled();
+      });
+
+      it('with the chart still there: the settings, as ever', async () => {
+        const view = returning(meSubscribed);
+        await view.user.click(await screen.findByRole('button', { name: ru.common.settings }));
+
+        expect(await screen.findByRole('button', { name: ru.settings.deletion.open })).toBeInTheDocument();
+        expect(heading()).toHaveTextContent(ru.settings.title);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+        expect(view.api.getCurrentChart).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('401 is another matter: the session expired, and nothing can be asked with it, the chart included', () => {
+      it('says so and offers to close; the next launch starts from what the server has, which after a deletion is the welcome screen', async () => {
+        const view = returning(mePaid, { prepare: (fake) => fake.orderReport.mockRejectedValue(apiError('UNAUTHORIZED', { status: 401 })) });
+        await view.user.click(await screen.findByRole('button', { name: ru.chart.orderReport }));
+
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent('Сессия устарела');
+        expect(alert).toHaveTextContent('Закрой приложение и открой его снова из чата с ботом.');
+        // The app does not guess that the data is gone: it was told nothing about it.
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+        expect(screen.queryByRole('button', { name: ru.welcome.start })).not.toBeInTheDocument();
+        // The one way on is out: no retry that could not help.
+        expect(screen.queryByRole('button', { name: ru.common.retry })).not.toBeInTheDocument();
+        await view.user.click(screen.getByRole('button', { name: ru.common.close }));
+        expect(view.telegram.close).toHaveBeenCalledTimes(1);
+        view.unmount();
+
+        // Opened again, with the data deleted meanwhile: a new session, a new `Me`, and nothing kept from the old one.
+        const next = fakeApi();
+        next.getMe.mockResolvedValue(meDeleted);
+        render(
+          <App api={next} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={fakeKeys()} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} />,
+        );
+
+        expect(await start()).toBeInTheDocument();
+        expect(heading()).toHaveTextContent(ru.welcome.title);
+        expect(next.getCurrentChart).not.toHaveBeenCalled();
+        expect(next.getReport).not.toHaveBeenCalled();
+      });
     });
   });
 

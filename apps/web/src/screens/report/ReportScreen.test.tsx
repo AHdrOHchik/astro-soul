@@ -448,3 +448,193 @@ describe('ReportScreen: the chart the report is ordered for is gone', () => {
     expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'report', code: '404' } });
   });
 });
+
+describe('ReportScreen: no such report on the server, and the question whether the chart went with it (`isChartThere`)', () => {
+  /** The answer of apps/api about a report it does not have (`reports.service.ts`). */
+  const SERVER_TEXT = 'Такого разбора нет. Обнови приложение';
+  const gone = () => apiError('NOT_FOUND', { status: 404, serverMessage: SERVER_TEXT, requestId: 'req-404' });
+  const order = () => screen.getByRole('button', { name: copy.order });
+
+  /** The screen says nothing about the report: no failure, no offer to order, not a word of the server's. */
+  function expectNothingSaid(analytics: ReturnType<typeof fakeAnalytics>) {
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(SERVER_TEXT)).not.toBeInTheDocument();
+    expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.order })).not.toBeInTheDocument();
+    expect(analytics.names()).not.toContain('error_shown');
+  }
+
+  it('a report the app knew of, and the chart is gone too: nothing is shown and nothing is forgotten here, the caller leads on', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone());
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
+    const onReportGone = vi.fn();
+    const { analytics } = setup({ api, props: { isChartThere, onReportGone } });
+    await pass(0);
+
+    expect(isChartThere).toHaveBeenCalledTimes(1);
+    expectNothingSaid(analytics);
+    expect(onReportGone).not.toHaveBeenCalled();
+    // And the server is not asked about that report again while the caller takes the user away.
+    await pass(60_000);
+    expect(api.getReport).toHaveBeenCalledTimes(1);
+    expect(isChartThere).toHaveBeenCalledTimes(1);
+  });
+
+  it('a report ordered on this screen, deleted with the data while it was being written: the same, and the server\'s words are never shown', async () => {
+    const api = fakeApi();
+    api.getReport.mockResolvedValueOnce(generating).mockRejectedValue(gone());
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
+    const { analytics, user } = setup({ api, props: { reportId: null, isChartThere } });
+    await user.click(order());
+    await screen.findByRole('progressbar');
+    analytics.clear();
+
+    await pass(POLL_DELAYS_MS[0]);
+
+    expect(isChartThere).toHaveBeenCalledTimes(1);
+    expectNothingSaid(analytics);
+    expect(analytics.events).toEqual([]);
+  });
+
+  it('nothing is said while the question is on its way either: the screen stays as it was', async () => {
+    const api = fakeApi();
+    api.getReport.mockResolvedValueOnce(generating).mockRejectedValue(gone());
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockReturnValue(new Promise<boolean>(() => undefined));
+    const { analytics } = setup({ api, props: { isChartThere } });
+    await screen.findByRole('progressbar');
+
+    await pass(POLL_DELAYS_MS[0]);
+
+    expect(isChartThere).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('progressbar')).toBeInTheDocument();
+    expectNothingSaid(analytics);
+  });
+
+  it('the chart is there, the report the app knew of is not: forgotten, and the screen offers to get one, as without the question', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone());
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(true);
+    const onReportGone = vi.fn();
+    const { analytics } = setup({ api, props: { isChartThere, onReportGone } });
+
+    expect(await screen.findByRole('button', { name: copy.order })).toBeInTheDocument();
+    expect(onReportGone).toHaveBeenCalledWith(REPORT_ID);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(analytics.events).toEqual([]);
+    expect(isChartThere).toHaveBeenCalledTimes(1);
+  });
+
+  it('the chart is there, the report ordered on this screen is not: a failure, shown and counted, as without the question', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone());
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(true);
+    const { analytics, user } = setup({ api, props: { reportId: null, isChartThere } });
+
+    await user.click(order());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(SERVER_TEXT);
+    expect(screen.getByText(ru.common.requestId('req-404'))).toBeInTheDocument();
+    expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'report', code: '404' } });
+  });
+
+  it.each([
+    ['the app knew of', {}, false],
+    ['ordered on this screen', { reportId: null }, true],
+  ] as const)('a question that failed says nothing about the chart: a report %s is treated as without the question', async (_which, props, ordered) => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone());
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockRejectedValue(apiError('NETWORK'));
+    const onReportGone = vi.fn();
+    const { user } = setup({ api, props: { ...props, isChartThere, onReportGone } });
+    if (ordered) await user.click(order());
+    await pass(0);
+
+    if (ordered) expect(screen.getByRole('alert')).toHaveTextContent(SERVER_TEXT);
+    else expect(order()).toBeInTheDocument();
+    expect(onReportGone).toHaveBeenCalledTimes(ordered ? 0 : 1);
+  });
+
+  it('is asked with a signal that is cancelled when the screen is left: an answer that comes later changes nothing', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValue(gone());
+    let answer: (there: boolean) => void = () => undefined;
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const onReportGone = vi.fn();
+    const { analytics, unmount } = setup({ api, props: { isChartThere, onReportGone } });
+    await pass(0);
+    const signal = isChartThere.mock.calls[0]?.[0];
+    expect(signal?.aborted).toBe(false);
+
+    unmount();
+    expect(signal?.aborted).toBe(true);
+    await act(async () => {
+      answer(true);
+      await Promise.resolve();
+    });
+    expect(onReportGone).not.toHaveBeenCalled();
+    expect(analytics.events).toEqual([]);
+  });
+
+  it('is not asked about any other failure, nor about a report that is there', async () => {
+    const api = fakeApi();
+    api.getReport.mockRejectedValueOnce(apiError('INTERNAL', { status: 500 })).mockResolvedValue(ready);
+    const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
+    const { user } = setup({ api, props: { isChartThere } });
+
+    await user.click(await screen.findByRole('button', { name: ru.common.retry }));
+    expect(await screen.findByText(sections[0]?.body_md ?? '')).toBeInTheDocument();
+    expect(isChartThere).not.toHaveBeenCalled();
+  });
+
+  describe('the PDF of a report that is on screen', () => {
+    const withPdf: Report = { ...ready, pdf_url: '/api/v1/reports/x/report.pdf?sig=1' };
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    /** The link, checked before it is opened, answers as the server says. */
+    function linkAnswers(status: number) {
+      const check = vi.fn<(url: string, init?: RequestInit) => Promise<Pick<Response, 'status'>>>().mockResolvedValue({ status });
+      vi.stubGlobal('fetch', check);
+      return check;
+    }
+
+    it('the link is gone and so is the report: the chart is asked about, and the screen says only that the PDF is not available', async () => {
+      const check = linkAnswers(404);
+      const api = fakeApi();
+      api.getReport.mockResolvedValueOnce(withPdf).mockRejectedValue(gone());
+      const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
+      const { telegram, user } = setup({ api, props: { isChartThere } });
+
+      await user.click(await screen.findByRole('button', { name: copy.pdf }));
+
+      expect(check).toHaveBeenCalledWith('https://api.test/api/v1/reports/x/report.pdf?sig=1', { method: 'HEAD' });
+      expect(isChartThere).toHaveBeenCalledTimes(1);
+      expect(await screen.findByText(copy.pdfUnavailable)).toBeInTheDocument();
+      expect(screen.queryByText(SERVER_TEXT)).not.toBeInTheDocument();
+      expect(telegram.openLink).not.toHaveBeenCalled();
+    });
+
+    it('a link that opens asks nothing; one that expired is asked for again, and the chart is not in question', async () => {
+      const check = linkAnswers(200);
+      const api = fakeApi();
+      api.getReport.mockResolvedValueOnce(withPdf).mockResolvedValue({ ...withPdf, pdf_url: '/api/v1/reports/x/report.pdf?sig=2' });
+      const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
+      const { telegram, user } = setup({ api, props: { isChartThere } });
+
+      await user.click(await screen.findByRole('button', { name: copy.pdf }));
+      expect(telegram.openLink).toHaveBeenLastCalledWith('https://api.test/api/v1/reports/x/report.pdf?sig=1');
+
+      check.mockResolvedValue({ status: 404 });
+      await user.click(screen.getByRole('button', { name: copy.pdf }));
+      expect(telegram.openLink).toHaveBeenLastCalledWith('https://api.test/api/v1/reports/x/report.pdf?sig=2');
+      expect(isChartThere).not.toHaveBeenCalled();
+    });
+  });
+});
