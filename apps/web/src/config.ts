@@ -20,7 +20,7 @@ export const config = {
   apiBaseUrl: (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, ''),
   /** The bot's username for the link in a shared message, without `@`. Empty = the picture and the text go out without a link. */
   botUsername: botUsernameOf(import.meta.env.VITE_BOT_USERNAME),
-  /** Where the support button leads. Empty = the button is there, disabled, and says support is coming. */
+  /** Where the support button leads. Empty = the button is there, disabled, and says that no contact is set. */
   supportLink: supportLinkOf(import.meta.env.VITE_SUPPORT_CONTACT),
   /**
    * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`): only when the variable says

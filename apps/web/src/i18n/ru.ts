@@ -671,7 +671,10 @@ export const ru = {
   support: {
     /** Owner's wording. */
     write: 'Написать в поддержку',
-    /** Owner's wording: the button while there is no contact to lead to. */
-    soon: 'Поддержка скоро появится',
+    /**
+     * Owner's wording: the button while the build has no contact to lead to (`VITE_SUPPORT_CONTACT`).
+     * The key keeps its first name, from the days the button said that support was coming.
+     */
+    soon: 'Контакт поддержки ещё не задан',
   },
 } as const;
