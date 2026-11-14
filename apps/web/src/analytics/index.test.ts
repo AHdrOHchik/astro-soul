@@ -108,21 +108,19 @@ describe('createAnalytics', () => {
     expect(unhandled).not.toHaveBeenCalled();
   });
 
-  it('sends an event only under a name the contract lists: one unknown name costs the whole batch on the server', () => {
+  it('sends an event only under a name the server takes: one unknown name costs the whole batch', () => {
     const { analytics, sent } = setup();
-    const contract = Object.keys(EVENT_NAMES);
 
     analytics.track('app_open');
-    // Agreed with the owner, due in the contract with 1.4.1.
+    // In the contract since 1.5.1, held back until the backend confirms that the server takes it.
     analytics.track('validation_failed_client', { step: 'birth_date', field: 'birth_date' });
     (analytics.track as (name: string) => void)('app_closed');
+    // A failed deletion has no event of its own in the contract: it goes out as `error_shown`, with the status as the code.
+    analytics.track('error_shown', { screen: 'settings', code: '409' });
     analytics.flush();
 
-    const names: string[] = sent().flat();
-    expect(names).toContain('app_open');
-    expect(names.filter((name) => !contract.includes(name))).toEqual([]);
-    // Holds before the contract lists the event and after: it goes out exactly when the contract knows it.
-    expect(names.includes('validation_failed_client')).toBe(contract.includes('validation_failed_client'));
+    expect(Object.keys(EVENT_NAMES)).toContain('validation_failed_client');
+    expect(sent().flat()).toEqual(['app_open', 'error_shown']);
   });
 
   it('lets no key through that the app does not know, whatever the caller passes', () => {
