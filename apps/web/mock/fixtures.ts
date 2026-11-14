@@ -18,6 +18,11 @@ export type FieldError = Schemas['FieldError'];
 export type ChartCreateRequest = Schemas['ChartCreateRequest'];
 export type ChartResponse = Schemas['ChartResponse'];
 export type EventsAccepted = Schemas['EventsAccepted'];
+export type PlanCode = Schemas['PlanCode'];
+export type Invoice = Schemas['Invoice'];
+export type Subscription = Schemas['SubscriptionState'];
+type Entitlements = Schemas['Entitlements'];
+type Quota = Schemas['Quota'];
 
 export const MOCK_CHART_ID = '00000000-0000-4000-8000-00000000c0de';
 
@@ -32,27 +37,65 @@ const MOCK_SIG = 'mock-signature';
 
 const SIGNS = ['Овен', 'Телец', 'Близнецы', 'Рак', 'Лев', 'Дева', 'Весы', 'Скорпион', 'Стрелец', 'Козерог', 'Водолей', 'Рыбы'];
 
-/** `GET /me` for a user with the chart `chartId`, or with none yet. */
-export function buildMe(chartId: string | null): Me {
-  const hasChart = chartId !== null;
+/** What the mock knows about its one user, besides the chart. */
+export interface MockAccount {
+  /** The chart the user has; null before the first one is built. */
+  chartId: string | null;
+  /** The subscription, as Telegram's webhook would have left it; null without one. */
+  subscription: { plan: Exclude<Subscription['plan'], 'none' | 'trial'>; expiresAt: number } | null;
+  /** The full report is bought for a chart; this is whether one is bought at all, as `Me` tells it. */
+  fullReport: boolean;
+  latestReportId: string | null;
+}
+
+/** `Entitlements` by the rules of packages/shared (`entitlementsForPlan`): a subscription does not include the full report. */
+function entitlementsOf({ subscription, fullReport }: MockAccount, now: number): Entitlements {
+  const active = subscription !== null && subscription.expiresAt > now;
+  return {
+    is_active: active,
+    plan: active ? subscription.plan : 'none',
+    full_forecast: active,
+    ask_per_day: active ? 5 : 1,
+    full_report: fullReport,
+    compat_per_month: active ? 1 : 0,
+    solar_included: active && subscription.plan === 'year',
+  };
+}
+
+/** The four quotas apps/api always sends, with the limits it derives from the entitlements (`quotaLimits`). */
+function quotasOf(entitlements: Entitlements, now: number): Quota[] {
+  const day = new Date(now);
+  day.setUTCHours(24, 0, 0, 0);
+  const month = new Date(Date.UTC(day.getUTCFullYear(), new Date(now).getUTCMonth() + 1, 1));
+  const tomorrow = day.toISOString();
+  const nextMonth = month.toISOString();
+  return [
+    { code: 'forecast_daily', used: 0, limit: entitlements.full_forecast ? -1 : 1, reset_at: tomorrow },
+    { code: 'ask_daily', used: entitlements.is_active ? 2 : 0, limit: entitlements.ask_per_day, reset_at: tomorrow },
+    { code: 'report_month', used: 0, limit: entitlements.full_report ? -1 : 0, reset_at: nextMonth },
+    { code: 'compat_month', used: 0, limit: entitlements.compat_per_month, reset_at: nextMonth },
+  ];
+}
+
+/** `GET /me` for the mock's user as it stands at `now`. */
+export function buildMe(account: MockAccount, now: number): Me {
+  const hasChart = account.chartId !== null;
+  const entitlements = entitlementsOf(account, now);
+  const { subscription } = account;
   return {
     user_id: '00000000-0000-4000-8000-000000000001',
     display_name: null,
     is_new: !hasChart,
     has_profile: hasChart,
     has_chart: hasChart,
-    chart_id: chartId,
-    subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
-    entitlements: {
-      is_active: false,
-      plan: 'none',
-      full_forecast: false,
-      ask_per_day: 0,
-      full_report: false,
-      compat_per_month: 0,
-      solar_included: false,
-    },
-    quotas: [],
+    chart_id: account.chartId,
+    latest_report_id: account.latestReportId,
+    subscription:
+      subscription === null
+        ? { plan: 'none', is_active: false, expires_at: null, auto_renew: false }
+        : { plan: subscription.plan, is_active: entitlements.is_active, expires_at: new Date(subscription.expiresAt).toISOString(), auto_renew: true },
+    entitlements,
+    quotas: quotasOf(entitlements, now),
     onboarding_step: hasChart ? 'done' : 'birth_date',
   };
 }

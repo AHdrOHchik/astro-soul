@@ -202,3 +202,71 @@ describe('inside Telegram with launch parameters the SDK rejects', () => {
     expect(telegram).toMatchObject({ isTelegram: true, initData: '', hasNativeBackButton: false });
   });
 });
+
+describe('Stars invoices', () => {
+  const INVOICE = 'https://t.me/$abcDEF-123';
+  // The SDK schema wants `signature` in init data; this one has none, so the app runs on its basic host.
+  const UNSIGNED_INIT_DATA = 'query_id=AAF0&auth_date=1700000000&hash=abc';
+
+  /** What the client says when the invoice is closed. */
+  async function closeInvoice(status: string) {
+    const { emitEvent } = await import('@telegram-apps/sdk');
+    emitEvent('invoice_closed', { slug: 'abcDEF-123', status });
+  }
+
+  it('outside Telegram there is nothing to open one with: the app is told so and does not break', async () => {
+    const telegram = await start();
+    expect(telegram.canPay).toBe(false);
+    await expect(telegram.openInvoice(INVOICE)).resolves.toBe('unsupported');
+  });
+
+  it.each([
+    ['with the SDK', INIT_DATA],
+    ['on the basic host', UNSIGNED_INIT_DATA],
+  ])('inside Telegram, %s: asks the client to show the invoice and tells how it was closed', async (_name, initData) => {
+    launchInTelegram('8.0', initData);
+    const telegram = await start();
+    expect(telegram.canPay).toBe(true);
+
+    const outcome = telegram.openInvoice(INVOICE);
+    expect(payloadOf('web_app_open_invoice')).toEqual({ slug: 'abcDEF-123' });
+    await closeInvoice('cancelled');
+
+    await expect(outcome).resolves.toBe('cancelled');
+  });
+
+  it('reads a status it does not know as «pending»: neither paid nor failed', async () => {
+    launchInTelegram('8.0');
+    const telegram = await start();
+    const outcome = telegram.openInvoice(INVOICE);
+    await closeInvoice('something_new');
+    await expect(outcome).resolves.toBe('pending');
+  });
+
+  it('does not ask the client to open what is not an invoice link', async () => {
+    launchInTelegram('8.0');
+    const telegram = await start();
+    await expect(telegram.openInvoice('https://example.com/$abc')).resolves.toBe('failed');
+    expect(events()).not.toContain('web_app_open_invoice');
+  });
+
+  it.each([
+    ['with the SDK', INIT_DATA],
+    ['on the basic host', UNSIGNED_INIT_DATA],
+  ])('a client older than Mini Apps 6.1 cannot pay, %s', async (_name, initData) => {
+    launchInTelegram('6.0', initData);
+    expect((await start()).canPay).toBe(false);
+  });
+
+  it('a development build may pretend: the invoice closes as told, and a paid one is reported to the server first', async () => {
+    const settle = vi.fn<(link: string) => Promise<void>>().mockResolvedValue(undefined);
+    const telegram = await start({ devInvoice: { status: 'paid', settle } });
+    expect(telegram.canPay).toBe(true);
+    await expect(telegram.openInvoice(INVOICE)).resolves.toBe('paid');
+    expect(settle).toHaveBeenCalledWith(INVOICE);
+
+    const cancelling = await start({ devInvoice: { status: 'cancelled', settle } });
+    await expect(cancelling.openInvoice(INVOICE)).resolves.toBe('cancelled');
+    expect(settle).toHaveBeenCalledTimes(1);
+  });
+});

@@ -65,8 +65,15 @@
 
 .text {
   display: grid;
+  flex: 1 1 auto;
   gap: var(--space-1);
   min-width: 0;
+}
+
+.aside {
+  flex: none;
+  margin-left: var(--space-3);
+  font-weight: var(--font-weight-bold);
 }
 
 .title {
