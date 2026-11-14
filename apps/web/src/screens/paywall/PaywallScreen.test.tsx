@@ -246,3 +246,121 @@ describe('PaywallScreen', () => {
     expect(onOpenReport).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('PaywallScreen: a build that sells no subscriptions (`subscriptions: false`)', () => {
+  const subscriptionPlans = ['week_149', 'month_399', 'year_2990'] as const;
+
+  it('sells the report alone: the subscriptions are not in the document at all, hidden or otherwise', async () => {
+    const { api, user, container } = setup({ props: { subscriptions: false } });
+
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    expect(option(copy.plans.one_149.title)).toBeChecked();
+    for (const code of subscriptionPlans) {
+      expect(screen.queryByText(copy.plans[code].title)).not.toBeInTheDocument();
+      expect(screen.queryByText(copy.plans[code].description)).not.toBeInTheDocument();
+    }
+    // No offer of a subscription and no price of one anywhere in the markup: nothing to reveal with a style.
+    // The one mention left is the report's own «без подписки», which is about the report.
+    expect(copy.plans.one_149.description).toMatch(/без подписки/);
+    expect(container.innerHTML.replace(copy.plans.one_149.description, '')).not.toMatch(/подписк/i);
+    expect(container.innerHTML).not.toMatch(/399|2.990/);
+    expect(container.querySelectorAll('input')).toHaveLength(1);
+    expect(screen.queryByText(copy.reportIsSeparate)).not.toBeInTheDocument();
+    expect(screen.queryByText(copy.renewal)).not.toBeInTheDocument();
+
+    await user.click(payButton());
+    await waitFor(() => {
+      expect(api.createInvoice).toHaveBeenCalledTimes(1);
+    });
+    expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'one_149', chart_id: chart.chart_id }, expect.any(AbortSignal));
+  });
+
+  it.each(subscriptionPlans)('has nothing chosen and nothing to pay when the screen is opened for %s: no invoice can be asked for', async (plan) => {
+    const { api, user } = setup({ props: { subscriptions: false, initialPlan: plan } });
+
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    expect(option(copy.plans.one_149.title)).not.toBeChecked();
+    const pay = screen.getByRole('button', { name: copy.choose });
+    expect(pay).toBeDisabled();
+    await user.click(pay);
+    expect(api.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it('says that there is nothing to pay for when there is no report to buy either, and leads back', async () => {
+    const { api, onClose, user, container } = setup({ props: { subscriptions: false, reportChartId: null, initialPlan: null } });
+
+    expect(screen.getByRole('heading', { name: 'Сейчас здесь нечего оплачивать' })).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(container.innerHTML).not.toMatch(/подписк/i);
+    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([copy.leave]);
+    await user.click(screen.getByRole('button', { name: copy.leave }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(api.createInvoice).not.toHaveBeenCalled();
+  });
+
+  it('still shows the subscription the user has: what was bought does not disappear with the offer', () => {
+    setup({ me: meSubscribed, props: { subscriptions: false } });
+    expect(screen.getByText(/^Подписка активна до \d+ декабря 2026 г\.$/)).toBeInTheDocument();
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+  });
+
+  it('sells subscriptions unless told otherwise: the prop left out is the same as `true`', () => {
+    setup();
+    expect(screen.getAllByRole('radio')).toHaveLength(4);
+    for (const code of subscriptionPlans) expect(option(copy.plans[code].title)).toBeInTheDocument();
+  });
+});
+
+describe('PaywallScreen: the chart the report is for is gone', () => {
+  /** The answer of apps/api to an invoice for a chart that is not the user's (`billing.service.ts`). */
+  const chartRejected = () => rejection({ field: 'chart_id', message: 'Карта не найдена' });
+
+  it('leaves the screen to the app: no failure is shown, and not a word of the server\'s', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(chartRejected());
+    const onChartGone = vi.fn();
+    const { analytics, telegram, user } = setup({ api, props: { onChartGone } });
+    analytics.clear();
+
+    await user.click(payButton());
+    await waitFor(() => {
+      expect(onChartGone).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Карта не найдена')).not.toBeInTheDocument();
+    expect(telegram.openInvoice).not.toHaveBeenCalled();
+    expect(analytics.names()).not.toContain('error_shown');
+  });
+
+  it('is told from any other refusal by the field the server names', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(rejection({ field: 'plan_code', message: 'plan_code — один из тарифов каталога' }));
+    const onChartGone = vi.fn();
+    const { user } = setup({ api, props: { onChartGone } });
+
+    await user.click(payButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.invoiceRejected);
+    expect(onChartGone).not.toHaveBeenCalled();
+  });
+
+  it('is not read into the refusal of a subscription: that invoice names no chart', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(chartRejected());
+    const onChartGone = vi.fn();
+    const { user } = setup({ api, props: { onChartGone, initialPlan: 'month_399' } });
+
+    await user.click(payButton());
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'month_399' }, expect.any(AbortSignal));
+    expect(onChartGone).not.toHaveBeenCalled();
+  });
+
+  it('is shown like any refusal where nobody takes it from the screen', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValue(chartRejected());
+    const { user } = setup({ api });
+
+    await user.click(payButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.invoiceRejected);
+  });
+});

@@ -1,4 +1,5 @@
 import { botUsernameOf } from './lib/share';
+import { subscriptionsModeOf } from './lib/subscriptions';
 import { supportLinkOf } from './lib/support';
 import type { InvoiceStatus } from './telegram';
 
@@ -21,6 +22,11 @@ export const config = {
   botUsername: botUsernameOf(import.meta.env.VITE_BOT_USERNAME),
   /** Where the support button leads. Empty = the button is there, disabled, and says support is coming. */
   supportLink: supportLinkOf(import.meta.env.VITE_SUPPORT_CONTACT),
+  /**
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`): yes unless the variable says `off`.
+   * With `off` nothing in the app offers one; a subscription the user already has is still shown.
+   */
+  subscriptions: subscriptionsModeOf(import.meta.env.VITE_SUBSCRIPTIONS) !== 'off',
   /** Stand-in for Telegram initData in a plain browser. Not present in production builds at all. */
   devInitData: import.meta.env.DEV ? (import.meta.env.VITE_DEV_INIT_DATA ?? '') : '',
   /**

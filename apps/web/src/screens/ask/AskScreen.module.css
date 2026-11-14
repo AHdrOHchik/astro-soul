@@ -1,0 +1,95 @@
+.form {
+  margin: 0;
+}
+
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+.skeleton,
+.exchange,
+.exhausted {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.exchange {
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.asked,
+.basis,
+.exhaustedText,
+.problem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+}
+
+.caption {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.subtitle {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+/* A focus target for screen readers, not a control: a ring here would only confuse. */
+.subtitle:focus {
+  outline: none;
+}
+
+/* The user's and the server's words as they are: line breaks kept, nothing in them is markup. */
+.plain {
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}
+
+.basisList {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.basisItem {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.quota {
+  font-weight: var(--font-weight-medium);
+}
+
+.quotaSkeleton {
+  width: 60%;
+}
+
+/* The server's word about the question on the left, the counter on the right. */
+.below {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.counter,
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}

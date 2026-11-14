@@ -70,6 +70,8 @@ export type AnalyticsStep =
   | 'chart'
   | 'paywall'
   | 'report'
+  | 'forecast'
+  | 'ask'
   | 'settings';
 
 /** Request fields the server may reject, as `details.field_errors` names them. */
@@ -81,6 +83,7 @@ const REJECTED_FIELDS = [
   'consent',
   'consent.version',
   'query',
+  'question',
   'body',
 ] as const;
 
@@ -122,7 +125,10 @@ export interface EventProps {
   payment_cancelled: { plan_code: PlanCode };
   /** A finished report is on screen. */
   report_ready_view: { report_id: string };
-  /** The server would not give something out for free any more; the paywall follows. */
+  /**
+   * The server would not give something out any more: it refused an order (the paywall
+   * follows), or the day's questions are used up, by its answer or by the quota in `Me`.
+   */
   quota_exhausted: { step: AnalyticsStep };
   /**
    * A failure was shown. `code` is the HTTP status when the server answered, the client's

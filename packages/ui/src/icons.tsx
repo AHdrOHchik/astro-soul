@@ -84,6 +84,13 @@ export const BackIcon = () => (
   </Icon>
 );
 
+/** Points to what a tap on the row opens. */
+export const ForwardIcon = () => (
+  <Icon>
+    <path d="M9.5 5 16 12l-6.5 7" />
+  </Icon>
+);
+
 export const StarsIcon = () => (
   <Icon>
     <path d="M10 3.5 11.8 8l4.7 1.8-4.7 1.8L10 16l-1.8-4.4L3.5 9.8 8.2 8 10 3.5ZM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9L18 14Z" />

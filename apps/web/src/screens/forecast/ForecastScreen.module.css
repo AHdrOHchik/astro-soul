@@ -1,0 +1,29 @@
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+.skeleton {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+/* A label, not a heading: small, in one piece, as wide as its words. */
+.focus {
+  justify-self: start;
+  padding: var(--space-1) var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-raised);
+  color: var(--color-gold);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+/* The server's text as it came: its line breaks are kept, nothing in it is markup. */
+.text {
+  overflow-wrap: anywhere;
+  white-space: pre-line;
+}

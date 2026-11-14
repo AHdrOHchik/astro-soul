@@ -57,6 +57,13 @@ export interface UseReportOptions {
    * data. Whoever remembers the report forgets it.
    */
   onReportGone?: (reportId: string) => void;
+  /**
+   * The server has no such chart to make a report about (404 to the order): it went with
+   * the user's data, deleted elsewhere while this page stayed open. The caller leads on
+   * from there, and nothing of the server's answer is shown. Without this prop the
+   * refusal is shown like any other failure.
+   */
+  onChartGone?: () => void;
 }
 
 export interface ReportFlow {
@@ -103,6 +110,7 @@ export function useReport({
   onReportId,
   onReport,
   onReportGone,
+  onChartGone,
 }: UseReportOptions): ReportFlow {
   const [reportId, setReportId] = useState(knownReportId);
   // The key of the first order is taken here, once: a development build runs the effect below twice, with this one key.
@@ -116,9 +124,9 @@ export function useReport({
   const [loads, setLoads] = useState(0);
 
   // The callbacks of the moment, for effects that must not start over when a parent renders.
-  const latest = useRef({ track, onPaymentRequired, onReportId, onReport, onReportGone, justPaid });
+  const latest = useRef({ track, onPaymentRequired, onReportId, onReport, onReportGone, onChartGone, justPaid });
   useEffect(() => {
-    latest.current = { track, onPaymentRequired, onReportId, onReport, onReportGone, justPaid };
+    latest.current = { track, onPaymentRequired, onReportId, onReport, onReportGone, onChartGone, justPaid };
   });
   // The report this screen has ordered itself. Any other one the app knew of before the screen opened.
   const orderedHere = useRef<string | null>(null);
@@ -152,6 +160,12 @@ export function useReport({
           }
           latest.current.track('quota_exhausted', { step: 'report' });
           latest.current.onPaymentRequired(run.explain);
+          return;
+        }
+        if (isApiError(error) && error.code === 'NOT_FOUND' && latest.current.onChartGone) {
+          // An order names a chart, and a 404 to it is the contract's «no such chart». Nothing failed that
+          // the user could repeat or report: the chart is gone, and the app starts from what the server has.
+          latest.current.onChartGone();
           return;
         }
         if (!isApiError(error)) console.error(error);

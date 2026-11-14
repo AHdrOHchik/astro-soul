@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../../analytics';
 import {
   failureCodeOf,
+  fieldErrorsOf,
   isAbortError,
   isApiError,
   rejectionTextOf,
@@ -45,6 +46,12 @@ export interface PaywallScreenProps {
   reportChartId: string | null;
   /** The plan chosen before the screen opened, e.g. by the button under the teaser. */
   initialPlan: PaywallPlan | null;
+  /**
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does unless told otherwise.
+   * With `false` the screen sells the full report alone: the plans are not in the list, and
+   * nothing on the screen speaks of a subscription the user could buy.
+   */
+  subscriptions?: boolean;
   /** The server refused to order a report and sent the user here: the screen says why it opened. */
   reportRequired?: boolean;
   /**
@@ -64,6 +71,12 @@ export interface PaywallScreenProps {
   onOpenReport?: () => void;
   /** Leaves the paywall for where the user came from. */
   onClose: () => void;
+  /**
+   * The server refused the invoice because the chart the report is for is not the user's
+   * (`chart_id` among the rejected fields): it went with the user's data. The caller leads
+   * on from there; without this prop the refusal is shown like any other.
+   */
+  onChartGone?: () => void;
 }
 
 /**
@@ -103,6 +116,7 @@ export function PaywallScreen({
   refreshMe,
   reportChartId,
   initialPlan,
+  subscriptions = true,
   reportRequired = false,
   awaiting = null,
   onAwaiting,
@@ -112,13 +126,17 @@ export function PaywallScreen({
   onReportPaid,
   onOpenReport,
   onClose,
+  onChartGone,
 }: PaywallScreenProps) {
   const titleId = useId();
   const groupName = useId();
   const subscribed = me.entitlements.is_active;
-  // A subscription is not sold to a subscriber; the report is sold where there is a chart to buy it for.
+  // The report is sold where there is a chart to buy it for. A subscription is not sold to a
+  // subscriber, and not at all by a build that has them switched off: then the plans are not
+  // made into options in the first place, so there is nothing to hide.
   const report: PaywallPlan[] = reportChartId === null ? [] : [REPORT_PLAN];
-  const offered: PaywallPlan[] = subscribed ? report : [...report, ...SUBSCRIPTION_PLANS];
+  const sellsSubscriptions = subscriptions && !subscribed;
+  const offered: PaywallPlan[] = sellsSubscriptions ? [...report, ...SUBSCRIPTION_PLANS] : report;
   const [chosen, setChosen] = useState<PaywallPlan | null>(initialPlan);
   const plan = chosen !== null && offered.includes(chosen) ? chosen : null;
   // Opened while a payment is still on its way to the server: the screen starts where that payment left off.
@@ -179,13 +197,18 @@ export function PaywallScreen({
     let invoice = invoices[plan];
     if (invoice === undefined) {
       setPhase('invoicing');
+      // The report is bought for one chart, named here: the server does not guess which.
+      const forChart = plan === REPORT_PLAN && reportChartId !== null ? { chart_id: reportChartId } : null;
       try {
-        // The report is bought for one chart, named here: the server does not guess which.
-        const forChart = plan === REPORT_PLAN && reportChartId !== null ? { chart_id: reportChartId } : {};
         invoice = await api.createInvoice({ plan_code: plan, ...forChart }, signal);
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
         setPhase('choosing');
+        if (onChartGone && forChart !== null && fieldErrorsOf(error).some(({ field }) => field === 'chart_id')) {
+          // The chart the report was to be bought for is not the user's any more. Nothing to show of it: the app leads on.
+          onChartGone();
+          return;
+        }
         setProblem(problemOf(error));
         track('error_shown', { screen: 'paywall', code: failureCodeOf(error) });
         return;
@@ -265,10 +288,10 @@ export function PaywallScreen({
   const until = me.subscription.expires_at === null ? '' : formatDay(me.subscription.expires_at);
   const activeLine = until === '' ? copy.active : copy.activeUntil(until);
   if (offered.length === 0) {
-    // Nothing to sell: the subscription is active and there is no report to buy here.
+    // Nothing to sell: there is no report to buy here, and the subscription is active, or this build sells none.
     return (
       <Screen back={back}>
-        <StateView icon={<StarsIcon />} title={activeLine}>
+        <StateView icon={<StarsIcon />} title={subscribed ? activeLine : copy.nothingOnSale}>
           {onOpenReport ? (
             <Button onClick={onOpenReport}>{ru.chart.openReport}</Button>
           ) : (
@@ -329,7 +352,7 @@ export function PaywallScreen({
             />
           ))}
         </fieldset>
-        {offersReport && !subscribed && <p className={styles.note}>{copy.reportIsSeparate}</p>}
+        {offersReport && sellsSubscriptions && <p className={styles.note}>{copy.reportIsSeparate}</p>}
         {plan !== null && plan !== REPORT_PLAN && <p className={styles.note}>{copy.renewal}</p>}
         <Button variant="ghost" onClick={onOpenTerms}>
           {copy.terms}

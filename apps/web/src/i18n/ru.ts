@@ -1,4 +1,4 @@
-import type { ApiErrorCode, ChartWarning, Quota, ReportStatus, Subscription, TimePrecision } from '../api';
+import type { ApiErrorCode, ChartWarning, ForecastFocus, Quota, ReportStatus, Subscription, TimePrecision } from '../api';
 import type { DateIssue, TimeIssue } from '../lib/birth';
 import type { PaywallPlan } from '../lib/plans';
 import type { PluralForm } from './format';
@@ -150,6 +150,14 @@ interface PlanCopy {
   description: string;
 }
 
+/**
+ * The owner's rule for the subscriptions: a description names only what the app already
+ * delivers (the full forecasts, the questions). What payments.md §1 lists besides (the
+ * compatibility, the chart of the year) is named as coming, in the owner's words
+ * «появится в ближайшие дни». The day one of those is released, its sentence is reworded.
+ */
+const SOON = 'появится в ближайшие дни';
+
 const plans: Record<PaywallPlan, PlanCopy> = {
   one_149: {
     title: 'Полный разбор',
@@ -157,15 +165,15 @@ const plans: Record<PaywallPlan, PlanCopy> = {
   },
   week_149: {
     title: 'Подписка на неделю',
-    description: 'Полные прогнозы, 5 вопросов карте в день, совместимость раз в месяц.',
+    description: `Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц ${SOON}.`,
   },
   month_399: {
     title: 'Подписка на месяц',
-    description: 'Полные прогнозы, 5 вопросов карте в день, совместимость раз в месяц.',
+    description: `Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц ${SOON}.`,
   },
   year_2990: {
     title: 'Подписка на год',
-    description: 'Всё, что в подписке на месяц, и карта года.',
+    description: `Всё, что в подписке на месяц. Карта года ${SOON}.`,
   },
 };
 
@@ -183,6 +191,19 @@ const quotaNames: Record<Quota['code'], string> = {
   ask_daily: 'Вопросы карте в день',
   report_month: 'Разборы в месяц',
   compat_month: 'Совместимость в месяц',
+};
+
+/**
+ * `Forecast.focus` as a label next to the text. A code without a name here is a focus this
+ * build does not show. `health` is about energy and routine and is named so: the service
+ * gives no advice on health.
+ */
+const focusNames: Record<ForecastFocus, string> = {
+  career: 'карьера',
+  love: 'отношения',
+  money: 'деньги',
+  health: 'самочувствие',
+  self: 'внимание к себе',
 };
 
 /** One line about a report the user has, for the chart screen. */
@@ -435,6 +456,8 @@ export const ru = {
     checkAgain: 'Проверить ещё раз',
     /** Leaves the paywall for the screen it was opened from. */
     leave: 'Вернуться',
+    /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. */
+    nothingOnSale: 'Сейчас здесь нечего оплачивать',
   },
 
   /** Screen 6. */
@@ -478,6 +501,69 @@ export const ru = {
     rateLimited: 'Слишком часто, попробуй через минуту.',
   },
 
+  /** Screen 8, and its card on the chart screen. The forecast itself is the server's text, never written here. */
+  forecast: {
+    /** Owner's wording: the name of the card and of the screen while the forecast is today's. */
+    title: 'Прогноз на сегодня',
+    /** Owner's wording, for a forecast of another day: «Прогноз на 14 ноября». Never «сегодня» for it. */
+    titleFor: (day: string) => `Прогноз на ${day}`,
+    loading: 'Загружаем прогноз…',
+    /** «Фокус дня» is the owner's wording; the name comes from `focusNames`. */
+    focus: (name: string) => `Фокус дня: ${name}`,
+    focusNames,
+    /** Owner's wording, in two parts: the server has no forecast for today yet. Not a failure and worded as none. */
+    pendingTitle: 'Сегодняшний прогноз готовится',
+    pendingText: 'Загляни после 08:00',
+    /** Owner's wording. */
+    toChart: 'К карте',
+    /** Owner's wording: the request itself failed. */
+    failedTitle: 'Не получилось загрузить прогноз',
+    /** Owner's wording. */
+    ask: 'Спросить карту',
+    /** Owner's wording. What goes out is the picture of the chart, never the text of the forecast. */
+    share: 'Поделиться',
+    /** Owner's wording: under the short forecast. A note, not a call to pay. */
+    subscriptionOnly: 'Полный прогноз — в подписке',
+  },
+
+  /** «Спроси карту»: one question, one answer. The answer is the server's text, never written or reworded here. */
+  ask: {
+    title: 'Спроси карту',
+    fieldLabel: 'Твой вопрос',
+    placeholder: 'Например: на что мне опереться в работе?',
+    /** Under the field: «120 / 500». */
+    counter: (length: number, max: number) => `${String(length)} / ${String(max)}`,
+    /** The same for a screen reader. */
+    counterLabel: (length: number, max: number) => `Набрано знаков: ${String(length)} из ${String(max)}`,
+    /** Owner's wording. */
+    submit: 'Спросить',
+    sending: 'Спрашиваем карту…',
+    /** Owner's wording: «Сегодня осталось 3 вопроса из 5». */
+    left: (left: number, limit: number, form: PluralForm) => {
+      const verb = form === 'one' ? 'остался' : 'осталось';
+      const noun = form === 'one' ? 'вопрос' : form === 'few' || form === 'other' ? 'вопроса' : 'вопросов';
+      return `Сегодня ${verb} ${String(left)} ${noun} из ${String(limit)}`;
+    },
+    /** Owner's wording. For a limit of -1: never «-1». */
+    unlimited: 'Без ограничений',
+    /** Owner's wording: the day's questions are used up. Not a failure and worded as none. */
+    exhausted: 'Вопросы на сегодня закончились. Новые — после полуночи.',
+    /** After `exhausted`: the moment by the user's own clock. */
+    resets: (when: string) => `Обновится ${when}.`,
+    /** After `resets`, when that moment is not midnight where the user is: whose midnight it is. */
+    resetsElsewhere: 'Полночь считается по месту рождения.',
+    /** Owner's wording: the quiet way to the paywall. */
+    subscriptionOffer: 'В подписке 5 вопросов в день',
+    /** Above the question the answer on screen belongs to. */
+    asked: 'Твой вопрос',
+    answer: 'Ответ карты',
+    /** Owner's wording. */
+    basedOn: 'На чём основано',
+    /** For a 422 that came without the server's own words about the question. */
+    rejected: 'Сервер не принял вопрос.',
+    failedTitle: 'Ответ не получен',
+  },
+
   /** Screen 9. */
   settings: {
     title: 'Настройки',
@@ -517,14 +603,22 @@ export const ru = {
       /** What goes is the list of SPEC.md (scenario 6); «необратимо» is the word of the legal texts. */
       text: 'Удаляются профиль, карты, разборы, прогнозы и вопросы. Это необратимо.',
       open: 'Удалить мои данные',
-      /** The first confirmation: what exactly goes. */
+      /** The first confirmation: what exactly goes, what it costs and what stays. */
       confirmTitle: 'Удалить все данные?',
       confirmText: [
         'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
-        'Подписка сохраняется до конца оплаченного периода.',
+        /**
+         * Owner's wording (SPEC.md, scenario 6, and legal.md §2), to be said before the tap. Since
+         * contract 1.5.5 the server cancels the subscription together with the data; until then
+         * this line promised the opposite, that the subscription lives on to the end of its period.
+         * Said to everyone: the app does not decide by its own copy of `Me` who needs to hear it.
+         */
+        'Подписка при этом отменяется, доступ закрывается сразу, оплаченный период не возвращается.',
+        /** Owner's wording, a requirement of legal.md (§1: payment identifiers are kept for accounting, without personal data). */
+        'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
       ],
-      /** The button of the first confirmation: on to the second, nothing is deleted yet. */
-      next: 'Продолжить',
+      /** Owner's wording. The button of the first confirmation: on to the second, nothing is deleted yet. */
+      next: 'Удалить данные',
       /** The second confirmation: the last word before the deletion. */
       lastTitle: 'Точно удалить?',
       lastText: ['Это последний шаг. Отменить удаление будет нельзя.'],
@@ -537,9 +631,15 @@ export const ru = {
       failedTitle: 'Данные не удалены',
       /** Owner's wording. */
       sessionExpired: 'Сессия истекла, открой приложение заново.',
-      /** Owner's wording: the screen after the deletion, the title and the text under it. */
+      /** Owner's wording: the title of the screen after the deletion. */
       doneTitle: 'Данные удалены',
-      doneText: 'Подписка сохраняется до конца оплаченного периода.',
+      /**
+       * The text under it. The owner's line for this place («Подписка сохраняется до конца
+       * оплаченного периода») stopped being true with contract 1.5.5: the deletion cancels the
+       * subscription. Until the owner words a new one, the screen repeats what stays in the
+       * owner's own words from the confirmation, and promises nothing about the subscription.
+       */
+      doneText: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
     },
   },
 

@@ -45,8 +45,11 @@ export interface SettingsScreenProps {
   track: Track;
   back?: ScreenProps['back'];
   onOpenDocument: (name: LegalDocument) => void;
-  /** The subscribe button: on to the paywall. */
-  onSubscribe: () => void;
+  /**
+   * The subscribe button: on to the paywall. Absent in a build that sells no subscriptions:
+   * the button is then not there, and a subscription the user has is shown as ever.
+   */
+  onSubscribe?: () => void;
   /** The server has deleted everything. Nothing of the app's state is true any more. */
   onDeleted: () => void;
 }
@@ -138,7 +141,7 @@ interface SectionsProps {
   me: Me;
   support: ReactNode;
   onOpenDocument: (name: LegalDocument) => void;
-  onSubscribe: () => void;
+  onSubscribe?: () => void;
   onDelete: () => void;
 }
 
@@ -201,15 +204,17 @@ function Sections({ me, support, onOpenDocument, onSubscribe, onDelete }: Sectio
   );
 }
 
-function SubscriptionInfo({ subscription, onSubscribe }: { subscription: Me['subscription']; onSubscribe: () => void }) {
+function SubscriptionInfo({ subscription, onSubscribe }: { subscription: Me['subscription']; onSubscribe?: () => void }) {
   const text = copy.subscription;
   if (subscription.plan === 'none' || !subscription.is_active) {
     return (
       <>
         <p>{subscription.plan === 'none' ? text.none : text.ended}</p>
-        <Button variant="secondary" onClick={onSubscribe}>
-          {text.subscribe}
-        </Button>
+        {onSubscribe && (
+          <Button variant="secondary" onClick={onSubscribe}>
+            {text.subscribe}
+          </Button>
+        )}
       </>
     );
   }

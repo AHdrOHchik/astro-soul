@@ -1,7 +1,7 @@
 import { Button, InfoIcon, Screen, StateView } from '@astro-soul/ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AnalyticsStep, Track } from './analytics';
-import type { Api, ChartCreateRequest, ChartResult, FieldError, Me, Report } from './api';
+import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, Me, Report } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
@@ -9,6 +9,7 @@ import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './
 import type { IdempotencyKeys } from './lib/idempotency';
 import { grants, REPORT_PLAN, type PaywallPlan } from './lib/plans';
 import type { TermsReload } from './lib/termsReload';
+import { AskScreen } from './screens/ask/AskScreen';
 import { BirthDateScreen } from './screens/BirthDateScreen';
 import { BirthPlaceScreen } from './screens/BirthPlaceScreen';
 import { BirthTimeScreen } from './screens/BirthTimeScreen';
@@ -16,6 +17,8 @@ import { BootScreen } from './screens/BootScreen';
 import { ChartScreen, type OpenChart } from './screens/chart/ChartScreen';
 import { ConsentScreen, type LegalDocument } from './screens/ConsentScreen';
 import { DocumentScreen } from './screens/DocumentScreen';
+import { ForecastScreen } from './screens/forecast/ForecastScreen';
+import type { KnownForecast } from './screens/forecast/useForecast';
 import { PaywallScreen } from './screens/paywall/PaywallScreen';
 import { ReportScreen } from './screens/report/ReportScreen';
 import { DeletedScreen } from './screens/settings/DeletedScreen';
@@ -32,6 +35,12 @@ export interface AppProps {
   botUsername?: string;
   /** Where the support button leads; '' = no contact yet, the button says so. */
   supportLink?: string;
+  /**
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does unless told otherwise.
+   * With `false` nothing in the app offers one: not the paywall, not the settings, not the
+   * forecast or the question screen. A subscription the user already has is shown as ever.
+   */
+  subscriptions?: boolean;
   /** The idempotency keys of report orders, kept across a reload of the page. */
   keys: IdempotencyKeys;
   /** Reports product events (`POST /events`). Keep the reference stable. */
@@ -59,7 +68,18 @@ function termsAtStart(refusedVersion: string | null): TermsState {
 }
 
 /** Signs the user in (`GET /me` validates initData) before any screen is shown. */
-export function App({ api, telegram, apiBaseUrl, botUsername = '', supportLink = '', keys, track, termsReload, today }: AppProps) {
+export function App({
+  api,
+  telegram,
+  apiBaseUrl,
+  botUsername = '',
+  supportLink = '',
+  subscriptions = true,
+  keys,
+  track,
+  termsReload,
+  today,
+}: AppProps) {
   const loadMe = useCallback((signal: AbortSignal) => api.getMe(signal), [api]);
   const me = useRequest(loadMe);
   const [terms, setTerms] = useState(() => termsAtStart(termsReload.refusedVersion));
@@ -143,6 +163,7 @@ export function App({ api, telegram, apiBaseUrl, botUsername = '', supportLink =
       apiBaseUrl={apiBaseUrl}
       botUsername={botUsername}
       supportLink={supportLink}
+      subscriptions={subscriptions}
       keys={keys}
       track={track}
       today={today}
@@ -156,9 +177,20 @@ export function App({ api, telegram, apiBaseUrl, botUsername = '', supportLink =
 
 /**
  * `current` is the chart the user already has, opened from the server; `chart` is the one
- * built from the form. `paywall`, `report` and `settings` open over either.
+ * built from the form. `paywall`, `report`, `forecast`, `ask` and `settings` open over either.
  */
-type Route = 'welcome' | 'consent' | LegalDocument | BirthStep | 'chart' | 'current' | 'paywall' | 'report' | 'settings';
+type Route =
+  | 'welcome'
+  | 'consent'
+  | LegalDocument
+  | BirthStep
+  | 'chart'
+  | 'current'
+  | 'paywall'
+  | 'report'
+  | 'forecast'
+  | 'ask'
+  | 'settings';
 /** Where the stack starts: at the user's chart, or at the welcome screen while there is none. */
 type Home = Extract<Route, 'welcome' | 'current'>;
 
@@ -175,6 +207,8 @@ const STEP_OF: Record<Route, AnalyticsStep> = {
   current: 'chart',
   paywall: 'paywall',
   report: 'report',
+  forecast: 'forecast',
+  ask: 'ask',
   settings: 'settings',
 };
 
@@ -224,9 +258,10 @@ function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors
   return { messages, routes: FORM_ROUTES.slice(0, earliest + 1) };
 }
 
-interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 'supportLink'> {
+interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 'supportLink' | 'subscriptions'> {
   botUsername: string;
   supportLink: string;
+  subscriptions: boolean;
   /** Who the user is, as the server said when the app started. */
   me: Me;
   /** This start follows a restart for newer legal texts: it opens on the consent screen, which says so. */
@@ -275,6 +310,7 @@ function Screens({
   apiBaseUrl,
   botUsername,
   supportLink,
+  subscriptions,
   keys,
   track,
   today: pinnedToday,
@@ -284,6 +320,8 @@ function Screens({
   onDeleted,
 }: ScreensProps) {
   const [today] = useState(() => pinnedToday ?? new Date());
+  // The moment as it is when asked: a forecast is «today's» by the hour the user looks at it, not by the hour the app started.
+  const clock = useCallback(() => pinnedToday ?? new Date(), [pinnedToday]);
   // What the server last said about the user. Access is read from here and from nowhere else.
   const [me, setMe] = useState(meAtStart);
   // The report the app knows of: the one `Me` names, then whichever the report screen meets.
@@ -295,6 +333,12 @@ function Screens({
   const forgetReport = useCallback((gone: string) => {
     setReportId((current) => (current === gone ? null : current));
     setKnownReport((current) => (current?.report_id === gone ? null : current));
+  }, []);
+  // What the server last said about the forecast of a chart: the card and the screen show it at once and ask again behind it.
+  const [knownForecast, setKnownForecast] = useState<KnownForecast | null>(null);
+  const rememberForecast = useCallback((chartId: string, forecast: Forecast | null) => {
+    // «None yet» is news as well: what was known before is not shown in its place.
+    setKnownForecast(forecast === null ? null : { chartId, forecast });
   }, []);
   // A plan Telegram called paid in this visit and the server has not granted yet. Until it does,
   // no screen offers to pay for it again. The ref is for the moment the answer comes, the state for the screens.
@@ -331,6 +375,8 @@ function Screens({
   const chartScroll = useRef(0);
   // The chart the paywall and the report screen were opened from.
   const [openChart, setOpenChart] = useState<OpenChart | null>(null);
+  // The zone of that chart's birth place, when the forecast was opened from it: there the server counts the days.
+  const [forecastZone, setForecastZone] = useState<string | null>(null);
   const [paywall, setPaywall] = useState<PaywallEntry>({ plan: null, offersReport: false, reportRequired: false });
   const [reportEntry, setReportEntry] = useState<ReportEntry>({ reportId: null, orderAtOnce: false, justPaid: false });
   const route = stack[stack.length - 1] ?? home;
@@ -394,8 +440,55 @@ function Screens({
     setHome('welcome');
     setStack(['welcome']);
   }, []);
+  /**
+   * The chart the app was showing is not on the server any more: the user's data was deleted
+   * elsewhere while this page stayed open. Everything remembered about that chart is dropped,
+   * and the app starts where it starts at launch: by asking the server which chart the user
+   * has. With none, the answer leads on to the welcome screen (`handleMissing`), and whatever
+   * the server said about the missing chart is never shown.
+   */
+  const forgetChart = useCallback(() => {
+    chartScroll.current = 0;
+    keys.forgetAll();
+    setShownCharts({ current: null, built: null });
+    setOpenChart(null);
+    setReportId(null);
+    setKnownReport(null);
+    setKnownForecast(null);
+    // The form starts clean as well: the consent went with the data it was given for.
+    setDraft(EMPTY_DRAFT);
+    setServerErrors(NO_SERVER_ERRORS);
+    setHome('current');
+    setStack(['current']);
+  }, [keys]);
+  /** The server answered that the chart is not there: to an order, a question, an invoice. */
+  const handleChartGone = useCallback(() => {
+    forgetChart();
+    // What else went with the chart (a purchase, the day's questions) is the server's to say: the screens read it from `Me`.
+    void refreshMe().catch(() => undefined);
+  }, [forgetChart, refreshMe]);
+  /**
+   * `Me` asked anew from a screen that works with the chart on screen. An answer without
+   * any chart says that one is gone, whatever the request that prompted the question said:
+   * the server's 404 to a forecast means «not prepared yet» and «no such chart» alike.
+   */
+  const refreshMeForChart = useCallback(
+    async (signal?: AbortSignal) => {
+      const fresh = await refreshMe(signal);
+      // Either field would say there is a chart, as at the start: gone is when neither does.
+      if (signal?.aborted !== true && !fresh.has_chart && typeof fresh.chart_id !== 'string') forgetChart();
+      return fresh;
+    },
+    [refreshMe, forgetChart],
+  );
   const openSettings = () => {
     open('settings');
+  };
+  // A subscription is offered where this build sells them and the user has none.
+  const canSubscribe = subscriptions && !me.entitlements.is_active;
+  const openSubscriptions = () => {
+    setPaywall({ plan: null, offersReport: false, reportRequired: false });
+    open('paywall');
   };
 
   useEffect(() => {
@@ -447,6 +540,16 @@ function Screens({
         onLoaded={route === 'current' ? rememberCurrent : rememberBuilt}
         scroll={chartScroll}
         onOpenSettings={openSettings}
+        forecast={{
+          known: knownForecast,
+          onKnown: rememberForecast,
+          now: clock,
+          onOpen: (chart, timeZone) => {
+            setOpenChart(chart);
+            setForecastZone(timeZone);
+            open('forecast');
+          },
+        }}
         report={{
           fullReport: me.entitlements.full_report,
           reportId,
@@ -500,6 +603,7 @@ function Screens({
           refreshMe={refreshMe}
           reportChartId={paywall.offersReport ? (reportChart?.chartId ?? null) : null}
           initialPlan={paywall.plan}
+          subscriptions={subscriptions}
           reportRequired={paywall.reportRequired}
           awaiting={awaitedPlan}
           onAwaiting={awaitPayment}
@@ -522,6 +626,46 @@ function Screens({
                 }
           }
           onClose={goBack}
+          onChartGone={handleChartGone}
+        />
+      );
+    case 'forecast':
+      // Not reachable without a chart; if it ever is, the screen under this one is the place to be.
+      if (reportChart === null) return <BootScreen />;
+      return (
+        <ForecastScreen
+          api={api}
+          telegram={telegram}
+          chartId={reportChart.chartId}
+          timeZone={openChart === null ? null : forecastZone}
+          known={knownForecast}
+          onKnown={rememberForecast}
+          share={reportChart.share}
+          now={clock}
+          track={track}
+          back={back}
+          onAsk={() => {
+            open('ask');
+          }}
+          onSubscribe={canSubscribe ? openSubscriptions : undefined}
+          onClose={goBack}
+          onNotReady={() => {
+            void refreshMeForChart().catch(() => undefined);
+          }}
+        />
+      );
+    case 'ask':
+      if (reportChart === null) return <BootScreen />;
+      return (
+        <AskScreen
+          api={api}
+          chartId={reportChart.chartId}
+          quota={me.quotas.find((quota) => quota.code === 'ask_daily') ?? null}
+          refreshMe={refreshMeForChart}
+          track={track}
+          back={back}
+          onSubscribe={canSubscribe ? openSubscriptions : undefined}
+          onChartGone={handleChartGone}
         />
       );
     case 'report':
@@ -548,6 +692,7 @@ function Screens({
           onReportId={setReportId}
           onReport={setKnownReport}
           onReportGone={forgetReport}
+          onChartGone={handleChartGone}
         />
       );
     case 'settings':
@@ -560,10 +705,7 @@ function Screens({
           track={track}
           back={back}
           onOpenDocument={open}
-          onSubscribe={() => {
-            setPaywall({ plan: null, offersReport: false, reportRequired: false });
-            open('paywall');
-          }}
+          onSubscribe={subscriptions ? openSubscriptions : undefined}
           onDeleted={onDeleted}
         />
       );
