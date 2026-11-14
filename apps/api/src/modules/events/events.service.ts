@@ -34,7 +34,7 @@ export class EventsService {
     const rows: EventInput[] = batch.events.map((event) => ({
       name: event.name,
       userId,
-      occurredAt: new Date(event.at),
+      occurredAt: new Date(event.occurred_at),
       props: event.props ?? {},
     }));
 

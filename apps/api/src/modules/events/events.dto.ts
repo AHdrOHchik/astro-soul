@@ -10,6 +10,10 @@ import { invalidFields } from '../../common/api-error';
  */
 export const ANALYTICS_EVENTS = [
   'app_open',
+  'onboarding_start',
+  'onboarding_birth_date_set',
+  'onboarding_time_set',
+  'onboarding_place_set',
   'consent_view',
   'consent_accepted',
   'birth_date_done',
@@ -23,14 +27,34 @@ export const ANALYTICS_EVENTS = [
   'chart_created',
   'chart_failed',
   'chart_restored',
+  'mini_reading_view',
+  'wheel_shared',
   'validation_failed',
+  'validation_failed_client',
   'paywall_view',
+  'checkout_started',
   'checkout_opened',
   'payment_succeeded',
   'payment_cancelled',
-  'share_clicked',
+  'report_requested',
+  'report_ready_view',
+  'forecast_view',
+  'ask_used',
+  'quota_exhausted',
+  'subscription_expired_seen',
+  'data_deleted',
+  'error_shown',
   'screen_view',
+  'share_clicked',
 ] as const;
+
+/**
+ * Серверные события: клиент их отправить не может (422 на весь батч),
+ * API пишет их сам. Контракт 1.5.1, `x-analytics-server-events`.
+ */
+export const SERVER_EVENTS = ['payment_rejected', 'refund_issued', 'subscription_expired'] as const;
+
+export type ServerEvent = (typeof SERVER_EVENTS)[number];
 
 export type AnalyticsEvent = (typeof ANALYTICS_EVENTS)[number];
 
@@ -69,7 +93,8 @@ const propValueSchema = z.union([z.string().max(64), z.number(), z.boolean()]);
 
 export const clientEventSchema = z.object({
   name: z.enum(ANALYTICS_EVENTS),
-  at: z.string().datetime({ offset: true }),
+  // Контракт 1.5.1: клиентское время события — `occurred_at` (было `at` в 1.4.0).
+  occurred_at: z.string().datetime({ offset: true }),
   props: z.record(propValueSchema).optional(),
 });
 
@@ -82,7 +107,7 @@ export type ClientEvent = z.infer<typeof clientEventSchema>;
 const FIELD_MESSAGES: Readonly<Record<string, string>> = {
   events: 'События должны быть батчем от 1 до 20 штук',
   'events.name': 'Такого события нет в контракте',
-  'events.at': 'Время события — ISO 8601 с часовым поясом',
+  'events.occurred_at': 'Время события — ISO 8601 с часовым поясом',
   'events.props': 'Свойства события — короткие строки, числа или флаги',
 };
 
@@ -140,8 +165,8 @@ export function parseEventsBatch(body: unknown, now: Date = new Date()): ParsedB
       continue;
     }
 
-    const at = new Date(event.at).getTime();
-    if (at > now.getTime() + CLOCK_SKEW_MS || at < now.getTime() - MAX_EVENT_AGE_MS) {
+    const occurredAt = new Date(event.occurred_at).getTime();
+    if (occurredAt > now.getTime() + CLOCK_SKEW_MS || occurredAt < now.getTime() - MAX_EVENT_AGE_MS) {
       droppedForTime += 1;
       continue;
     }
@@ -151,7 +176,7 @@ export function parseEventsBatch(body: unknown, now: Date = new Date()): ParsedB
 
   if (droppedForTime > 0 && fresh.length === 0) {
     throw invalidFields(
-      [{ field: 'events.at', message: messageFor('events.at') }],
+      [{ field: 'events.occurred_at', message: messageFor('events.occurred_at') }],
       { reason: 'events_stale' },
     );
   }

@@ -7,6 +7,9 @@ import { UsersRepository } from '../users/users.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { QuotasService } from '../quotas/quotas.service';
 import { EventsRepository } from '../events/events.repository';
+import { PaymentsService } from '../billing/payments.service';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
 
 /**
  * `Entitlements` (packages/shared, camelCase) → контракт (`Me.entitlements`,
@@ -32,6 +35,8 @@ export class MeService {
     @Inject(QuotasService) private readonly quotas: QuotasService,
     @Inject(DbService) private readonly db: DbService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
+    @Inject(PaymentsService) private readonly payments: PaymentsService,
+    @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
 
   async getMe(auth: VerifiedInitData): Promise<Me> {
@@ -76,24 +81,19 @@ export class MeService {
    * `reports`, `forecasts`, `asks`, плюс счётчики квот. Платежи и подписки
    * остаются (это бухгалтерия), но обезличиваются: `telegram_id = NULL`.
    *
-   * 409 CONFLICT, если есть платёж, за который деньги уже списаны, а доступ
-   * ещё не выдан — иначе пользователь потеряет оплаченное.
+   * QA-14: зависший платёж больше не тупик. Сначала его разрешает тот же код,
+   * что и вебхук (`pending_payments_resolve`): доставит доступ или пометит
+   * отказом. Если он всё ещё висит — звёзды возвращаются сразу, и только
+   * неудачный возврат даёт 409 `refund_failed` с контактом поддержки: молча
+   * отдать деньги и удалить аккаунт нельзя.
    */
   async deleteMe(auth: VerifiedInitData): Promise<void> {
     const userId = this.users.userIdFor(auth.telegramUserId);
 
-    await this.db.withTransaction(async (client) => {
-      const pending = await client.query<{ pending: boolean }>(
-        `SELECT EXISTS (
-           SELECT 1 FROM payments
-            WHERE user_id = $1 AND processed = false AND status = 'paid'
-         ) AS pending`,
-        [userId],
-      );
+    await this.resolvePendingPayments(userId);
+    await this.refundStillPendingPayments(userId);
 
-      if (pending.rows[0]?.pending === true) {
-        throw conflict({ reason: 'payments_pending' });
-      }
+    await this.db.withTransaction(async (client) => {
 
       // Платежи переживают удаление и без ПДн: charge_id нужен для возвратов.
       await client.query(
@@ -107,5 +107,48 @@ export class MeService {
     });
 
     await this.events.log({ name: 'account_deleted' });
+  }
+
+  /** Разрешить зависшие платежи тем же путём, что и вебхук. */
+  private async resolvePendingPayments(userId: string): Promise<void> {
+    for (const chargeId of await this.payments.unprocessedChargesOf(userId)) {
+      try {
+        await this.payments.resolvePending(chargeId);
+      } catch {
+        // Не вышло доставить — ниже попробуем вернуть звёзды.
+      }
+    }
+  }
+
+  /**
+   * После разрешения: если платёж всё ещё `paid`/`unprocessed`, возвращаем звёзды.
+   * Не удалось — 409 с `details.reason = "refund_failed"` и контактом поддержки.
+   */
+  private async refundStillPendingPayments(userId: string): Promise<void> {
+    const charges = await this.payments.unprocessedChargesOf(userId);
+
+    if (charges.length === 0) {
+      return;
+    }
+
+    const failed: string[] = [];
+    for (const chargeId of charges) {
+      const refunded = await this.payments.refund(chargeId, 'delete_with_pending');
+      if (!refunded) {
+        failed.push(chargeId);
+      }
+    }
+
+    if (failed.length > 0) {
+      const contact = this.env.SUPPORT_CONTACT;
+      throw conflict({
+        reason: 'refund_failed',
+        details: { reason: 'refund_failed' },
+        message:
+          contact === undefined
+            ? 'Не получилось вернуть звёзды за незавершённую оплату. Напиши в поддержку — вернём вручную.'
+            : `Не получилось вернуть звёзды за незавершённую оплату. Напиши в поддержку ${contact} — вернём вручную.`,
+      });
+    }
   }
 }

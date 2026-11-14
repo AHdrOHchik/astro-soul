@@ -1,0 +1,31 @@
+# Джобы API по расписанию (infra/cron.md).
+#
+# `Type=oneshot` + curl: сервис не держит процесс между запусками и не хранит
+# состояние. Секрет читается из файла окружения, а не из командной строки:
+# иначе он осел бы в `ps` и в истории.
+[Unit]
+Description=astro-soul: API jobs (payments, refunds, retention)
+Documentation=file:/opt/astro-soul/infra/cron.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/astro-soul/jobs.env
+# JOBS_JOB пустой — запускаются все джобы по порядку; имя в этом файле
+# сужает запуск до одного (см. cron.md).
+Environment=JOBS_JOB=
+ExecStart=/usr/bin/curl --fail --silent --show-error --max-time 300 \
+  -X POST \
+  -H "X-Jobs-Secret: ${ASTRO_JOBS_SECRET}" \
+  "${ASTRO_JOBS_URL}${JOBS_JOB:+?job=${JOBS_JOB}}"
+TimeoutStartSec=330
+Nice=10
+# Джобу нужны только сеть и файл окружения.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

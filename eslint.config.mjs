@@ -20,6 +20,8 @@ export default tseslint.config(
       // Они не входят ни в одну сборку — как и сам конфиг выше.
       'e2e/qa/**',
       'scripts/qa/**',
+      // Генератор корпуса примеров: та же история — .mjs вне tsconfig.
+      'scripts/reports/**',
     ],
   },
   js.configs.recommended,

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { PLANS, type Plan } from '@astro-soul/shared';
+import { PLANS, type Plan, type PlanCode } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
 import { JsonLogger } from '../../common/logger';
 import { TelegramClient } from '../telegram/telegram.client';
@@ -34,6 +34,15 @@ export interface TelegramUpdate {
     readonly successful_payment?: TelegramSuccessfulPayment;
   };
 }
+
+/** Причины отказа из контракта (`payment_rejected.props.code`). */
+export type RejectCode = 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
+
+/** Что стало с платежом: доступ выдан, отказ по деньгам или повтор доставки. */
+type PaymentOutcome =
+  | { readonly kind: 'processed'; readonly plan: Plan; readonly expiresAt: Date | null; readonly renewed: boolean }
+  | { readonly kind: 'rejected'; readonly code: RejectCode }
+  | { readonly kind: 'duplicate' };
 
 type ProcessOutcome =
   | { readonly kind: 'duplicate' }
@@ -104,7 +113,7 @@ export class PaymentsService {
       await this.telegram.answerPreCheckoutQuery(
         query.id,
         false,
-        'Товар недоступен, попробуйте ещё раз',
+        'Товар недоступен, попробуй ещё раз',
       );
       return;
     }
@@ -112,54 +121,117 @@ export class PaymentsService {
     await this.telegram.answerPreCheckoutQuery(query.id, true);
   }
 
+  /**
+   * Апдейт `successful_payment`: сверка и выдача доступа, затем сообщение в чат.
+   * Ответ вебхука от исхода не зависит — он всегда `200` (см. `processPayment`).
+   */
   private async handleSuccessfulPayment(
     chatId: number | null,
     telegramUserId: number | null,
     payment: TelegramSuccessfulPayment,
   ): Promise<void> {
-    const payload = parseInvoicePayload(payment.invoice_payload);
-    const plan = payload === null ? undefined : PLANS[payload.p];
+    const outcome = await this.processPayment({ telegramUserId, payment });
 
-    if (payload === null || plan === undefined) {
-      // Деньги списаны, но связать платёж не с чем: фиксируем charge_id для разбора
-      // поддержкой. Падать с 500 нельзя — Telegram будет ретраить бесконечно.
-      this.logger.error(payload === null ? 'payment_payload_invalid' : 'payment_unknown_plan', {
-        charge: payment.telegram_payment_charge_id,
-        amount: payment.total_amount,
-      });
+    if (outcome.kind !== 'processed') {
       return;
     }
 
+    // П.5 из payments.md §3.2: сообщение не критично, ошибка не отменяет платёж.
+    if (chatId !== null) {
+      await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
+    }
+  }
+
+  /**
+   * QA-11: доступ выдаётся только за платёж, который сервер сам выставлял.
+   *
+   * Проверки по порядку: (1) инвойс с таким `payload.k` существует и принадлежит
+   * этому же пользователю, план в payload совпадает с планом инвойса;
+   * (2) сумма равна цене плана; (3) план известен. Любой отказ — `200` в вебхуке
+   * (иначе Telegram будет ретраить вечно), запись платежа со статусом `rejected`
+   * и причиной, серверное событие `payment_rejected` и счётчик в `/admin/metrics`.
+   * Возврат звёзд автоматически не делаем: это реальные деньги пользователя,
+   * решение принимает владелец.
+   *
+   * Один и тот же путь используют вебхук и джоб `pending_payments_resolve`:
+   * зависший платёж разрешается ровно теми же проверками, что и свежий.
+   */
+  private async processPayment(input: {
+    readonly telegramUserId: number | null;
+    readonly payment: TelegramSuccessfulPayment;
+  }): Promise<PaymentOutcome> {
+    const { payment, telegramUserId } = input;
+    const payload = parseInvoicePayload(payment.invoice_payload);
+    const plan = payload === null ? undefined : PLANS[payload.p];
+    const chargeId = payment.telegram_payment_charge_id;
+
     if (payment.currency !== 'XTR') {
-      this.logger.error('payment_wrong_currency', { charge: payment.telegram_payment_charge_id });
-      return;
+      await this.rejectPayment({
+        code: 'amount_mismatch',
+        detail: 'currency_not_xtr',
+        telegramUserId,
+        payment,
+        userId: payload?.u ?? null,
+        planCode: payload?.p ?? null,
+        expected: plan?.stars ?? null,
+      });
+      return { kind: 'rejected', code: 'amount_mismatch' };
+    }
+
+    if (payload === null || plan === undefined) {
+      await this.rejectPayment({
+        code: 'unknown_plan',
+        detail: payload === null ? 'payload_invalid' : 'plan_not_in_catalogue',
+        telegramUserId,
+        payment,
+        userId: payload?.u ?? null,
+        planCode: null,
+        expected: null,
+      });
+      return { kind: 'rejected', code: 'unknown_plan' };
     }
 
     const invoice = await this.repo.findInvoiceByIdeaKey(payload.u, payload.k);
-    const amountMatches = payment.total_amount === plan.stars;
-    if (!amountMatches) {
-      // Оплата не совпала с ценой плана: доступ выдаём по факту оплаты,
-      // но фиксируем — это повод разобраться руками, а не молчание.
-      this.logger.error('payment_amount_mismatch', {
-        charge: payment.telegram_payment_charge_id,
+    if (invoice === null || invoice.plan_code !== payload.p) {
+      await this.rejectPayment({
+        code: 'no_invoice',
+        detail: invoice === null ? 'invoice_missing' : 'invoice_plan_mismatch',
+        telegramUserId,
+        payment,
+        userId: payload.u,
+        planCode: payload.p,
         expected: plan.stars,
-        actual: payment.total_amount,
       });
+      return { kind: 'rejected', code: 'no_invoice' };
     }
 
-    const chargeId = payment.telegram_payment_charge_id;
+    if (payment.total_amount !== plan.stars) {
+      await this.rejectPayment({
+        code: 'amount_mismatch',
+        detail: 'amount_differs_from_plan_price',
+        telegramUserId,
+        payment,
+        userId: payload.u,
+        planCode: payload.p,
+        expected: plan.stars,
+      });
+      return { kind: 'rejected', code: 'amount_mismatch' };
+    }
+
+    // Срок из Telegram — когда он есть. Если поля нет, период прибавит
+    // `upsertSubscription` к текущему `expires_at` (R-1): три оплаты подряд
+    // дают три периода, а не один и тот же «сейчас + период».
     const requestedExpiresAt =
-      plan.kind === 'subscription'
-        ? new Date(
-            (payment.subscription_expiration_date ??
-              Math.floor(Date.now() / 1000) + plan.periodSeconds) * 1000,
-          )
+      plan.kind === 'subscription' && payment.subscription_expiration_date !== undefined
+        ? new Date(payment.subscription_expiration_date * 1000)
         : null;
-    const chartId = invoice?.chart_id ?? null;
+    const chartId = invoice.chart_id;
 
     const outcome = await this.db.withTransaction<ProcessOutcome>(async (client) => {
       const locked = await this.repo.lockPayment(client, chargeId);
-      if (locked?.processed === true) {
+      // Повтор доставки уже обработанного платежа и повтор доставки отказа
+      // (`rejected`) — оба ничего не выдают: доступ даёт только первая запись.
+      if (locked !== null && (locked.processed || locked.status === 'rejected')) {
         return { kind: 'duplicate' };
       }
 
@@ -208,7 +280,7 @@ export class PaymentsService {
 
     if (outcome.kind === 'duplicate') {
       this.logger.info('payment_duplicate_ignored', { charge: chargeId });
-      return;
+      return outcome;
     }
 
     await this.events.log({
@@ -217,15 +289,122 @@ export class PaymentsService {
       props: {
         plan: payload.p,
         stars: payment.total_amount,
-        amount_matches: amountMatches,
+        // Сюда доходят только платежи, сверенные с инвойсом и ценой плана.
+        amount_matches: true,
         renewed: outcome.renewed,
       },
     });
 
-    // П.5 из payments.md §3.2: сообщение не критично, ошибка не отменяет платёж.
-    if (chatId !== null) {
-      await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
+    return outcome;
+  }
+  /**
+   * Отказ по деньгам: платёж пишется со статусом `rejected`, доступ не выдаётся.
+   *
+   * В логах — только `charge_id`, суммы, код и `request_id` (его добавляет
+   * логгер): ни telegram_id, ни payload пользователя.
+   */
+  private async rejectPayment(input: {
+    readonly code: RejectCode;
+    readonly detail: string;
+    readonly telegramUserId: number | null;
+    readonly payment: TelegramSuccessfulPayment;
+    readonly userId: string | null;
+    readonly planCode: PlanCode | null;
+    readonly expected: number | null;
+  }): Promise<void> {
+    const chargeId = input.payment.telegram_payment_charge_id;
+
+    this.logger.warn('payment_rejected', {
+      code: input.code,
+      detail: input.detail,
+      charge: chargeId,
+      amount: input.payment.total_amount,
+      expected: input.expected,
+      plan: input.planCode,
+    });
+
+    const recorded = await this.db.withTransaction(async (client) => {
+      // Зависший платёж (`paid`, но доступ не выдан) уже лежит в базе: его
+      // помечаем отказом, а не пытаемся вставить вторую строку с тем же charge_id.
+      const updatedId = await this.repo.markPaymentRejected(client, { chargeId, reason: input.code });
+      if (updatedId !== null) {
+        return true;
+      }
+
+      const insertedId = await this.repo.insertRejectedPayment(client, {
+        userId: input.userId,
+        telegramId: input.telegramUserId,
+        planCode: input.planCode,
+        totalAmount: input.payment.total_amount,
+        currency: input.payment.currency,
+        chargeId,
+        providerChargeId: input.payment.provider_payment_charge_id ?? null,
+        invoicePayload: input.payment.invoice_payload,
+        subscriptionExpiresAt: null,
+        rejectReason: input.code,
+      });
+
+      // Повторная доставка того же charge_id уже записана — второй раз не считаем.
+      return insertedId !== null;
+    });
+
+    if (!recorded) {
+      this.logger.info('payment_rejected_duplicate_ignored', { charge: chargeId, code: input.code });
+      return;
     }
+
+    // Событие только серверное: клиент его отправить не может (контракт 1.5.1).
+    await this.events.log({
+      name: 'payment_rejected',
+      userId: input.userId,
+      props: { code: input.code, plan: input.planCode, expected: input.expected },
+    });
+  }
+
+  /**
+   * Довести зависший платёж до конца теми же проверками, что и вебхук:
+   * доступ (если инвойс и сумма в порядке) или `rejected` (если нет).
+   *
+   * Возвращает `'unresolved'`, если строка исчезла или уже разобрана, и
+   * бросает исключение, если выдача не удалась: тогда платёж остаётся
+   * `paid`/`unprocessed`, и его забирает джоб возврата.
+   */
+  async resolvePending(chargeId: string): Promise<'processed' | 'rejected' | 'unresolved'> {
+    const row = await this.repo.findPaymentForResolution(chargeId);
+
+    if (row === null || row.processed || row.status !== 'paid') {
+      return 'unresolved';
+    }
+
+    const outcome = await this.processPayment({
+      telegramUserId: row.telegram_id === null ? null : Number(row.telegram_id),
+      payment: {
+        currency: row.currency,
+        total_amount: row.total_amount,
+        invoice_payload: row.invoice_payload ?? '',
+        telegram_payment_charge_id: row.telegram_payment_charge_id,
+        ...(row.provider_payment_charge_id === null
+          ? {}
+          : { provider_payment_charge_id: row.provider_payment_charge_id }),
+        ...(row.subscription_expires_at === null
+          ? {}
+          : { subscription_expiration_date: Math.floor(row.subscription_expires_at.getTime() / 1000) }),
+      },
+    });
+
+    return outcome.kind === 'processed' ? 'processed' : outcome.kind === 'rejected' ? 'rejected' : 'unresolved';
+  }
+
+  /** Незавершённые платежи пользователя: `DELETE /me` разрешает их инлайн. */
+  async unprocessedChargesOf(userId: string): Promise<string[]> {
+    const rows = await this.repo.listUnprocessedPaymentsOf(userId);
+    return rows.map((row) => row.telegram_payment_charge_id);
+  }
+
+  /** Платежи, висящие дольше `minutes`, — вход джоба `pending_payments_resolve`. */
+  async staleCharges(minutes: number, limit: number): Promise<string[]> {
+    const rows = await this.repo.findUnprocessedPayments(minutes, limit);
+    return rows.map((row) => row.telegram_payment_charge_id);
   }
 
   private async grantOne(
@@ -243,7 +422,8 @@ export class PaymentsService {
       const subscription = await this.repo.upsertSubscription(client, {
         userId: input.userId,
         plan: input.plan.subscriptionPlan as 'week' | 'month' | 'year',
-        expiresAt: input.subscriptionExpiresAt ?? new Date(Date.now() + input.plan.periodSeconds * 1000),
+        requestedExpiresAt: input.subscriptionExpiresAt,
+        periodSeconds: input.plan.periodSeconds,
         chargeId: input.chargeId,
       });
 

@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { APP_ENV } from './config/env.module';
 import type { AppEnv } from './config/env';
 import { JsonLogger } from './common/logger';
+import { applyRequestContext } from './common/request-id.middleware';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -15,6 +16,9 @@ async function bootstrap(): Promise<void> {
   const logger = app.get(JsonLogger);
 
   app.setGlobalPrefix('api/v1');
+  // QA-12b: request_id должен быть в ответе даже на битый JSON, а парсер тела
+  // срабатывает раньше middleware Nest'а — поэтому контекст ставим первым.
+  applyRequestContext(app);
   // Битый JSON в теле — это 400 от контракта, а не HTML-страница Express.
   app.useBodyParser('json', { limit: '64kb' });
   app.getHttpAdapter().getInstance().disable('x-powered-by');

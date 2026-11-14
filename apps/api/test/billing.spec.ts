@@ -7,6 +7,14 @@ import { FICTIONAL_USER, TEST_BOT_TOKEN } from './test-env';
 import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
 import { makeFakeAstro } from './fake-astro';
 
+const BIRTH = {
+  birth_date: '1994-05-17',
+  birth_time: '14:20',
+  time_precision: 'exact',
+  birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
+  consent: { accepted: true, version: '2026-11-10' },
+};
+
 let ctx: TestContext;
 let telegram: FakeTelegram;
 
@@ -27,6 +35,17 @@ beforeEach(async () => {
   await truncateAll(ctx.db);
   telegram.invoiceCalls.length = 0;
 });
+
+/** Карта нужна плану `one_149`: с 1.5.2 разбор покупается на конкретную карту. */
+async function createChart(): Promise<string> {
+  const response = await request(ctx.app.getHttpServer())
+    .post('/api/v1/charts')
+    .set(INIT_DATA_HEADER, initDataFor())
+    .send(BIRTH)
+    .expect(201);
+
+  return response.body.chart.chart_id as string;
+}
 
 describe('POST /api/v1/billing/invoice', () => {
   it('создаёт инвойс в XTR по цене из плана, payload ≤ 128 байт', async () => {
@@ -58,17 +77,33 @@ describe('POST /api/v1/billing/invoice', () => {
     expect(invoice?.status).toBe('created');
   });
 
-  it('двойной тап: тот же план в пределах 5 минут отдаёт ту же ссылку', async () => {
-    const first = await request(ctx.app.getHttpServer())
+  it('one_149 без chart_id → 422 с полем chart_id и без инвойса', async () => {
+    const response = await request(ctx.app.getHttpServer())
       .post('/api/v1/billing/invoice')
       .set(INIT_DATA_HEADER, initDataFor())
       .send({ plan_code: 'one_149' })
+      .expect(422);
+
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'chart_id', message: 'Выбери карту, для которой покупаешь разбор' },
+    ]);
+    expect(telegram.invoiceCalls).toHaveLength(0);
+    expect(await ctx.db.query(`SELECT 1 FROM invoices`)).toHaveLength(0);
+  });
+
+  it('двойной тап: тот же план в пределах 5 минут отдаёт ту же ссылку', async () => {
+    const chartId = await createChart();
+
+    const first = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ plan_code: 'one_149', chart_id: chartId })
       .expect(201);
 
     const second = await request(ctx.app.getHttpServer())
       .post('/api/v1/billing/invoice')
       .set(INIT_DATA_HEADER, initDataFor())
-      .send({ plan_code: 'one_149' })
+      .send({ plan_code: 'one_149', chart_id: chartId })
       .expect(201);
 
     expect(second.body.invoice_link).toBe(first.body.invoice_link);
@@ -88,11 +123,13 @@ describe('POST /api/v1/billing/invoice', () => {
   });
 
   it('антифрод: четвёртый инвойс за час → 429 RATE_LIMITED', async () => {
+    const chartId = await createChart();
+
     for (const plan of ['one_149', 'compat_249', 'solar_590'] as const) {
       await request(ctx.app.getHttpServer())
         .post('/api/v1/billing/invoice')
         .set(INIT_DATA_HEADER, initDataFor())
-        .send({ plan_code: plan })
+        .send({ plan_code: plan, ...(plan === 'one_149' ? { chart_id: chartId } : {}) })
         .expect(201);
     }
 
@@ -113,6 +150,11 @@ describe('POST /api/v1/billing/invoice', () => {
       .expect(422);
 
     expect(response.body.code).toBe('VALIDATION_FAILED');
+    // QA-8: фронт подсвечивает поле по `field_errors`, `details.fields` больше нет.
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'plan_code', message: 'plan_code — один из тарифов каталога' },
+    ]);
+    expect(response.body.details.fields).toBeUndefined();
   });
 
   it('чужая карта в chart_id → 404', async () => {

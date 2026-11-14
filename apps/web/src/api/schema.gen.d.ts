@@ -112,7 +112,14 @@ export interface paths {
                     };
                     content?: never;
                 };
-                /** @description Есть незавершённые платежи (Problem.code = CONFLICT) */
+                /**
+                 * @description Удаление остановлено платежом в процессе и вернуть его не удалось:
+                 *     `Problem.code = CONFLICT`, `details.reason = "refund_failed"`.
+                 *     Пользователю показывается текст `Problem.message` со ссылкой на
+                 *     поддержку (`SUPPORT_CONTACT`), повтор возможен после ответа поддержки.
+                 *
+                 *     Если возврат удался, ответ — `204`: данные удалены, звёзды вернулись.
+                 */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -539,7 +546,7 @@ export interface paths {
          *     * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
          *       рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
          *       события отбрасываются на сервере и в БД не попадают;
-         *     * `at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
+         *     * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
          *       или позже серверного времени более чем на 5 минут — отбрасывается;
          *     * лимит: общий, 60 запросов в минуту; `429` клиент игнорирует.
          */
@@ -601,9 +608,20 @@ export interface paths {
         put?: never;
         /**
          * Заказать разбор (асинхронно)
-         * @description Возвращает 202 и report_id. Генерация — в очереди, 30–90 сек.
-         *     Требуется оплата (кроме первого бесплатного мини-разбора, который приходит вместе с картой).
-         *     Идемпотентность: заголовок `Idempotency-Key` обязателен, TTL 24 ч.
+         * @description Возвращает 202 и report_id со `status: queued`. Генерация идёт в фоне,
+         *     готовность — через `GET /reports/{report_id}` (главы появляются по мере
+         *     готовности, 30–90 сек на весь разбор).
+         *
+         *     Доступ проверяется здесь, а не на экране: полный разбор — разовая
+         *     покупка (`one_149`), подписка его не открывает. Без покупки — `402`.
+         *
+         *     Идемпотентность: заголовок `Idempotency-Key` обязателен (до 64 символов,
+         *     буквы/цифры/`-_.:`). Три тапа по кнопке с одним ключом дают **один**
+         *     разбор и одно списание; повторный заказ по той же карте с другим ключом
+         *     тоже не создаёт второй разбор, пока первый не провалился.
+         *
+         *     В этом релизе собирается только `type: full`: `compat` и `solar` —
+         *     отдельные продукты, на них API честно отвечает `422`, а не «в очереди».
          */
         post: {
             parameters: {
@@ -620,7 +638,7 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description В очереди */
+                /** @description В очереди, `status: queued` */
                 202: {
                     headers: {
                         [name: string]: unknown;
@@ -629,12 +647,37 @@ export interface paths {
                         "application/json": components["schemas"]["Report"];
                     };
                 };
-                /** @description Требуется оплата (PAYMENT_REQUIRED) */
+                /** @description Требуется оплата (PAYMENT_REQUIRED) — разбор не куплен */
                 402: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Карты нет или она чужая (NOT_FOUND) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Нет `Idempotency-Key`, некорректное или пустое тело (`chart_id`),
+                 *     неподдерживаемый тип — `VALIDATION_FAILED` +
+                 *     `details.field_errors[{field, message}]` (поле заголовка называется
+                 *     `Idempotency-Key`).
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
                 };
             };
         };
@@ -651,7 +694,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Статус и содержимое разбора */
+        /**
+         * Статус и содержимое разбора
+         * @description `status: generating` покрывает внутренние стадии `planning` и `writing`.
+         *     `progress` — 0…100, растёт по числу готовых глав.
+         *
+         *     Пока разбор не оплачен, в ответе только `teaser` (первые 400 знаков
+         *     «Ядра») и `is_paid: false`; `sections` пустой. После оплаты главы
+         *     приходят сразу, как готовы, а полный разбор — при `status: ready`.
+         *
+         *     Провал генерации — `status: failed`; звёзды за него возвращает джоб
+         *     `report_refund`, после чего статус становится `refunded`.
+         */
         get: {
             parameters: {
                 query?: never;
@@ -672,7 +726,7 @@ export interface paths {
                         "application/json": components["schemas"]["Report"];
                     };
                 };
-                /** @description NOT_FOUND */
+                /** @description NOT_FOUND — разбора нет или он чужой */
                 404: {
                     headers: {
                         [name: string]: unknown;
@@ -840,6 +894,12 @@ export interface paths {
          * Создать инвойс в Stars
          * @description Для подписок передаётся subscription_period, для разовых — обычный инвойс.
          *     Ссылка открывается через Telegram.WebApp.openInvoice.
+         *
+         *     `chart_id` обязателен для `one_149` (полный разбор): товар привязан
+         *     к конкретной карте, и разбор потом открывается только по ней. Фронт
+         *     подставляет карту явно, даже если она у пользователя одна — скрытой
+         *     привязки к «первой карте» нет (1.5.2). Для остальных планов `chart_id`
+         *     необязателен; если передан — проверяется, что карта своя.
          */
         post: {
             parameters: {
@@ -863,7 +923,10 @@ export interface paths {
                         "application/json": components["schemas"]["Invoice"];
                     };
                 };
-                /** @description Неизвестный план или чужая карта (VALIDATION_FAILED / NOT_FOUND) */
+                /**
+                 * @description Неизвестный план, чужая карта или отсутствует `chart_id` у
+                 *     `one_149` — `VALIDATION_FAILED` + `details.field_errors[{field, message}]`.
+                 */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -955,23 +1018,47 @@ export interface paths {
         put?: never;
         /**
          * Триггер воркеров (крон, защищён секретом)
-         * @description Запускает джобы — генерацию прогнозов на завтра, восстановление зависших разборов.
+         * @description Запускается кроном (`infra/systemd/astro-jobs.timer`, раз в 10 минут),
+         *     не пользователем: `security: []`, доступ даёт заголовок `X-Jobs-Secret`
+         *     (`INTERNAL_JOB_SECRET`). Секрет не задан в окружении — маршрут закрыт
+         *     всегда (`403`).
+         *
+         *     `job` — конкретная работа или пусто (все). Джобы идемпотентны:
+         *     повторный запуск не дублирует возвраты, сообщения и удаления.
+         *
+         *     Ответ — счётчики сделанного за запуск; нули означают «делать было
+         *     нечего», а не «не сработало».
          */
         post: {
             parameters: {
-                query?: never;
-                header?: never;
+                query?: {
+                    job?: "subscriptions_downgrade" | "pending_payments_resolve" | "pdn_retention_cleanup" | "report_refund";
+                };
+                header: {
+                    "X-Jobs-Secret": string;
+                };
                 path?: never;
                 cookie?: never;
             };
             requestBody?: never;
             responses: {
-                /** @description Принято */
+                /** @description Работы выполнены, счётчики в теле */
                 202: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["JobRunResult"];
+                    };
+                };
+                /** @description Нет секрета или он неверный (FORBIDDEN) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
                 };
             };
         };
@@ -994,7 +1081,7 @@ export interface paths {
          *     Без ПДн: только агрегаты.
          *
          *     Воронка считается по `events.occurred_at` — клиентскому времени
-         *     события, — поэтому опоздавший батч (`at` до суток назад) попадает в
+         *     события, — поэтому опоздавший батч (`occurred_at` до суток назад) попадает в
          *     свой день, а не в день доставки. Окно — 30 дней, `occurred_at` не
          *     старше суток от серверного времени (см. `POST /events`).
          */
@@ -1021,6 +1108,17 @@ export interface paths {
                             stars_received_30d?: number;
                             llm_cost_usd_30d?: number;
                             reports_failed_30d?: number;
+                            /**
+                             * @description Платежи, по которым доступ не выдан: нет серверного инвойса,
+                             *     сумма не совпала с ценой плана, неизвестный план.
+                             *     Главный счётчик QA-11 — отказ по деньгам должен быть виден
+                             *     в метриках, а не только в логах.
+                             */
+                            payments_rejected_30d?: number;
+                            amount_mismatch_30d?: number;
+                            refunded_30d?: number;
+                            /** @description Платежи `processed = false` прямо сейчас */
+                            pending_payments_now?: number;
                             /**
                              * @description Счётчики событий по именам за 30 дней; считается по
                              *     `events.occurred_at`. Нулевые имена не отдаются.
@@ -1106,6 +1204,21 @@ export interface components {
                  *     Порядок отражает порядок проверки, дубликатов по `field` нет.
                  */
                 field_errors?: components["schemas"]["FieldError"][];
+                /**
+                 * @description Машинная причина, когда одного `code` мало: `signature_mismatch`,
+                 *     `auth_date_too_old`, `empty` (нет заголовка авторизации),
+                 *     `provider_timeout | provider_unavailable | not_configured` (гео),
+                 *     `no_invoice | amount_mismatch | unknown_plan` (платёж).
+                 *     Незнакомое значение клиент игнорирует.
+                 */
+                reason?: string;
+                /** @description Квота, в которую упёрлись (`QUOTA_EXCEEDED`) */
+                quota_code?: string;
+                /**
+                 * Format: date-time
+                 * @description Когда квота обнулится (`QUOTA_EXCEEDED`)
+                 */
+                reset_at?: string;
             } & {
                 [key: string]: unknown;
             };
@@ -1136,19 +1249,26 @@ export interface components {
             display_name?: string | null;
             is_new: boolean;
             has_profile: boolean;
-            has_chart?: boolean;
+            has_chart: boolean;
             /**
              * Format: uuid
              * @description Карта пользователя для `GET /charts/{chart_id}` и `/charts/current`.
              *     `null`, пока карты нет. Сервер возвращает поле всегда; в `required`
              *     не включено, чтобы не ломать уже собранный клиент.
              */
-            chart_id?: string | null;
+            chart_id: string | null;
+            /**
+             * Format: uuid
+             * @description Последний заказанный разбор (готовый или в работе) — чтобы клиент
+             *     показал «открыть разбор» без отдельного запроса. `null`, если
+             *     разборов не было.
+             */
+            latest_report_id?: string | null;
             subscription: components["schemas"]["SubscriptionState"];
-            entitlements?: components["schemas"]["Entitlements"];
+            entitlements: components["schemas"]["Entitlements"];
             quotas: components["schemas"]["Quota"][];
             /** @enum {string} */
-            onboarding_step?: "birth_date" | "birth_time" | "birth_place" | "done";
+            onboarding_step: "birth_date" | "birth_time" | "birth_place" | "done";
         };
         /**
          * @description Права доступа (`Me.entitlements`). Источник правды —
@@ -1266,7 +1386,7 @@ export interface components {
              *     Так поле можно ввести, не ломая уже собранный фронт.
              * @example /api/v1/charts/0f1c.../wheel.png?sig=1767225600.abc123
              */
-            wheel_png_url?: string;
+            wheel_png_url: string;
         };
         Chart: {
             /** Format: uuid */
@@ -1351,6 +1471,9 @@ export interface components {
              * @description Насколько известно время. Сохраняется в `profiles.time_mode` и
              *     возвращается в `Chart.birth.time_precision`.
              *     `unknown` ⇒ дома и Асцендент не рассчитываются.
+             *     Поле по-прежнему обязательное в `required`: значение по умолчанию
+             *     `exact` плата за забытое поле — неверная карта, а это молчаливая
+             *     ошибка, которую пользователь не увидит.
              * @enum {string}
              */
             time_precision: "exact" | "approximate" | "unknown";
@@ -1378,13 +1501,23 @@ export interface components {
              * @description Имя события из `x-analytics-events`
              * @enum {string}
              */
-            name: "app_open" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "validation_failed" | "paywall_view" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "share_clicked" | "screen_view";
+            name: "app_open" | "onboarding_start" | "onboarding_birth_date_set" | "onboarding_time_set" | "onboarding_place_set" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "mini_reading_view" | "wheel_shared" | "validation_failed" | "validation_failed_client" | "paywall_view" | "checkout_started" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "report_requested" | "report_ready_view" | "forecast_view" | "ask_used" | "quota_exhausted" | "subscription_expired_seen" | "data_deleted" | "error_shown" | "screen_view" | "share_clicked";
             /**
              * Format: date-time
-             * @description Время события на устройстве (ISO 8601 с часовым поясом)
+             * @description Время события на устройстве (ISO 8601 с часовым поясом). Так поле
+             *     называется везде — в запросе, в БД (`events.occurred_at`) и в
+             *     метриках: одно имя на все слои, синоним `at` отменён.
+             *     Старше суток или позже серверного времени более чем на 5 минут —
+             *     событие отбрасывается.
              * @example 2026-11-10T12:00:00.000Z
              */
-            at: string;
+            occurred_at: string;
+            /**
+             * Format: uuid
+             * @description Карта, к которой относится событие, если применимо.
+             *     Не входит в `required`: у `app_open` карты ещё нет.
+             */
+            chart_id?: string | null;
             /**
              * @description Идентификаторы, шаг, код ошибки. Строки до 64 символов.
              *     Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
@@ -1410,7 +1543,12 @@ export interface components {
             accepted: number;
         };
         ReportRequest: {
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Карта, по которой заказывается разбор. Обязателен и должен быть
+             *     той картой, за которую заплачено: разбор открывается по оплаченной
+             *     карте, а не по «первой» у пользователя.
+             */
             chart_id: string;
             /** @enum {string} */
             type: "full" | "compat" | "solar";
@@ -1423,15 +1561,50 @@ export interface components {
                 name?: string;
             } | null;
         };
+        /**
+         * @description Счётчики одного запуска крона. Все поля есть всегда; нули означают
+         *     «делать было нечего». Имена совпадают с полями `JobRunResult` в коде.
+         * @example {
+         *       "subscriptions_expired": 0,
+         *       "expiry_notices_sent": 0,
+         *       "pending_payments_processed": 1,
+         *       "pending_payments_rejected": 0,
+         *       "refunds_attempted": 0,
+         *       "refunds_done": 0,
+         *       "report_refunds_done": 0,
+         *       "pdn_users_deleted": 0
+         *     }
+         */
+        JobRunResult: {
+            subscriptions_expired?: number;
+            expiry_notices_sent?: number;
+            pending_payments_processed?: number;
+            pending_payments_rejected?: number;
+            refunds_attempted?: number;
+            refunds_done?: number;
+            report_refunds_done?: number;
+            pdn_users_deleted?: number;
+        };
         Report: {
             /** Format: uuid */
             report_id: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description Карта, по которой заказывается разбор. Обязателен и должен быть
+             *     той картой, за которую заплачено: разбор открывается по оплаченной
+             *     карте, а не по «первой» у пользователя.
+             */
             chart_id?: string;
             /** @enum {string} */
             type: "full" | "compat" | "solar";
-            /** @enum {string} */
+            /**
+             * @description `generating` — разбор собирается (внутри `planning` и `writing`).
+             *     `failed` — модель или валидаторы не справились; `refunded` — звёзды
+             *     уже вернулись джобом `report_refund`.
+             * @enum {string}
+             */
             status: "queued" | "generating" | "ready" | "failed" | "refunded";
+            /** @description Доля готовых глав от 7; 100 только при `ready` */
             progress?: number;
             /** Format: date-time */
             created_at: string;
@@ -1478,7 +1651,8 @@ export interface components {
             plan_code: components["schemas"]["PlanCode"];
             /**
              * Format: uuid
-             * @description Для разовых продуктов
+             * @description Для разовых продуктов. Обязателен для `one_149` (полный разбор):
+             *     товар привязан к карте (1.5.2).
              */
             chart_id?: string;
         };
@@ -1497,6 +1671,12 @@ export interface components {
     parameters: never;
     requestBodies: never;
     headers: {
+        /**
+         * @description Тот же идентификатор, что в `Problem.request_id`. Сервер отдаёт его на
+         *     любом ответе, включая ошибку разбора тела (битый JSON): без него
+         *     поддержка не найдёт запрос в логах.
+         */
+        "X-Request-Id": string;
         /** @description Остаток квоты в текущем окне */
         "RateLimit-Remaining": number;
         /** @description Unix-время сброса окна */

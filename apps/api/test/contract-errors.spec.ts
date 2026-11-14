@@ -59,6 +59,37 @@ describe('неизвестный маршрут', () => {
   });
 });
 
+describe('битое тело запроса (QA-12b)', () => {
+  it('422 на невалидный JSON с X-Request-Id в заголовке и в Problem', async () => {
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .set('Content-Type', 'application/json')
+      .send('{oops')
+      .expect(422);
+
+    // Раньше здесь было `no-request-context` и ни одного заголовка — по такому
+    // ответу инцидент в логах не найти.
+    expect(response.headers['x-request-id']).toMatch(/^[A-Za-z0-9._-]{8,64}$/);
+    expect(response.body.request_id).toBe(response.headers['x-request-id']);
+    expect(response.body.request_id).not.toBe('no-request-context');
+    expect(response.body.code).toBe('VALIDATION_FAILED');
+  });
+
+  it('клиентский X-Request-Id переиспользуется, а не заменяется', async () => {
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .set('Content-Type', 'application/json')
+      .set('X-Request-Id', 'qa-trace-0001')
+      .send('{oops')
+      .expect(422);
+
+    expect(response.headers['x-request-id']).toBe('qa-trace-0001');
+    expect(response.body.request_id).toBe('qa-trace-0001');
+  });
+});
+
 describe('POST /charts — валидация', () => {
   it('без согласия → 422 и field_errors по consent', async () => {
     const { consent: _consent, ...withoutConsent } = VALID;

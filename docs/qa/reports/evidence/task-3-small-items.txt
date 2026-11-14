@@ -1,0 +1,18 @@
+=== QA-12b: битый JSON
+HTTP/1.1 422 Unprocessable Entity
+X-Request-Id: 55565939-cc29-4b4c-8719-2c583384e5eb
+{"code":"VALIDATION_FAILED","message":"Проверь введённые данные.","request_id":"55565939-cc29-4b4c-8719-2c583384e5eb"}
+
+=== R-1: m4 (три оплаты; третья без subscription_expiration_date)
+
+=== M4: продление подписки ===
+после первой оплаты expires_at: 2026-12-12 00:00:00+00
+после продления   expires_at: 2027-01-11 00:00:00+00
+
+--- после продления
+payments   : 
+month_399|399|processed|t|-|777000111
+month_399|399|processed|t|-|777000111
+subscriptions: month|active|2027-01-11 00:00:00+00
+entitlements : (пусто)
+после 3-й оплаты БЕЗ subscription_expiration_date: 2027-02-10 00:00:00+00

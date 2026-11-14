@@ -48,7 +48,7 @@ Telegram Mini App: пользователь вводит дату, время и
 - `llmContext(chart)` — только факты в JSON. Модель не считает, а переводит.
 - `renderWheel(chart)` — SVG, поворот по Асценденту.
 - Детерминизм: одинаковый вход → одинаковый JSON. `time_known=false` → дома и ASC = `null`.
-- Эфемериды локально, без сети. Прототип уже есть: `astro/engine.py`.
+- Эфемериды локально, без сети. Движок — `packages/astro/astro/engine.py`.
 - Swiss Ephemeris под AGPL: до покупки коммерческой лицензии работает флаг `ASTRO_ENGINE=fallback`.
 
 ## Генерация текста

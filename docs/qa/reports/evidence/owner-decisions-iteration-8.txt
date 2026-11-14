@@ -1,0 +1,26 @@
+Решения владельца по блокерам итерации 8 (2026-11-10) и что изменилось в коде.
+
+1. LLM_REPORT_CAP_RUB = 80 ₽
+   env.ts: default 80 (было необязательное поле без значения).
+   reports.service.ts: лимит на разбор проверяется до и до/после каждого вызова,
+   перерасход → failed (error_code=cost_cap) без повтора.
+2. LLM_MONTHLY_CAP_RUB = 2000 ₽/мес (было 1000).
+3. Цена токена — из той же таблицы, что имя модели:
+   apps/api/src/config/llm-models.ts: GigaChat-3-Ultra = 0.5, GigaChat-2-Max = 0.65.
+   Переменная LLM_PRICE_PER_1K_RUB удалена; неизвестная модель не поднимает сервис
+   (env.superRefine → ошибка LLM_MODEL на старте).
+4. GIGACHAT_SCOPE: default GIGACHAT_API_PERS.
+5. Управители: современные, оставлено как есть (без изменений кода).
+6. chart_id обязателен: POST /billing/invoice для one_149 без chart_id → 422
+   details.field_errors[{field: chart_id}]; скрытая привязка к «первой карте»
+   удалена (hasReportEntitlement ищет доступ строго по этой карте).
+   Контракт: 1.5.1 → 1.5.2 (запись в info.description).
+7. Ключ GigaChat: живой вызов из песочницы сделать нельзя — исходящая сеть
+   ограничена, TLS до ngw.devices.sberbank.ru:9443 не устанавливается
+   (curl: SSL_ERROR_SYSCALL, http_code 000). Ключ в репозиторий не записан.
+   Проверка GigaChat ждёт окружения с доступом к Сберу и CA-бандлом.
+
+Тесты после правок:
+  apps/api: 197 passed (было 193; +1 биллинг chart_id, +3 цены/лимиты/модель).
+  web 326, ui 24, shared 8, pytest 49 — без изменений.
+  lint и typecheck — зелёные.

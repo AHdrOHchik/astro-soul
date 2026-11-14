@@ -1,0 +1,17 @@
+# Пять минут — компромисс: зависший платёж живёт не дольше
+# 10 (порог) + 5 (тик) минут, а суточные джобы внутри тика стоят один
+# дешёвый SELECT каждый.
+[Unit]
+Description=astro-soul: run API jobs every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=astro-jobs.service
+# Пропущенный из-за выключения запуск не догоняем: джобы смотрят на состояние
+# базы, а не на календарь, и догоняющий запуск ничего не улучшит.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

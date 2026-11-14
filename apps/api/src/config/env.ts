@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_LLM_MODEL, LLM_MODEL_IDS, llmModelSpec } from './llm-models';
 
 /**
  * Валидация окружения на старте: сервис не поднимается с неполным конфигом.
@@ -82,7 +83,73 @@ const envSchema = z.object({
     z.string().min(8).optional(),
   ),
 
+  /**
+   * Контакт поддержки для текстов, где пользователю нужно куда-то написать
+   * (`DELETE /me` при неудавшемся возврате). Пустое значение — «не задано»:
+   * текст тогда не обещает контакт, а просит написать в поддержку бота.
+   */
+  SUPPORT_CONTACT: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(2).max(64).optional(),
+  ),
+
+  /**
+   * GigaChat: ключ авторизации (Basic) и параметры OAuth. Статического
+   * access_token нет: он живёт 30 минут и берётся по ключу.
+   */
+  GIGACHAT_AUTH_KEY: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(8).optional()),
+  GIGACHAT_OAUTH_URL: z.string().url().default('https://ngw.devices.sberbank.ru:9443/api/v2/oauth'),
+  GIGACHAT_BASE_URL: z.string().url().default('https://gigachat.devices.sberbank.ru/api/v1'),
+  /**
+   * Владелец (итерация 8, вопрос 4): `GIGACHAT_API_PERS`. Значение по умолчанию,
+   * чтобы для запуска хватало одного ключа авторизации.
+   */
+  GIGACHAT_SCOPE: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(2).default('GIGACHAT_API_PERS')),
+  /**
+   * Путь к CA-бандлу НУЦ Минцифры. TLS-проверка не отключается никогда:
+   * нет файла — сервис не ходит в провайдера и пишет, что именно проверить.
+   */
+  GIGACHAT_CA_BUNDLE: z.preprocess((value) => (value === '' ? undefined : value), z.string().min(1).optional()),
+
+  /**
+   * Модель разбора. Версия входит в имя: она же пишется в `reports.model`,
+   * и по ней же берётся цена токена (`config/llm-models.ts`).
+   */
+  LLM_MODEL: z.string().min(2).default(DEFAULT_LLM_MODEL),
+  LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.7),
+  LLM_MAX_TOKENS: z.coerce.number().int().min(64).max(4096).default(1400),
+  /** Время на один вызов провайдера: разбор не должен висеть минутами. */
+  LLM_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(60_000),
+  /**
+   * Потолок расходов на LLM в месяц, рубли.
+   * Владелец (итерация 8, вопрос 2): 2000 ₽ на старте — это ~80 разборов,
+   * хватает на первые продажи, не упирается в лимит на первой неделе.
+   */
+  LLM_MONTHLY_CAP_RUB: z.coerce.number().min(0).default(2000),
+  /**
+   * Потолок на один разбор, рубли.
+   * Владелец (итерация 8, вопрос 1): 80 ₽. Оценка разбора ~23 ₽, с
+   * перегенерациями ~30 ₽; 80 ₽ — «две с половиной попытки». При 149 ⭐
+   * выручки маржа остаётся даже в худшем случае.
+   */
+  LLM_REPORT_CAP_RUB: z.coerce.number().min(0).default(80),
+  /**
+   * Подставной провайдер вместо GigaChat: включается сам, когда ключей нет,
+   * и честно пишется в логах и в ответе. Нужен для разработки и тестов.
+   */
+  LLM_FAKE: z.preprocess((value) => (value === '' ? undefined : value), z.enum(['0', '1']).optional()),
+
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
+}).superRefine((value, ctx) => {
+  // Цена токена берётся из таблицы моделей: неизвестная модель — это не
+  // «0 ₽ за токен», а ошибка конфигурации, и лучше упасть на старте.
+  if (llmModelSpec(value.LLM_MODEL) === null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['LLM_MODEL'],
+      message: `LLM_MODEL: нет цены для модели (${LLM_MODEL_IDS.join(', ')})`,
+    });
+  }
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

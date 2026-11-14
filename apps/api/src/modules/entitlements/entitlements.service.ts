@@ -32,7 +32,7 @@ export class EntitlementsService {
   };
 
   async getEntitlements(userId: string): Promise<Entitlements> {
-    const [subscription, oneOff] = await Promise.all([
+    const [subscription, oneOff, readyReport] = await Promise.all([
       this.db.queryOne<{
         plan: Exclude<SubscriptionState['plan'], 'none'>;
         status: string;
@@ -51,6 +51,12 @@ export class EntitlementsService {
             AND (expires_at IS NULL OR expires_at > now())`,
         [userId],
       ),
+      // Готовый разбор — тоже доступ: он уже куплен, даже если запись
+      // `entitlements` успела истечь (разовый продукт живёт вечно).
+      this.db.queryOne<{ one: number }>(
+        `SELECT 1 AS one FROM reports WHERE user_id = $1 AND status = 'ready' LIMIT 1`,
+        [userId],
+      ),
     ]);
 
     const base =
@@ -62,7 +68,7 @@ export class EntitlementsService {
 
     return {
       ...base,
-      fullReport: base.fullReport || kinds.has('report'),
+      fullReport: base.fullReport || kinds.has('report') || readyReport !== null,
       compatPerMonth: Math.max(base.compatPerMonth, kinds.has('compat') ? 1 : 0),
       solarIncluded: base.solarIncluded || kinds.has('solar'),
     };

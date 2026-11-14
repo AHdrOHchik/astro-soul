@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.1
+  version: 1.5.2
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -117,6 +117,14 @@ info:
       • требования к коду, не выразимые схемой: `successful_payment` обязан
         сверять наличие инвойса, сумму и владельца; при отсутствии
         `subscription_expiration_date` продление идёт от текущего `expires_at`.
+
+    1.5.2 — одна правка по решению владельца (итерация 8, вопрос 6):
+      • `chart_id` обязателен в `POST /billing/invoice` для плана `one_149`.
+        Раньше покупку без карты приходилось «прикреплять» к первой карте
+        пользователя — скрытая привязка платного товара. Теперь такой инвойс
+        не создаётся (`422`, `details.field_errors[{field: "chart_id"}]`),
+        а `POST /reports` открывает разбор только по оплаченной карте.
+        Покупки, сделанные до 1.5.2 без `chart_id`, разбор не открывают.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -588,7 +596,13 @@ components:
       type: object
       required: [chart_id, type]
       properties:
-        chart_id: { type: string, format: uuid }
+        chart_id:
+          type: string
+          format: uuid
+          description: |
+            Карта, по которой заказывается разбор. Обязателен и должен быть
+            той картой, за которую заплачено: разбор открывается по оплаченной
+            карте, а не по «первой» у пользователя.
         type: { type: string, enum: [full, compat, solar] }
         partner:
           type: [object, 'null']
@@ -599,15 +613,55 @@ components:
             birth_place: { $ref: '#/components/schemas/GeoPlace' }
             name: { type: string, maxLength: 60 }
 
+    JobRunResult:
+      type: object
+      description: |
+        Счётчики одного запуска крона. Все поля есть всегда; нули означают
+        «делать было нечего». Имена совпадают с полями `JobRunResult` в коде.
+      properties:
+        subscriptions_expired: { type: integer }
+        expiry_notices_sent: { type: integer }
+        pending_payments_processed: { type: integer }
+        pending_payments_rejected: { type: integer }
+        refunds_attempted: { type: integer }
+        refunds_done: { type: integer }
+        report_refunds_done: { type: integer }
+        pdn_users_deleted: { type: integer }
+      example:
+        subscriptions_expired: 0
+        expiry_notices_sent: 0
+        pending_payments_processed: 1
+        pending_payments_rejected: 0
+        refunds_attempted: 0
+        refunds_done: 0
+        report_refunds_done: 0
+        pdn_users_deleted: 0
+
     Report:
       type: object
       required: [report_id, status, type, created_at]
       properties:
         report_id: { type: string, format: uuid }
-        chart_id: { type: string, format: uuid }
+        chart_id:
+          type: string
+          format: uuid
+          description: |
+            Карта, по которой заказывается разбор. Обязателен и должен быть
+            той картой, за которую заплачено: разбор открывается по оплаченной
+            карте, а не по «первой» у пользователя.
         type: { type: string, enum: [full, compat, solar] }
-        status: { type: string, enum: [queued, generating, ready, failed, refunded] }
-        progress: { type: integer, minimum: 0, maximum: 100 }
+        status:
+          type: string
+          enum: [queued, generating, ready, failed, refunded]
+          description: |
+            `generating` — разбор собирается (внутри `planning` и `writing`).
+            `failed` — модель или валидаторы не справились; `refunded` — звёзды
+            уже вернулись джобом `report_refund`.
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Доля готовых глав от 7; 100 только при `ready`
         created_at: { type: string, format: date-time }
         ready_at: { type: [string, 'null'], format: date-time }
         pdf_url: { type: [string, 'null'], description: Временная подписанная ссылка, TTL 24 ч }
@@ -660,7 +714,12 @@ components:
       required: [plan_code]
       properties:
         plan_code: { $ref: '#/components/schemas/PlanCode' }
-        chart_id: { type: string, format: uuid, description: Для разовых продуктов }
+        chart_id:
+          type: string
+          format: uuid
+          description: |
+            Для разовых продуктов. Обязателен для `one_149` (полный разбор):
+            товар привязан к карте (1.5.2).
 
     Invoice:
       type: object
@@ -719,7 +778,13 @@ paths:
         '204':
           description: Удалено
         '409':
-          description: Есть незавершённые платежи (Problem.code = CONFLICT)
+          description: |
+            Удаление остановлено платежом в процессе и вернуть его не удалось:
+            `Problem.code = CONFLICT`, `details.reason = "refund_failed"`.
+            Пользователю показывается текст `Problem.message` со ссылкой на
+            поддержку (`SUPPORT_CONTACT`), повтор возможен после ответа поддержки.
+
+            Если возврат удался, ответ — `204`: данные удалены, звёзды вернулись.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -972,9 +1037,20 @@ paths:
       tags: [reports]
       summary: Заказать разбор (асинхронно)
       description: |
-        Возвращает 202 и report_id. Генерация — в очереди, 30–90 сек.
-        Требуется оплата (кроме первого бесплатного мини-разбора, который приходит вместе с картой).
-        Идемпотентность: заголовок `Idempotency-Key` обязателен, TTL 24 ч.
+        Возвращает 202 и report_id со `status: queued`. Генерация идёт в фоне,
+        готовность — через `GET /reports/{report_id}` (главы появляются по мере
+        готовности, 30–90 сек на весь разбор).
+
+        Доступ проверяется здесь, а не на экране: полный разбор — разовая
+        покупка (`one_149`), подписка его не открывает. Без покупки — `402`.
+
+        Идемпотентность: заголовок `Idempotency-Key` обязателен (до 64 символов,
+        буквы/цифры/`-_.:`). Три тапа по кнопке с одним ключом дают **один**
+        разбор и одно списание; повторный заказ по той же карте с другим ключом
+        тоже не создаёт второй разбор, пока первый не провалился.
+
+        В этом релизе собирается только `type: full`: `compat` и `solar` —
+        отдельные продукты, на них API честно отвечает `422`, а не «в очереди».
       security: [{ TelegramInitData: [] }]
       parameters:
         - name: Idempotency-Key
@@ -988,17 +1064,44 @@ paths:
             schema: { $ref: '#/components/schemas/ReportRequest' }
       responses:
         '202':
-          description: В очереди
+          description: 'В очереди, `status: queued`'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Report' }
         '402':
-          description: Требуется оплата (PAYMENT_REQUIRED)
+          description: Требуется оплата (PAYMENT_REQUIRED) — разбор не куплен
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: Карты нет или она чужая (NOT_FOUND)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            Нет `Idempotency-Key`, некорректное или пустое тело (`chart_id`),
+            неподдерживаемый тип — `VALIDATION_FAILED` +
+            `details.field_errors[{field, message}]` (поле заголовка называется
+            `Idempotency-Key`).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /api/v1/reports/{report_id}:
     get:
       tags: [reports]
       summary: Статус и содержимое разбора
+      description: |
+        `status: generating` покрывает внутренние стадии `planning` и `writing`.
+        `progress` — 0…100, растёт по числу готовых глав.
+
+        Пока разбор не оплачен, в ответе только `teaser` (первые 400 знаков
+        «Ядра») и `is_paid: false`; `sections` пустой. После оплаты главы
+        приходят сразу, как готовы, а полный разбор — при `status: ready`.
+
+        Провал генерации — `status: failed`; звёзды за него возвращает джоб
+        `report_refund`, после чего статус становится `refunded`.
       security: [{ TelegramInitData: [] }]
       parameters:
         - name: report_id
@@ -1011,7 +1114,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Report' }
-        '404': { description: NOT_FOUND }
+        '404': { description: NOT_FOUND — разбора нет или он чужой }
 
   /api/v1/engagement/forecast:
     get:
@@ -1077,6 +1180,12 @@ paths:
       description: |
         Для подписок передаётся subscription_period, для разовых — обычный инвойс.
         Ссылка открывается через Telegram.WebApp.openInvoice.
+
+        `chart_id` обязателен для `one_149` (полный разбор): товар привязан
+        к конкретной карте, и разбор потом открывается только по ней. Фронт
+        подставляет карту явно, даже если она у пользователя одна — скрытой
+        привязки к «первой карте» нет (1.5.2). Для остальных планов `chart_id`
+        необязателен; если передан — проверяется, что карта своя.
       security: [{ TelegramInitData: [] }]
       requestBody:
         required: true
@@ -1090,7 +1199,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Invoice' }
         '422':
-          description: Неизвестный план или чужая карта (VALIDATION_FAILED / NOT_FOUND)
+          description: |
+            Неизвестный план, чужая карта или отсутствует `chart_id` у
+            `one_149` — `VALIDATION_FAILED` + `details.field_errors[{field, message}]`.
         '429':
           description: 'Слишком много инвойсов (антифрод): 3 в час, 10 в сутки — Problem.code = RATE_LIMITED'
 
@@ -1121,10 +1232,44 @@ paths:
     post:
       tags: [internal]
       summary: Триггер воркеров (крон, защищён секретом)
-      description: Запускает джобы — генерацию прогнозов на завтра, восстановление зависших разборов.
+      description: |
+        Запускается кроном (`infra/systemd/astro-jobs.timer`, раз в 10 минут),
+        не пользователем: `security: []`, доступ даёт заголовок `X-Jobs-Secret`
+        (`INTERNAL_JOB_SECRET`). Секрет не задан в окружении — маршрут закрыт
+        всегда (`403`).
+
+        `job` — конкретная работа или пусто (все). Джобы идемпотентны:
+        повторный запуск не дублирует возвраты, сообщения и удаления.
+
+        Ответ — счётчики сделанного за запуск; нули означают «делать было
+        нечего», а не «не сработало».
       security: []
+      parameters:
+        - name: X-Jobs-Secret
+          in: header
+          required: true
+          schema: { type: string }
+        - name: job
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - subscriptions_downgrade
+              - pending_payments_resolve
+              - pdn_retention_cleanup
+              - report_refund
       responses:
-        '202': { description: Принято }
+        '202':
+          description: Работы выполнены, счётчики в теле
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobRunResult' }
+        '403':
+          description: Нет секрета или он неверный (FORBIDDEN)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /api/v1/admin/metrics:
     get:

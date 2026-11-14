@@ -909,8 +909,8 @@ describe('App: product events', () => {
       expect(events.length).toBeGreaterThan(20);
       for (const batch of batches) expect(batch.length).toBeLessThanOrEqual(20);
       for (const event of events) {
-        expect(Object.keys(event).sort()).toEqual(event.props ? ['at', 'name', 'props'] : ['at', 'name']);
-        expect(event.at).toBe(TODAY.toISOString());
+        expect(Object.keys(event).sort()).toEqual(event.props ? ['name', 'occurred_at', 'props'] : ['name', 'occurred_at']);
+        expect(event.occurred_at).toBe(TODAY.toISOString());
         for (const [key, value] of Object.entries(event.props ?? {})) {
           expect(ALLOWED[key]?.(value), `${event.name}: ${key}=${String(value)}`).toBe(true);
         }

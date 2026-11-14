@@ -20,6 +20,11 @@ export interface ProductMetrics {
   readonly stars_received_30d: number;
   readonly llm_cost_usd_30d: number;
   readonly reports_failed_30d: number;
+  /** QA-11: платежи, по которым доступ не выдан. */
+  readonly payments_rejected_30d: number;
+  readonly amount_mismatch_30d: number;
+  readonly refunded_30d: number;
+  readonly pending_payments_now: number;
   readonly events_30d: Readonly<Record<string, number>>;
   readonly funnel_30d: Readonly<Record<string, number>>;
 }
@@ -78,11 +83,30 @@ export class AdminMetricsService {
            count(*)::int AS base
          FROM subscriptions`,
       ),
-      this.db.queryOne<{ stars: number }>(
-        `SELECT COALESCE(sum(total_amount), 0)::int AS stars
-           FROM payments
-          WHERE status <> 'refunded'
-            AND paid_at >= now() - ${WINDOW}`,
+      this.db.queryOne<{
+        stars: number;
+        rejected: number;
+        mismatch: number;
+        refunded: number;
+        pending: number;
+      }>(
+        // `rejected` — деньги не за доступ: в выручку не попадают (QA-11).
+        `SELECT
+           COALESCE(sum(total_amount) FILTER (
+             WHERE status NOT IN ('refunded', 'rejected') AND paid_at >= now() - ${WINDOW}
+           ), 0)::int AS stars,
+           count(*) FILTER (
+             WHERE status = 'rejected' AND paid_at >= now() - ${WINDOW}
+           )::int AS rejected,
+           count(*) FILTER (
+             WHERE status = 'rejected' AND reject_reason = 'amount_mismatch'
+               AND paid_at >= now() - ${WINDOW}
+           )::int AS mismatch,
+           count(*) FILTER (
+             WHERE status = 'refunded' AND refunded_at >= now() - ${WINDOW}
+           )::int AS refunded,
+           count(*) FILTER (WHERE processed = false AND status = 'paid')::int AS pending
+         FROM payments`,
       ),
       this.db.queryOne<{ failed: number }>(
         `SELECT count(*)::int AS failed
@@ -118,6 +142,10 @@ export class AdminMetricsService {
       // в следующей итерации, до тех пор честный ноль.
       llm_cost_usd_30d: 0,
       reports_failed_30d: reports?.failed ?? 0,
+      payments_rejected_30d: payments?.rejected ?? 0,
+      amount_mismatch_30d: payments?.mismatch ?? 0,
+      refunded_30d: payments?.refunded ?? 0,
+      pending_payments_now: payments?.pending ?? 0,
       events_30d: eventsByName,
       funnel_30d: funnelByStep,
     };

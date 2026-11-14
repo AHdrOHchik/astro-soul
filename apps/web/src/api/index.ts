@@ -32,7 +32,12 @@ export type ChartWarning = (typeof CHART_WARNINGS)[number];
  * The chart as every method hands it over (`POST /charts`, `GET /charts/current`): the chart,
  * its short reading, the warnings and the paths of the wheel pictures.
  */
-export type ChartResult = Omit<ChartEnvelope, 'warnings'> & { warnings: ChartWarning[] };
+export type ChartResult = Omit<ChartEnvelope, 'warnings' | 'wheel_png_url'> & {
+  warnings: ChartWarning[];
+  // Optional in the app's own type: an older server sends no PNG, and the screen then reads
+  // "there is none". Contract 1.5.1 marks the field required, so it is narrowed here.
+  wheel_png_url?: string;
+};
 export type MiniReading = ChartResult['mini_reading'];
 /** A product event as `POST /events` takes it. */
 export type ClientEvent = components['schemas']['ClientEvent'];
@@ -129,7 +134,7 @@ function toChartResult(result: unknown): ChartResult {
     warnings: toWarnings(result.warnings),
     wheel_url: text(result.wheel_url),
     is_restored: result.is_restored === true,
-    // Optional in the contract: a server older than 1.3.0 does not send it.
+    // Not sent by a server older than 1.3.0: the screen then knows there is no PNG.
     ...(wheelPng !== '' && { wheel_png_url: wheelPng }),
   };
 }

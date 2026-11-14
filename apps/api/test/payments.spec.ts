@@ -270,7 +270,7 @@ describe('вебхук Telegram', () => {
     expect(entitlement).toMatchObject({ kind: 'report', status: 'active', chart_id: chartId });
   });
 
-  it('битый payload (не UUID): 200, ничего не записано, без 500', async () => {
+  it('битый payload (не UUID): 200, платёж записан как rejected, без 500', async () => {
     const status = await sendWebhook(
       successfulPayment({
         payload: '{"p":"month_399","u":"не-uuid","k":"тоже"}',
@@ -280,25 +280,184 @@ describe('вебхук Telegram', () => {
     );
 
     expect(status).toBe(200);
-    expect(await ctx.db.query(`SELECT 1 FROM payments`)).toHaveLength(0);
+    // QA-11: отказ по деньгам обязан быть виден, а не теряться в логах.
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string; processed: boolean }>(
+      `SELECT status, reject_reason, processed FROM payments WHERE telegram_payment_charge_id = 'charge-malformed'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'unknown_plan', processed: false });
+    expect(await ctx.db.query(`SELECT 1 FROM subscriptions`)).toHaveLength(0);
     expect(telegram.messages).toHaveLength(0);
   });
 
-  it('неизвестный план в payload: деньги приняты, доступ не выдан, падения нет', async () => {
+  it('неизвестный план в payload: 200, доступ не выдан, платёж записан как rejected', async () => {
     expect(
       await sendWebhook(
         successfulPayment({ payload: '{"p":"nope","u":"00000000-0000-4000-8000-000000000000","k":"1"}', chargeId: 'charge-bad', amount: 1 }),
       ),
     ).toBe(200);
 
-    const payments = await ctx.db.query(`SELECT 1 FROM payments`);
-    expect(payments).toHaveLength(0);
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string }>(
+      `SELECT status, reject_reason FROM payments WHERE telegram_payment_charge_id = 'charge-bad'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'unknown_plan' });
+  });
+});
+
+describe('QA-11: доступ только за платёж, который выставлял сервер', () => {
+  /** `/me` глазами пользователя: подписка и entitlements считаются сервером. */
+  async function meBody(): Promise<{
+    subscription: { plan: string; is_active: boolean };
+    entitlements: { is_active: boolean; full_forecast: boolean };
+  }> {
+    const me = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    return me.body as { subscription: { plan: string; is_active: boolean }; entitlements: { is_active: boolean; full_forecast: boolean } };
+  }
+
+  /** Внутренний UUID пользователя: в payload инвойса едет именно он. */
+  async function internalUserId(): Promise<string> {
+    const row = await ctx.db.queryOne<{ id: string }>(`SELECT id FROM users LIMIT 1`);
+    if (row === null) {
+      throw new Error('пользователь не создан: сначала нужен любой запрос от него');
+    }
+    return row.id;
+  }
+
+  async function rejectionEvents(): Promise<{ props: { code?: string } }[]> {
+    return ctx.db.query<{ props: { code?: string } }>(
+      `SELECT props FROM events WHERE name = 'payment_rejected' ORDER BY created_at`,
+    );
+  }
+
+  it('инвойса нет: доступ не выдан, платёж rejected (no_invoice), /me без подписки', async () => {
+    await meBody();
+    const payload = JSON.stringify({
+      p: 'year_2990',
+      u: await internalUserId(),
+      k: '00000000-0000-4000-8000-00000000dead',
+    });
+
+    expect(
+      await sendWebhook(
+        successfulPayment({ payload, chargeId: 'charge-no-invoice', amount: 1, expiresAt: Math.floor(Date.now() / 1000) + 31_536_000 }),
+      ),
+    ).toBe(200);
+
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string; processed: boolean }>(
+      `SELECT status, reject_reason, processed FROM payments WHERE telegram_payment_charge_id = 'charge-no-invoice'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'no_invoice', processed: false });
+
+    expect(await ctx.db.query(`SELECT 1 FROM subscriptions`)).toHaveLength(0);
+    expect(await ctx.db.query(`SELECT 1 FROM entitlements`)).toHaveLength(0);
+    expect(await meBody()).toMatchObject({
+      subscription: { plan: 'none', is_active: false },
+      entitlements: { is_active: false, full_forecast: false },
+    });
+    expect(telegram.messages).toHaveLength(0);
+    expect(await rejectionEvents()).toEqual([{ props: expect.objectContaining({ code: 'no_invoice' }) }]);
+  });
+
+  it('сумма меньше цены плана: rejected (amount_mismatch), доступа нет', async () => {
+    const { payload } = await createInvoice('month_399');
+
+    expect(
+      await sendWebhook(successfulPayment({ payload, chargeId: 'charge-underpaid', amount: 1 })),
+    ).toBe(200);
+
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string }>(
+      `SELECT status, reject_reason FROM payments WHERE telegram_payment_charge_id = 'charge-underpaid'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'amount_mismatch' });
+    expect(await ctx.db.query(`SELECT 1 FROM subscriptions`)).toHaveLength(0);
+    expect((await meBody()).subscription.is_active).toBe(false);
+    expect(await rejectionEvents()).toEqual([{ props: expect.objectContaining({ code: 'amount_mismatch' }) }]);
+  });
+
+  it('сумма больше цены плана: rejected (amount_mismatch), доступа нет', async () => {
+    const { payload } = await createInvoice('month_399');
+
+    expect(
+      await sendWebhook(successfulPayment({ payload, chargeId: 'charge-overpaid', amount: 400 })),
+    ).toBe(200);
+
+    const payment = await ctx.db.queryOne<{ status: string; reject_reason: string }>(
+      `SELECT status, reject_reason FROM payments WHERE telegram_payment_charge_id = 'charge-overpaid'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'amount_mismatch' });
+    expect(await ctx.db.query(`SELECT 1 FROM subscriptions`)).toHaveLength(0);
+    expect((await meBody()).subscription.is_active).toBe(false);
+  });
+
+  it('обычный платёж по выставленному инвойсу: доступ есть, платёж processed', async () => {
+    const { payload } = await createInvoice('month_399');
+    const expiresAt = Math.floor(Date.now() / 1000) + 30 * 24 * 3600;
+
+    expect(
+      await sendWebhook(successfulPayment({ payload, chargeId: 'charge-honest', amount: 399, expiresAt })),
+    ).toBe(200);
+
+    const payment = await ctx.db.queryOne<{ status: string; processed: boolean; reject_reason: string | null }>(
+      `SELECT status, processed, reject_reason FROM payments WHERE telegram_payment_charge_id = 'charge-honest'`,
+    );
+    expect(payment).toMatchObject({ status: 'processed', processed: true, reject_reason: null });
+    expect((await meBody()).subscription).toMatchObject({ plan: 'month', is_active: true });
+    expect(await rejectionEvents()).toHaveLength(0);
+  });
+
+  it('повторная доставка rejected-платежа не выдаёт доступ и не плодит строки', async () => {
+    const { payload } = await createInvoice('week_149');
+    const update = successfulPayment({ payload, chargeId: 'charge-retry-rejected', amount: 1 });
+
+    expect(await sendWebhook(update)).toBe(200);
+    expect(await sendWebhook(update)).toBe(200);
+
+    const payments = await ctx.db.query<{ status: string; reject_reason: string }>(
+      `SELECT status, reject_reason FROM payments`,
+    );
+    expect(payments).toEqual([{ status: 'rejected', reject_reason: 'amount_mismatch' }]);
+    expect(await ctx.db.query(`SELECT 1 FROM subscriptions`)).toHaveLength(0);
+    expect(await rejectionEvents()).toHaveLength(1);
+    expect(telegram.messages).toHaveLength(0);
+  });
+});
+
+describe('R-1: продление без subscription_expiration_date', () => {
+  it('три оплаты без даты от Telegram дают три периода, а не один', async () => {
+    const { payload } = await createInvoice('month_399');
+
+    for (const n of [1, 2, 3]) {
+      expect(
+        await sendWebhook(successfulPayment({ payload, chargeId: `charge-no-expiry-${n}`, amount: 399 })),
+      ).toBe(200);
+    }
+
+    const subscription = await ctx.db.queryOne<{ expires_at: Date }>(`SELECT expires_at FROM subscriptions`);
+    const days = (subscription!.expires_at.getTime() - Date.now()) / (24 * 3600 * 1000);
+    // 3 × 30 дней, допуск на часы прогона: раньше было бы ровно 30.
+    expect(days).toBeGreaterThan(89);
+    expect(days).toBeLessThan(91);
   });
 });
 
 describe('возвраты', () => {
   it('refundStarPayment + отзыв доступа', async () => {
-    const { payload } = await createInvoice('one_149');
+    // С 1.5.2 разовый разбор покупается на конкретную карту.
+    const chart = await request(ctx.app.getHttpServer())
+      .post('/api/v1/charts')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({
+        birth_date: '1994-05-17',
+        birth_time: '14:20',
+        time_precision: 'exact',
+        birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
+        consent: { accepted: true, version: '2026-11-10' },
+      })
+      .expect(201);
+
+    const { payload } = await createInvoice('one_149', chart.body.chart.chart_id as string);
     await sendWebhook(successfulPayment({ payload, chargeId: 'charge-refund-1', amount: 149 }));
 
     const service = ctx.app.get(PaymentsService);
