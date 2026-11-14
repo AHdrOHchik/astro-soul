@@ -112,7 +112,14 @@ export interface paths {
                     };
                     content?: never;
                 };
-                /** @description Есть незавершённые платежи (Problem.code = CONFLICT) */
+                /**
+                 * @description Удаление остановлено платежом в процессе и вернуть его не удалось:
+                 *     `Problem.code = CONFLICT`, `details.reason = "refund_failed"`.
+                 *     Пользователю показывается текст `Problem.message` со ссылкой на
+                 *     поддержку (`SUPPORT_CONTACT`), повтор возможен после ответа поддержки.
+                 *
+                 *     Если возврат удался, ответ — `204`: данные удалены, звёзды вернулись.
+                 */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -601,9 +608,20 @@ export interface paths {
         put?: never;
         /**
          * Заказать разбор (асинхронно)
-         * @description Возвращает 202 и report_id. Генерация — в очереди, 30–90 сек.
-         *     Требуется оплата (кроме первого бесплатного мини-разбора, который приходит вместе с картой).
-         *     Идемпотентность: заголовок `Idempotency-Key` обязателен, TTL 24 ч.
+         * @description Возвращает 202 и report_id со `status: queued`. Генерация идёт в фоне,
+         *     готовность — через `GET /reports/{report_id}` (главы появляются по мере
+         *     готовности, 30–90 сек на весь разбор).
+         *
+         *     Доступ проверяется здесь, а не на экране: полный разбор — разовая
+         *     покупка (`one_149`), подписка его не открывает. Без покупки — `402`.
+         *
+         *     Идемпотентность: заголовок `Idempotency-Key` обязателен (до 64 символов,
+         *     буквы/цифры/`-_.:`). Три тапа по кнопке с одним ключом дают **один**
+         *     разбор и одно списание; повторный заказ по той же карте с другим ключом
+         *     тоже не создаёт второй разбор, пока первый не провалился.
+         *
+         *     В этом релизе собирается только `type: full`: `compat` и `solar` —
+         *     отдельные продукты, на них API честно отвечает `422`, а не «в очереди».
          */
         post: {
             parameters: {
@@ -620,7 +638,7 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description В очереди */
+                /** @description В очереди, `status: queued` */
                 202: {
                     headers: {
                         [name: string]: unknown;
@@ -629,12 +647,36 @@ export interface paths {
                         "application/json": components["schemas"]["Report"];
                     };
                 };
-                /** @description Требуется оплата (PAYMENT_REQUIRED) */
+                /** @description Требуется оплата (PAYMENT_REQUIRED) — разбор не куплен */
                 402: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Карты нет или она чужая (NOT_FOUND) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Нет `Idempotency-Key`, некорректное тело или неподдерживаемый тип —
+                 *     `VALIDATION_FAILED` + `details.field_errors[{field, message}]`
+                 *     (поле заголовка называется `Idempotency-Key`).
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
                 };
             };
         };
@@ -651,7 +693,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Статус и содержимое разбора */
+        /**
+         * Статус и содержимое разбора
+         * @description `status: generating` покрывает внутренние стадии `planning` и `writing`.
+         *     `progress` — 0…100, растёт по числу готовых глав.
+         *
+         *     Пока разбор не оплачен, в ответе только `teaser` (первые 400 знаков
+         *     «Ядра») и `is_paid: false`; `sections` пустой. После оплаты главы
+         *     приходят сразу, как готовы, а полный разбор — при `status: ready`.
+         *
+         *     Провал генерации — `status: failed`; звёзды за него возвращает джоб
+         *     `report_refund`, после чего статус становится `refunded`.
+         */
         get: {
             parameters: {
                 query?: never;
@@ -672,7 +725,7 @@ export interface paths {
                         "application/json": components["schemas"]["Report"];
                     };
                 };
-                /** @description NOT_FOUND */
+                /** @description NOT_FOUND — разбора нет или он чужой */
                 404: {
                     headers: {
                         [name: string]: unknown;
@@ -955,23 +1008,47 @@ export interface paths {
         put?: never;
         /**
          * Триггер воркеров (крон, защищён секретом)
-         * @description Запускает джобы — генерацию прогнозов на завтра, восстановление зависших разборов.
+         * @description Запускается кроном (`infra/systemd/astro-jobs.timer`, раз в 10 минут),
+         *     не пользователем: `security: []`, доступ даёт заголовок `X-Jobs-Secret`
+         *     (`INTERNAL_JOB_SECRET`). Секрет не задан в окружении — маршрут закрыт
+         *     всегда (`403`).
+         *
+         *     `job` — конкретная работа или пусто (все). Джобы идемпотентны:
+         *     повторный запуск не дублирует возвраты, сообщения и удаления.
+         *
+         *     Ответ — счётчики сделанного за запуск; нули означают «делать было
+         *     нечего», а не «не сработало».
          */
         post: {
             parameters: {
-                query?: never;
-                header?: never;
+                query?: {
+                    job?: "subscriptions_downgrade" | "pending_payments_resolve" | "pdn_retention_cleanup" | "report_refund";
+                };
+                header: {
+                    "X-Jobs-Secret": string;
+                };
                 path?: never;
                 cookie?: never;
             };
             requestBody?: never;
             responses: {
-                /** @description Принято */
+                /** @description Работы выполнены, счётчики в теле */
                 202: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json": components["schemas"]["JobRunResult"];
+                    };
+                };
+                /** @description Нет секрета или он неверный (FORBIDDEN) */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
                 };
             };
         };
@@ -1469,6 +1546,30 @@ export interface components {
                 name?: string;
             } | null;
         };
+        /**
+         * @description Счётчики одного запуска крона. Все поля есть всегда; нули означают
+         *     «делать было нечего». Имена совпадают с полями `JobRunResult` в коде.
+         * @example {
+         *       "subscriptions_expired": 0,
+         *       "expiry_notices_sent": 0,
+         *       "pending_payments_processed": 1,
+         *       "pending_payments_rejected": 0,
+         *       "refunds_attempted": 0,
+         *       "refunds_done": 0,
+         *       "report_refunds_done": 0,
+         *       "pdn_users_deleted": 0
+         *     }
+         */
+        JobRunResult: {
+            subscriptions_expired?: number;
+            expiry_notices_sent?: number;
+            pending_payments_processed?: number;
+            pending_payments_rejected?: number;
+            refunds_attempted?: number;
+            refunds_done?: number;
+            report_refunds_done?: number;
+            pdn_users_deleted?: number;
+        };
         Report: {
             /** Format: uuid */
             report_id: string;
@@ -1476,8 +1577,14 @@ export interface components {
             chart_id?: string;
             /** @enum {string} */
             type: "full" | "compat" | "solar";
-            /** @enum {string} */
+            /**
+             * @description `generating` — разбор собирается (внутри `planning` и `writing`).
+             *     `failed` — модель или валидаторы не справились; `refunded` — звёзды
+             *     уже вернулись джобом `report_refund`.
+             * @enum {string}
+             */
             status: "queued" | "generating" | "ready" | "failed" | "refunded";
+            /** @description Доля готовых глав от 7; 100 только при `ready` */
             progress?: number;
             /** Format: date-time */
             created_at: string;

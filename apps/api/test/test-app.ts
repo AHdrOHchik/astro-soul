@@ -4,6 +4,8 @@ import { AppModule } from '../src/app.module';
 import { AstroClient } from '../src/modules/astro/astro.client';
 import { TelegramClient } from '../src/modules/telegram/telegram.client';
 import { DbService } from '../src/db/db.service';
+import { LLM_PROVIDER } from '../src/modules/llm/llm.module';
+import type { LlmProvider } from '../src/modules/llm/llm.client';
 import { applyRequestContext } from '../src/common/request-id.middleware';
 import { applyTestEnv } from './test-env';
 
@@ -21,6 +23,8 @@ export interface TestContextOptions {
     TelegramClient,
     'createInvoiceLink' | 'answerPreCheckoutQuery' | 'sendMessage' | 'refundStarPayment'
   >;
+  /** Подмена провайдера LLM: в тестах не тратим деньги и не ходим в сеть. */
+  readonly llm?: LlmProvider;
   /** Точечные переопределения окружения (например, включить лимиты запросов). */
   readonly env?: Readonly<Record<string, string>>;
 }
@@ -39,6 +43,9 @@ export async function createTestContext(options: TestContextOptions = {}): Promi
   }
   if (options.telegram !== undefined) {
     builder.overrideProvider(TelegramClient).useValue(options.telegram);
+  }
+  if (options.llm !== undefined) {
+    builder.overrideProvider(LLM_PROVIDER).useValue(options.llm);
   }
 
   const moduleRef = await builder.compile();

@@ -14,6 +14,7 @@ import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
 import { MeModule } from './modules/me/me.module';
 import { OpsModule } from './modules/ops/ops.module';
+import { ReportsModule } from './modules/reports/reports.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { OpsModule } from './modules/ops/ops.module';
     GeoModule,
     EventsModule,
     OpsModule,
+    ReportsModule,
   ],
   providers: [
     RequestIdMiddleware,

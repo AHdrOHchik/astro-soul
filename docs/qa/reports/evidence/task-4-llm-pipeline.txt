@@ -1,0 +1,43 @@
+Task 4 — LLM-конвейер и POST/GET /reports (P0-4/P0-7, контракт 1.5.1)
+Дата: 2026-11-10. Ветка: arena/12b48f91-astro-soul.
+
+ЧТО ЗАПУСКАЛОСЬ
+  cd apps/api
+  corepack pnpm exec vitest run test/llm-provider.spec.ts test/reports.spec.ts
+
+РЕЗУЛЬТАТ
+  ✓ test/reports.spec.ts (7 tests) 853ms
+  ✓ test/llm-provider.spec.ts (6 tests) 1051ms
+  Test Files  2 passed (2)
+       Tests  13 passed (13)
+
+ПРОВАЙДЕР (6 тестов, локальный HTTP-заглушка-сервер, без сети и денег)
+  1. токен кэшируется: два complete() → ровно один OAuth;
+     OAuth — form-urlencoded, scope из GIGACHAT_SCOPE, RqUID = uuid4;
+  2. expires_at в мс: срок 30 мин → кэш; срок 30 сек (< 60 сек запаса) → новая авторизация;
+  3. 401 → сброс кэша + один повтор (2 chat-вызова, 2 OAuth);
+  4. 429 → один повтор, затем LlmError(code=rate_limited), ровно 2 chat-вызова;
+  5. usage 2000 токенов × 0.5 ₽/1000 = 1 ₽ (costRub округлён до 4 знаков);
+  6. https без GIGACHAT_CA_BUNDLE → LlmError(code=config),
+     текст содержит «проверь GIGACHAT_CA_BUNDLE»; TLS-проверка не отключается.
+
+КОНВЕЙЕР (7 тестов)
+  1. POST /reports без Idempotency-Key → 422, details.field_errors[0].field = Idempotency-Key;
+  2. без оплаты → 402 PAYMENT_REQUIRED, в reports 0 строк;
+  3. три POST с одним ключом → один report_id, в reports 1 строка, разбор доходит до ready;
+  4. GET: 7 глав (core…summary), у каждой body_md > 300 знаков,
+     в «Итоге» дословный дисклеймер, teaser = первые 400 знаков «Ядра»,
+     attempts >= 8, llm_cost_rub > 0;
+  5. в промптах нет ПДн: ни даты, ни времени, ни города, ни координат,
+     ни telegram_id, ни имени/username; факты карты при этом в промпте есть;
+  6. провайдер падает → status=failed, error_code=provider,
+     джоб report_refund → report_refunds_done=1, звёзды возвращены, status=refunded;
+  7. LLM_REPORT_CAP_RUB=0.1 → failed, error_code=cost_cap, attempts=1 (повтора не было).
+
+СЕРВЕРНЫЕ ПРОВЕРКИ В КОДЕ
+  - prompt собирается только из serializeChartFacts() + extras (whitelist, без chart.birth.*);
+  - валидаторы validators.ts на каждую главу, одна перегенерация, затем failed;
+  - стоимость пишется по usage каждого вызова в reports.llm_cost_rub и attempts,
+    месячный лимит и лимит разбора проверяются ДО следующего вызова;
+  - подставной провайдер включается без ключей GigaChat и честно пишется
+    в лог (llm_fake_provider) и в reports.model = fake-llm.
