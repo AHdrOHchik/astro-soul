@@ -49,8 +49,8 @@ describe('createAnalytics', () => {
     expect(sendEvents).toHaveBeenCalledOnce();
     expect(sendEvents).toHaveBeenCalledWith(
       [
-        { name: 'app_open', at: '2026-11-10T12:00:00.000Z' },
-        { name: 'screen_view', at: '2026-11-10T12:00:00.000Z', props: { step: 'welcome' } },
+        { name: 'app_open', occurred_at: '2026-11-10T12:00:00.000Z' },
+        { name: 'screen_view', occurred_at: '2026-11-10T12:00:00.000Z', props: { step: 'welcome' } },
       ],
       { keepalive: false },
     );
@@ -133,7 +133,7 @@ describe('createAnalytics', () => {
     analytics.flush();
 
     const [event] = sendEvents.mock.calls[0]?.[0] ?? [];
-    expect(event).toEqual({ name: 'screen_view', at: NOW.toISOString(), props: { step: 'birth_place' } });
+    expect(event).toEqual({ name: 'screen_view', occurred_at: NOW.toISOString(), props: { step: 'birth_place' } });
   });
 });
 

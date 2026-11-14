@@ -43,6 +43,15 @@ export function buildMe(chartId: string | null): Me {
     has_chart: hasChart,
     chart_id: chartId,
     subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
+    entitlements: {
+      is_active: false,
+      plan: 'none',
+      full_forecast: false,
+      ask_per_day: 0,
+      full_report: false,
+      compat_per_month: 0,
+      solar_included: false,
+    },
     quotas: [],
     onboarding_step: hasChart ? 'done' : 'birth_date',
   };
