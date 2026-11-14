@@ -66,8 +66,10 @@ export function App({ api, telegram, apiBaseUrl, botUsername = '', supportLink =
   // The server has deleted everything about the user: nothing the app holds is true any more.
   const [deleted, setDeleted] = useState(false);
   const handleDeleted = useCallback(() => {
+    // The one thing the app keeps on the device between reloads: the keys of the orders, under the id of the chart.
+    keys.forgetAll();
     setDeleted(true);
-  }, []);
+  }, [keys]);
 
   useEffect(() => {
     // The first frame is drawn: Telegram may swap its placeholder for the app.

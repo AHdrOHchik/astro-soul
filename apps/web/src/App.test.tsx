@@ -47,20 +47,21 @@ function setup(options: SetupOptions = {}) {
   const telegram = fakeTelegram(options.telegram);
   const analytics = fakeAnalytics();
   const termsReload = fakeTermsReload(options.termsReload);
+  const keys = fakeKeys();
   const user = setupUser();
   const app = (
     <App
       api={api}
       telegram={telegram}
       apiBaseUrl="https://api.test"
-      keys={fakeKeys()}
+      keys={keys}
       track={analytics.track}
       termsReload={termsReload}
       today={TODAY}
     />
   );
   const view = render(options.strict ? <StrictMode>{app}</StrictMode> : app);
-  return { api, telegram, analytics, termsReload, user, ...view };
+  return { api, telegram, analytics, termsReload, keys, user, ...view };
 }
 
 const start = () => screen.findByRole('button', { name: ru.welcome.start });
@@ -373,7 +374,9 @@ describe('App: the full report, the paywall and the settings', () => {
   });
 
   it('settings are a tap away from the chart; deleting the data ends the app on the screen that says so, and nothing more is reported', async () => {
-    const { api, analytics, telegram, user } = returning();
+    const { api, analytics, keys, telegram, user } = returning();
+    // An order made earlier left its key on the device.
+    const kept = keys.current(chartId, 'full');
 
     await user.click(await screen.findByRole('button', { name: ru.common.settings }));
     expect(heading()).toHaveTextContent(ru.settings.title);
@@ -392,6 +395,8 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(screen.getByText(ru.settings.deletion.doneText)).toBeInTheDocument();
     expect(api.deleteMe).toHaveBeenCalledTimes(1);
     expect(analytics.names()).toEqual(['data_deleted']);
+    // The keys of the orders went with the data: the same chart id would get a new one.
+    expect(keys.current(chartId, 'full')).not.toBe(kept);
     // Nothing of the old user is left to go back to.
     expect(telegram.setBackHandler).toHaveBeenLastCalledWith(null);
     await user.click(screen.getByRole('button', { name: ru.common.close }));

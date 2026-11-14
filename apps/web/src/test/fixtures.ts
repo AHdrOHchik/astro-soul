@@ -198,6 +198,9 @@ export function fakeKeys(): IdempotencyKeys {
   return {
     current: (chartId, type) => kept.get(`${type}.${chartId}`) ?? create(`${type}.${chartId}`),
     renew: (chartId, type) => create(`${type}.${chartId}`),
+    forgetAll: () => {
+      kept.clear();
+    },
   };
 }
 

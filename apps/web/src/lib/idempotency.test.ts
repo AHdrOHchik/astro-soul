@@ -94,4 +94,27 @@ describe('idempotency keys of report orders', () => {
     storage?.setItem(`${REPORT_KEY_PREFIX}full.${CHART}`, '<script>alert(1)</script>');
     expect(keys.current(CHART, 'full')).toMatch(UUID_V4);
   });
+
+  it('forgets every key when told to, in the storage and in memory, and touches nothing that is not its own', () => {
+    const { keys, restart, storage } = setup();
+    const first = keys.current(CHART, 'full');
+    keys.current(CHART, 'solar');
+    keys.current('00000000-0000-4000-8000-00000000beef', 'full');
+    storage?.setItem('somebody-else', 'stays');
+
+    keys.forgetAll();
+
+    expect(storage?.length).toBe(1);
+    expect(storage?.getItem('somebody-else')).toBe('stays');
+    // Nothing is remembered: the next order of the same chart is a new one, also after a reload.
+    expect(keys.current(CHART, 'full')).not.toBe(first);
+    expect(restart().current('00000000-0000-4000-8000-00000000beef', 'full')).toMatch(UUID_V4);
+  });
+
+  it('forgets without a storage too', () => {
+    const { keys } = setup(null);
+    const key = keys.current(CHART, 'full');
+    keys.forgetAll();
+    expect(keys.current(CHART, 'full')).not.toBe(key);
+  });
 });

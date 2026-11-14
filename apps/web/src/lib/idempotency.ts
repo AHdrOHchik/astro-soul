@@ -6,7 +6,7 @@
  * A key is made when the user asks for the report and kept under the chart and the kind of
  * report until the user decides to order anew, after a report that failed. It is kept in
  * sessionStorage, so it outlives a reload of the page, and holds nothing about the user: a
- * random id under the id of a chart.
+ * random id under the id of a chart. When the user deletes their data the keys go too.
  */
 
 /** Exported for the tests and for looking at the storage by hand. */
@@ -22,6 +22,8 @@ export interface IdempotencyKeys {
   current(chartId: string, type: string): string;
   /** A new key in place of the kept one: the next order is a new order. */
   renew(chartId: string, type: string): string;
+  /** Forgets every key. After the user's data is deleted nothing of their orders stays on the device. */
+  forgetAll(): void;
 }
 
 export interface IdempotencyKeysOptions {
@@ -85,6 +87,21 @@ export function createIdempotencyKeys(options: IdempotencyKeysOptions = {}): Ide
     },
     renew(chartId, type) {
       return create(nameOf(chartId, type));
+    },
+    forgetAll() {
+      memory.clear();
+      try {
+        const storage = getStorage();
+        // The names first, the removal after: removing while walking moves the rest up.
+        const names: string[] = [];
+        for (let index = 0; index < storage.length; index += 1) {
+          const name = storage.key(index);
+          if (name?.startsWith(REPORT_KEY_PREFIX)) names.push(name);
+        }
+        for (const name of names) storage.removeItem(name);
+      } catch {
+        // No storage: nothing was kept there.
+      }
     },
   };
 }
