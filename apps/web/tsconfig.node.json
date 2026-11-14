@@ -12,6 +12,7 @@
   "include": [
     "vite.config.ts",
     "mock",
+    "scripts",
     "tests"
   ]
 }

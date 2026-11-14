@@ -2,9 +2,7 @@ import react from '@vitejs/plugin-react';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { mockApi } from './mock/plugin.ts';
-import { botUsernameOf } from './src/lib/share.ts';
-import { SUBSCRIPTION_MODES, subscriptionsModeOf } from './src/lib/subscriptions.ts';
-import { supportLinkOf } from './src/lib/support.ts';
+import { readBuildSettings } from './scripts/buildSettings.ts';
 
 /*
  * Oldest engines we promise to run on: iOS 15 (Safari 15) and the Chromium 80
@@ -24,32 +22,13 @@ export default defineConfig(({ mode, command }) => {
   // only VITE_* ones reach the client bundle.
   const env = loadEnv(mode, process.cwd(), '');
   const useMock = env.API_MOCK === '1';
-  // The app treats a value it cannot use as no value. Unnoticed, that is a release whose shared charts lead nowhere.
-  if (env.VITE_BOT_USERNAME && botUsernameOf(env.VITE_BOT_USERNAME) === '') {
-    throw new Error(`VITE_BOT_USERNAME is not a Telegram username: «${env.VITE_BOT_USERNAME}». Expected the bot's username, with or without @.`);
-  }
-  // The same for the support contact: a value the app cannot turn into a link would leave «Написать в поддержку» disabled without a word.
-  if (env.VITE_SUPPORT_CONTACT && supportLinkOf(env.VITE_SUPPORT_CONTACT) === '') {
-    throw new Error(`VITE_SUPPORT_CONTACT is neither a Telegram username nor an https link: «${env.VITE_SUPPORT_CONTACT}».`);
-  }
-
-  // What is sold must never depend on a typo: `VITE_SUBSCRIPTIONS=of` is neither «sell» nor «do not sell».
-  const subscriptions = subscriptionsModeOf(env.VITE_SUBSCRIPTIONS);
-  if (subscriptions === null) {
-    throw new Error(`VITE_SUBSCRIPTIONS is «${env.VITE_SUBSCRIPTIONS ?? ''}». Expected ${SUBSCRIPTION_MODES.join(' or ')}, or nothing (the same as off).`);
-  }
-
-  // Nothing in the repository sets these for a release: they come from the environment of whoever builds.
-  // A forgotten one is not an error (the app works without it), so the build says in plain words what it was given.
-  if (command === 'build') {
-    const support = supportLinkOf(env.VITE_SUPPORT_CONTACT);
-    const bot = botUsernameOf(env.VITE_BOT_USERNAME);
-    const lines = [
-      `subscriptions: ${subscriptions === 'off' ? 'not sold (set VITE_SUBSCRIPTIONS=enabled to sell)' : 'ON SALE'}`,
-      `support: ${support === '' ? 'NOT SET, the button is disabled (VITE_SUPPORT_CONTACT)' : support}`,
-      `bot: ${bot === '' ? 'NOT SET, a shared chart carries no link (VITE_BOT_USERNAME)' : `@${bot}`}`,
-    ];
-    process.stdout.write(`${lines.map((line) => `[web build] ${line}`).join('\n')}\n`);
+  // A value nobody can read stops the dev server and the build alike: taken for «not set», it would be a
+  // release that quietly differs from what the owner meant (a bot's name with a typo, `VITE_SUBSCRIPTIONS=of`).
+  const settings = readBuildSettings(env);
+  // Nothing in the repository sets these values for a release, so a build says what it was given. `pnpm build`
+  // has said it already, as its very first step (scripts/print-build-settings.ts); a bare `vite build` says it here.
+  if (command === 'build' && env.WEB_BUILD_SETTINGS_SHOWN !== '1') {
+    process.stdout.write(`${settings.lines.join('\n')}\n`);
   }
 
   return {

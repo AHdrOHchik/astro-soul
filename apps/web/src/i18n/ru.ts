@@ -18,12 +18,8 @@ import type { PluralForm } from './format';
  * marked «owner's wording»: they are not to be rephrased in passing either.
  */
 
-/**
- * Version of the legal texts below, sent as `consent.version` in `POST /charts`. The
- * server stores it next to the user's consent and accepts no other version than its
- * own: a release with new texts has to carry the new date here (YYYY-MM-DD).
- */
-export const CONSENT_VERSION = '2026-11-10';
+// The version of the legal texts below. It has a file of its own, with nothing else in it: the build reads it too.
+export { CONSENT_VERSION } from './consentVersion';
 
 interface ErrorCopy {
   title: string;
