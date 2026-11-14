@@ -5,6 +5,8 @@ import styles from './StateView.module.css';
 export interface StateViewProps {
   title: string;
   text?: string;
+  /** A second line in small print under the text: a part of the message, read with it. */
+  note?: string;
   icon?: ReactNode;
   /** Small print under the actions, e.g. a support reference. */
   caption?: ReactNode;
@@ -15,7 +17,7 @@ export interface StateViewProps {
 }
 
 /** Full-block message for the empty and error states of a screen. */
-export function StateView({ title, text, icon, caption, children, role = 'status' }: StateViewProps) {
+export function StateView({ title, text, note, icon, caption, children, role = 'status' }: StateViewProps) {
   // Callers pass conditional buttons; `false` and `null` must not leave an empty row behind.
   const hasActions = Children.toArray(children).length > 0;
   return (
@@ -24,6 +26,7 @@ export function StateView({ title, text, icon, caption, children, role = 'status
         {icon && <span className={styles.icon}>{icon}</span>}
         <h2 className={styles.title}>{title}</h2>
         {text && <p className={styles.text}>{text}</p>}
+        {note && <p className={styles.note}>{note}</p>}
       </div>
       {hasActions && <div className={styles.actions}>{children}</div>}
       {caption && <div className={styles.caption}>{caption}</div>}
