@@ -91,12 +91,11 @@ const ANSWER =
   'Это ответ мока, а не чтение твоей карты: настоящий пишет сервер. Опора у тебя — в привычке доводить начатое до результата; когда выбор неочевиден, она помогает больше, чем скорость.';
 
 /** What a question does besides being answered, by its first word: the failures worth seeing. */
-export type AskScenario = 'error' | 'cap' | 'payment';
+export type AskScenario = 'error' | 'cap';
 
 const SCENARIO_WORDS: readonly [word: string, scenario: AskScenario][] = [
   ['ошибка', 'error'],
   ['лимит', 'cap'],
-  ['оплата', 'payment'],
 ];
 
 export type AskOutcome =

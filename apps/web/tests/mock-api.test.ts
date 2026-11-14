@@ -181,9 +181,12 @@ describe('mock API: the forecast and the questions, by the rules of apps/api', (
     it.each([
       ['ошибка', 'error'],
       ['Лимит', 'cap'],
-      ['оплата', 'payment'],
     ])('starting with «%s» asks for a failure worth seeing (%s), whatever the quota', (word, scenario) => {
       expect(ask(`${word} и что будет?`, none)).toEqual({ kind: 'scenario', chartId: CHART, scenario });
+    });
+
+    it('«оплата…» is an ordinary question: apps/api answers no question with a 402, and the mock plays none', () => {
+      expect(ask('оплата и что будет?', some)).toMatchObject({ kind: 'answer', counted: true });
     });
   });
 });

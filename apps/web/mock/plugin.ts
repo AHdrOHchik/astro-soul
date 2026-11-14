@@ -506,12 +506,9 @@ function createHandler({
         sendProblem(res, 404, 'NOT_FOUND', ENGAGEMENT_MESSAGE.chartGone);
       } else if (outcome.kind === 'scenario' && outcome.scenario === 'error') {
         sendProblem(res, 500, 'INTERNAL', MESSAGE.INTERNAL);
-      } else if (outcome.kind === 'scenario' && outcome.scenario === 'cap') {
+      } else if (outcome.kind === 'scenario') {
         // The month's budget of the service is spent: the code of a used-up quota, and a quota that is not used up.
         sendProblem(res, 429, 'QUOTA_EXCEEDED', ENGAGEMENT_MESSAGE.askUnavailable, limit);
-      } else if (outcome.kind === 'scenario') {
-        // Not an answer apps/api gives to a question today: here to see what the app does if it ever comes.
-        sendProblem(res, 402, 'PAYMENT_REQUIRED', 'Вопросы карте — в подписке');
       } else if (outcome.kind === 'exhausted') {
         sendProblem(res, 429, 'QUOTA_EXCEEDED', ENGAGEMENT_MESSAGE.askExhausted, { ...limit, unlimited: false });
       } else {

@@ -116,9 +116,9 @@ export function AskScreen({ api, chartId, quota, refreshMe, track, back, onSubsc
   const answerTitle = useRef<HTMLHeadingElement>(null);
 
   // The callbacks of the moment, for what must not start over when the caller renders.
-  const latest = useRef({ refreshMe, onChartGone, onSubscribe, track });
+  const latest = useRef({ refreshMe, onChartGone, track });
   useEffect(() => {
-    latest.current = { refreshMe, onChartGone, onSubscribe, track };
+    latest.current = { refreshMe, onChartGone, track };
   });
 
   /** Asks the server for `Me`, where the count is. Never rejects: a count that could not be asked for is `unknown`. */
@@ -202,13 +202,6 @@ export function AskScreen({ api, chartId, quota, refreshMe, track, back, onSubsc
         // The chart is not there any more. Not a failure of this screen to show: the app leads on, and says nothing of the server's.
         setBusy(false);
         latest.current.onChartGone();
-        return;
-      }
-      if (code === 'PAYMENT_REQUIRED' && latest.current.onSubscribe) {
-        // The server wants a purchase for a question: on to the paywall, where there is one to offer.
-        setBusy(false);
-        countExhausted();
-        latest.current.onSubscribe();
         return;
       }
       if (code === 'QUOTA_EXCEEDED') {
