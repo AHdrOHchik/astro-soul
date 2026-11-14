@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { PLANS, type Plan } from '@astro-soul/shared';
+import { PLANS, type Plan, type PlanCode } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
 import { JsonLogger } from '../../common/logger';
 import { TelegramClient } from '../telegram/telegram.client';
@@ -34,6 +34,9 @@ export interface TelegramUpdate {
     readonly successful_payment?: TelegramSuccessfulPayment;
   };
 }
+
+/** Причины отказа из контракта (`payment_rejected.props.code`). */
+export type RejectCode = 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
 
 type ProcessOutcome =
   | { readonly kind: 'duplicate' }
@@ -112,6 +115,17 @@ export class PaymentsService {
     await this.telegram.answerPreCheckoutQuery(query.id, true);
   }
 
+  /**
+   * QA-11: доступ выдаётся только за платёж, который сервер сам выставлял.
+   *
+   * Проверки по порядку: (1) инвойс с таким `payload.k` существует и принадлежит
+   * этому же пользователю, план в payload совпадает с планом инвойса;
+   * (2) сумма равна цене плана; (3) план известен. Любой отказ — `200` в вебхуке
+   * (иначе Telegram будет ретраить вечно), запись платежа со статусом `rejected`
+   * и причиной, серверное событие `payment_rejected` и счётчик в `/admin/metrics`.
+   * Возврат звёзд автоматически не делаем: это реальные деньги пользователя,
+   * решение принимает владелец.
+   */
   private async handleSuccessfulPayment(
     chatId: number | null,
     telegramUserId: number | null,
@@ -119,35 +133,53 @@ export class PaymentsService {
   ): Promise<void> {
     const payload = parseInvoicePayload(payment.invoice_payload);
     const plan = payload === null ? undefined : PLANS[payload.p];
+    const chargeId = payment.telegram_payment_charge_id;
 
-    if (payload === null || plan === undefined) {
-      // Деньги списаны, но связать платёж не с чем: фиксируем charge_id для разбора
-      // поддержкой. Падать с 500 нельзя — Telegram будет ретраить бесконечно.
-      this.logger.error(payload === null ? 'payment_payload_invalid' : 'payment_unknown_plan', {
-        charge: payment.telegram_payment_charge_id,
-        amount: payment.total_amount,
-      });
+    if (payment.currency !== 'XTR') {
+      this.logger.error('payment_wrong_currency', { charge: chargeId });
       return;
     }
 
-    if (payment.currency !== 'XTR') {
-      this.logger.error('payment_wrong_currency', { charge: payment.telegram_payment_charge_id });
+    if (payload === null || plan === undefined) {
+      await this.rejectPayment({
+        code: 'unknown_plan',
+        detail: payload === null ? 'payload_invalid' : 'plan_not_in_catalogue',
+        telegramUserId,
+        payment,
+        userId: payload?.u ?? null,
+        planCode: null,
+        expected: null,
+      });
       return;
     }
 
     const invoice = await this.repo.findInvoiceByIdeaKey(payload.u, payload.k);
-    const amountMatches = payment.total_amount === plan.stars;
-    if (!amountMatches) {
-      // Оплата не совпала с ценой плана: доступ выдаём по факту оплаты,
-      // но фиксируем — это повод разобраться руками, а не молчание.
-      this.logger.error('payment_amount_mismatch', {
-        charge: payment.telegram_payment_charge_id,
+    if (invoice === null || invoice.plan_code !== payload.p) {
+      await this.rejectPayment({
+        code: 'no_invoice',
+        detail: invoice === null ? 'invoice_missing' : 'invoice_plan_mismatch',
+        telegramUserId,
+        payment,
+        userId: payload.u,
+        planCode: payload.p,
         expected: plan.stars,
-        actual: payment.total_amount,
       });
+      return;
     }
 
-    const chargeId = payment.telegram_payment_charge_id;
+    if (payment.total_amount !== plan.stars) {
+      await this.rejectPayment({
+        code: 'amount_mismatch',
+        detail: 'amount_differs_from_plan_price',
+        telegramUserId,
+        payment,
+        userId: payload.u,
+        planCode: payload.p,
+        expected: plan.stars,
+      });
+      return;
+    }
+
     const requestedExpiresAt =
       plan.kind === 'subscription'
         ? new Date(
@@ -159,7 +191,9 @@ export class PaymentsService {
 
     const outcome = await this.db.withTransaction<ProcessOutcome>(async (client) => {
       const locked = await this.repo.lockPayment(client, chargeId);
-      if (locked?.processed === true) {
+      // Повтор доставки уже обработанного платежа и повтор доставки отказа
+      // (`rejected`) — оба ничего не выдают: доступ даёт только первая запись.
+      if (locked !== null && (locked.processed || locked.status === 'rejected')) {
         return { kind: 'duplicate' };
       }
 
@@ -217,7 +251,8 @@ export class PaymentsService {
       props: {
         plan: payload.p,
         stars: payment.total_amount,
-        amount_matches: amountMatches,
+        // Сюда доходят только платежи, сверенные с инвойсом и ценой плана.
+        amount_matches: true,
         renewed: outcome.renewed,
       },
     });
@@ -226,6 +261,63 @@ export class PaymentsService {
     if (chatId !== null) {
       await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
     }
+  }
+
+  /**
+   * Отказ по деньгам: платёж пишется со статусом `rejected`, доступ не выдаётся.
+   *
+   * В логах — только `charge_id`, суммы, код и `request_id` (его добавляет
+   * логгер): ни telegram_id, ни payload пользователя.
+   */
+  private async rejectPayment(input: {
+    readonly code: RejectCode;
+    readonly detail: string;
+    readonly telegramUserId: number | null;
+    readonly payment: TelegramSuccessfulPayment;
+    readonly userId: string | null;
+    readonly planCode: PlanCode | null;
+    readonly expected: number | null;
+  }): Promise<void> {
+    const chargeId = input.payment.telegram_payment_charge_id;
+
+    this.logger.warn('payment_rejected', {
+      code: input.code,
+      detail: input.detail,
+      charge: chargeId,
+      amount: input.payment.total_amount,
+      expected: input.expected,
+      plan: input.planCode,
+    });
+
+    const inserted = await this.db.withTransaction(async (client) => {
+      const paymentId = await this.repo.insertRejectedPayment(client, {
+        userId: input.userId,
+        telegramId: input.telegramUserId,
+        planCode: input.planCode,
+        totalAmount: input.payment.total_amount,
+        currency: input.payment.currency,
+        chargeId,
+        providerChargeId: input.payment.provider_payment_charge_id ?? null,
+        invoicePayload: input.payment.invoice_payload,
+        subscriptionExpiresAt: null,
+        rejectReason: input.code,
+      });
+
+      // Повторная доставка того же charge_id уже записана — второй раз не считаем.
+      return paymentId !== null;
+    });
+
+    if (!inserted) {
+      this.logger.info('payment_rejected_duplicate_ignored', { charge: chargeId, code: input.code });
+      return;
+    }
+
+    // Событие только серверное: клиент его отправить не может (контракт 1.5.1).
+    await this.events.log({
+      name: 'payment_rejected',
+      userId: input.userId,
+      props: { code: input.code, plan: input.planCode, expected: input.expected },
+    });
   }
 
   private async grantOne(

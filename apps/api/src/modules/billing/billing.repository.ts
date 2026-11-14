@@ -17,13 +17,18 @@ export interface InvoiceRow {
 export interface NewPayment {
   readonly userId: string | null;
   readonly telegramId: number | null;
-  readonly planCode: PlanCode;
+  /** `null` допустим только у `rejected`: у неизвестного плана плана нет. */
+  readonly planCode: PlanCode | null;
   readonly totalAmount: number;
   readonly currency: string;
   readonly chargeId: string;
   readonly providerChargeId: string | null;
   readonly invoicePayload: string;
   readonly subscriptionExpiresAt: Date | null;
+}
+
+export interface NewRejectedPayment extends NewPayment {
+  readonly rejectReason: 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
 }
 
 export interface GrantInput {
@@ -104,9 +109,12 @@ export class BillingRepository {
   // --- платежи (в транзакции) ---------------------------------------------
 
   /** `SELECT ... FOR UPDATE`: вторая доставка того же charge_id ждёт первую. */
-  async lockPayment(client: PoolClient, chargeId: string): Promise<{ id: string; processed: boolean } | null> {
-    const result = await client.query<{ id: string; processed: boolean }>(
-      `SELECT id, processed FROM payments WHERE telegram_payment_charge_id = $1 FOR UPDATE`,
+  async lockPayment(
+    client: PoolClient,
+    chargeId: string,
+  ): Promise<{ id: string; processed: boolean; status: string } | null> {
+    const result = await client.query<{ id: string; processed: boolean; status: string }>(
+      `SELECT id, processed, status FROM payments WHERE telegram_payment_charge_id = $1 FOR UPDATE`,
       [chargeId],
     );
     return result.rows[0] ?? null;
@@ -131,6 +139,37 @@ export class BillingRepository {
         payment.providerChargeId,
         payment.invoicePayload,
         payment.subscriptionExpiresAt,
+      ],
+    );
+
+    return result.rows[0]?.id ?? null;
+  }
+
+  /**
+   * Отказ по деньгам (QA-11): строка пишется, чтобы отказ был виден поддержке
+   * и в метриках, но `processed` остаётся `false` — доступа она не даёт.
+   * Возвращает `null`, если такой `charge_id` уже записан (повтор доставки).
+   */
+  async insertRejectedPayment(client: PoolClient, payment: NewRejectedPayment): Promise<string | null> {
+    const result = await client.query<{ id: string }>(
+      `INSERT INTO payments (
+         user_id, telegram_id, plan_code, currency, total_amount,
+         telegram_payment_charge_id, provider_payment_charge_id, invoice_payload,
+         subscription_expires_at, status, processed, reject_reason
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'rejected', false, $10)
+       ON CONFLICT (telegram_payment_charge_id) DO NOTHING
+       RETURNING id`,
+      [
+        payment.userId,
+        payment.telegramId,
+        payment.planCode,
+        payment.currency,
+        payment.totalAmount,
+        payment.chargeId,
+        payment.providerChargeId,
+        payment.invoicePayload,
+        payment.subscriptionExpiresAt,
+        payment.rejectReason,
       ],
     );
 

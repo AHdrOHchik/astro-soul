@@ -1,0 +1,19 @@
+=== ДО: контракт 1.5.1, коммит add73bf (код без проверки инвойса)
+
+=== QA-11: successful_payment без инвойса + сумма не совпадает ===
+доставка апдейта: 200 {"ok":true}
+payments для этого пользователя: year_2990|1|processed
+subscriptions: year|active|2027-11-14 09:00:41+00
+invoices (сервер инвойс не выставлял): 0
+/me: {"status":200,"subscription":{"plan":"year","is_active":true,"expires_at":"2027-11-14T09:00:41.000Z","auto_renew":true,"stars_paid_total":1},"entitlements":{"is_active":true,"plan":"year","full_forecast":true,"ask_per_day":5,"full_report":false,"compat_per_month":1,"solar_included":true}}
+в логах (не в метриках): payment_amount_mismatch expected=2990 actual=1
+
+=== ПОСЛЕ: QA-11 закрыт (проверка инвойса + суммы + плана)
+
+=== QA-11: successful_payment без инвойса + сумма не совпадает ===
+доставка апдейта: 200 {"ok":true}
+payments для этого пользователя: year_2990|1|rejected
+subscriptions: 
+invoices (сервер инвойс не выставлял): 0
+/me: {"status":200,"subscription":{"plan":"none","is_active":false,"expires_at":null,"auto_renew":false,"stars_paid_total":0},"entitlements":{"is_active":false,"plan":"none","full_forecast":false,"ask_per_day":1,"full_report":false,"compat_per_month":0,"solar_included":false}}
+в логах (не в метриках): payment_amount_mismatch expected=2990 actual=1

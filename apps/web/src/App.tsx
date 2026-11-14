@@ -127,7 +127,7 @@ export function App({ api, telegram, apiBaseUrl, botUsername = '', track, termsR
       track={track}
       today={today}
       // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
-      hasChart={me.data.has_chart === true || typeof me.data.chart_id === 'string'}
+      hasChart={me.data.has_chart || typeof me.data.chart_id === 'string'}
       termsRenewed={terms === 'renewed'}
       onConsentRefused={handleConsentRefused}
     />
