@@ -18,12 +18,21 @@ function body(text: string, key: 'core' | 'summary' = 'core'): string {
   return result;
 }
 
+/**
+ * Проверки структуры абзацев (QA-22) проверяются отдельным блоком: здесь
+ * фикстуры — одно предложение, растянутое до нужной длины, и падать на
+ * «3–6 абзацев» они будут всегда. Остальные правила от этого не зависят.
+ */
+const STRUCTURAL = new Set(['paragraphs', 'paragraph_sentences', 'word_share', 'sentence_repeat']);
+
 function rules(text: string, precision: 'exact' | 'approximate' | 'unknown' = 'unknown', key: 'core' | 'summary' = 'core') {
   return validateSection({ key, bodyMd: body(text, key), timePrecision: precision });
 }
 
 function failed(text: string, precision: 'exact' | 'unknown' = 'unknown', key: 'core' | 'summary' = 'core'): string[] {
-  return rules(text, precision, key).failures.map((failure) => failure.rule);
+  return rules(text, precision, key)
+    .failures.map((failure) => failure.rule)
+    .filter((rule) => !STRUCTURAL.has(rule));
 }
 
 /**
@@ -53,7 +62,7 @@ describe('P0-5: дома при unknown — семь обязательных к
 
   it('«в доме партнёрства» — warning, не провал', () => {
     const result = rules('Плутон стоит в доме партнёрства');
-    expect(result.failures).toEqual([]);
+    expect(result.failures.filter((failure) => !STRUCTURAL.has(failure.rule))).toEqual([]);
     expect(result.warnings.some((warning) => warning.startsWith('unknown_house_soft'))).toBe(true);
   });
 
@@ -107,7 +116,7 @@ describe('P0-5: остальные правила', () => {
       bodyMd: `${'а'.repeat(1_250)} ${'б'.repeat(150)}`,
       timePrecision: 'exact',
     });
-    expect(slightlyLong.failures).toEqual([]);
+    expect(slightlyLong.failures.filter((failure) => !STRUCTURAL.has(failure.rule))).toEqual([]);
     expect(slightlyLong.warnings.some((warning) => warning.startsWith('length_off'))).toBe(true);
   });
 
@@ -146,5 +155,80 @@ describe('P0-5: остальные правила', () => {
 
   it('делит текст на предложения', () => {
     expect(splitSentences('Первое. Второе! Третье?')).toEqual(['Первое.', 'Второе!', 'Третье?']);
+  });
+});
+
+/**
+ * QA-22: проверки, которые раньше не существовали, — абзацы, длина абзаца,
+ * доля частотного слова, дословный повтор предложения внутри главы.
+ *
+ * Текст fake-llm из приёмки QA-002 (одним абзацем, с четвёркой повторяющихся
+ * слов) обязан давать непустой `validation` — иначе эти проверки снова
+ * «зелёные» на браке.
+ */
+describe('QA-22: структура главы', () => {
+  const QA_FAKE_TEXT = [
+    'Когда дело касается решений, ты долго выбираешь темп для решений и редко об этом жалеешь.',
+    'Ты держишь решений в поле зрения, но не позволяешь решений задавать тебе скорость.',
+    'Твоя сила в решений проявляется тихо: решений работает, пока другие обсуждают подход.',
+    'В разговорах про решений ты сначала проверяешь опору, потом цену решений.',
+    'Тебе важно, чтобы решений шло своим ходом, поэтому решений редко бывает быстрым.',
+    'Ты не любишь показывать, сколько решений держишь внутри, и прячешь решений за спокойствием.',
+    'Ошибку в решений ты замечаешь раньше других и потом долго возвращаешься к решений.',
+    'Когда решений требует решения, ты берёшь паузу, и эта пауза в решений тебя не подводит.',
+    'Твой способ вести решений выглядит медленным, зато решений почти не даёт сбоев.',
+    'Про решений ты говоришь мало, но каждое слово про решений у тебя взвешено.',
+    'Тебя успокаивает, когда решений движется ровно, и раздражает, когда решений торопят.',
+    'В решений ты опираешься на проверенное, и это делает решений надёжным, но не быстрым.',
+].join(' ');
+
+  it('текст fake-llm из приёмки даёт непустой validation', () => {
+    const result = validateSection({ key: 'core', bodyMd: QA_FAKE_TEXT, timePrecision: 'exact' });
+    const rulesFound = result.failures.map((failure) => failure.rule);
+
+    expect(result.failures.length).toBeGreaterThan(0);
+    expect(rulesFound).toContain('paragraphs');
+    expect(rulesFound).toContain('word_share');
+  });
+
+  it('абзацев меньше трёх или больше шести — провал', () => {
+    const two = 'Первое предложение. Второе предложение.\n\nТретье предложение. Четвёртое предложение.';
+    expect(
+      validateSection({ key: 'core', bodyMd: two, timePrecision: 'exact' }).failures.map((f) => f.rule),
+    ).toContain('paragraphs');
+  });
+
+  it('в абзаце 1 или 5 предложений — провал по своему коду', () => {
+    const one = 'Одно предложение в абзаце.\n\nВторой абзац. Ещё одно. И ещё.\n\nТретий абзац. Тут два.';
+    expect(
+      validateSection({ key: 'core', bodyMd: one, timePrecision: 'exact' }).failures.map((f) => f.rule),
+    ).toContain('paragraph_sentences');
+  });
+
+  it('доля самого частого слова выше 12 % — провал; в core порог мягче', () => {
+    const repetitive = [
+      'Стихия стихия стихия стихия стихия стихия стихия стихия стихия стихия.',
+      'Стихия стихия стихия стихия стихия стихия стихия стихия стихия стихия.',
+      'Стихия стихия стихия стихия стихия стихия стихия стихия стихия стихия.',
+    ].join('\n\n');
+
+    const inPurpose = validateSection({ key: 'purpose', bodyMd: repetitive, timePrecision: 'exact' });
+    expect(inPurpose.failures.map((f) => f.rule)).toContain('word_share');
+
+    const inCore = validateSection({ key: 'core', bodyMd: repetitive, timePrecision: 'exact' });
+    const share = inCore.failures.find((f) => f.rule === 'word_share');
+    // В core порог 18 %, а 100 % «стихии» выше и его.
+    expect(share).toBeDefined();
+  });
+
+  it('дословно повторённое предложение внутри главы — провал', () => {
+    const repeated =
+      'Ты возвращаешься к незакрытым разговорам и мысленно доводишь их до конца.\n\n' +
+      'Второе предложение здесь другое. И третье тоже другое.\n\n' +
+      'Ты возвращаешься к незакрытым разговорам и мысленно доводишь их до конца. Ещё фраза.';
+
+    expect(
+      validateSection({ key: 'core', bodyMd: repeated, timePrecision: 'exact' }).failures.map((f) => f.rule),
+    ).toContain('sentence_repeat');
   });
 });

@@ -206,11 +206,27 @@ describe('GET /api/v1/reports/{report_id}', () => {
     // Тизер — первые 400 знаков «Ядра»: он же показывается до оплаты.
     expect(ready.body.teaser).toBe(sections[0]?.body_md.slice(0, 400));
 
-    const report = await ctx.db.queryOne<{ attempts: number; llm_cost_rub: string }>(
-      `SELECT attempts, llm_cost_rub FROM reports`,
+    const report = await ctx.db.queryOne<{
+      attempts: number;
+      llm_cost_rub: string;
+      llm_tokens_in: number;
+      llm_tokens_out: number;
+      prompt_version: string;
+      report_structure_version: string;
+    }>(
+      `SELECT attempts, llm_cost_rub, llm_tokens_in, llm_tokens_out,
+              prompt_version, report_structure_version
+         FROM reports`,
     );
     expect(report?.attempts).toBeGreaterThanOrEqual(8);
-    expect(Number(report?.llm_cost_rub)).toBeGreaterThan(0);
+    // QA-002, задача 2: подставной провайдер ничего не стоит, поэтому рублей
+    // ноль, но токены записаны — сумма и объём больше не расходятся.
+    expect(Number(report?.llm_cost_rub)).toBe(0);
+    expect(report?.llm_tokens_in ?? 0).toBeGreaterThan(0);
+    expect(report?.llm_tokens_out ?? 0).toBeGreaterThan(0);
+    // Контент v1.1: новые разборы пишут новую версию структуры и промптов.
+    expect(report?.prompt_version).toBe('prompts_v1.1');
+    expect(report?.report_structure_version).toBe('structure_v1.1');
   });
 
   it('в промпт не попадают ПДн — только факты карты', async () => {

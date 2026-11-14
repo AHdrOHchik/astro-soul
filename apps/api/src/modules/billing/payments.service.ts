@@ -5,7 +5,7 @@ import { DbService } from '../../db/db.service';
 import { JsonLogger } from '../../common/logger';
 import { TelegramClient } from '../telegram/telegram.client';
 import { EventsRepository } from '../events/events.repository';
-import { BillingRepository } from './billing.repository';
+import { BillingRepository, type RejectReason } from './billing.repository';
 import { parseInvoicePayload } from './billing.dto';
 
 export interface TelegramSuccessfulPayment {
@@ -35,8 +35,12 @@ export interface TelegramUpdate {
   };
 }
 
-/** Причины отказа из контракта (`payment_rejected.props.code`). */
-export type RejectCode = 'no_invoice' | 'amount_mismatch' | 'unknown_plan';
+/**
+ * Причины отказа из контракта (`payment_rejected.props.code`).
+ * `invoice_invalidated` и `user_deleted` — QA-15: оплата после удаления данных;
+ * `refund_failed` — отказ записан, но звёзды вернуть не удалось.
+ */
+export type RejectCode = RejectReason | 'refund_failed';
 
 /** Что стало с платежом: доступ выдан, отказ по деньгам или повтор доставки. */
 type PaymentOutcome =
@@ -114,6 +118,26 @@ export class PaymentsService {
         query.id,
         false,
         'Товар недоступен, попробуй ещё раз',
+      );
+      return;
+    }
+
+    // QA-15: инвойс удалённого пользователя больше не принимает оплату.
+    const invoice = await this.repo.findInvoiceByIdeaKey(payload.u, payload.k);
+    const expired =
+      invoice === null ||
+      invoice.status !== 'created' ||
+      !(await this.repo.userExists(payload.u));
+
+    if (expired) {
+      this.logger.warn('pre_checkout_rejected', {
+        reason: invoice === null ? 'invoice_missing' : 'invoice_not_payable',
+        plan: payload.p,
+      });
+      await this.telegram.answerPreCheckoutQuery(
+        query.id,
+        false,
+        'Оплата больше недоступна — начни заново',
       );
       return;
     }
@@ -218,6 +242,37 @@ export class PaymentsService {
       return { kind: 'rejected', code: 'amount_mismatch' };
     }
 
+    // QA-15: оплата после удаления данных. Инвойс аннулируется вместе с
+    // пользователем, поэтому основная проверка — его статус; проверка
+    // существования пользователя закрывает гонку и старые данные.
+    if (invoice.status === 'invalidated') {
+      await this.rejectPayment({
+        code: 'invoice_invalidated',
+        detail: 'invoice_invalidated_after_delete',
+        telegramUserId,
+        payment,
+        userId: payload.u,
+        planCode: payload.p,
+        expected: plan.stars,
+        refund: true,
+      });
+      return { kind: 'rejected', code: 'invoice_invalidated' };
+    }
+
+    if (!(await this.repo.userExists(payload.u))) {
+      await this.rejectPayment({
+        code: 'user_deleted',
+        detail: 'user_missing_at_payment',
+        telegramUserId,
+        payment,
+        userId: payload.u,
+        planCode: payload.p,
+        expected: plan.stars,
+        refund: true,
+      });
+      return { kind: 'rejected', code: 'user_deleted' };
+    }
+
     // Срок из Telegram — когда он есть. Если поля нет, период прибавит
     // `upsertSubscription` к текущему `expires_at` (R-1): три оплаты подряд
     // дают три периода, а не один и тот же «сейчас + период».
@@ -304,13 +359,15 @@ export class PaymentsService {
    * логгер): ни telegram_id, ни payload пользователя.
    */
   private async rejectPayment(input: {
-    readonly code: RejectCode;
+    readonly code: RejectReason;
     readonly detail: string;
     readonly telegramUserId: number | null;
     readonly payment: TelegramSuccessfulPayment;
     readonly userId: string | null;
     readonly planCode: PlanCode | null;
     readonly expected: number | null;
+    /** QA-15: отказ из-за удаления данных возвращает звёзды автоматически. */
+    readonly refund?: boolean;
   }): Promise<void> {
     const chargeId = input.payment.telegram_payment_charge_id;
 
@@ -353,12 +410,68 @@ export class PaymentsService {
       return;
     }
 
-    // Событие только серверное: клиент его отправить не может (контракт 1.5.1).
+    // Событие только серверное: клиент его отправить не может (контракт 1.5.3).
     await this.events.log({
       name: 'payment_rejected',
       userId: input.userId,
       props: { code: input.code, plan: input.planCode, expected: input.expected },
     });
+
+    if (input.refund !== true) {
+      return;
+    }
+
+    await this.refundRejectedPayment({
+      chargeId,
+      telegramUserId: input.telegramUserId,
+      userId: input.userId,
+      code: input.code,
+    });
+  }
+
+  /**
+   * Возврат по отказу QA-15. Деньги вернулись — `refunded_at` у `rejected`
+   * и серверное событие `refund_issued`. Не вернулись (нет `telegram_id` или
+   * Telegram отказал) — платёж остаётся `rejected` + `processed = false`,
+   * попадает в `pending_payments_now`, а в событиях появляется
+   * `payment_rejected` с `code = refund_failed`: это ручной разбор поддержки.
+   */
+  private async refundRejectedPayment(input: {
+    readonly chargeId: string;
+    readonly telegramUserId: number | null;
+    readonly userId: string | null;
+    readonly code: RejectReason;
+  }): Promise<void> {
+    const refunded =
+      input.telegramUserId !== null &&
+      (await this.telegram.refundStarPayment(input.telegramUserId, input.chargeId));
+
+    if (!refunded) {
+      this.logger.error('payment_refund_failed', {
+        charge: input.chargeId,
+        code: input.code,
+        reason: input.telegramUserId === null ? 'no_telegram_id' : 'telegram_refused',
+      });
+      await this.events.log({
+        name: 'payment_rejected',
+        userId: input.userId,
+        props: { code: 'refund_failed', plan: null, expected: null },
+      });
+      return;
+    }
+
+    await this.repo.markRejectedRefunded(input.chargeId);
+    this.logger.info('refund_issued', { charge: input.chargeId, code: input.code });
+    await this.events.log({
+      name: 'refund_issued',
+      userId: input.userId,
+      props: { code: input.code },
+    });
+  }
+
+  /** QA-15: аннулирование инвойсов делает `DELETE /me` в своей транзакции. */
+  async invalidateInvoices(client: PoolClient, userId: string): Promise<number> {
+    return this.repo.invalidateInvoices(client, userId);
   }
 
   /**

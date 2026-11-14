@@ -18,7 +18,8 @@ export interface ProductMetrics {
   readonly conversion_to_paid: number;
   readonly churn_30d: number;
   readonly stars_received_30d: number;
-  readonly llm_cost_usd_30d: number;
+  /** Стоимость LLM в рублях за 30 дней — по `reports.llm_cost_rub`. */
+  readonly llm_cost_rub_30d: number;
   readonly reports_failed_30d: number;
   /** QA-11: платежи, по которым доступ не выдан. */
   readonly payments_rejected_30d: number;
@@ -51,7 +52,7 @@ export class AdminMetricsService {
   constructor(@Inject(DbService) private readonly db: DbService) {}
 
   async getMetrics(): Promise<ProductMetrics> {
-    const [activity, events, funnel, subscriptions, payments, reports] = await Promise.all([
+    const [activity, events, funnel, subscriptions, payments, reports, cost] = await Promise.all([
       this.db.queryOne<{ mau: number }>(
         `SELECT count(DISTINCT user_id)::int AS mau
            FROM events
@@ -105,7 +106,12 @@ export class AdminMetricsService {
            count(*) FILTER (
              WHERE status = 'refunded' AND refunded_at >= now() - ${WINDOW}
            )::int AS refunded,
-           count(*) FILTER (WHERE processed = false AND status = 'paid')::int AS pending
+           count(*) FILTER (
+             WHERE (status = 'paid' AND processed = false)
+                OR (status = 'rejected'
+                    AND reject_reason IN ('invoice_invalidated', 'user_deleted')
+                    AND refunded_at IS NULL)
+           )::int AS pending
          FROM payments`,
       ),
       this.db.queryOne<{ failed: number }>(
@@ -113,6 +119,11 @@ export class AdminMetricsService {
            FROM reports
           WHERE status = 'failed'
             AND updated_at >= now() - ${WINDOW}`,
+      ),
+      this.db.queryOne<{ cost: string }>(
+        `SELECT COALESCE(SUM(llm_cost_rub), 0)::text AS cost
+           FROM reports
+          WHERE created_at >= now() - ${WINDOW}`,
       ),
     ]);
 
@@ -138,9 +149,8 @@ export class AdminMetricsService {
       // для когорт нужна история, которую начнём копить с этой версии.
       churn_30d: ratio(subscriptions?.churned_30d ?? 0, subscriptions?.base ?? 0),
       stars_received_30d: payments?.stars ?? 0,
-      // LLM ещё не подключён: стоимость пишется в `reports.llm_cost_usd`
-      // в следующей итерации, до тех пор честный ноль.
-      llm_cost_usd_30d: 0,
+      // Одна формула: рубли по цене модели (QA-002, задача 2).
+      llm_cost_rub_30d: Math.round(Number(cost?.cost ?? 0) * 10_000) / 10_000,
       reports_failed_30d: reports?.failed ?? 0,
       payments_rejected_30d: payments?.rejected ?? 0,
       amount_mismatch_30d: payments?.mismatch ?? 0,

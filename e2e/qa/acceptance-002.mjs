@@ -376,8 +376,8 @@ async function vectors() {
               '(ждём: отзыв доступа, т.к. refundStarPayment вернул деньги)');
   const callsAfter = await stubCalls();
   console.log('   refundStarPayment вызван:', callsAfter.filter((c) => c.method === 'refundStarPayment').length,
-              '| событие payment_refunded в БД:',
-              sql(`SELECT count(*) FROM events WHERE name='payment_refunded' AND user_id='${userIdOf(USER)}'`));
+              '| событие refund_issued в БД:',
+              sql(`SELECT count(*) FROM events WHERE name='refund_issued' AND user_id='${userIdOf(USER)}'`));
 
   // 6. pre_checkout_query с ценой из клиента
   wipe();
@@ -435,6 +435,11 @@ async function deleteThenPay() {
   console.log('payments :', sql(`SELECT plan_code,status,processed FROM payments WHERE user_id='${uid}'`) || '(пусто)');
   console.log('entitlements:', sql(`SELECT kind,status FROM entitlements WHERE user_id='${uid}'`) || '(пусто)');
   console.log('invoices :', sql(`SELECT status FROM invoices WHERE user_id='${uid}'`));
+  console.log('refundStarPayment вызовов:', (await stubCalls()).filter((c) => c.method === 'refundStarPayment').length);
+  console.log('события:', sql(`SELECT name FROM events WHERE user_id='${uid}' ORDER BY created_at`) || '(пусто)');
+  // Важно: пользователя до этого запроса нет — его создаёт сам `GET /me`,
+  // а не платёж. Поэтому `is_new=true` здесь ожидаем, а `full_report` нет.
+  console.log('users до /me:', sql(`SELECT count(*) FROM users WHERE id='${uid}'`));
   const m = await api('/me');
   console.log('/me full_report=', m.body.entitlements?.full_report, 'is_new=', m.body.is_new);
 
