@@ -429,8 +429,9 @@ function createHandler({
       return;
     }
 
-    const wheel = { svg: `GET /charts/${MOCK_CHART_ID}/wheel.svg`, png: `GET /charts/${MOCK_CHART_ID}/wheel.png` };
-    if (route === wheel.svg || route === wheel.png) {
+    // The wheel of any chart: the mock draws one picture for all of them. An address that names no chart id is not one.
+    const wheelOf = req.method === 'GET' ? /^\/charts\/([^/]+)\/wheel\.(svg|png)$/.exec(path) : null;
+    if (wheelOf && UUID.test(wheelOf[1] ?? '')) {
       // Public by signed token: no initData here, see the contract. The same signature opens both.
       if (!url.searchParams.get('sig')) {
         sendProblem(res, 403, 'FORBIDDEN', MESSAGE.FORBIDDEN);
@@ -441,7 +442,7 @@ function createHandler({
         sendInvalid(res, [{ field: 'theme', message: 'Тема может быть dark или light' }]);
         return;
       }
-      if (route === wheel.svg) {
+      if (wheelOf[2] === 'svg') {
         send(res, 200, renderMockWheel(theme), 'image/svg+xml');
         return;
       }
@@ -609,7 +610,7 @@ function createHandler({
           send(res, 202, reportView(known, now, false));
         } else if (latest && latestStatus !== 'failed' && latestStatus !== 'refunded') {
           // A report of this chart is in work or done: a second order is that same report.
-          send(res, 202, reportView(latest, now, paidCharts.size > 0));
+          send(res, 202, reportView(latest, now, paidCharts.has(chartId)));
         } else if (!paidCharts.has(chartId)) {
           sendProblem(res, 402, 'PAYMENT_REQUIRED', 'Полный разбор — отдельная покупка. Оформи её на экране разбора', {
             reason: 'report_not_paid',
@@ -628,7 +629,8 @@ function createHandler({
     const reportOf = /^\/reports\/([^/]+)$/.exec(path);
     if (reportOf && req.method === 'GET') {
       const report = reports.get(reportOf[1] ?? '');
-      if (report) send(res, 200, reportView(report, now, paidCharts.size > 0));
+      // Paid for or not is a matter of the chart the report is about: another chart's purchase opens nothing here.
+      if (report) send(res, 200, reportView(report, now, paidCharts.has(report.chartId)));
       else sendProblem(res, 404, 'NOT_FOUND', 'Такого разбора нет. Обнови приложение', { reason: 'report_not_found' });
       return;
     }
