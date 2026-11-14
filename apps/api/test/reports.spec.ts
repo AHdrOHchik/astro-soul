@@ -64,11 +64,11 @@ afterEach(() => {
 });
 
 /** Пользователь с картой: карта строится тем же API, что и в проде. */
-async function userWithChart(): Promise<Fixture> {
+async function userWithChart(birth: typeof BIRTH = BIRTH): Promise<Fixture> {
   const response = await request(ctx.app.getHttpServer())
     .post('/api/v1/charts')
     .set(INIT_DATA_HEADER, initDataFor())
-    .send(BIRTH)
+    .send(birth)
     .expect(201);
 
   const user = await ctx.db.queryOne<{ id: string }>(`SELECT id FROM users`);
@@ -140,6 +140,21 @@ describe('POST /api/v1/reports', () => {
 
     expect(response.body.code).toBe('PAYMENT_REQUIRED');
     expect(await ctx.db.query(`SELECT 1 FROM reports`)).toHaveLength(0);
+  });
+
+  it('одна покупка не открывает разбор по другой карте', async () => {
+    const first = await userWithChart();
+    await grantReport(first);
+
+    await orderReport(first, 'chart-one').expect(202);
+
+    // Вторая карта того же пользователя: другой вход, другой chart_id.
+    const second = await userWithChart({ ...BIRTH, birth_date: '1990-01-02' });
+    expect(second.chartId).not.toBe(first.chartId);
+
+    const response = await orderReport(second, 'chart-two').expect(402);
+    expect(response.body.code).toBe('PAYMENT_REQUIRED');
+    expect(await ctx.db.query(`SELECT 1 FROM reports`)).toHaveLength(1);
   });
 
   it('три заказа с одним ключом дают один разбор', async () => {

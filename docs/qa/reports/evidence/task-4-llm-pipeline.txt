@@ -6,10 +6,10 @@ Task 4 — LLM-конвейер и POST/GET /reports (P0-4/P0-7, контрак�
   corepack pnpm exec vitest run test/llm-provider.spec.ts test/reports.spec.ts
 
 РЕЗУЛЬТАТ
-  ✓ test/reports.spec.ts (7 tests) 853ms
-  ✓ test/llm-provider.spec.ts (6 tests) 1051ms
+  ✓ test/reports.spec.ts (8 tests) ~1.0s
+  ✓ test/llm-provider.spec.ts (6 tests) ~1.1s
   Test Files  2 passed (2)
-       Tests  13 passed (13)
+       Tests  14 passed (14)
 
 ПРОВАЙДЕР (6 тестов, локальный HTTP-заглушка-сервер, без сети и денег)
   1. токен кэшируется: два complete() → ровно один OAuth;
@@ -21,7 +21,7 @@ Task 4 — LLM-конвейер и POST/GET /reports (P0-4/P0-7, контрак�
   6. https без GIGACHAT_CA_BUNDLE → LlmError(code=config),
      текст содержит «проверь GIGACHAT_CA_BUNDLE»; TLS-проверка не отключается.
 
-КОНВЕЙЕР (7 тестов)
+КОНВЕЙЕР (8 тестов)
   1. POST /reports без Idempotency-Key → 422, details.field_errors[0].field = Idempotency-Key;
   2. без оплаты → 402 PAYMENT_REQUIRED, в reports 0 строк;
   3. три POST с одним ключом → один report_id, в reports 1 строка, разбор доходит до ready;
@@ -32,7 +32,9 @@ Task 4 — LLM-конвейер и POST/GET /reports (P0-4/P0-7, контрак�
      ни telegram_id, ни имени/username; факты карты при этом в промпте есть;
   6. провайдер падает → status=failed, error_code=provider,
      джоб report_refund → report_refunds_done=1, звёзды возвращены, status=refunded;
-  7. LLM_REPORT_CAP_RUB=0.1 → failed, error_code=cost_cap, attempts=1 (повтора не было).
+  7. одна покупка не открывает вторую карту: разбор по второй карте → 402,
+     в reports остаётся одна строка (доступ проверяется по (user, chart), а не по флагу `fullReport`);
+  8. LLM_REPORT_CAP_RUB=0.1 → failed, error_code=cost_cap, attempts=1 (повтора не было).
 
 СЕРВЕРНЫЕ ПРОВЕРКИ В КОДЕ
   - prompt собирается только из serializeChartFacts() + extras (whitelist, без chart.birth.*);

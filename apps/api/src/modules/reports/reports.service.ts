@@ -165,7 +165,10 @@ export class ReportsService {
       return this.view(latest, entitlement.fullReport);
     }
 
-    if (!entitlement.fullReport) {
+    // Проверка доступа — по карте, а не по флагу `fullReport`: одна покупка
+    // не должна открывать разборы по другим картам (деньги).
+    const owned = await this.repo.claimReportEntitlement(userId, chart.id);
+    if (!owned) {
       throw new ApiError('PAYMENT_REQUIRED', 402, {
         message: 'Полный разбор — отдельная покупка. Оформи её на экране разбора',
         reason: 'report_not_paid',

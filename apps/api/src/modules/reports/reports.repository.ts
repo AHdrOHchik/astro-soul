@@ -59,6 +59,35 @@ export class ReportsRepository {
     );
   }
 
+  /**
+   * Доступ к полному разбору **этой** карты. Покупка без `chart_id` (подарок,
+   * поддержка) закрепляется за первой картой в момент использования: иначе
+   * одна покупка открывала бы разборы по всем картам пользователя.
+   */
+  async claimReportEntitlement(userId: string, chartId: string): Promise<boolean> {
+    const row = await this.db.queryOne<{ id: string }>(
+      `SELECT id FROM entitlements
+        WHERE user_id = $1
+          AND kind = 'report'
+          AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > now())
+          AND (chart_id = $2 OR chart_id IS NULL)
+        ORDER BY (chart_id IS NULL)
+        LIMIT 1`,
+      [userId, chartId],
+    );
+
+    if (row === null) {
+      return false;
+    }
+
+    await this.db.query(`UPDATE entitlements SET chart_id = $2 WHERE id = $1 AND chart_id IS NULL`, [
+      row.id,
+      chartId,
+    ]);
+    return true;
+  }
+
   async byId(id: string): Promise<ReportRow | null> {
     return this.db.queryOne<ReportRow>(`SELECT ${COLUMNS} FROM reports WHERE id = $1`, [id]);
   }
