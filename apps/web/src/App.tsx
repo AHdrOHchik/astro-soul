@@ -85,9 +85,12 @@ export function App({
   const [terms, setTerms] = useState(() => termsAtStart(termsReload.refusedVersion));
   // The server has deleted everything about the user: nothing the app holds is true any more.
   const [deleted, setDeleted] = useState(false);
-  const handleDeleted = useCallback(() => {
+  // Non-access fact captured when the user opens deletion, kept only for the final screen's wording.
+  const [deletedHadSubscription, setDeletedHadSubscription] = useState(false);
+  const handleDeleted = useCallback((hadSubscription: boolean) => {
     // The one thing the app keeps on the device between reloads: the keys of the orders, under the id of the chart.
     keys.forgetAll();
+    setDeletedHadSubscription(hadSubscription);
     setDeleted(true);
   }, [keys]);
 
@@ -119,7 +122,7 @@ export function App({
     termsReload.reload();
   }, [termsReload]);
 
-  if (deleted) return <DeletedScreen telegram={telegram} />;
+  if (deleted) return <DeletedScreen telegram={telegram} hadSubscription={deletedHadSubscription} />;
   if (terms === 'outdated') {
     return (
       <Screen>
@@ -268,8 +271,8 @@ interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 's
   termsRenewed: boolean;
   /** The server refused the consent version. Keep the reference stable. */
   onConsentRefused: () => void;
-  /** The server has deleted everything about the user. */
-  onDeleted: () => void;
+  /** The server has deleted everything; the boolean is for post-deletion wording only. */
+  onDeleted: (hadSubscription: boolean) => void;
 }
 
 /** What the paywall was opened for. */
@@ -682,6 +685,11 @@ function Screens({
                 }
           }
           onClose={goBack}
+          onBuildChart={() => {
+            forgetChart();
+            setHome('welcome');
+            setStack(['welcome']);
+          }}
           onChartGone={handleChartGone}
         />
       );

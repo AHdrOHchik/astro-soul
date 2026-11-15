@@ -1238,16 +1238,17 @@ describe('App: the forecast and the question', () => {
     /** Whether the build sells subscriptions (`VITE_SUBSCRIPTIONS=enabled`). The tests here are about one that does, unless they say otherwise. */
     subscriptions?: boolean;
     prepare?: (fake: ReturnType<typeof fakeApi>) => void;
+    telegram?: Parameters<typeof fakeTelegram>[0];
   }
 
   /** A user who has a chart, in a build that sells subscriptions or does not; `prepare` sets up the rest of the server. */
-  function returning(startMe: Me, { subscriptions = true, prepare }: RetentionOptions = {}) {
+  function returning(startMe: Me, { subscriptions = true, prepare, telegram: telegramHost }: RetentionOptions = {}) {
     const api = fakeApi();
     api.getMe.mockResolvedValue(startMe);
     api.getCurrentChart.mockResolvedValue(restored);
     api.getForecast.mockResolvedValue(forecast);
     prepare?.(api);
-    const telegram = fakeTelegram();
+    const telegram = fakeTelegram(telegramHost);
     const analytics = fakeAnalytics();
     const keys = fakeKeys();
     const forgetKeys = vi.spyOn(keys, 'forgetAll');
@@ -1389,6 +1390,32 @@ describe('App: the forecast and the question', () => {
       expect(screen.getAllByRole('radio').some((radio) => (radio as HTMLInputElement).checked)).toBe(false);
       expect(analytics.names()).toEqual(['screen_view', 'paywall_view']);
       expect(api.createInvoice).not.toHaveBeenCalled();
+    });
+
+    it('a subscription confirmed after the chart was deleted stays on the success screen until «Построить карту» is tapped', async () => {
+      const monthInvoice = { ...reportInvoice, plan_code: 'month_399', stars: 399, is_subscription: true, subscription_period_sec: 2_592_000 } as const;
+      const meAfterPayment: Me = { ...meSubscribed, has_chart: false, chart_id: null };
+      const view = returning(meFree, {
+        telegram: { invoice: 'paid' },
+        prepare: (fake) => {
+          fake.getMe.mockResolvedValueOnce(meFree).mockResolvedValue(meAfterPayment);
+          fake.getForecast.mockResolvedValue(freeForecast);
+          fake.createInvoice.mockResolvedValue(monthInvoice);
+        },
+      });
+      await openForecast(view.user);
+      await view.user.click(screen.getByRole('button', { name: ru.forecast.subscriptionOnly }));
+      await view.user.click(screen.getByRole('radio', { name: new RegExp(`^${ru.paywall.plans.month_399.title} `) }));
+      await view.user.click(screen.getByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
+
+      expect(await screen.findByText(ru.paywall.subscriptionWithoutChart)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: ru.welcome.title })).not.toBeInTheDocument();
+      expect(view.forgetKeys).not.toHaveBeenCalled();
+
+      await view.user.click(screen.getByRole('button', { name: ru.paywall.buildChart }));
+      expect(await start()).toBeInTheDocument();
+      expect(heading()).toHaveTextContent(ru.welcome.title);
+      expect(view.forgetKeys).toHaveBeenCalledTimes(1);
     });
 
     it('where the day\'s questions are used up: «В подписке 5 вопросов в день» leads to the same paywall', async () => {

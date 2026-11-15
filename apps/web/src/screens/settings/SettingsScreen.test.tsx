@@ -48,7 +48,11 @@ afterEach(() => {
 const pass = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 
 const section = (title: string) => within(screen.getByRole('region', { name: title }));
-const openDeletion = () => screen.findByRole('button', { name: copy.deletion.open });
+const openDeletion = async () => {
+  // Ready state: the separate loading-state delete action is covered by its own test below.
+  await screen.findByRole('region', { name: copy.subscription.title });
+  return screen.getByRole('button', { name: copy.deletion.open });
+};
 /** The same button, for a test on a clock that stands still: looked for after the settings have loaded. */
 const deletionButton = () => screen.getByRole('button', { name: copy.deletion.open });
 const continueDeletion = () => screen.getByRole('button', { name: copy.deletion.next });
@@ -64,7 +68,7 @@ async function toLastConfirmation(user: ReturnType<typeof setupUser>) {
 describe('SettingsScreen', () => {
   it('loading: a skeleton while the server is asked; error: the failure, with a way to repeat', async () => {
     const pending = deferred<Me>();
-    const { refreshMe, user } = setup({ me: pending.promise });
+    const { refreshMe, onDeleted, user } = setup({ me: pending.promise });
 
     expect(screen.getByRole('status')).toHaveTextContent(copy.loading);
     expect(screen.getByRole('main')).toHaveAttribute('aria-busy', 'true');
@@ -73,6 +77,29 @@ describe('SettingsScreen', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.NETWORK.title);
     await user.click(screen.getByRole('button', { name: ru.common.retry }));
     expect(refreshMe).toHaveBeenCalledTimes(2);
+
+    // A failed Me read does not make deletion unavailable; only the optional wording snapshot is absent.
+    await user.click(screen.getByRole('button', { name: copy.deletion.open }));
+    expect(screen.getByRole('alertdialog', { name: copy.deletion.confirmTitle })).toBeInTheDocument();
+    await user.click(continueDeletion());
+    await pass(DELETE_GUARD_MS);
+    await user.click(confirmDeletion());
+    expect(onDeleted).toHaveBeenCalledWith(false);
+  });
+
+  it('deletion is available before Me loads and keeps the no-subscription variant snapshot', async () => {
+    const pending = deferred<Me>();
+    const { onDeleted, user } = setup({ me: pending.promise });
+
+    await user.click(screen.getByRole('button', { name: copy.deletion.open }));
+    expect(screen.getByRole('alertdialog', { name: copy.deletion.confirmTitle })).toBeInTheDocument();
+    // Me arrives only after the dialog opened; it must not rewrite the captured wording fact.
+    pending.resolve(meSubscribed);
+    await user.click(continueDeletion());
+    await pass(DELETE_GUARD_MS);
+    await user.click(confirmDeletion());
+
+    expect(onDeleted).toHaveBeenCalledWith(false);
   });
 
   it('empty: no subscription and no quotas are said in words, and the rest of the screen is there', async () => {
@@ -148,8 +175,24 @@ describe('SettingsScreen', () => {
       await user.click(confirmDeletion());
 
       expect(api.deleteMe).toHaveBeenCalledTimes(1);
-      expect(onDeleted).toHaveBeenCalledTimes(1);
+      expect(onDeleted).toHaveBeenCalledWith(false);
       expect(analytics.events).toEqual([{ name: 'data_deleted' }]);
+    });
+
+    it('captures a cancelled-but-still-active paid subscription when the user opens deletion', async () => {
+      const paidButCancelled: Me = {
+        ...meSubscribed,
+        subscription: { ...meSubscribed.subscription, auto_renew: false },
+      };
+      const { onDeleted, user } = setup({ me: paidButCancelled });
+
+      await user.click(await openDeletion());
+      // It is a snapshot of the active paid period, not of auto-renewal.
+      await user.click(continueDeletion());
+      await pass(DELETE_GUARD_MS);
+      await user.click(confirmDeletion());
+
+      expect(onDeleted).toHaveBeenCalledWith(true);
     });
 
     // The two tests below count the wait to the millisecond, so their clock moves only when they move it.
