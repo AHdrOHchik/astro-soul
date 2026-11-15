@@ -83,13 +83,17 @@ export function App({
   const loadMe = useCallback((signal: AbortSignal) => api.getMe(signal), [api]);
   const me = useRequest(loadMe);
   const [terms, setTerms] = useState(() => termsAtStart(termsReload.refusedVersion));
-  // The server has deleted everything about the user: nothing the app holds is true any more.
-  const [deleted, setDeleted] = useState(false);
-  const handleDeleted = useCallback(() => {
-    // The one thing the app keeps on the device between reloads: the keys of the orders, under the id of the chart.
-    keys.forgetAll();
-    setDeleted(true);
-  }, [keys]);
+  // The server has deleted everything about the user: nothing the app holds is true any more. What is kept with
+  // that is a fact for the wording of the last screen, known before the deletion: whether the user had a subscription.
+  const [deleted, setDeleted] = useState<{ hadSubscription: boolean } | null>(null);
+  const handleDeleted = useCallback(
+    (hadSubscription: boolean) => {
+      // The one thing the app keeps on the device between reloads: the keys of the orders, under the id of the chart.
+      keys.forgetAll();
+      setDeleted({ hadSubscription });
+    },
+    [keys],
+  );
 
   useEffect(() => {
     // The first frame is drawn: Telegram may swap its placeholder for the app.
@@ -119,7 +123,7 @@ export function App({
     termsReload.reload();
   }, [termsReload]);
 
-  if (deleted) return <DeletedScreen telegram={telegram} />;
+  if (deleted !== null) return <DeletedScreen telegram={telegram} hadSubscription={deleted.hadSubscription} />;
   if (terms === 'outdated') {
     return (
       <Screen>
@@ -268,8 +272,8 @@ interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 's
   termsRenewed: boolean;
   /** The server refused the consent version. Keep the reference stable. */
   onConsentRefused: () => void;
-  /** The server has deleted everything about the user. */
-  onDeleted: () => void;
+  /** The server has deleted everything about the user; whether they had a subscription when they asked for it. */
+  onDeleted: (hadSubscription: boolean) => void;
 }
 
 /** What the paywall was opened for. */

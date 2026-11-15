@@ -438,6 +438,71 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(telegram.close).toHaveBeenCalledTimes(1);
   });
 
+  describe('the screen after the deletion, by what the settings showed of a subscription before it', () => {
+    const SUBSCRIPTION_CANCELLED = 'Подписка отменена. Если захочешь вернуться — начнёшь с чистого листа.';
+    const NOTHING_OF_IT = 'Если захочешь вернуться — начнёшь с чистого листа.';
+    const PAYMENTS_STAY = 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.';
+    /** A subscription that has run out: the plan is still named, and nothing is active. */
+    const meEnded: Me = { ...meWithChart, subscription: { ...meSubscribed.subscription, is_active: false, auto_renew: false } };
+
+    /** From the chart through the settings and both confirmations to the screen that says the data is deleted. */
+    async function deleteData(user: FakeUser) {
+      await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+      await user.click(await screen.findByRole('button', { name: ru.settings.deletion.open }));
+      await user.click(screen.getByRole('button', { name: ru.settings.deletion.next }));
+      await act(() => vi.advanceTimersByTimeAsync(DELETE_GUARD_MS));
+      await user.click(screen.getByRole('button', { name: ru.settings.deletion.confirm }));
+      expect(await screen.findByRole('heading', { name: 'Данные удалены' })).toBeInTheDocument();
+    }
+    /** Everything on the page, attributes included: where a link leads is not in the text. */
+    const page = () => document.body.innerHTML;
+
+    it('a subscriber: «Подписка отменена», and the way to the subscriptions in Telegram', async () => {
+      const { api, user } = returning((fake) => fake.getMe.mockResolvedValue(meSubscribed));
+
+      await deleteData(user);
+
+      expect(screen.getByText(SUBSCRIPTION_CANCELLED)).toBeInTheDocument();
+      expect(screen.getByText(PAYMENTS_STAY)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Управлять подписками в Telegram' })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
+      // Known before the deletion: nothing was asked of the server after it.
+      expect(api.getMe).toHaveBeenCalledTimes(2);
+    });
+
+    it('a user without a subscription: not a word about one, and no link to anywhere', async () => {
+      const { api, user } = returning();
+
+      await deleteData(user);
+
+      expect(screen.getByText(NOTHING_OF_IT)).toBeInTheDocument();
+      expect(screen.getByText(PAYMENTS_STAY)).toBeInTheDocument();
+      expect(page()).not.toMatch(/подписк/i);
+      expect(page()).not.toContain('tg://');
+      expect(screen.queryByRole('link')).not.toBeInTheDocument();
+      expect(api.getMe).toHaveBeenCalledTimes(2);
+    });
+
+    it('a subscription that had ended by the time the settings were opened: the app started with one, and says nothing of it', async () => {
+      // What counts is the `Me` the settings showed at the tap, not the one the app remembers from its start.
+      const { user } = returning((fake) => fake.getMe.mockResolvedValueOnce(meSubscribed).mockResolvedValue(meEnded));
+
+      await deleteData(user);
+
+      expect(screen.getByText(NOTHING_OF_IT)).toBeInTheDocument();
+      expect(page()).not.toMatch(/подписк/i);
+      expect(page()).not.toContain('tg://');
+    });
+
+    it('and the other way round, a subscription the app did not know of at its start: the settings showed it, so the screen speaks of it', async () => {
+      const { user } = returning((fake) => fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(meSubscribed));
+
+      await deleteData(user);
+
+      expect(screen.getByText(SUBSCRIPTION_CANCELLED)).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Управлять подписками в Telegram' })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
+    });
+  });
+
   it('a new user reaches the settings from the welcome screen', async () => {
     const { user } = setup();
 

@@ -656,18 +656,24 @@ export const ru = {
       /** Owner's wording. */
       sessionExpired: 'Сессия истекла, открой приложение заново.',
       /**
-       * Owner's wording, the screen after the deletion: «Данные удалены. Подписка отменена. Если
-       * захочешь вернуться — начнёшь с чистого листа.» The first sentence is the title, the rest
-       * the text under it. Said to everyone, as on the confirmations.
+       * Owner's wording, the screen after the deletion. The title is for everyone; the text under it
+       * comes in two variants, by whether the user had a subscription when they asked for the deletion.
        */
       doneTitle: 'Данные удалены',
-      doneText: 'Подписка отменена. Если захочешь вернуться — начнёшь с чистого листа.',
-      /** Under that, in small print, by the owner's order of the lines: what stays, in the words of the first confirmation. */
+      /**
+       * Owner's wording, for a user who had no subscription, and for one the app knows nothing about:
+       * not a word of a subscription. Silence is better than a statement that may be false.
+       */
+      doneText: 'Если захочешь вернуться — начнёшь с чистого листа.',
+      /** Owner's wording, for a user who had a subscription, a cancelled one still paid for included: the same line, and what became of it. */
+      doneTextSubscribed: 'Подписка отменена. Если захочешь вернуться — начнёшь с чистого листа.',
+      /** Under that, in small print, by the owner's order of the lines: what stays, in the words of the first confirmation. For everyone. */
       doneNote: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
       /**
-       * Owner's wording: the link to the subscriptions in Telegram's own settings. The server cancels
-       * the subscription on its side, and nothing in apps/api tells Telegram to stop renewing it
-       * (issue #29): where the subscription lives is the one thing the user can look into and act on.
+       * Owner's wording: the link to the subscriptions in Telegram's own settings, for a user who had
+       * one. The server cancels the subscription on its side, and nothing in apps/api tells Telegram
+       * to stop renewing it (issue #29): where the subscription lives is the one thing the user can
+       * look into and act on.
        */
       manageSubscriptions: 'Управлять подписками в Telegram',
     },

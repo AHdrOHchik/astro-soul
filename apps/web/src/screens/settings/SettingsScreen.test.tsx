@@ -436,3 +436,89 @@ describe('SettingsScreen: a build that sells no subscriptions (no `onSubscribe`)
     expect(subscription.getByRole('link', { name: copy.subscription.openTelegram })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
   });
 });
+
+/*
+ * The screen after the deletion has two variants (the owner's decision of iteration 8): with the
+ * line about the subscription and the link to Telegram's settings for a user who had one, without
+ * either for a user who had none. Which it is cannot be asked after the deletion, so the settings
+ * hand it on: what the `Me` they were showing said at the tap that opened the confirmations.
+ */
+describe('SettingsScreen: what the screen after the deletion is told about the subscription', () => {
+  const withSubscription = (changes: Partial<Me['subscription']>): Me => ({
+    ...meSubscribed,
+    subscription: { ...meSubscribed.subscription, ...changes },
+  });
+  /** The way to the subscriptions in Telegram's settings, which the block of the subscription has for one in force and for no other. */
+  const telegramLink = () => section(copy.subscription.title).queryByRole('link', { name: copy.subscription.openTelegram });
+
+  it.each<[string, Me, boolean]>([
+    ['a subscription that renews', meSubscribed, true],
+    ['one the user has cancelled and still has paid time of', withSubscription({ auto_renew: false }), true],
+    ['a trial that is running', withSubscription({ plan: 'trial' }), true],
+    ['no subscription', meWithChart, false],
+    ['one that has ended: the plan is named, and it is not active', withSubscription({ is_active: false }), false],
+    ['an answer at odds with itself: active, of the plan `none`', withSubscription({ plan: 'none' }), false],
+  ])('%s: the settings showed it as one in force or did not, and that is what is handed on', async (_case, me, expected) => {
+    const { api, onDeleted, refreshMe, user } = setup({ me });
+    await openDeletion();
+    const shownInForce = telegramLink() !== null;
+
+    await toLastConfirmation(user);
+    await user.click(confirmDeletion());
+
+    expect(api.deleteMe).toHaveBeenCalledTimes(1);
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+    expect(onDeleted).toHaveBeenCalledWith(expected);
+    // One and the same thing: the user who is told «the subscription is cancelled» is the user who saw one in the settings.
+    expect(shownInForce).toBe(expected);
+    // Known from the `Me` that was on screen: the deletion asked the server nothing more about the user, before or after.
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+  });
+
+  it('is what was known at the tap that opened the confirmations: a deletion that fails and is repeated hands on the same', async () => {
+    const api = fakeApi();
+    api.deleteMe.mockRejectedValueOnce(apiError('NETWORK')).mockRejectedValueOnce(apiError('INTERNAL', { status: 500 }));
+    const { onDeleted, refreshMe, user } = setup({ api, me: meSubscribed });
+
+    await toLastConfirmation(user);
+    await user.click(confirmDeletion());
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.NETWORK.text);
+    await user.click(confirmDeletion());
+    expect(await screen.findByText(new RegExp(ru.errors.INTERNAL.text))).toBeInTheDocument();
+    expect(onDeleted).not.toHaveBeenCalled();
+
+    await user.click(confirmDeletion());
+
+    expect(api.deleteMe).toHaveBeenCalledTimes(3);
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+    expect(onDeleted).toHaveBeenCalledWith(true);
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+  });
+
+  it('backed out of and opened again, the confirmations hand on what the settings show then', async () => {
+    const { onDeleted, user } = setup({ me: meWithChart });
+
+    await user.click(await openDeletion());
+    await user.click(cancelDeletion());
+    await toLastConfirmation(user);
+    await user.click(confirmDeletion());
+
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+    expect(onDeleted).toHaveBeenCalledWith(false);
+  });
+
+  it('without `Me` (still asked for, or the request failed) nothing opens the confirmations: no deletion starts from settings that know nothing of the user', async () => {
+    const pending = deferred<Me>();
+    const { api, onDeleted } = setup({ me: pending.promise });
+
+    expect(screen.getByRole('status')).toHaveTextContent(copy.loading);
+    expect(screen.queryByRole('button', { name: copy.deletion.open })).not.toBeInTheDocument();
+
+    pending.reject(apiError('NETWORK'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.NETWORK.title);
+    expect(screen.queryByRole('button', { name: copy.deletion.open })).not.toBeInTheDocument();
+    expect(api.deleteMe).not.toHaveBeenCalled();
+    expect(onDeleted).not.toHaveBeenCalled();
+  });
+});

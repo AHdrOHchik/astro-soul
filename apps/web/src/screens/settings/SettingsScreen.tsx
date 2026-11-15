@@ -45,8 +45,13 @@ export interface SettingsScreenProps {
    * the button is then not there, and a subscription the user has is shown as ever.
    */
   onSubscribe?: () => void;
-  /** The server has deleted everything. Nothing of the app's state is true any more. */
-  onDeleted: () => void;
+  /**
+   * The server has deleted everything. Nothing of the app's state is true any more. Handed on is
+   * the one thing the screen after the deletion words itself by, and nobody can be asked about
+   * by then: whether `Me` showed a subscription when the user tapped the button that opens the
+   * confirmations.
+   */
+  onDeleted: (hadSubscription: boolean) => void;
 }
 
 /** The states every screen of the app is checked for. */
@@ -69,10 +74,15 @@ export function SettingsScreen({
 }: SettingsScreenProps) {
   const titleId = useId();
   const request = useRequest(refreshMe);
-  const [deleting, setDeleting] = useState(false);
+  // The confirmations of the deletion, open from the tap on the button of the settings; null while they are not.
+  // Kept with them is what `Me` showed of a subscription at that tap: a fact for the wording of the screen
+  // after the deletion, held in memory and nowhere else, and gone with this screen like everything it holds.
+  const [deletion, setDeletion] = useState<{ hadSubscription: boolean } | null>(null);
+  // Without `Me` (still asked for, or the request failed) the settings know of no subscription, and claim none.
+  const subscribed = request.status === 'ready' && hasSubscription(request.data.subscription);
 
   const support = <SupportButton link={supportLink} telegram={telegram} />;
-  if (deleting) {
+  if (deletion !== null) {
     return (
       <Screen back={back}>
         <Deletion
@@ -81,9 +91,11 @@ export function SettingsScreen({
           support={support}
           track={track}
           onCancel={() => {
-            setDeleting(false);
+            setDeletion(null);
           }}
-          onDeleted={onDeleted}
+          onDeleted={() => {
+            onDeleted(deletion.hadSubscription);
+          }}
         />
       </Screen>
     );
@@ -102,7 +114,7 @@ export function SettingsScreen({
         onOpenDocument={onOpenDocument}
         onSubscribe={onSubscribe}
         onDelete={() => {
-          setDeleting(true);
+          setDeletion({ hadSubscription: subscribed });
         }}
       />
     );
@@ -197,6 +209,16 @@ function Sections({ me, support, onOpenDocument, onSubscribe, onDelete }: Sectio
       </section>
     </div>
   );
+}
+
+/**
+ * Whether `Me` shows a subscription that is in force: a plan with a name, active now. One the
+ * user has cancelled and still has paid time of is in force as well. It is the case in which
+ * the block of the subscription below shows the plan and the way to Telegram's settings, and
+ * by it the screen after a deletion says that the subscription was cancelled.
+ */
+function hasSubscription(subscription: Me['subscription']): boolean {
+  return subscription.plan !== 'none' && subscription.is_active;
 }
 
 function SubscriptionInfo({ subscription, onSubscribe }: { subscription: Me['subscription']; onSubscribe?: () => void }) {
