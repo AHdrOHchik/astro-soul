@@ -181,9 +181,12 @@ describe('mock API: the forecast and the questions, by the rules of apps/api', (
     it.each([
       ['ошибка', 'error'],
       ['Лимит', 'cap'],
-      ['оплата', 'payment'],
     ])('starting with «%s» asks for a failure worth seeing (%s), whatever the quota', (word, scenario) => {
       expect(ask(`${word} и что будет?`, none)).toEqual({ kind: 'scenario', chartId: CHART, scenario });
+    });
+
+    it('«оплата…» is an ordinary question: apps/api answers no question with a 402, and the mock plays none', () => {
+      expect(ask('оплата и что будет?', some)).toMatchObject({ kind: 'answer', counted: true });
     });
   });
 });
@@ -221,14 +224,20 @@ async function serveMock(me: string) {
   const { port } = server.address() as AddressInfo;
 
   return {
-    async request(method: string, path: string, body?: unknown) {
+    async request(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
       const response = await fetch(`http://127.0.0.1:${String(port)}/api/v1${path}`, {
         method,
-        headers: { 'X-Telegram-Init-Data': 'mock-init-data', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        headers: { 'X-Telegram-Init-Data': 'mock-init-data', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const text = await response.text();
       return { status: response.status, body: text === '' ? undefined : (JSON.parse(text) as unknown) };
+    },
+    /** A request as a picture on a page makes it: no initData, and nothing read of the body. */
+    async raw(method: string, path: string) {
+      const response = await fetch(`http://127.0.0.1:${String(port)}/api/v1${path}`, { method });
+      await response.arrayBuffer();
+      return { status: response.status };
     },
     close() {
       return new Promise<void>((resolve) => {
@@ -359,6 +368,79 @@ describe('mock API: the chart a report is bought for (`Entitlements.full_report_
     const mock = await serveMock('subscriber');
     try {
       expect(await entitlementsOf(mock)).toMatchObject({ is_active: true, full_report: false, full_report_chart_id: null });
+    } finally {
+      await mock.close();
+    }
+  });
+});
+
+describe('mock API: a second chart of a user who bought the report of the first', () => {
+  /** Other birth data than the chart the mock starts with: another chart. */
+  const OTHER_INPUT = { ...RETURNING_INPUT, birth_date: '1990-01-02' };
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  interface MeBody {
+    chart_id: string | null;
+    entitlements: { full_report: boolean; full_report_chart_id: string | null };
+  }
+  const meOf = async (mock: Awaited<ReturnType<typeof serveMock>>) => (await mock.request('GET', '/me')).body as MeBody;
+  const chartIdIn = (answer: { body: unknown }) => (answer.body as { chart: { chart_id: string } }).chart.chart_id;
+
+  it('other birth data are another chart with an id of its own; the same data again are the same id', async () => {
+    const mock = await serveMock('returning');
+    try {
+      const first = (await meOf(mock)).chart_id;
+
+      const built = await mock.request('POST', '/charts', OTHER_INPUT);
+      expect(built.status).toBe(201);
+      const second = chartIdIn(built);
+      expect(second).toMatch(UUID);
+      expect(second).not.toBe(first);
+      expect((await meOf(mock)).chart_id).toBe(second);
+
+      // Asked for again, it is the chart that is already there.
+      const again = await mock.request('POST', '/charts', OTHER_INPUT);
+      expect(again.status).toBe(200);
+      expect(chartIdIn(again)).toBe(second);
+      // And the data the mock started with are still the chart the docs name.
+      expect(chartIdIn(await mock.request('POST', '/charts', RETURNING_INPUT))).toBe(first);
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('`Me` goes on naming the first chart as the paid one: `full_report` stays true, and the second chart is not paid for', async () => {
+    const mock = await serveMock('paid');
+    try {
+      const first = (await meOf(mock)).chart_id;
+      const second = chartIdIn(await mock.request('POST', '/charts', OTHER_INPUT));
+
+      expect(await meOf(mock)).toMatchObject({ chart_id: second, entitlements: { full_report: true, full_report_chart_id: first } });
+      // What the server answers to an order for the chart nothing was bought for: the app is to show the price instead of asking.
+      const order = await mock.request('POST', '/reports', { chart_id: second, type: 'full' }, { 'Idempotency-Key': 'order-for-the-second-chart' });
+      expect(order).toMatchObject({ status: 402, body: { code: 'PAYMENT_REQUIRED', details: { reason: 'report_not_paid' } } });
+
+      // Back on the first chart, the purchase is where it was.
+      await mock.request('POST', '/charts', RETURNING_INPUT);
+      const paid = await mock.request('POST', '/reports', { chart_id: first, type: 'full' }, { 'Idempotency-Key': 'order-for-the-first-chart' });
+      expect(paid.status).toBe(202);
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it('the wheel of the second chart is served under its own id, and an address that names no chart is not a wheel', async () => {
+    const mock = await serveMock('returning');
+    try {
+      const built = (await mock.request('POST', '/charts', OTHER_INPUT)).body as { chart: { chart_id: string }; wheel_url: string; wheel_png_url: string };
+      expect(built.wheel_url).toBe(`/api/v1/charts/${built.chart.chart_id}/wheel.svg?sig=mock-signature`);
+      expect(built.wheel_png_url).toBe(`/api/v1/charts/${built.chart.chart_id}/wheel.png?sig=mock-signature`);
+
+      expect((await mock.raw('GET', built.wheel_url.replace('/api/v1', ''))).status).toBe(200);
+      // No signature: refused, as the contract has it.
+      expect((await mock.raw('GET', `/charts/${built.chart.chart_id}/wheel.svg`)).status).toBe(403);
+      // What the «Безколёсово» scenario sends the app to: not a chart id, so not a picture.
+      expect((await mock.raw('GET', '/charts/unknown/wheel.svg?sig=broken')).status).toBe(401);
     } finally {
       await mock.close();
     }

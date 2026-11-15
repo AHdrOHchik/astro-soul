@@ -21,6 +21,7 @@ import { SupportButton } from '../../components/SupportButton';
 import { useRequest } from '../../hooks/useRequest';
 import { formatDay, formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
+import { TELEGRAM_SUBSCRIPTIONS } from '../../lib/telegramLinks';
 import type { Telegram } from '../../telegram';
 import type { LegalDocument } from '../ConsentScreen';
 import styles from './SettingsScreen.module.css';
@@ -28,12 +29,6 @@ import styles from './SettingsScreen.module.css';
 const copy = ru.settings;
 const SKELETON_BLOCKS = [0, 1, 2];
 const DOCUMENTS: readonly LegalDocument[] = ['privacy', 'terms'];
-
-/**
- * Where Telegram keeps the user's Stars subscriptions. The app cannot cancel one: the API
- * has no such call, and Telegram has no other place for it.
- */
-const TELEGRAM_SUBSCRIPTIONS = 'tg://settings/star_subscriptions';
 
 export interface SettingsScreenProps {
   api: Pick<Api, 'deleteMe'>;
@@ -282,7 +277,8 @@ export const DELETE_GUARD_MS = 1000;
 
 /**
  * The two confirmations of the deletion, one after the other: what exactly goes, said
- * plainly, then the last word. Only the button of the second one deletes.
+ * plainly, then the last word, which says once more what goes and what it costs. Only the
+ * button of the second one deletes.
  */
 function Deletion({ api, telegram, support, track, onCancel, onDeleted }: DeletionProps) {
   const text = copy.deletion;
@@ -378,7 +374,8 @@ function Deletion({ api, telegram, support, track, onCancel, onDeleted }: Deleti
       </h2>
       <div id={textId} className={styles.dialogText}>
         {(last ? text.lastText : text.confirmText).map((paragraph) => (
-          <p key={paragraph}>{paragraph}</p>
+          // What the deletion does to the subscription stands out on the confirmation that deletes: bold, at full size.
+          <p key={paragraph}>{last && paragraph === text.lastTextStrong ? <strong>{paragraph}</strong> : paragraph}</p>
         ))}
       </div>
       {failure !== null && <DeletionFailure error={failure} support={support} />}

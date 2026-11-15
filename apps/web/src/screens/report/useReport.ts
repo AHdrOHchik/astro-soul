@@ -64,6 +64,14 @@ export interface UseReportOptions {
    * refusal is shown like any other failure.
    */
   onChartGone?: () => void;
+  /**
+   * Asked when the server has no such report (404), before the screen shows anything about
+   * it: is the chart still on the server? A report goes with the user's data, so the usual
+   * reason is that the data was deleted elsewhere. `false`: the chart is gone too, the
+   * caller leads on from there, and this screen shows nothing more. `true`, or a question
+   * that failed: the screen goes on as it does without this prop.
+   */
+  isChartThere?: (signal?: AbortSignal) => Promise<boolean>;
 }
 
 export interface ReportFlow {
@@ -111,6 +119,7 @@ export function useReport({
   onReport,
   onReportGone,
   onChartGone,
+  isChartThere,
 }: UseReportOptions): ReportFlow {
   const [reportId, setReportId] = useState(knownReportId);
   // The key of the first order is taken here, once: a development build runs the effect below twice, with this one key.
@@ -124,9 +133,9 @@ export function useReport({
   const [loads, setLoads] = useState(0);
 
   // The callbacks of the moment, for effects that must not start over when a parent renders.
-  const latest = useRef({ track, onPaymentRequired, onReportId, onReport, onReportGone, onChartGone, justPaid });
+  const latest = useRef({ track, onPaymentRequired, onReportId, onReport, onReportGone, onChartGone, isChartThere, justPaid });
   useEffect(() => {
-    latest.current = { track, onPaymentRequired, onReportId, onReport, onReportGone, onChartGone, justPaid };
+    latest.current = { track, onPaymentRequired, onReportId, onReport, onReportGone, onChartGone, isChartThere, justPaid };
   });
   // The report this screen has ordered itself. Any other one the app knew of before the screen opened.
   const orderedHere = useRef<string | null>(null);
@@ -238,16 +247,45 @@ export function useReport({
         (error: unknown) => {
           asking = false;
           if (signal.aborted || isAbortError(error)) return;
-          if (isApiError(error) && error.code === 'NOT_FOUND' && asked !== orderedHere.current) {
-            // The report the app knew of is gone: deleted with the user's data. Nothing failed, so
-            // nothing is shown and nothing is counted: the report is forgotten, and the screen is
-            // what it is with no report. One this screen has just ordered is another matter: the
-            // server took the order and then lost it, and that is a failure to show (below).
+          const fail = () => {
             over = true;
             clearTimeout(stallTimer);
-            latest.current.onReportGone?.(asked);
-            setReportId(null);
-            setView({ kind: 'idle' });
+            if (!isApiError(error)) console.error(error);
+            latest.current.track('error_shown', { screen: 'report', code: failureCodeOf(error) });
+            setView({ kind: 'error', error, from: 'load' });
+          };
+          if (isApiError(error) && error.code === 'NOT_FOUND') {
+            // The server has no such report: nothing more is asked about it.
+            over = true;
+            clearTimeout(stallTimer);
+            const settle = () => {
+              if (asked === orderedHere.current) {
+                // One this screen has just ordered: the server took the order and then lost it, and that is a failure to show.
+                fail();
+                return;
+              }
+              // The report the app knew of is gone: deleted with the user's data. Nothing failed, so
+              // nothing is shown and nothing is counted: the report is forgotten, and the screen is
+              // what it is with no report.
+              latest.current.onReportGone?.(asked);
+              setReportId(null);
+              setView({ kind: 'idle' });
+            };
+            const check = latest.current.isChartThere;
+            if (check === undefined) {
+              settle();
+              return;
+            }
+            // First, whether the chart is gone as well. If it is, the caller is leading the user on, and the
+            // screen stays as it was for that moment: not a word about a report of data that no longer exists.
+            check(signal).then(
+              (there) => {
+                if (!signal.aborted && there) settle();
+              },
+              () => {
+                if (!signal.aborted) settle();
+              },
+            );
             return;
           }
           const passing = isApiError(error) && PASSING.includes(error.code);
@@ -257,11 +295,7 @@ export function useReport({
             if (!document.hidden) schedule();
             return;
           }
-          over = true;
-          clearTimeout(stallTimer);
-          if (!isApiError(error)) console.error(error);
-          latest.current.track('error_shown', { screen: 'report', code: failureCodeOf(error) });
-          setView({ kind: 'error', error, from: 'load' });
+          fail();
         },
       );
     }
@@ -313,7 +347,9 @@ export function useReport({
       const report = await api.getReport(reportId);
       setView((current) => (current.kind === 'report' ? { ...current, report } : current));
       return report;
-    } catch {
+    } catch (error) {
+      // The report on screen is not on the server any more. Whether the chart is, the caller finds out, and leads on if not.
+      if (isApiError(error) && error.code === 'NOT_FOUND') void latest.current.isChartThere?.().catch(() => undefined);
       return null;
     }
   }, [api, reportId]);

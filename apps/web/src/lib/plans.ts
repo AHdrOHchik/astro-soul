@@ -26,9 +26,25 @@ export function expectedStars(plan: PaywallPlan): number {
 }
 
 /**
- * Whether the server's `Me` grants what the plan sells. The only confirmation of a
- * purchase there is: what Telegram says when an invoice closes is not one.
+ * Whether the full report of this chart is paid for, by the server's last word. The one
+ * place the app answers that question: the chart screen asks it to choose between the
+ * price and the report, and `grants` asks it to confirm a purchase.
+ *
+ * The report is bought for a chart, and `Me` names that chart. `full_report` alone says
+ * only that the user has bought a report of some chart: for any other chart of theirs the
+ * answer here is «no», and so it is when the server names no chart at all (`null`: the
+ * purchase went with the user's data).
  */
-export function grants(me: Me, plan: PaywallPlan): boolean {
-  return plan === REPORT_PLAN ? me.entitlements.full_report : me.entitlements.is_active;
+export function hasReportFor(me: Me, chartId: string): boolean {
+  return me.entitlements.full_report_chart_id === chartId;
+}
+
+/**
+ * Whether the server's `Me` grants what was bought: the plan, and for the full report the
+ * chart it was bought for (null for a subscription, which is about no chart). The only
+ * confirmation of a purchase there is: what Telegram says when an invoice closes is not one.
+ */
+export function grants(me: Me, plan: PaywallPlan, chartId: string | null): boolean {
+  if (plan !== REPORT_PLAN) return me.entitlements.is_active;
+  return chartId !== null && hasReportFor(me, chartId);
 }

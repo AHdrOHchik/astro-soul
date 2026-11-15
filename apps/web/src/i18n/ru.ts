@@ -9,20 +9,17 @@ import type { PluralForm } from './format';
  *
  * The legal texts are not written here: `welcome.disclaimer`, `welcome.terms`,
  * `consent` and `documents` are copied word for word from the file a human owns,
- * `legal-texts-<CONSENT_VERSION>.md` in the repository root. A new wording comes
- * as a new file together with a new CONSENT_VERSION; `tests/legal-texts.test.ts`
- * fails until the texts, the file and the version agree.
+ * `legal-texts-<CONSENT_VERSION>.md` in the repository root. Whether a new wording
+ * is a new version is the owner's to say (legal.md §6: the version changes with what
+ * is processed and on what ground, not with every rewording). Either way
+ * `tests/legal-texts.test.ts` fails until the texts, the file and the version agree.
  *
  * Texts about money, refunds and the deletion of data that the owner worded are
  * marked «owner's wording»: they are not to be rephrased in passing either.
  */
 
-/**
- * Version of the legal texts below, sent as `consent.version` in `POST /charts`. The
- * server stores it next to the user's consent and accepts no other version than its
- * own: a release with new texts has to carry the new date here (YYYY-MM-DD).
- */
-export const CONSENT_VERSION = '2026-11-10';
+// The version of the legal texts below. It has a file of its own, with nothing else in it: the build reads it too.
+export { CONSENT_VERSION } from './consentVersion';
 
 interface ErrorCopy {
   title: string;
@@ -155,6 +152,7 @@ interface PlanCopy {
  * delivers (the full forecasts, the questions). What payments.md §1 lists besides (the
  * compatibility, the chart of the year) is named as coming, in the owner's words
  * «появится в ближайшие дни». The day one of those is released, its sentence is reworded.
+ * The descriptions below are approved by the owner as they are.
  */
 const SOON = 'появится в ближайшие дни';
 
@@ -194,15 +192,16 @@ const quotaNames: Record<Quota['code'], string> = {
 };
 
 /**
- * `Forecast.focus` as a label next to the text. A code without a name here is a focus this
- * build does not show. `health` is about energy and routine and is named so: the service
- * gives no advice on health.
+ * The focus of a forecast as a label next to the text, under the names the app gives the
+ * server's codes (src/api). The focus on energy and routine is `wellbeing` here and
+ * «самочувствие» on screen: the service gives no advice on the other word, and the key is
+ * named so that nobody writes that word in. The labels are approved by the owner.
  */
 const focusNames: Record<ForecastFocus, string> = {
   career: 'карьера',
   love: 'отношения',
   money: 'деньги',
-  health: 'самочувствие',
+  wellbeing: 'самочувствие',
   self: 'внимание к себе',
 };
 
@@ -215,6 +214,9 @@ const reportStates: Record<ReportStatus, string> = {
   // Owner's wording.
   refunded: 'Разбор не получился, звёзды вернулись на счёт.',
 };
+
+/** Owner's wording: what deleting the data does to a subscription. The sentence of the last confirmation that stands out. */
+const SUBSCRIPTION_IS_LOST = 'Подписка отменяется сразу, оплаченный период не возвращается.';
 
 /** Telegram Stars, the app's only currency: «1 звезда», «2 звезды», «149 звёзд». */
 const stars: Record<PluralForm, string> = {
@@ -271,7 +273,7 @@ export const ru = {
     points: [
       'Мы используем их только для расчёта карты и генерации твоего разбора.',
       'Не передаём третьим лицам; текст разбора генерируется без твоего имени, точных координат и id.',
-      'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Это необратимо.',
+      'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Профиль, карта, разборы, прогнозы и вопросы удаляются безвозвратно. Подписка при этом отменяется, доступ закрывается сразу, оплаченный период не возвращается. Обезличенная история платежей (без имени, даты рождения и места) сохраняется, пока этого требует бухгалтерский учёт и возможность возврата.',
       'Если ты не заходишь 24 месяца, данные удаляются автоматически.',
     ],
     /** A paragraph of its own under the list: it is about usage statistics, not about the birth data. */
@@ -298,7 +300,7 @@ export const ru = {
         'Мы собираем только то, что нужно для расчёта карты: дату, время и место рождения. Плюс твой telegram_id, чтобы ты мог войти, и тексты вопросов, которые ты задаёшь карте.',
         'Не собираем: телефон, email, паспортные данные, геолокацию устройства и контакты.',
         'Данные рождения используются только для расчёта карты и генерации разбора. Текст разбора генерируется без имени, точных координат и id. Платёжные идентификаторы хранятся без персональных данных.',
-        'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Если ты не заходишь 24 месяца, данные удаляются автоматически.',
+        'Ты можешь удалить все данные в любой момент: Настройки → «Удалить мои данные». Профиль, карта, разборы, прогнозы и вопросы удаляются безвозвратно; подписка отменяется, оплаченный период не возвращается; обезличенная история платежей сохраняется для бухгалтерского учёта и возвратов. Если ты не заходишь 24 месяца, данные удаляются автоматически.',
         'Аналитика: мы собираем обезличенную статистику использования. В событиях нет даты, времени и места рождения, текста вопросов и имени.',
       ],
     },
@@ -306,7 +308,7 @@ export const ru = {
     terms: {
       paragraphs: [
         '18+. Сервис носит развлекательный и ознакомительный характер. Разборы и прогнозы не являются медицинской, психологической, юридической или финансовой рекомендацией и не предсказывают события. Решения о здоровье, деньгах и отношениях принимай самостоятельно.',
-        'Оплата проходит звёздами Telegram. Подписка продлевается автоматически, пока ты её не отменишь; отменить можно в настройках Telegram, доступ сохраняется до конца оплаченного периода. Если товар не был предоставлен из-за технической ошибки, звёзды возвращаются автоматически.',
+        'Оплата проходит звёздами Telegram. Подписка продлевается автоматически, пока ты её не отменишь. Отменить можно в настройках Telegram — тогда доступ сохранится до конца оплаченного периода. Если ты удаляешь данные в приложении, подписка отменяется сразу, доступ закрывается, оплаченный период не возвращается. Если товар не был предоставлен из-за технической ошибки, звёзды возвращаются автоматически.',
         'Удалить данные: Настройки → «Удалить мои данные».',
       ],
     },
@@ -456,7 +458,7 @@ export const ru = {
     checkAgain: 'Проверить ещё раз',
     /** Leaves the paywall for the screen it was opened from. */
     leave: 'Вернуться',
-    /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. */
+    /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. Approved by the owner. */
     nothingOnSale: 'Сейчас здесь нечего оплачивать',
   },
 
@@ -507,6 +509,7 @@ export const ru = {
     title: 'Прогноз на сегодня',
     /** Owner's wording, for a forecast of another day: «Прогноз на 14 ноября». Never «сегодня» for it. */
     titleFor: (day: string) => `Прогноз на ${day}`,
+    /** Approved by the owner. */
     loading: 'Загружаем прогноз…',
     /** «Фокус дня» is the owner's wording; the name comes from `focusNames`. */
     focus: (name: string) => `Фокус дня: ${name}`,
@@ -514,6 +517,11 @@ export const ru = {
     /** Owner's wording, in two parts: the server has no forecast for today yet. Not a failure and worded as none. */
     pendingTitle: 'Сегодняшний прогноз готовится',
     pendingText: 'Загляни после 08:00',
+    /**
+     * Owner's wording, the second line under it: whose 08:00 that is. The server sends the forecast at
+     * eight by the clock of the birth place, which need not be the clock of the user's phone.
+     */
+    pendingNote: 'Время считается по месту рождения.',
     /** Owner's wording. */
     toChart: 'К карте',
     /** Owner's wording: the request itself failed. */
@@ -526,7 +534,10 @@ export const ru = {
     subscriptionOnly: 'Полный прогноз — в подписке',
   },
 
-  /** «Спроси карту»: one question, one answer. The answer is the server's text, never written or reworded here. */
+  /**
+   * «Спроси карту»: one question, one answer. The answer is the server's text, never written or reworded here.
+   * Every line of this screen is the owner's wording or approved by the owner.
+   */
   ask: {
     title: 'Спроси карту',
     fieldLabel: 'Твой вопрос',
@@ -600,7 +611,7 @@ export const ru = {
     deletion: {
       /** Owner's wording, the name the legal texts promise. */
       title: 'Удалить мои данные',
-      /** What goes is the list of SPEC.md (scenario 6); «необратимо» is the word of the legal texts. */
+      /** What goes is the list of SPEC.md (scenario 7, «Удаление данных»). */
       text: 'Удаляются профиль, карты, разборы, прогнозы и вопросы. Это необратимо.',
       open: 'Удалить мои данные',
       /** The first confirmation: what exactly goes, what it costs and what stays. */
@@ -608,7 +619,7 @@ export const ru = {
       confirmText: [
         'Удалим профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор. Восстановить их не получится.',
         /**
-         * Owner's wording (SPEC.md, scenario 6, and legal.md §2), to be said before the tap. Since
+         * Owner's wording (SPEC.md, scenario 7, and legal.md §2), to be said before the tap. Since
          * contract 1.5.5 the server cancels the subscription together with the data; until then
          * this line promised the opposite, that the subscription lives on to the end of its period.
          * Said to everyone: the app does not decide by its own copy of `Me` who needs to hear it.
@@ -621,7 +632,20 @@ export const ru = {
       next: 'Удалить данные',
       /** The second confirmation: the last word before the deletion. */
       lastTitle: 'Точно удалить?',
-      lastText: ['Это последний шаг. Отменить удаление будет нельзя.'],
+      /**
+       * Owner's wording, three sentences, on the confirmation whose button deletes: a paragraph each.
+       * Said to everyone, like the same thing on the first confirmation.
+       */
+      lastText: [
+        'Удаляются профиль, карты, разборы, прогнозы и вопросы — в том числе купленный разбор.',
+        SUBSCRIPTION_IS_LOST,
+        'Восстановить данные не получится.',
+      ],
+      /**
+       * The one of them that is drawn bold, at full size and never in small print: it is what keeps
+       * the user from a surprise about money, and the owner asked for it to stand out.
+       */
+      lastTextStrong: SUBSCRIPTION_IS_LOST,
       /** Owner's wording. */
       confirm: 'Удалить навсегда',
       cancel: 'Не удалять',
@@ -631,22 +655,31 @@ export const ru = {
       failedTitle: 'Данные не удалены',
       /** Owner's wording. */
       sessionExpired: 'Сессия истекла, открой приложение заново.',
-      /** Owner's wording: the title of the screen after the deletion. */
-      doneTitle: 'Данные удалены',
       /**
-       * The text under it. The owner's line for this place («Подписка сохраняется до конца
-       * оплаченного периода») stopped being true with contract 1.5.5: the deletion cancels the
-       * subscription. Until the owner words a new one, the screen repeats what stays in the
-       * owner's own words from the confirmation, and promises nothing about the subscription.
+       * Owner's wording, the screen after the deletion: «Данные удалены. Подписка отменена. Если
+       * захочешь вернуться — начнёшь с чистого листа.» The first sentence is the title, the rest
+       * the text under it. Said to everyone, as on the confirmations.
        */
-      doneText: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
+      doneTitle: 'Данные удалены',
+      doneText: 'Подписка отменена. Если захочешь вернуться — начнёшь с чистого листа.',
+      /** Under that, in small print, by the owner's order of the lines: what stays, in the words of the first confirmation. */
+      doneNote: 'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
+      /**
+       * Owner's wording: the link to the subscriptions in Telegram's own settings. The server cancels
+       * the subscription on its side, and nothing in apps/api tells Telegram to stop renewing it
+       * (issue #29): where the subscription lives is the one thing the user can look into and act on.
+       */
+      manageSubscriptions: 'Управлять подписками в Telegram',
     },
   },
 
   support: {
     /** Owner's wording. */
     write: 'Написать в поддержку',
-    /** Owner's wording: the button while there is no contact to lead to. */
-    soon: 'Поддержка скоро появится',
+    /**
+     * Owner's wording: the button while the build has no contact to lead to (`VITE_SUPPORT_CONTACT`).
+     * The key keeps its first name, from the days the button said that support was coming.
+     */
+    soon: 'Контакт поддержки ещё не задан',
   },
 } as const;

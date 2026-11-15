@@ -197,7 +197,7 @@ describe('ForecastScreen', () => {
     ['career', 'Фокус дня: карьера'],
     ['love', 'Фокус дня: отношения'],
     ['money', 'Фокус дня: деньги'],
-    ['health', 'Фокус дня: самочувствие'],
+    ['wellbeing', 'Фокус дня: самочувствие'],
     ['self', 'Фокус дня: внимание к себе'],
   ] as const)('names the focus %s in words: «%s»', async (focus, label) => {
     setup({ answer: { ...forecast, focus } });
@@ -374,5 +374,38 @@ describe('ForecastScreen', () => {
     expect(signal?.aborted).toBe(false);
     unmount();
     expect(signal?.aborted).toBe(true);
+  });
+});
+
+describe('ForecastScreen: «готовится», the first day of a chart and every morning before the forecast is written', () => {
+  it('says whose 08:00 it is, as a second line in small print under «Загляни после 08:00»', async () => {
+    setup({ answer: null });
+    await screen.findByRole('heading', { name: 'Сегодняшний прогноз готовится' });
+
+    const lines = [...screen.getByRole('status').querySelectorAll('h2, p')].map((line) => line.textContent);
+    expect(lines).toEqual(['Сегодняшний прогноз готовится', 'Загляни после 08:00', 'Время считается по месту рождения.']);
+    // With the test setup of CSS modules a class is its own name in the stylesheet (StateView.module.css).
+    expect(screen.getByText('Время считается по месту рождения.')).toHaveClass('note');
+    expect(screen.getByText('Загляни после 08:00')).not.toHaveClass('note');
+  });
+
+  it('says it whether or not the app knows the zone of the birth place: the server counts by it either way', async () => {
+    setup({ answer: null, timeZone: null });
+    expect(await screen.findByText('Время считается по месту рождения.')).toBeInTheDocument();
+  });
+
+  it('promises no question for that day: no way to the question screen, and not a word about asking', async () => {
+    const { onAsk } = setup({ answer: null });
+    await screen.findByRole('heading', { name: 'Сегодняшний прогноз готовится' });
+
+    expect(screen.queryByRole('button', { name: 'Спросить карту' })).not.toBeInTheDocument();
+    expect(screen.getByRole('main').textContent).not.toMatch(/вопрос|спроси/i);
+    expect(onAsk).not.toHaveBeenCalled();
+  });
+
+  it('a forecast that is there has no such line: it is about the hour of one that is not', async () => {
+    setup();
+    await screen.findByText(forecast.text);
+    expect(screen.queryByText('Время считается по месту рождения.')).not.toBeInTheDocument();
   });
 });

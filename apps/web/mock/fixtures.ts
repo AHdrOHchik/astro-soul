@@ -7,6 +7,7 @@
  * does not calculate anything. Its wheel says MOCK in the middle, and the chart
  * names `mock` as its engine version.
  */
+import { createHash } from 'node:crypto';
 import type { components } from '../src/api/schema.gen';
 
 type Schemas = components['schemas'];
@@ -24,6 +25,7 @@ export type Subscription = Schemas['SubscriptionState'];
 type Entitlements = Schemas['Entitlements'];
 type Quota = Schemas['Quota'];
 
+/** The id of the chart the mock may start with (`me=returning`, `paid`, `subscriber`): the one the docs and the tests name. */
 export const MOCK_CHART_ID = '00000000-0000-4000-8000-00000000c0de';
 
 /**
@@ -149,6 +151,19 @@ export function inputKey({ birth_date, birth_time, time_precision, birth_place }
 }
 
 /**
+ * The id of the chart of these birth data: one chart per set of data, and so one id, as on
+ * the server. Other data are another chart with another id, which is what lets the mock
+ * show a user who bought the report of one chart and then built a second one.
+ */
+export function chartIdOf(input: ChartCreateRequest): string {
+  const key = inputKey(input);
+  if (key === inputKey(RETURNING_INPUT)) return MOCK_CHART_ID;
+  const hex = createHash('sha256').update(key).digest('hex');
+  // Shaped like a version 4 UUID, which is all the contract says of an id.
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
  * `ChartResponse.warnings` by the server's rule (apps/api, `computeWarnings`): the time first,
  * then the place. The server warns about a place its gazetteer lacks; here that is one
  * scenario place. That place also gets a code no build knows, to show that the app skips it.
@@ -215,6 +230,7 @@ const positionLabel = ({ sign, degree, minute }: { sign: string; degree: number;
   `${sign}, ${String(degree)}°${String(minute).padStart(2, '0')}′`;
 
 export function buildChart(input: ChartCreateRequest): ChartResponse {
+  const chartId = chartIdOf(input);
   const timeKnown = input.time_precision !== 'unknown';
   const sun = demoSunSign(input.birth_date);
   const house = (value: number) => (timeKnown ? value : null);
@@ -223,7 +239,7 @@ export function buildChart(input: ChartCreateRequest): ChartResponse {
   const asc = timeKnown ? { sign: signAt(sun + 3), degree: 4, minute: 9 } : null;
 
   const chart: Chart = {
-    chart_id: MOCK_CHART_ID,
+    chart_id: chartId,
     created_at: new Date().toISOString(),
     birth: {
       date: input.birth_date,
@@ -263,8 +279,8 @@ export function buildChart(input: ChartCreateRequest): ChartResponse {
     chart,
     mini_reading: { ...lines, summary: [lines.sun, lines.moon, lines.asc].join(' · ') },
     // One signature for both addresses, as in apps/api: the SVG is for the screen, the PNG for sharing.
-    wheel_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.svg?sig=${MOCK_SIG}`,
-    wheel_png_url: `/api/v1/charts/${MOCK_CHART_ID}/wheel.png?sig=${MOCK_SIG}`,
+    wheel_url: `/api/v1/charts/${chartId}/wheel.svg?sig=${MOCK_SIG}`,
+    wheel_png_url: `/api/v1/charts/${chartId}/wheel.png?sig=${MOCK_SIG}`,
     warnings: warningsFor(input),
     is_restored: false,
   };

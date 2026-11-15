@@ -7,7 +7,7 @@ import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
 import type { IdempotencyKeys } from './lib/idempotency';
-import { grants, REPORT_PLAN, type PaywallPlan } from './lib/plans';
+import { grants, hasReportFor, REPORT_PLAN, type PaywallPlan } from './lib/plans';
 import type { TermsReload } from './lib/termsReload';
 import { AskScreen } from './screens/ask/AskScreen';
 import { BirthDateScreen } from './screens/BirthDateScreen';
@@ -36,8 +36,8 @@ export interface AppProps {
   /** Where the support button leads; '' = no contact yet, the button says so. */
   supportLink?: string;
   /**
-   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does unless told otherwise.
-   * With `false` nothing in the app offers one: not the paywall, not the settings, not the
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does not unless told to.
+   * Without `true` nothing in the app offers one: not the paywall, not the settings, not the
    * forecast or the question screen. A subscription the user already has is shown as ever.
    */
   subscriptions?: boolean;
@@ -74,7 +74,7 @@ export function App({
   apiBaseUrl,
   botUsername = '',
   supportLink = '',
-  subscriptions = true,
+  subscriptions = false,
   keys,
   track,
   termsReload,
@@ -282,6 +282,13 @@ interface PaywallEntry {
   reportRequired: boolean;
 }
 
+/** A purchase Telegram called paid and the server has not granted yet. */
+interface AwaitedPurchase {
+  plan: PaywallPlan;
+  /** The chart the report was bought for; null for a subscription, which is about no chart. */
+  chartId: string | null;
+}
+
 /** How the report screen was entered. */
 interface ReportEntry {
   /** The report to open; null when there is none known. */
@@ -328,9 +335,13 @@ function Screens({
   const [reportId, setReportId] = useState<string | null>(meAtStart.latest_report_id ?? null);
   // And the server's last word about it, so the chart screen can show it at once and ask again behind it.
   const [knownReport, setKnownReport] = useState<Report | null>(null);
+  // The reports the server has said it does not have. An id never comes back: should `Me` go on naming one,
+  // the app does not take it up again, or it would ask about it, hear 404 and ask `Me` once more, without end.
+  const goneReports = useRef(new Set<string>());
   // The server no longer has that report (404 to the id `Me` named: it went with the user's data).
   // Nothing the app holds about it is true any more; `null` is the ordinary «no report».
   const forgetReport = useCallback((gone: string) => {
+    goneReports.current.add(gone);
     setReportId((current) => (current === gone ? null : current));
     setKnownReport((current) => (current?.report_id === gone ? null : current));
   }, []);
@@ -340,25 +351,26 @@ function Screens({
     // «None yet» is news as well: what was known before is not shown in its place.
     setKnownForecast(forecast === null ? null : { chartId, forecast });
   }, []);
-  // A plan Telegram called paid in this visit and the server has not granted yet. Until it does,
+  // A purchase Telegram called paid in this visit and the server has not granted yet. Until it does,
   // no screen offers to pay for it again. The ref is for the moment the answer comes, the state for the screens.
-  const [awaitedPlan, setAwaitedPlan] = useState<PaywallPlan | null>(null);
-  const awaited = useRef<PaywallPlan | null>(null);
-  const awaitPayment = useCallback((plan: PaywallPlan) => {
-    awaited.current = plan;
-    setAwaitedPlan(plan);
+  const [awaitedPurchase, setAwaitedPurchase] = useState<AwaitedPurchase | null>(null);
+  const awaited = useRef<AwaitedPurchase | null>(null);
+  const awaitPayment = useCallback((purchase: AwaitedPurchase) => {
+    awaited.current = purchase;
+    setAwaitedPurchase(purchase);
   }, []);
   const refreshMe = useCallback(
     async (signal?: AbortSignal) => {
       const fresh = await api.getMe(signal);
       setMe(fresh);
-      if (typeof fresh.latest_report_id === 'string') setReportId(fresh.latest_report_id);
-      const plan = awaited.current;
-      if (plan !== null && grants(fresh, plan)) {
+      if (typeof fresh.latest_report_id === 'string' && !goneReports.current.has(fresh.latest_report_id)) setReportId(fresh.latest_report_id);
+      const purchase = awaited.current;
+      // A report is confirmed for the chart it was bought for: a report the user has of another chart confirms nothing.
+      if (purchase !== null && grants(fresh, purchase.plan, purchase.chartId)) {
         // The one confirmation of a payment there is, counted here once, whichever screen asked the server.
         awaited.current = null;
-        setAwaitedPlan(null);
-        track('payment_succeeded', { plan_code: plan });
+        setAwaitedPurchase(null);
+        track('payment_succeeded', { plan_code: purchase.plan });
       }
       return fresh;
     },
@@ -372,6 +384,8 @@ function Screens({
   // Said until the user agrees to the new texts; after that it is no longer news.
   const [termsNotice, setTermsNotice] = useState(termsRenewed);
   const [shownCharts, setShownCharts] = useState<ShownCharts>({ current: null, built: null });
+  // Counts the times the app has dropped a chart: the chart screen of before is not the chart screen of after.
+  const [chartEpoch, setChartEpoch] = useState(0);
   const chartScroll = useRef(0);
   // The chart the paywall and the report screen were opened from.
   const [openChart, setOpenChart] = useState<OpenChart | null>(null);
@@ -458,6 +472,14 @@ function Screens({
     // The form starts clean as well: the consent went with the data it was given for.
     setDraft(EMPTY_DRAFT);
     setServerErrors(NO_SERVER_ERRORS);
+    // A payment still on its way that was made for a chart went with the chart: nothing will come of it now, and
+    // the chart built next is offered its own price. A subscription is about no chart: it is awaited as before.
+    if (awaited.current !== null && awaited.current.chartId !== null) {
+      awaited.current = null;
+      setAwaitedPurchase(null);
+    }
+    // The chart screen may be the one on screen (it asks about the report too): it starts over like any other.
+    setChartEpoch((epoch) => epoch + 1);
     setHome('current');
     setStack(['current']);
   }, [keys]);
@@ -480,6 +502,26 @@ function Screens({
       return fresh;
     },
     [refreshMe, forgetChart],
+  );
+  /**
+   * Is the chart still on the server? Asked of `Me` when the server has no such report (404):
+   * a report goes with the user's data and in no other way. Without a chart the app has
+   * started over by the time this says so.
+   */
+  const isChartThere = useCallback(
+    async (signal?: AbortSignal) => {
+      const fresh = await refreshMeForChart(signal);
+      return fresh.has_chart || typeof fresh.chart_id === 'string';
+    },
+    [refreshMeForChart],
+  );
+  /** The report `Me` named is not on the server (404 on the chart screen): forgotten, and `Me` is asked whether the chart went with it. */
+  const handleReportGone = useCallback(
+    (gone: string) => {
+      forgetReport(gone);
+      void refreshMeForChart().catch(() => undefined);
+    },
+    [forgetReport, refreshMeForChart],
   );
   const openSettings = () => {
     open('settings');
@@ -520,8 +562,9 @@ function Screens({
     const cached = route === 'current' ? shownCharts.current : shownCharts.built?.request === request ? shownCharts.built.result : null;
     return (
       <ChartScreen
-        // A screen of its own per chart: the one from the server and the one from the form share nothing.
-        key={route}
+        // A screen of its own per chart: the one from the server and the one from the form share nothing,
+        // and neither does the screen of a chart the server turned out not to have.
+        key={`${route}:${String(chartEpoch)}`}
         api={api}
         telegram={telegram}
         request={route === 'current' ? null : request}
@@ -551,13 +594,17 @@ function Screens({
           },
         }}
         report={{
-          fullReport: me.entitlements.full_report,
+          // Paid for or not is asked about the chart on screen, never about the user: `cached` is that chart
+          // from the moment the server hands it over (`onLoaded` comes before the screen draws it).
+          fullReport: cached !== null && hasReportFor(me, cached.chart.chart_id),
           reportId,
           known: knownReport,
           onKnown: setKnownReport,
-          onGone: forgetReport,
-          paymentPending: awaitedPlan === REPORT_PLAN,
-          onCheckPayment: refreshMe,
+          onGone: handleReportGone,
+          // Whichever chart that payment was for: while one is on its way, no price is offered anywhere.
+          paymentPending: awaitedPurchase?.plan === REPORT_PLAN,
+          // The payment was for a chart: `Me` without any says that the chart is gone, and the purchase with it.
+          onCheckPayment: refreshMeForChart,
           onBuy: (chart) => {
             setOpenChart(chart);
             setPaywall({ plan: REPORT_PLAN, offersReport: true, reportRequired: false });
@@ -580,6 +627,10 @@ function Screens({
 
   // The chart a report can be about: the one the user came from, else the one `Me` names.
   const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id, share: null } : null);
+  // The chart the paywall sells the report for; null when the report is not on offer there.
+  const paywallChartId = paywall.offersReport ? (reportChart?.chartId ?? null) : null;
+  // The chart of the payment the app is waiting for; null when there is none, or it is for a subscription.
+  const awaitedChartId = awaitedPurchase?.chartId ?? null;
 
   switch (route) {
     case 'welcome':
@@ -600,13 +651,18 @@ function Screens({
           api={api}
           telegram={telegram}
           me={me}
-          refreshMe={refreshMe}
-          reportChartId={paywall.offersReport ? (reportChart?.chartId ?? null) : null}
+          // A report is paid for a chart. Where the screen sells one, or waits for a payment made for a chart, `Me`
+          // without any chart says that the chart is gone, and the purchase with it: the app starts over instead of waiting.
+          refreshMe={paywallChartId !== null || awaitedChartId !== null ? refreshMeForChart : refreshMe}
+          reportChartId={paywallChartId}
           initialPlan={paywall.plan}
           subscriptions={subscriptions}
           reportRequired={paywall.reportRequired}
-          awaiting={awaitedPlan}
-          onAwaiting={awaitPayment}
+          awaiting={awaitedPurchase?.plan ?? null}
+          awaitingChartId={awaitedChartId}
+          onAwaiting={(plan) => {
+            awaitPayment({ plan, chartId: plan === REPORT_PLAN ? paywallChartId : null });
+          }}
           track={track}
           back={back}
           onOpenTerms={() => {
@@ -693,6 +749,7 @@ function Screens({
           onReport={setKnownReport}
           onReportGone={forgetReport}
           onChartGone={handleChartGone}
+          isChartThere={isChartThere}
         />
       );
     case 'settings':
@@ -700,7 +757,9 @@ function Screens({
         <SettingsScreen
           api={api}
           telegram={telegram}
-          refreshMe={refreshMe}
+          // Opened from a chart, the settings ask `Me` like every screen that works with one: an answer without
+          // a chart says the data was deleted elsewhere. A user who has built none yet has nothing to lose that way.
+          refreshMe={home === 'current' || shownCharts.built !== null ? refreshMeForChart : refreshMe}
           supportLink={supportLink}
           track={track}
           back={back}

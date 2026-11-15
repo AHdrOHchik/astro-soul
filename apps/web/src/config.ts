@@ -20,13 +20,14 @@ export const config = {
   apiBaseUrl: (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, ''),
   /** The bot's username for the link in a shared message, without `@`. Empty = the picture and the text go out without a link. */
   botUsername: botUsernameOf(import.meta.env.VITE_BOT_USERNAME),
-  /** Where the support button leads. Empty = the button is there, disabled, and says support is coming. */
+  /** Where the support button leads. Empty = the button is there, disabled, and says that no contact is set. */
   supportLink: supportLinkOf(import.meta.env.VITE_SUPPORT_CONTACT),
   /**
-   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`): yes unless the variable says `off`.
-   * With `off` nothing in the app offers one; a subscription the user already has is still shown.
+   * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`): only when the variable says
+   * `enabled`. Unset, empty, `off` or anything else, it sells none: nothing in the app offers
+   * one then, and a subscription the user already has is still shown.
    */
-  subscriptions: subscriptionsModeOf(import.meta.env.VITE_SUBSCRIPTIONS) !== 'off',
+  subscriptions: subscriptionsModeOf(import.meta.env.VITE_SUBSCRIPTIONS) === 'enabled',
   /** Stand-in for Telegram initData in a plain browser. Not present in production builds at all. */
   devInitData: import.meta.env.DEV ? (import.meta.env.VITE_DEV_INIT_DATA ?? '') : '',
   /**

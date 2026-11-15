@@ -69,7 +69,10 @@ export interface ChartForecastProps {
 
 /** The full report on the chart screen: what the server says the user has, and where the buttons lead. */
 export interface ChartReportProps {
-  /** `Me.entitlements.full_report`. */
+  /**
+   * Whether the full report of the chart on screen is paid for, by the server's word
+   * (`hasReportFor`). Of this chart, not of the user: a report bought for another chart is not it.
+   */
   fullReport: boolean;
   /** `Me.latest_report_id`, or a report met in this session; null when the app knows of none. */
   reportId: string | null;

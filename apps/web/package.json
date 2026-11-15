@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "pnpm run typecheck && vite build && node scripts/check-bundle.mjs",
+    "build": "node scripts/print-build-settings.ts && pnpm run typecheck && WEB_BUILD_SETTINGS_SHOWN=1 vite build && node scripts/check-bundle.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "typecheck": "pnpm run gen:api:check && tsc -p tsconfig.app.json && tsc -p tsconfig.node.json",

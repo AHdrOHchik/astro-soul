@@ -50,6 +50,8 @@ export const entitlements: Me['entitlements'] = {
   full_forecast: false,
   ask_per_day: 0,
   full_report: false,
+  // Always in the answer since contract 1.5.4: the chart the report is bought for, or null.
+  full_report_chart_id: null,
   compat_per_month: 0,
   solar_included: false,
 };
@@ -133,8 +135,8 @@ export const chartWithoutTime: ChartResult = {
 /** `Me` of a user who has the fixture chart and nothing bought. */
 export const meWithChart: Me = { ...me, is_new: false, has_profile: true, has_chart: true, chart_id: chart.chart_id, onboarding_step: 'done' };
 
-/** The same user with the full report bought. */
-export const mePaid: Me = { ...meWithChart, entitlements: { ...entitlements, full_report: true } };
+/** The same user with the full report bought: of the fixture chart, as the server names it. */
+export const mePaid: Me = { ...meWithChart, entitlements: { ...entitlements, full_report: true, full_report_chart_id: chart.chart_id } };
 
 /** The same user with a monthly subscription that renews. */
 export const meSubscribed: Me = {

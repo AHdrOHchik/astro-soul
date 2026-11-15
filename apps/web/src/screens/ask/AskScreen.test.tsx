@@ -536,32 +536,6 @@ describe('AskScreen', () => {
       expect(analytics.events).toEqual([]);
     });
 
-    it('402: on to the paywall, where there is a subscription to offer', async () => {
-      const { api, analytics, onSubscribe } = await open();
-      analytics.clear();
-      api.ask.mockRejectedValue(apiError('PAYMENT_REQUIRED', { status: 402, serverMessage: 'Вопросы карте — в подписке' }));
-      await ask();
-
-      expect(onSubscribe).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-      // The question is kept for the way back.
-      expect(field()).toHaveValue(QUESTION);
-      expect(submit()).toBeEnabled();
-      expect(analytics.events).toEqual([{ name: 'quota_exhausted', props: { step: 'ask' } }]);
-    });
-
-    it('402 with no subscription to offer: the server\'s words, and no way to a paywall that sells nothing', async () => {
-      const { api, onSubscribe } = await open({ offer: false });
-      api.ask.mockRejectedValue(apiError('PAYMENT_REQUIRED', { status: 402, serverMessage: 'Вопросы карте — в подписке', requestId: 'req-402' }));
-      await ask();
-
-      expect(onSubscribe).not.toHaveBeenCalled();
-      const alert = screen.getByRole('alert');
-      expect(alert).toHaveTextContent('Ответ не получен');
-      expect(alert).toHaveTextContent('Вопросы карте — в подписке');
-      expect(within(alert).getByText(ru.common.requestId('req-402'))).toBeInTheDocument();
-    });
-
     it('a failed request: says that no answer came, keeps the question, and sends it again only by a tap', async () => {
       const { api, analytics } = await open();
       analytics.clear();
