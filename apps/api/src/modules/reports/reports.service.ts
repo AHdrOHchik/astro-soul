@@ -10,8 +10,7 @@ import { EntitlementsService } from '../entitlements/entitlements.service';
 import { LLM_PROVIDER } from '../llm/llm.module';
 import { LlmError, type LlmMessage, type LlmProvider, type LlmResponse } from '../llm/llm.client';
 import { UsersRepository } from '../users/users.repository';
-import { serializeChartFacts } from './chart-facts';
-import { serializeChartFactsExtras } from './chart-facts-extras';
+import { CHART_FACTS_VERSION, serializeTopFactors } from './top-factors';
 import { fewShotBlocks } from './corpus';
 import { buildDigest } from './digests';
 import {
@@ -189,11 +188,13 @@ export class ReportsService {
       model: this.llm.name,
       promptVersion: PROMPT_VERSION,
       structureVersion: STRUCTURE_VERSION,
+      chartFactsVersion: CHART_FACTS_VERSION,
     });
 
     this.logger.info('report_queued', {
       report_id: report.id,
       model: this.llm.name,
+      chart_facts_version: CHART_FACTS_VERSION,
       chart_hash: createHash('sha256').update(facts).digest('hex').slice(0, 12),
     });
 
@@ -221,10 +222,17 @@ export class ReportsService {
     return this.view(report, entitlement.fullReport);
   }
 
-  /** `chart_facts` + дополнения (аспекты к углам, управители). Только whitelist. */
+  /**
+   * Блок фактов для промпта: `chart_facts` v1.2 — отобранные 7–9 позиций
+   * вместо полной карты (задача C, `top-factors.ts`).
+   *
+   * Полная карта (`serializeChartFacts` v1.1 + дополнения) больше не уходит в
+   * модель: вход был главной статьёй расхода. Версия пишется в
+   * `reports.chart_facts_version`, чтобы «дешёвый разбор» отличался от
+   * «сломанного отбора».
+   */
   private factsFor(chart: Chart): string {
-    const extras = serializeChartFactsExtras(chart);
-    return extras === '' ? serializeChartFacts(chart) : `${serializeChartFacts(chart)}\n${extras}`;
+    return serializeTopFactors(chart);
   }
 
   private view(report: ReportRow, paid: boolean): ReportView {

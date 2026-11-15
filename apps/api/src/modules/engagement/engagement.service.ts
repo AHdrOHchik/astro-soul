@@ -183,33 +183,53 @@ export class EngagementService {
     const chart = await this.repo.chartForUser(chartId, userId);
 
     if (chart === null) {
-      throw notFound({ message: 'Такой карты нет. Построй карту заново', reason: 'chart_not_found' });
+      // Контракт 1.5.6: `details.reason` — машинный признак, по нему клиент
+      // уходит в онбординг. Текст читать приложению нельзя.
+      throw notFound({
+        message: 'Такой карты нет. Построй карту заново',
+        reason: 'no_chart',
+        details: { reason: 'no_chart' },
+      });
     }
 
     const tz = EngagementService.timeZoneOf(chart.data.chart);
     const local = localParts(new Date(), tz);
 
     if (local === null) {
-      throw notFound({ message: 'Прогноз ещё не готов', reason: 'forecast_not_ready' });
+      throw notFound({
+        message: 'Прогноз ещё не готов',
+        reason: 'not_ready',
+        details: { reason: 'not_ready' },
+      });
     }
 
     const forecast = await this.repo.forecastFor(chartId, local.date);
 
     if (forecast === null) {
       // Контракт: 404, пока джоб не положил строку. Никакой генерации здесь.
+      // `not_ready` — «останься на экране ожидания», `no_chart` — «в онбординг»:
+      // раньше оба смысла различались только текстом, и приложение после
+      // каждого 404 перечитывало `GET /me` (контракт 1.5.6, B-2).
       throw notFound({
         message: 'Прогноз на сегодня ещё готовится. Загляни чуть позже',
-        reason: 'forecast_not_ready',
+        reason: 'not_ready',
+        details: { reason: 'not_ready' },
       });
     }
 
-    const text = forecast.is_paid ? (forecast.full_text ?? forecast.teaser ?? '') : (forecast.teaser ?? '');
+    // `forecast.is_paid` — состояние на момент генерации, а право читать полный
+    // текст проверяется **сейчас** (задача D). Человек мог отменить подписку
+    // между ночным джобом и открытием экрана: тогда он получает урезанный
+    // прогноз, а не копию, оплаченную вчера.
+    const entitlements = await this.entitlements.getEntitlements(userId);
+    const paidNow = forecast.is_paid && entitlements.fullForecast;
+    const text = paidNow ? (forecast.full_text ?? forecast.teaser ?? '') : (forecast.teaser ?? '');
 
     return {
       date: forecast.date,
       text,
       focus: focusOf(forecast.focus),
-      is_paid: forecast.is_paid,
+      is_paid: paidNow,
       generated_at: forecast.created_at.toISOString(),
     };
   }
@@ -231,7 +251,13 @@ export class EngagementService {
     const chart = await this.repo.chartForUser(input.chart_id, userId);
 
     if (chart === null) {
-      throw notFound({ message: 'Такой карты нет. Построй карту заново', reason: 'chart_not_found' });
+      // Вопросу без карты некуда идти: `no_chart` — сигнал «построй карту
+      // заново», а не «попробуй позже» (контракт 1.5.6, B-1).
+      throw notFound({
+        message: 'Карты нет. Построй её заново',
+        reason: 'no_chart',
+        details: { reason: 'no_chart' },
+      });
     }
 
     const tz = EngagementService.timeZoneOf(chart.data.chart);

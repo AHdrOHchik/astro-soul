@@ -19,6 +19,13 @@
  *   {fail: {sendMessage: {status: 429, retryAfter: 5}}} → HTTP 429 + retry-after
  *   {fail: {sendMessage: {byChat: {'<id>': 403}}}}     → адресно по chat_id, остальным — ok
  *
+ * Отмена автопродления (`editUserStarSubscription`, итерация 12): по умолчанию
+ * `{ok:true, result:true}`. Адресный отказ — по `charge_id`:
+ *   {fail: {editUserStarSubscription: {byCharge: {'<charge>': 'CHARGE_ID_INVALID'}}}}
+ *   {fail: {editUserStarSubscription: {status: 500}}}
+ * `GET /__config` показывает счётчик вызовов и последние параметры: по ним
+ * проверяется, что сервер передал правильную пару (user_id, charge_id).
+ *
  * Совместимость: без `/__config` стаб отвечает 200 `{ok:true}` на всё, как
  * раньше; старые прогоны (`acceptance-002.mjs`) не знают про статусы и
  * продолжают работать.
@@ -82,7 +89,15 @@ const server = createServer((req, res) => {
       return json(res, 200, { ok: true });
     }
     if (url.pathname === '/__config' && req.method === 'GET') {
-      return json(res, 200, { failures, calls: calls.length });
+      const cancels = calls.filter((call) => call.method === 'editUserStarSubscription');
+      return json(res, 200, {
+        failures,
+        calls: calls.length,
+        editUserStarSubscription: {
+          count: cancels.length,
+          last: cancels.at(-1)?.body ?? null,
+        },
+      });
     }
     if (url.pathname === '/__config' && req.method === 'POST') {
       try {
@@ -118,6 +133,16 @@ const server = createServer((req, res) => {
         if (status !== undefined) return forced(res, status);
         return json(res, 200, { ok: true, result: true });
       }
+      // Адресный отказ по платежу: один прогон проверяет успех и
+      // CHARGE_ID_INVALID на разных charge_id.
+      const byCharge = /** @type {{byCharge?: Record<string, string>}} */ (failure).byCharge;
+      if (byCharge !== undefined) {
+        const code = byCharge[String(body.telegram_payment_charge_id)];
+        if (code !== undefined) {
+          return json(res, 200, { ok: false, error_code: 400, description: `Bad Request: ${code}` });
+        }
+        return json(res, 200, { ok: true, result: true });
+      }
       if (typeof failure === 'object' && failure !== null && 'status' in failure) {
         const spec = /** @type {{status: number, retryAfter?: number}} */ (failure);
         return forced(res, Number(spec.status), spec.retryAfter);
@@ -135,6 +160,7 @@ const server = createServer((req, res) => {
       case 'answerPreCheckoutQuery':
       case 'sendMessage':
       case 'refundStarPayment':
+      case 'editUserStarSubscription':
         return json(res, 200, { ok: true, result: true });
       case 'getMe':
         return json(res, 200, { ok: true, result: { id: 1, is_bot: true, username: 'qa_bot' } });

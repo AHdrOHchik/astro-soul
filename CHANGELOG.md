@@ -1,5 +1,35 @@
 # Changelog
 
+## Итерация 12 — отмена подписки в Telegram, причины 404, `chart_facts` v1.2
+
+- **A: `DELETE /me` отключает автопродление в Telegram.** Локальная `cancelled`
+  не отменяла подписку в Telegram: звёзды списывались за следующий период уже
+  после удаления данных. Теперь до транзакции вызывается
+  `editUserStarSubscription(is_canceled: true)` с парой (`telegram_id`,
+  `telegram_payment_charge_id` последнего успешного платежа подписки),
+  таймаут 5 с. Ошибка Bot API удаление не блокирует (152-ФЗ): результат пишется
+  в `subscriptions.telegram_cancel_state`, неуспех повторяет
+  `pdn_retention_cleanup` (не чаще раза в час, до 5 попыток, затем `gave_up`).
+  Миграции: `0018` (enum `telegram_cancel_state`), `0019` (колонки состояния;
+  `telegram_payment_charge_id` уже был в `subscriptions` и обновляется каждым
+  продлением — отдельную `telegram_charge_id` не заводили),
+  `0020` (`reports.chart_facts_version`). Событие
+  `subscription_cancel_failed`, метрики `subscription_cancel_failed_30d` и
+  `subscriptions_cancelled_pending_telegram`, счётчики джоба
+  `telegram_cancel_*`.
+- **B: контракт 1.5.6.** `details.reason` у `404`: `no_chart` / `not_ready`
+  (ask и forecast); описание `DELETE /me` больше не обещает сохранение
+  подписки; идемпотентность зафиксирована (`204`/`204`, `404` никогда);
+  `402` на вопрос не описывается — сервер его не отдаёт.
+- **C: `chart_facts` v1.2.** В промпт уходят 7–9 отобранных позиций вместо
+  полной карты: блок фактов 1 247 → 464 символа (−63 %), вход главы
+  −16,5 % (83,5 % от прежнего). Числа и метод — `docs/qa/reports/chart-facts-v1.2.md`.
+  Промпты не менялись. `llm_call_ok` логирует `input_tokens` / `output_tokens`
+  на каждый вызов; `input`/`output` уже хранятся в `llm_tokens_in/out`.
+- **D: прогноз** отдаёт полный текст только при активном `full_forecast` в
+  момент чтения кэша; после удаления данных новый инвойс создаётся; в новых
+  логах нет `telegram_id`, а `charge_id` — только хвостом из 6 символов.
+
 ## Итерация 11 — удаление данных и стаб бота
 
 - **Блокер A: «Удалить мои данные» стало окончательным.** `DELETE /me` в одной

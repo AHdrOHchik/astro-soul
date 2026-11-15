@@ -94,19 +94,33 @@ export interface paths {
         post?: never;
         /**
          * Удалить все персональные данные пользователя (ПДн)
-         * @description Полное удаление профиля, карт, разборов, прогнозов и вопросов.
+         * @description Удаляются профиль, карты, разборы, прогнозы и вопросы.
          *
-         *     Права и подписка отзываются в той же транзакции: после удаления
-         *     `Me.subscription.is_active = false`, `Me.entitlements.full_report = false`,
-         *     `full_report_chart_id = null`, `latest_report_id = null`. Повторный вход
-         *     тем же `telegram_id` создаёт нового пользователя (`is_new = true`) без
-         *     покупок — даже если `user_id` совпал (он детерминирован из telegram_id).
+         *     **Подписка отменяется, доступ закрывается сразу, оплаченный период не
+         *     возвращается.** После удаления `Me.subscription.is_active = false`,
+         *     `Me.entitlements.full_report = false`, `full_report_chart_id = null`,
+         *     `latest_report_id = null`. Повторный вход тем же `telegram_id` создаёт
+         *     нового пользователя (`is_new = true`) без покупок — даже если `user_id`
+         *     совпал (он детерминирован из telegram_id).
+         *
+         *     **Автопродление в Telegram отключается** вызовом
+         *     `editUserStarSubscription(is_canceled: true)` — до транзакции удаления,
+         *     пока известна пара (`telegram_id`, `telegram_payment_charge_id`).
+         *     Ошибка Telegram удаление не блокирует: удаление ПДн не зависит от
+         *     доступности чужого API. Неуспех пишется в
+         *     `subscriptions.telegram_cancel_state` и повторяется ночным джобом в
+         *     течение окна возврата (30 дней, до 5 попыток).
          *
          *     Обезличивается всё, где был `user_id`: `payments`, `subscriptions`
          *     (`status = cancelled`), `entitlements` (`status = revoked`), `events`.
-         *     Обезличенная история платежей сохраняется для бухучёта и возвратов:
-         *     `telegram_payment_charge_id`, сумма и план остаются, `user_id` — нет.
-         *     Возврат звёзд по charge_id после удаления остаётся возможным.
+         *     **Обезличенная история платежей сохраняется** для бухучёта и возвратов:
+         *     `telegram_payment_charge_id`, план, сумма и дата остаются, `user_id` —
+         *     нет. `payments.telegram_id` снимается через 30 дней (окно возврата),
+         *     после чего вернуть звёзды можно только по явному id от поддержки.
+         *
+         *     Маршрут **идемпотентен**: всегда `204`, даже если удалять нечего.
+         *     `404` не отдаётся никогда — клиенту не нужно различать «уже удалено» и
+         *     «нечего удалять».
          */
         delete: {
             parameters: {
@@ -788,12 +802,22 @@ export interface paths {
                         "application/json": components["schemas"]["Forecast"];
                     };
                 };
-                /** @description Прогноз ещё не готов */
+                /**
+                 * @description Прогноза нет. `Problem.details.reason`:
+                 *       • `not_ready` — карта есть, но ночной джоб ещё не положил строку:
+                 *         приложение остаётся на экране «готовится» и `GET /me` не
+                 *         перечитывает;
+                 *       • `no_chart` — карты нет или она чужая: приложение уходит в
+                 *         онбординг.
+                 *     Тексты читать не нужно: они для человека, признак — `reason`.
+                 */
                 404: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
                 };
             };
         };
@@ -838,6 +862,19 @@ export interface paths {
                     };
                     content: {
                         "application/json": components["schemas"]["AskResponse"];
+                    };
+                };
+                /**
+                 * @description Карты нет или она чужая (`NOT_FOUND`), `details.reason = no_chart`.
+                 *     Вопросу без карты некуда идти: клиент ведёт человека в онбординг.
+                 *     `402` на этот маршрут не отдаётся.
+                 */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
                 /**
@@ -1152,6 +1189,18 @@ export interface paths {
                             refunded_30d?: number;
                             /** @description Платежи `processed = false` прямо сейчас */
                             pending_payments_now?: number;
+                            /**
+                             * @description Сколько раз отмена автопродления в Telegram не прошла за
+                             *     30 дней (события `subscription_cancel_failed`). История, а
+                             *     не очередь: успешный повтор счётчик не уменьшает.
+                             */
+                            subscription_cancel_failed_30d?: number;
+                            /**
+                             * @description Сколько отменённых подписок прямо сейчас ждут повтора в
+                             *     Telegram (`telegram_cancel_state = 'failed'`). Ноль —
+                             *     очередь пуста; рост — повтор не справляется.
+                             */
+                            subscriptions_cancelled_pending_telegram?: number;
                             /**
                              * @description Счётчики событий по именам за 30 дней; считается по
                              *     `events.occurred_at`. Нулевые имена не отдаются.
@@ -1621,7 +1670,10 @@ export interface components {
          *       "pushes_sent": 0,
          *       "pushes_skipped_inactive": 0,
          *       "pushes_deferred": 0,
-         *       "pushes_failed": 0
+         *       "pushes_failed": 0,
+         *       "telegram_cancel_retried": 0,
+         *       "telegram_cancel_cancelled": 0,
+         *       "telegram_cancel_gave_up": 0
          *     }
          */
         JobRunResult: {
@@ -1640,6 +1692,9 @@ export interface components {
             pushes_skipped_inactive?: number;
             pushes_deferred?: number;
             pushes_failed?: number;
+            telegram_cancel_retried?: number;
+            telegram_cancel_cancelled?: number;
+            telegram_cancel_gave_up?: number;
         };
         Report: {
             /** Format: uuid */

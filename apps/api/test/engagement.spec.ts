@@ -169,6 +169,81 @@ describe('GET /api/v1/engagement/forecast', () => {
   });
 });
 
+describe('GET /api/v1/engagement/forecast — машинные причины 404 (контракт 1.5.6)', () => {
+  it('карты нет → 404 details.reason = no_chart', async () => {
+    await userWithChart();
+
+    const response = await request(ctx.app.getHttpServer())
+      .get('/api/v1/engagement/forecast?chart_id=11111111-1111-4111-8111-111111111111')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(404);
+
+    expect(response.body.code).toBe('NOT_FOUND');
+    expect(response.body.details).toMatchObject({ reason: 'no_chart' });
+  });
+
+  it('карта есть, прогноза ещё нет → 404 details.reason = not_ready', async () => {
+    const fixture = await userWithChart();
+
+    const response = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/engagement/forecast?chart_id=${fixture.chartId}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(404);
+
+    expect(response.body.details).toMatchObject({ reason: 'not_ready' });
+  });
+
+  it('полный текст выдаётся только при активном праве на момент чтения', async () => {
+    const fixture = await userWithChart();
+    await makePaid(fixture.userId);
+    await backdateChart(fixture.chartId);
+    const at = atMoscow(3);
+    await engagement.runNightly(at);
+
+    const paid = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/engagement/forecast?chart_id=${fixture.chartId}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(paid.body.is_paid).toBe(true);
+    expect(paid.body.text.length).toBeGreaterThan(0);
+
+    // Подписку отменили между генерацией и чтением: `forecast.is_paid` в строке
+    // остался true, но права уже нет — человек получает урезанный прогноз.
+    await ctx.db.query(`UPDATE subscriptions SET status = 'cancelled'`);
+
+    const afterCancel = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/engagement/forecast?chart_id=${fixture.chartId}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(afterCancel.body.is_paid).toBe(false);
+    const row = await ctx.db.queryOne<{ teaser: string | null }>(
+      `SELECT teaser FROM forecasts WHERE chart_id = $1`,
+      [fixture.chartId],
+    );
+    expect(afterCancel.body.text).toBe(row?.teaser ?? '');
+  });
+});
+
+describe('POST /api/v1/engagement/ask — 404 без карты (контракт 1.5.6)', () => {
+  it('карты нет → 404 details.reason = no_chart, модель не вызывается', async () => {
+    await userWithChart();
+
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/engagement/ask')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({
+        chart_id: '11111111-1111-4111-8111-111111111111',
+        question: 'Что мне поможет сосредоточиться на работе?',
+      })
+      .expect(404);
+
+    expect(response.body.code).toBe('NOT_FOUND');
+    expect(response.body.details).toMatchObject({ reason: 'no_chart' });
+    expect(llm.calls).toHaveLength(0);
+  });
+});
+
 describe('POST /api/v1/engagement/ask', () => {
   function ask(fixture: Fixture, question: string) {
     return request(ctx.app.getHttpServer())

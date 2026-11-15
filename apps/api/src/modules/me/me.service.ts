@@ -8,6 +8,7 @@ import { EntitlementsService } from '../entitlements/entitlements.service';
 import { QuotasService } from '../quotas/quotas.service';
 import { EventsRepository } from '../events/events.repository';
 import { PaymentsService } from '../billing/payments.service';
+import { SubscriptionCancelService } from '../billing/subscription-cancel.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { JsonLogger } from '../../common/logger';
@@ -38,6 +39,7 @@ export class MeService {
     @Inject(DbService) private readonly db: DbService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(PaymentsService) private readonly payments: PaymentsService,
+    @Inject(SubscriptionCancelService) private readonly subscriptionCancel: SubscriptionCancelService,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -128,6 +130,14 @@ export class MeService {
    * паре (user_id, charge_id), и без него возврат после удаления был бы
    * невозможен. Дальше его снимает `pdn_retention_cleanup`.
    *
+   * **Автопродление в Telegram.** Локальная `cancelled` не отменяет подписку в
+   * Telegram: звёзды продолжают списываться за следующий период, и человек,
+   * удаливший данные, видит новое списание. Поэтому до транзакции вызывается
+   * `editUserStarSubscription(is_canceled: true)` (задача A). Порядок
+   * обязателен: пару (telegram_id, charge_id) читаем, пока `user_id` ещё есть.
+   * Ошибка Telegram удаление не блокирует — результат пишется в
+   * `subscriptions.telegram_cancel_state`, неуспех повторяет ночной джоб.
+   *
    * QA-14: зависший платёж больше не тупик. Сначала его разрешает тот же код,
    * что и вебхук (`pending_payments_resolve`): доставит доступ или пометит
    * отказом. Если он всё ещё висит — звёзды возвращаются сразу, и только
@@ -140,6 +150,22 @@ export class MeService {
     await this.resolvePendingPayments(userId);
     await this.refundStillPendingPayments(userId);
 
+    // 1. Telegram — до транзакции: пара (telegram_id, charge_id) ещё доступна.
+    //    Метод не бросает; даже если бросит, удаление всё равно пойдёт: право
+    //    человека на удаление первично (152-ФЗ), а не доступность Bot API.
+    let cancel: Awaited<ReturnType<SubscriptionCancelService['cancelForUser']>>;
+    try {
+      cancel = await this.subscriptionCancel.cancelForUser(userId);
+    } catch (error) {
+      this.logger.warn('telegram_cancel_state', {
+        state: 'failed',
+        code: 'telegram_error',
+        error: error instanceof Error ? error.name : 'unknown',
+      });
+      cancel = { state: 'failed', attempted: true, code: 'telegram_error' };
+    }
+
+    // 2. Локальное удаление — независимо от результата выше.
     await this.db.withTransaction(async (client) => {
       // Порядок: сначала снимаем права и отменяем подписку, потом рвём связь с
       // платежами и событиями, и только затем удаляем пользователя. Всё это
@@ -147,11 +173,23 @@ export class MeService {
       //
       // `cancelled`, а не `expired`: `expired` — «срок вышел сам», тут — воля
       // пользователя. Метрика `subscription_expired` на удаление не пишется.
+      // Состояние отмены автопродления пишется той же строкой: результат
+      // вызова Telegram и локальная отмена — одно событие, а не два.
+      //
+      // Если подписки не было (`attempted = false`), колонки не трогаем: у
+      // строки, отменённой раньше, может стоять `failed` — её ещё ждёт повтор
+      // из ночного джоба, и затирать это состояние нельзя.
       await client.query(
         `UPDATE subscriptions
-            SET status = 'cancelled', user_id = NULL, anonymized_at = now()
+            SET status = 'cancelled', user_id = NULL, anonymized_at = now(),
+                telegram_cancel_state = CASE
+                  WHEN $2::boolean THEN $3::telegram_cancel_state
+                  ELSE telegram_cancel_state
+                END,
+                telegram_cancel_attempts = telegram_cancel_attempts + CASE WHEN $2::boolean THEN 1 ELSE 0 END,
+                telegram_cancel_last_at = CASE WHEN $2::boolean THEN now() ELSE telegram_cancel_last_at END
           WHERE user_id = $1`,
-        [userId],
+        [userId, cancel.attempted, cancel.state],
       );
 
       // Права отзываются: `revoked` — «снято волей пользователя», а не
@@ -191,7 +229,10 @@ export class MeService {
       await client.query(`DELETE FROM quotas WHERE user_id = $1`, [userId]);
       await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
 
-      this.logger.info('account_deleted', { invoices_invalidated: invalidated });
+      this.logger.info('account_deleted', {
+        invoices_invalidated: invalidated,
+        telegram_cancel_state: cancel.state,
+      });
     });
 
     await this.events.log({ name: 'account_deleted' });

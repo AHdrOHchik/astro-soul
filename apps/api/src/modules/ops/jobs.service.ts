@@ -4,6 +4,7 @@ import { JsonLogger } from '../../common/logger';
 import { EventsRepository } from '../events/events.repository';
 import { TelegramClient } from '../telegram/telegram.client';
 import { PaymentsService } from '../billing/payments.service';
+import { SubscriptionCancelService } from '../billing/subscription-cancel.service';
 import { EngagementService } from '../engagement/engagement.service';
 
 /** Через сколько минут недоставленный товар считаем поводом для возврата. */
@@ -65,6 +66,10 @@ export interface JobRunResult {
   readonly refunds_done: number;
   readonly report_refunds_done: number;
   readonly pdn_users_deleted: number;
+  /** Отмена автопродления в Telegram, повторенная ночным джобом (задача A). */
+  readonly telegram_cancel_retried: number;
+  readonly telegram_cancel_cancelled: number;
+  readonly telegram_cancel_gave_up: number;
   /** Удержание: ночная генерация прогнозов. */
   readonly forecasts_generated: number;
   readonly forecasts_skipped: number;
@@ -92,6 +97,7 @@ export class JobsService {
   constructor(
     @Inject(DbService) private readonly db: DbService,
     @Inject(PaymentsService) private readonly payments: PaymentsService,
+    @Inject(SubscriptionCancelService) private readonly subscriptionCancel: SubscriptionCancelService,
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(EngagementService) private readonly engagement: EngagementService,
@@ -116,6 +122,9 @@ export class JobsService {
       refunds_done: 0,
       report_refunds_done: 0,
       pdn_users_deleted: 0,
+      telegram_cancel_retried: 0,
+      telegram_cancel_cancelled: 0,
+      telegram_cancel_gave_up: 0,
       forecasts_generated: 0,
       forecasts_skipped: 0,
       forecasts_failed: 0,
@@ -176,6 +185,14 @@ export class JobsService {
 
     if (pick('pdn_retention_cleanup')) {
       result.pdn_users_deleted = await this.cleanupPdn();
+
+      // Отмена автопродления в Telegram живёт в том же ночном прогоне: это
+      // тоже удержание, и отдельный таймер здесь ни к чему. Повтор идёт по
+      // строкам `cancelled` + `failed`, не чаще раза в час (задача A, п. 3).
+      const retry = await this.subscriptionCancel.retryFailed();
+      result.telegram_cancel_retried = retry.retried;
+      result.telegram_cancel_cancelled = retry.cancelled;
+      result.telegram_cancel_gave_up = retry.gaveUp;
     }
 
     return result;

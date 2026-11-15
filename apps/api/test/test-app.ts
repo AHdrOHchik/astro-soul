@@ -21,7 +21,11 @@ export interface TestContextOptions {
   /** Подмена Bot API: никаких сетевых вызовов в тестах. */
   readonly telegram?: Pick<
     TelegramClient,
-    'createInvoiceLink' | 'answerPreCheckoutQuery' | 'sendMessage' | 'refundStarPayment'
+    | 'createInvoiceLink'
+    | 'answerPreCheckoutQuery'
+    | 'sendMessage'
+    | 'refundStarPayment'
+    | 'editUserStarSubscription'
   >;
   /** Подмена провайдера LLM: в тестах не тратим деньги и не ходим в сеть. */
   readonly llm?: LlmProvider;

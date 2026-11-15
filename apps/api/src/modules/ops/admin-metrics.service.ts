@@ -26,6 +26,10 @@ export interface ProductMetrics {
   readonly amount_mismatch_30d: number;
   readonly refunded_30d: number;
   readonly pending_payments_now: number;
+  /** Задача A: сколько отмен автопродления в Telegram не прошло за 30 дней. */
+  readonly subscription_cancel_failed_30d: number;
+  /** Сколько отменённых подписок всё ещё ждут повтора в Telegram. */
+  readonly subscriptions_cancelled_pending_telegram: number;
   readonly events_30d: Readonly<Record<string, number>>;
   readonly funnel_30d: Readonly<Record<string, number>>;
 }
@@ -52,80 +56,93 @@ export class AdminMetricsService {
   constructor(@Inject(DbService) private readonly db: DbService) {}
 
   async getMetrics(): Promise<ProductMetrics> {
-    const [activity, events, funnel, subscriptions, payments, reports, cost] = await Promise.all([
-      this.db.queryOne<{ mau: number }>(
-        `SELECT count(DISTINCT user_id)::int AS mau
-           FROM events
-          WHERE user_id IS NOT NULL
-            AND ${HAPPENED_AT} >= now() - ${WINDOW}`,
-      ),
-      this.db.query<{ name: string; total: number }>(
-        `SELECT name, count(*)::int AS total
-           FROM events
-          WHERE ${HAPPENED_AT} >= now() - ${WINDOW}
-          GROUP BY name
-          ORDER BY total DESC`,
-      ),
-      this.db.query<{ name: string; users: number }>(
-        `SELECT name, count(DISTINCT user_id)::int AS users
-           FROM events
-          WHERE user_id IS NOT NULL
-            AND name = ANY($1::text[])
-            AND ${HAPPENED_AT} >= now() - ${WINDOW}
-          GROUP BY name`,
-        [FUNNEL_STEPS],
-      ),
-      this.db.queryOne<{ paying: number; churned_30d: number; base: number }>(
-        `SELECT
-           count(*) FILTER (WHERE status = 'active' AND expires_at > now())::int AS paying,
-           count(*) FILTER (
-             WHERE status IN ('expired', 'cancelled') AND updated_at >= now() - ${WINDOW}
-           )::int AS churned_30d,
-           count(*)::int AS base
-         FROM subscriptions`,
-      ),
-      this.db.queryOne<{
-        stars: number;
-        rejected: number;
-        mismatch: number;
-        refunded: number;
-        pending: number;
-      }>(
-        // `rejected` — деньги не за доступ: в выручку не попадают (QA-11).
-        `SELECT
-           COALESCE(sum(total_amount) FILTER (
-             WHERE status NOT IN ('refunded', 'rejected') AND paid_at >= now() - ${WINDOW}
-           ), 0)::int AS stars,
-           count(*) FILTER (
-             WHERE status = 'rejected' AND paid_at >= now() - ${WINDOW}
-           )::int AS rejected,
-           count(*) FILTER (
-             WHERE status = 'rejected' AND reject_reason = 'amount_mismatch'
-               AND paid_at >= now() - ${WINDOW}
-           )::int AS mismatch,
-           count(*) FILTER (
-             WHERE status = 'refunded' AND refunded_at >= now() - ${WINDOW}
-           )::int AS refunded,
-           count(*) FILTER (
-             WHERE (status = 'paid' AND processed = false)
-                OR (status = 'rejected'
-                    AND reject_reason IN ('invoice_invalidated', 'user_deleted')
-                    AND refunded_at IS NULL)
-           )::int AS pending
-         FROM payments`,
-      ),
-      this.db.queryOne<{ failed: number }>(
-        `SELECT count(*)::int AS failed
-           FROM reports
-          WHERE status = 'failed'
-            AND updated_at >= now() - ${WINDOW}`,
-      ),
-      this.db.queryOne<{ cost: string }>(
-        `SELECT COALESCE(SUM(llm_cost_rub), 0)::text AS cost
-           FROM reports
-          WHERE created_at >= now() - ${WINDOW}`,
-      ),
-    ]);
+    const [activity, events, funnel, subscriptions, payments, reports, cost, telegramCancel] =
+      await Promise.all([
+        this.db.queryOne<{ mau: number }>(
+          `SELECT count(DISTINCT user_id)::int AS mau
+             FROM events
+            WHERE user_id IS NOT NULL
+              AND ${HAPPENED_AT} >= now() - ${WINDOW}`,
+        ),
+        this.db.query<{ name: string; total: number }>(
+          `SELECT name, count(*)::int AS total
+             FROM events
+            WHERE ${HAPPENED_AT} >= now() - ${WINDOW}
+            GROUP BY name
+            ORDER BY total DESC`,
+        ),
+        this.db.query<{ name: string; users: number }>(
+          `SELECT name, count(DISTINCT user_id)::int AS users
+             FROM events
+            WHERE user_id IS NOT NULL
+              AND name = ANY($1::text[])
+              AND ${HAPPENED_AT} >= now() - ${WINDOW}
+            GROUP BY name`,
+          [FUNNEL_STEPS],
+        ),
+        this.db.queryOne<{ paying: number; churned_30d: number; base: number }>(
+          `SELECT
+             count(*) FILTER (WHERE status = 'active' AND expires_at > now())::int AS paying,
+             count(*) FILTER (
+               WHERE status IN ('expired', 'cancelled') AND updated_at >= now() - ${WINDOW}
+             )::int AS churned_30d,
+             count(*)::int AS base
+           FROM subscriptions`,
+        ),
+        this.db.queryOne<{
+          stars: number;
+          rejected: number;
+          mismatch: number;
+          refunded: number;
+          pending: number;
+        }>(
+          // `rejected` — деньги не за доступ: в выручку не попадают (QA-11).
+          `SELECT
+             COALESCE(sum(total_amount) FILTER (
+               WHERE status NOT IN ('refunded', 'rejected') AND paid_at >= now() - ${WINDOW}
+             ), 0)::int AS stars,
+             count(*) FILTER (
+               WHERE status = 'rejected' AND paid_at >= now() - ${WINDOW}
+             )::int AS rejected,
+             count(*) FILTER (
+               WHERE status = 'rejected' AND reject_reason = 'amount_mismatch'
+                 AND paid_at >= now() - ${WINDOW}
+             )::int AS mismatch,
+             count(*) FILTER (
+               WHERE status = 'refunded' AND refunded_at >= now() - ${WINDOW}
+             )::int AS refunded,
+             count(*) FILTER (
+               WHERE (status = 'paid' AND processed = false)
+                  OR (status = 'rejected'
+                      AND reject_reason IN ('invoice_invalidated', 'user_deleted')
+                      AND refunded_at IS NULL)
+             )::int AS pending
+           FROM payments`,
+        ),
+        this.db.queryOne<{ failed: number }>(
+          `SELECT count(*)::int AS failed
+             FROM reports
+            WHERE status = 'failed'
+              AND updated_at >= now() - ${WINDOW}`,
+        ),
+        this.db.queryOne<{ cost: string }>(
+          `SELECT COALESCE(SUM(llm_cost_rub), 0)::text AS cost
+             FROM reports
+            WHERE created_at >= now() - ${WINDOW}`,
+        ),
+        // Задача A: «повторяется в фоне» без числа — это «неизвестно, работает
+        // ли». Первое — сколько отмен автопродления не прошло, второе —
+        // сколько подписок всё ещё ждут повтора.
+        this.db.queryOne<{ failed: number; pending: number }>(
+          `SELECT
+             (SELECT count(*)::int FROM events
+               WHERE name = 'subscription_cancel_failed'
+                 AND created_at >= now() - ${WINDOW}) AS failed,
+             (SELECT count(*)::int FROM subscriptions
+               WHERE status = 'cancelled'
+                 AND telegram_cancel_state = 'failed') AS pending`,
+        ),
+      ]);
 
     const eventsByName: Record<string, number> = {};
     for (const row of events) {
@@ -156,6 +173,8 @@ export class AdminMetricsService {
       amount_mismatch_30d: payments?.mismatch ?? 0,
       refunded_30d: payments?.refunded ?? 0,
       pending_payments_now: payments?.pending ?? 0,
+      subscription_cancel_failed_30d: telegramCancel?.failed ?? 0,
+      subscriptions_cancelled_pending_telegram: telegramCancel?.pending ?? 0,
       events_30d: eventsByName,
       funnel_30d: funnelByStep,
     };
