@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Me } from '../../api';
 import { formatMoment } from '../../i18n/format';
@@ -459,5 +460,285 @@ describe('PaywallScreen: the report is confirmed for the chart it was paid for (
     expect(await screen.findByRole('heading', { level: 1, name: copy.title })).toBeInTheDocument();
     expect(screen.queryByText(copy.processingTitle)).not.toBeInTheDocument();
     expect(onReportPaid).not.toHaveBeenCalled();
+  });
+});
+
+/*
+ * The owner's decision of iteration 8. The user's data was deleted elsewhere while this page stayed
+ * open, and the user bought a subscription on it: the server made the user anew, with the
+ * subscription and with no chart. `Me` after the payment says both, and the screen that confirms
+ * the subscription says so instead of leading on to an empty first screen.
+ *
+ * It is said of an answer, not of what the screen opened with: the `me` the app holds may be older
+ * than the chart it has (a chart built in this visit is in no `Me` asked before it), and to a user
+ * with a chart «the chart was not found» would be false, with no way on to the report.
+ */
+describe('PaywallScreen: a subscription is confirmed by a `Me` that names no chart, though the app had one', () => {
+  const MISSING = 'Карта не найдена — возможно, данные удалили на другом устройстве. Построй карту заново, подписка при этом сохранится.';
+  const BUILD = 'Построить карту';
+  const ACTIVE = /^Подписка активна до \d+ декабря 2026 г\.$/;
+  /** `Me` after such a payment: the subscription, and no chart by either field. */
+  const meWithoutChart: Me = { ...meSubscribed, has_chart: false, chart_id: null };
+  /** `Me` of a user the server knows no chart and no subscription of. */
+  const meOfNobody: Me = { ...meWithChart, has_chart: false, chart_id: null };
+  /** The paywall of the subscriptions, the one opened from the forecast, the questions or the settings. */
+  const subscriptionsOnly = { reportChartId: null, initialPlan: null } as const;
+  const monthInvoice = { ...reportInvoice, plan_code: 'month_399', stars: 399, is_subscription: true, subscription_period_sec: 2_592_000 } as const;
+  const buttons = () => screen.getAllByRole('button').map((button) => button.textContent);
+
+  interface LiveOptions {
+    /** What the app knew when the screen opened. */
+    before?: Me;
+    /** What the server answers once asked. */
+    after: Me;
+    props?: Partial<PaywallScreenProps>;
+  }
+
+  /** The screen as the app holds it: every answer of the server becomes its `me`. */
+  function setupLive({ before = meWithChart, after, props }: LiveOptions) {
+    const api = fakeApi();
+    api.createInvoice.mockResolvedValue(monthInvoice);
+    const refreshMe = vi.fn<PaywallScreenProps['refreshMe']>().mockResolvedValue(after);
+    const onBuildChart = vi.fn();
+    const onOpenReport = vi.fn();
+    const onClose = vi.fn();
+    const onReportPaid = vi.fn();
+    const user = setupUser();
+    /** Hands the screen another `me`: what reaches the app from elsewhere while the screen is open. */
+    let hand: (me: Me) => void = () => undefined;
+    function Held() {
+      const [me, setMe] = useState(before);
+      hand = setMe;
+      return (
+        <PaywallScreen
+          api={api}
+          telegram={fakeTelegram()}
+          me={me}
+          refreshMe={async (signal) => {
+            const fresh = await refreshMe(signal);
+            setMe(fresh);
+            return fresh;
+          }}
+          reportChartId={chart.chart_id}
+          initialPlan="one_149"
+          subscriptions
+          track={vi.fn()}
+          onOpenTerms={vi.fn()}
+          onReportPaid={onReportPaid}
+          onOpenReport={onOpenReport}
+          onClose={onClose}
+          onBuildChart={onBuildChart}
+          {...props}
+        />
+      );
+    }
+    render(<Held />);
+    const land = (me: Me) => {
+      act(() => {
+        hand(me);
+      });
+    };
+    return { api, refreshMe, onBuildChart, onOpenReport, onClose, onReportPaid, user, land };
+  }
+
+  /** Chooses the month and pays: Telegram calls it paid, and the screen asks the server. */
+  async function subscribe(user: ReturnType<typeof setupUser>) {
+    await user.click(option(copy.plans.month_399.title));
+    await user.click(payButton());
+  }
+
+  it('says so under the usual title, and the one button is «Построить карту» in place of the usual one', async () => {
+    const { onBuildChart, onOpenReport, onClose, refreshMe, user } = setupLive({ after: meWithoutChart, props: subscriptionsOnly });
+
+    await subscribe(user);
+
+    const message = await screen.findByRole('status');
+    expect(within(message).getByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+    expect(within(message).getByText(MISSING)).toBeInTheDocument();
+    expect(buttons()).toEqual([BUILD]);
+    expect(screen.queryByRole('button', { name: ru.chart.openReport })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.leave })).not.toBeInTheDocument();
+    // Nothing happens by itself: the user has just paid, and reads this first.
+    await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS * 5));
+    expect(onBuildChart).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // One question confirmed it; nothing is asked again behind the user's back.
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: BUILD }));
+
+    expect(onBuildChart).toHaveBeenCalledTimes(1);
+    expect(onOpenReport).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('is the owner\'s line in one piece: its first sentence is the title the screen has anyway, the rest the text under it', async () => {
+    // No date to name: the title is the plain «Подписка активна.»
+    const after: Me = { ...meWithoutChart, subscription: { ...meWithoutChart.subscription, expires_at: null } };
+    const { user } = setupLive({ after, props: subscriptionsOnly });
+
+    await subscribe(user);
+
+    const message = await screen.findByRole('status');
+    const lines = [...message.querySelectorAll('h2, p')].map((line) => line.textContent);
+    expect(lines).toHaveLength(2);
+    expect(lines.join(' ')).toBe(
+      'Подписка активна. Карта не найдена — возможно, данные удалили на другом устройстве. Построй карту заново, подписка при этом сохранится.',
+    );
+    // «The subscription is active» is said once, not in the title and again under it.
+    expect(screen.getByRole('main').textContent.match(/Подписка активна/g)).toHaveLength(1);
+  });
+
+  it('where the report was on offer as well: the same line, and nothing is sold for a chart that is not there', async () => {
+    // The paywall the price on the chart leads to: the report for this chart, and the subscriptions.
+    const { api, user } = setupLive({ after: meWithoutChart });
+
+    await subscribe(user);
+
+    expect(await screen.findByText(MISSING)).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp(`^${copy.pay}`) })).not.toBeInTheDocument();
+    expect(buttons()).toEqual([BUILD]);
+    // The one invoice made here is the subscription's.
+    expect(api.createInvoice).toHaveBeenCalledTimes(1);
+    expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'month_399' }, expect.any(AbortSignal));
+  });
+
+  it('confirmed late, by «Проверить ещё раз»: while the payment is «being processed» only that is said, and the line comes with the server\'s word', async () => {
+    // Telegram called the invoice of a subscription paid before; `Me`, asked since, names no chart and no subscription yet.
+    const { refreshMe, user } = setupLive({ before: meOfNobody, after: meOfNobody, props: { ...subscriptionsOnly, awaiting: 'month_399' } });
+
+    expect(screen.getByText(copy.processingTitle)).toBeInTheDocument();
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+    expect(buttons()).toEqual([copy.checkAgain, copy.leave]);
+    expect(refreshMe).not.toHaveBeenCalled();
+
+    // Asked, and still nothing: the same screen, and not a word about a chart.
+    await user.click(screen.getByRole('button', { name: copy.checkAgain }));
+    await waitFor(() => {
+      expect(refreshMe).toHaveBeenCalledTimes(1);
+    });
+    expect(await screen.findByText(copy.processingTitle)).toBeInTheDocument();
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+
+    refreshMe.mockResolvedValue(meWithoutChart);
+    await user.click(screen.getByRole('button', { name: copy.checkAgain }));
+
+    expect(await screen.findByText(MISSING)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+    expect(buttons()).toEqual([BUILD]);
+  });
+
+  it('the reverse, the subscription is confirmed and the chart is there: the usual screen, without that line', async () => {
+    const { onBuildChart, onOpenReport, user } = setupLive({ after: meSubscribed, props: subscriptionsOnly });
+
+    await subscribe(user);
+
+    expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+    expect(screen.getByRole('main').textContent).not.toMatch(/Карта не найдена|Построй карту заново/);
+    expect(buttons()).toEqual([ru.chart.openReport]);
+    await user.click(screen.getByRole('button', { name: ru.chart.openReport }));
+    expect(onOpenReport).toHaveBeenCalledTimes(1);
+    expect(onBuildChart).not.toHaveBeenCalled();
+  });
+
+  it('and with the chart there the paywall of the report is as ever: the subscription is named, the report is on offer', async () => {
+    const { user } = setupLive({ after: meSubscribed });
+
+    await subscribe(user);
+
+    expect(await screen.findByText(ACTIVE)).toBeInTheDocument();
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: BUILD })).not.toBeInTheDocument();
+    // The plan just bought is not on sale any more; the report still is, for the user to choose.
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    expect(option(copy.plans.one_149.title)).not.toBeChecked();
+    expect(screen.getByRole('button', { name: copy.choose })).toBeDisabled();
+  });
+
+  it.each<[string, Partial<Me>]>([
+    ['`chart_id` names one though `has_chart` is false', { has_chart: false, chart_id: chart.chart_id }],
+    ['`has_chart` is true though `chart_id` is null', { has_chart: true, chart_id: null }],
+  ])('either field of `Me` says there is a chart (%s): the usual screen', async (_case, fields) => {
+    const { user } = setupLive({ after: { ...meSubscribed, ...fields }, props: { ...subscriptionsOnly, onOpenReport: undefined } });
+
+    await subscribe(user);
+
+    expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+    expect(buttons()).toEqual([copy.leave]);
+  });
+
+  it('a user who has built no chart yet (the app gives no way to «build anew»): the usual screen. That `Me` names no chart is no news about them', async () => {
+    const { onClose, user } = setupLive({
+      before: meOfNobody,
+      after: meWithoutChart,
+      props: { ...subscriptionsOnly, onBuildChart: undefined, onOpenReport: undefined },
+    });
+
+    await subscribe(user);
+
+    expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+    expect(screen.getByRole('main').textContent).not.toMatch(/Карта не найдена|удалили|заново/);
+    expect(buttons()).toEqual([copy.leave]);
+    await user.click(screen.getByRole('button', { name: copy.leave }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  describe('what the screen opens with is not such an answer: `me` may be older than the chart the app has', () => {
+    it('a subscriber whose `me` names no chart, on the paywall of the report: the report is on sale as ever', async () => {
+      // Subscribed before the first chart, built in this visit: the app has not asked `Me` since.
+      const { api, refreshMe, user } = setup({ me: meWithoutChart, props: { onBuildChart: vi.fn() } });
+
+      expect(screen.getByText(ACTIVE)).toBeInTheDocument();
+      expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: BUILD })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('radio')).toHaveLength(1);
+      expect(payButton()).toHaveTextContent(`${copy.pay} 149`);
+
+      // And it can be bought: the invoice names the chart the app has.
+      await user.click(payButton());
+      expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'one_149', chart_id: chart.chart_id }, expect.any(AbortSignal));
+      await waitFor(() => {
+        expect(refreshMe).toHaveBeenCalled();
+      });
+      // A report is not a subscription: that question, whatever it is answered, confirms none here.
+      await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+      expect(await screen.findByText(copy.processingTitle)).toBeInTheDocument();
+      expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+    });
+
+    it('the same on the paywall of the subscriptions: «Подписка активна…» with its usual button', async () => {
+      const onBuildChart = vi.fn();
+      const onOpenReport = vi.fn();
+      const { user } = setup({ me: meWithoutChart, props: { ...subscriptionsOnly, onBuildChart, onOpenReport } });
+
+      expect(screen.getByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+      expect(screen.getByRole('main').textContent).not.toMatch(/Карта не найдена|удалили|заново/);
+      expect(buttons()).toEqual([ru.chart.openReport]);
+      await user.click(screen.getByRole('button', { name: ru.chart.openReport }));
+      expect(onOpenReport).toHaveBeenCalledTimes(1);
+      expect(onBuildChart).not.toHaveBeenCalled();
+    });
+  });
+
+  it('is said while `me` says so: a later answer without the subscription, or with a chart, takes the line away', async () => {
+    const { land, user } = setupLive({ after: meWithoutChart, props: subscriptionsOnly });
+    await subscribe(user);
+    expect(await screen.findByText(MISSING)).toBeInTheDocument();
+
+    // The subscription is not there any more (taken back, say): nothing calls it active.
+    land(meOfNobody);
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: BUILD })).not.toBeInTheDocument();
+    expect(screen.getByRole('main').textContent).not.toMatch(/Подписка активна/);
+
+    land(meWithoutChart);
+    expect(screen.getByText(MISSING)).toBeInTheDocument();
+
+    // A chart is there after all: the usual screen.
+    land(meSubscribed);
+    expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+    expect(buttons()).toEqual([ru.chart.openReport]);
   });
 });

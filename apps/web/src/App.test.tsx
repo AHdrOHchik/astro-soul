@@ -2031,6 +2031,221 @@ describe('App: the forecast and the question', () => {
       });
     });
 
+    /*
+     * The owner's decision of iteration 8. Everything above ends on the welcome screen without a word, and
+     * rightly: the user did nothing but look. Here the user has just paid. The server made them anew for
+     * that payment, with the subscription and with no chart, and the screen that confirms the subscription
+     * says so and waits for the user's own tap before anything starts over.
+     */
+    describe('a subscription bought on the page that stayed open: the server confirms it and names no chart', () => {
+      const MISSING = 'Карта не найдена — возможно, данные удалили на другом устройстве. Построй карту заново, подписка при этом сохранится.';
+      const ACTIVE = /^Подписка активна до \d+ декабря 2026 г\.$/;
+      const price = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta} `) });
+      const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
+      const month = () => screen.getByRole('radio', { name: new RegExp(`^${ru.paywall.plans.month_399.title} `) });
+      const buildAnew = () => screen.getByRole('button', { name: 'Построить карту' });
+      const buttons = () => screen.getAllByRole('button').map((button) => button.textContent);
+      const succeeded = (view: ReturnType<typeof returning>) => view.analytics.events.filter((event) => event.name === 'payment_succeeded');
+      const monthInvoice = { ...reportInvoice, plan_code: 'month_399', stars: 399, is_subscription: true, subscription_period_sec: 2_592_000 } as const;
+      /** The user the server made anew for that payment: the subscription, and nothing else. */
+      const meResubscribed: Me = { ...meSubscribed, has_profile: false, has_chart: false, chart_id: null, latest_report_id: null };
+
+      /** A user with a chart and no subscription, in a build that sells them; the invoice the server makes is the month's. */
+      const withChart = () =>
+        returning(meFree, {
+          prepare: (fake) => {
+            fake.getForecast.mockResolvedValue(freeForecast);
+            fake.createInvoice.mockResolvedValue(monthInvoice);
+          },
+        });
+      /** The server once the data is deleted and the payment has made the user anew. */
+      function deleteAndResubscribe(api: ReturnType<typeof fakeApi>) {
+        deleteElsewhere(api);
+        api.getMe.mockResolvedValue(meResubscribed);
+      }
+      async function payForMonth(user: FakeUser) {
+        await user.click(month());
+        await user.click(await payButton());
+      }
+
+      it('on the paywall the price on the chart leads to: «Подписка активна…», why there is no chart, «Построить карту». Nothing starts over by itself', async () => {
+        const view = withChart();
+        await view.user.click(await price());
+
+        deleteAndResubscribe(view.api);
+        await payForMonth(view.user);
+
+        expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+        expect(screen.getByText(MISSING)).toBeInTheDocument();
+        expect(buttons()).toEqual(['Построить карту']);
+        // The report this paywall was opened for is not on sale any more: its chart is not there.
+        expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+        // The user has just paid and reads this first: the app waits for as long as it takes.
+        await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS * 5));
+        expect(screen.getByText(MISSING)).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: ru.welcome.start })).not.toBeInTheDocument();
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+        expect(view.api.getCurrentChart).toHaveBeenCalledTimes(1);
+        // One question was enough to confirm the payment, and it is counted once.
+        expect(view.api.getMe).toHaveBeenCalledTimes(2);
+        expect(succeeded(view)).toEqual([{ name: 'payment_succeeded', props: { plan_code: 'month_399' } }]);
+        expect(view.analytics.names()).not.toContain('error_shown');
+
+        await view.user.click(buildAnew());
+
+        // The user's own tap: from here on, the same start over as everywhere else.
+        await expectFreshStart(view);
+        expect(view.api.getCurrentChart).toHaveBeenCalledTimes(2);
+        // And the subscription is still theirs: the settings of the new start show it.
+        await view.user.click(notNow());
+        await view.user.click(await screen.findByRole('button', { name: ru.common.settings }));
+        expect(await screen.findByText(ru.settings.subscription.names.month)).toBeInTheDocument();
+        expect(succeeded(view)).toHaveLength(1);
+      });
+
+      it('on the paywall of the subscriptions, opened from the short forecast: the same', async () => {
+        const view = withChart();
+        await openForecast(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.forecast.subscriptionOnly }));
+
+        deleteAndResubscribe(view.api);
+        await payForMonth(view.user);
+
+        expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+        expect(screen.getByText(MISSING)).toBeInTheDocument();
+        expect(buttons()).toEqual(['Построить карту']);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+        expect(succeeded(view)).toHaveLength(1);
+
+        await view.user.click(buildAnew());
+
+        await expectFreshStart(view);
+      });
+
+      it('not confirmed at once: «Платёж обрабатывается» stays through `Me` that names no chart, and the line comes with the confirmation', async () => {
+        const view = withChart();
+        await view.user.click(await price());
+
+        // The data is gone, and the server has not seen the payment yet: `Me` names neither a chart nor a subscription.
+        deleteElsewhere(view.api);
+        await payForMonth(view.user);
+        await act(() => vi.advanceTimersByTimeAsync(CONFIRM_INTERVAL_MS));
+
+        expect(await screen.findByText(ru.paywall.processingTitle)).toBeInTheDocument();
+        // Asked twice about a subscription, on a paywall that sells a report for the chart as well: nothing started over.
+        expect(view.api.getMe).toHaveBeenCalledTimes(3);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+        expect(view.api.getCurrentChart).toHaveBeenCalledTimes(1);
+        expect(succeeded(view)).toEqual([]);
+
+        view.api.getMe.mockResolvedValue(meResubscribed);
+        await view.user.click(screen.getByRole('button', { name: ru.paywall.checkAgain }));
+
+        expect(await screen.findByText(MISSING)).toBeInTheDocument();
+        expect(buttons()).toEqual(['Построить карту']);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+        expect(succeeded(view)).toHaveLength(1);
+      });
+
+      it('a chart built in this visit counts as well: the app had it on screen, and the server names none', async () => {
+        const api = fakeApi();
+        api.createInvoice.mockResolvedValue(monthInvoice);
+        const keys = fakeKeys();
+        const forgetKeys = vi.spyOn(keys, 'forgetAll');
+        const user = setupUser();
+        render(<App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={keys} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} subscriptions />);
+        await fillIn(user);
+        await user.click(await price());
+
+        deleteAndResubscribe(api);
+        await payForMonth(user);
+
+        expect(await screen.findByText(MISSING)).toBeInTheDocument();
+        expect(buttons()).toEqual(['Построить карту']);
+        expect(forgetKeys).not.toHaveBeenCalled();
+
+        await user.click(buildAnew());
+
+        // Asked which chart the user has, for the first time in this visit: none, so the form starts from the consent.
+        await user.click(await start());
+        expect(heading()).toHaveTextContent(ru.consent.title);
+        expect(consentBox()).not.toBeChecked();
+        expect(api.getCurrentChart).toHaveBeenCalledTimes(1);
+        expect(forgetKeys).toHaveBeenCalled();
+      });
+
+      it('a user who has built no chart yet and subscribes from the settings: the usual screen. There was no chart to be missing', async () => {
+        const api = fakeApi();
+        api.createInvoice.mockResolvedValue(monthInvoice);
+        const keys = fakeKeys();
+        const forgetKeys = vi.spyOn(keys, 'forgetAll');
+        const user = setupUser();
+        render(<App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={keys} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} subscriptions />);
+        await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+        await user.click(await screen.findByRole('button', { name: ru.settings.subscription.subscribe }));
+
+        api.getMe.mockResolvedValue({ ...meResubscribed, is_new: true });
+        await payForMonth(user);
+
+        expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+        expect(screen.getByRole('main').textContent).not.toMatch(/Карта не найдена|удалили|заново/);
+        expect(buttons()).toEqual([ru.paywall.leave]);
+        await user.click(screen.getByRole('button', { name: ru.paywall.leave }));
+        // Back where the user came from, and nothing was dropped on the way.
+        expect(heading()).toHaveTextContent(ru.settings.title);
+        expect(forgetKeys).not.toHaveBeenCalled();
+        expect(api.getCurrentChart).not.toHaveBeenCalled();
+      });
+
+      it('`Me` of the start is older than a chart built since, and is no such answer: a subscriber with a first chart finds its report on sale', async () => {
+        const api = fakeApi();
+        // Subscribed before any chart was built: from the settings of the welcome screen, or after a deletion.
+        api.getMe.mockResolvedValue(meResubscribed);
+        const keys = fakeKeys();
+        const forgetKeys = vi.spyOn(keys, 'forgetAll');
+        const user = setupUser();
+        render(<App api={api} telegram={fakeTelegram()} apiBaseUrl="https://api.test" keys={keys} track={vi.fn()} termsReload={fakeTermsReload()} today={TODAY} subscriptions />);
+        await fillIn(user);
+
+        await user.click(await price());
+
+        // The chart is on the server, built a moment ago. What names no chart is what the app was told before that.
+        expect(await payButton()).toHaveTextContent(`${ru.paywall.pay} 149`);
+        expect(screen.getAllByRole('radio')).toHaveLength(1);
+        expect(screen.getByRole('main').textContent).not.toMatch(/Карта не найдена|удалили|заново/);
+        expect(screen.queryByRole('button', { name: 'Построить карту' })).not.toBeInTheDocument();
+        expect(api.getMe).toHaveBeenCalledTimes(1);
+        expect(forgetKeys).not.toHaveBeenCalled();
+      });
+
+      it('the reverse, the chart is where it was: the usual screen, with the way on it always had', async () => {
+        const view = withChart();
+        await openForecast(view.user);
+        await view.user.click(screen.getByRole('button', { name: ru.forecast.subscriptionOnly }));
+
+        view.api.getMe.mockResolvedValue(meSubscribed);
+        await payForMonth(view.user);
+
+        expect(await screen.findByRole('heading', { name: ACTIVE })).toBeInTheDocument();
+        expect(screen.getByRole('main').textContent).not.toMatch(/Карта не найдена|удалили|заново/);
+        expect(buttons()).toEqual([ru.chart.openReport]);
+        expect(view.forgetKeys).not.toHaveBeenCalled();
+      });
+
+      it('the report bought on that paywall instead is paid for the chart: `Me` without one still starts the app over, as before', async () => {
+        const view = withChart();
+        view.api.createInvoice.mockResolvedValue(reportInvoice);
+        await view.user.click(await price());
+
+        deleteElsewhere(view.api);
+        await view.user.click(await payButton());
+
+        await expectFreshStart(view);
+        expect(screen.queryByText(MISSING)).not.toBeInTheDocument();
+        expect(succeeded(view)).toEqual([]);
+      });
+    });
+
     describe('401 is another matter: the session expired, and nothing can be asked with it, the chart included', () => {
       it('says so and offers to close; the next launch starts from what the server has, which after a deletion is the welcome screen', async () => {
         const view = returning(mePaid, { prepare: (fake) => fake.orderReport.mockRejectedValue(apiError('UNAUTHORIZED', { status: 401 })) });

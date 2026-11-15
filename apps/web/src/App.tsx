@@ -635,6 +635,10 @@ function Screens({
   const paywallChartId = paywall.offersReport ? (reportChart?.chartId ?? null) : null;
   // The chart of the payment the app is waiting for; null when there is none, or it is for a subscription.
   const awaitedChartId = awaitedPurchase?.chartId ?? null;
+  // The app has a chart it works with: the one it opened on, or one built in this visit. An answer of `Me` that names
+  // no chart is news about such a user (the data was deleted elsewhere); about a user who has built none yet it is not.
+  // An answer asked now, that is: the `me` held here may be older than a chart built in this visit.
+  const hasChartOnHand = home === 'current' || shownCharts.built !== null;
 
   switch (route) {
     case 'welcome':
@@ -655,9 +659,15 @@ function Screens({
           api={api}
           telegram={telegram}
           me={me}
-          // A report is paid for a chart. Where the screen sells one, or waits for a payment made for a chart, `Me`
-          // without any chart says that the chart is gone, and the purchase with it: the app starts over instead of waiting.
-          refreshMe={paywallChartId !== null || awaitedChartId !== null ? refreshMeForChart : refreshMe}
+          // The screen asks `Me` about a payment. A report is paid for a chart: asked about such a payment, `Me` without
+          // any chart says that the chart is gone, and the purchase with it, and the app starts over instead of waiting.
+          // A subscription is about no chart: such an answer moves the app nowhere. The user has just paid, and the
+          // screen says what the answer means once the subscription is confirmed.
+          refreshMe={(signal) => {
+            // Read at the moment of the question, not of this render: the screen asks from the tap that opened the invoice.
+            const purchase = awaited.current;
+            return purchase !== null && purchase.chartId !== null ? refreshMeForChart(signal) : refreshMe(signal);
+          }}
           reportChartId={paywallChartId}
           initialPlan={paywall.plan}
           subscriptions={subscriptions}
@@ -687,6 +697,10 @@ function Screens({
           }
           onClose={goBack}
           onChartGone={handleChartGone}
+          // The way on when a subscription is confirmed and `Me` names no chart: the app starts over like every time a
+          // chart turns out to be gone, by asking the server which chart the user has. The tap is the user's, after the
+          // screen has said why; nothing leads there by itself.
+          onBuildChart={hasChartOnHand ? forgetChart : undefined}
         />
       );
     case 'forecast':
@@ -763,7 +777,7 @@ function Screens({
           telegram={telegram}
           // Opened from a chart, the settings ask `Me` like every screen that works with one: an answer without
           // a chart says the data was deleted elsewhere. A user who has built none yet has nothing to lose that way.
-          refreshMe={home === 'current' || shownCharts.built !== null ? refreshMeForChart : refreshMe}
+          refreshMe={hasChartOnHand ? refreshMeForChart : refreshMe}
           supportLink={supportLink}
           track={track}
           back={back}

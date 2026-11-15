@@ -435,6 +435,17 @@ export const ru = {
     /** Owner's wording. No full stop of its own: the date ends with «г.». */
     activeUntil: (date: string) => `Подписка активна до ${date}`,
     active: 'Подписка активна.',
+    /**
+     * Owner's wording, in one piece: «Подписка активна. Карта не найдена — возможно, данные удалили на
+     * другом устройстве. Построй карту заново, подписка при этом сохранится.» Said when the server
+     * confirms a subscription and names no chart, though the app had one on screen: the data was
+     * deleted elsewhere while this page stayed open, and the user has just paid on it. The first
+     * sentence is the title the screen has anyway (`active`, or `activeUntil` with the date); this
+     * is the rest, the text under it, so that nothing is said twice.
+     */
+    chartMissing: 'Карта не найдена — возможно, данные удалили на другом устройстве. Построй карту заново, подписка при этом сохранится.',
+    /** Owner's wording: the one button under that text, in place of the usual one. */
+    buildChart: 'Построить карту',
     /** The invoice named another price than the list did; the price follows, then `priceChangedAction`. */
     priceChanged: 'Цена на сервере другая:',
     priceChangedAction: 'Проверь её и нажми «Оплатить» ещё раз.',

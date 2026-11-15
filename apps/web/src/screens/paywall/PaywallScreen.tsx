@@ -83,6 +83,15 @@ export interface PaywallScreenProps {
    * on from there; without this prop the refusal is shown like any other.
    */
   onChartGone?: () => void;
+  /**
+   * Starts the app over with building a chart. Given when the app has a chart it works with.
+   * If the server then confirms a subscription bought here with a `Me` that names no chart,
+   * the data was deleted elsewhere while this page stayed open, and the user has paid on it
+   * since. The screen says so under the usual title and offers this as the one way on; it
+   * sells nothing for a chart that is not there, and leads nowhere by itself. Absent for a
+   * user who has built no chart yet: that `Me` names none is no news about them.
+   */
+  onBuildChart?: () => void;
 }
 
 /**
@@ -134,6 +143,7 @@ export function PaywallScreen({
   onOpenReport,
   onClose,
   onChartGone,
+  onBuildChart,
 }: PaywallScreenProps) {
   const titleId = useId();
   const groupName = useId();
@@ -153,6 +163,10 @@ export function PaywallScreen({
   const [awaited, setAwaited] = useState<{ plan: PaywallPlan; chartId: string | null } | null>(
     awaiting === null ? null : { plan: awaiting, chartId: awaitingChartId ?? reportChartId },
   );
+  // A subscription was confirmed on this screen: `me` is the server's answer to that question. Until then `me` is what
+  // the app knew when the screen opened, and that may be older than the chart the app has: a chart built in this visit
+  // is in no `Me` asked before it. So what `me` says of a chart is read only from such an answer.
+  const [confirmedHere, setConfirmedHere] = useState(false);
   // The invoices made on this screen. From the moment there is one, its price is the price, and a second tap opens it again.
   const [invoices, setInvoices] = useState<Partial<Record<PaywallPlan, Invoice>>>({});
   const priceOf = (code: PaywallPlan) => invoices[code]?.stars ?? expectedStars(code);
@@ -183,8 +197,12 @@ export function PaywallScreen({
       if (signal.aborted) return;
       if (fresh !== null && grants(fresh, bought, chartId)) {
         // Counted by the app, where the server's answer lands: a payment confirmed from another screen counts the same.
-        if (bought === REPORT_PLAN) onReportPaid();
-        else setPhase('choosing');
+        if (bought === REPORT_PLAN) {
+          onReportPaid();
+        } else {
+          setConfirmedHere(true);
+          setPhase('choosing');
+        }
         return;
       }
     }
@@ -296,6 +314,18 @@ export function PaywallScreen({
 
   const until = me.subscription.expires_at === null ? '' : formatDay(me.subscription.expires_at);
   const activeLine = until === '' ? copy.active : copy.activeUntil(until);
+  // Either field would say there is a chart, as everywhere in the app: missing is when neither does.
+  const chartMissing = !me.has_chart && typeof me.chart_id !== 'string';
+  if (onBuildChart && confirmedHere && subscribed && chartMissing) {
+    // The subscription is there and the chart the app had is not: said before anything else, and nothing is sold beside it.
+    return (
+      <Screen back={back}>
+        <StateView icon={<StarsIcon />} title={activeLine} text={copy.chartMissing}>
+          <Button onClick={onBuildChart}>{copy.buildChart}</Button>
+        </StateView>
+      </Screen>
+    );
+  }
   if (offered.length === 0) {
     // Nothing to sell: there is no report to buy here, and the subscription is active, or this build sells none.
     return (
