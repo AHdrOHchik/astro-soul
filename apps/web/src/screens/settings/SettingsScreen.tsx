@@ -45,8 +45,8 @@ export interface SettingsScreenProps {
    * the button is then not there, and a subscription the user has is shown as ever.
    */
   onSubscribe?: () => void;
-  /** The server has deleted everything. Nothing of the app's state is true any more. */
-  onDeleted: () => void;
+  /** The server has deleted everything; the argument is the non-access fact captured when deletion was opened. */
+  onDeleted: (hadSubscription: boolean) => void;
 }
 
 /** The states every screen of the app is checked for. */
@@ -70,6 +70,13 @@ export function SettingsScreen({
   const titleId = useId();
   const request = useRequest(refreshMe);
   const [deleting, setDeleting] = useState(false);
+  // Snapshot only for the post-deletion wording; it never grants access or affects deletion.
+  const [hadSubscriptionAtDelete, setHadSubscriptionAtDelete] = useState(false);
+  const openDeletion = (snapshot?: Me) => {
+    const subscription = snapshot?.subscription;
+    setHadSubscriptionAtDelete(subscription !== undefined && subscription.is_active && subscription.plan !== 'none');
+    setDeleting(true);
+  };
 
   const support = <SupportButton link={supportLink} telegram={telegram} />;
   if (deleting) {
@@ -83,7 +90,9 @@ export function SettingsScreen({
           onCancel={() => {
             setDeleting(false);
           }}
-          onDeleted={onDeleted}
+          onDeleted={() => {
+            onDeleted(hadSubscriptionAtDelete);
+          }}
         />
       </Screen>
     );
@@ -102,19 +111,42 @@ export function SettingsScreen({
         onOpenDocument={onOpenDocument}
         onSubscribe={onSubscribe}
         onDelete={() => {
-          setDeleting(true);
+          openDeletion(request.data);
         }}
       />
     );
   const views: Record<ScreenState, (() => ReactNode) | null> = {
     loading: () => (
-      <SkeletonGroup label={copy.loading} className={styles.sections}>
-        {SKELETON_BLOCKS.map((block) => (
-          <Skeleton key={block} variant="block" className={styles.blockSkeleton} />
-        ))}
-      </SkeletonGroup>
+      <>
+        <SkeletonGroup label={copy.loading} className={styles.sections}>
+          {SKELETON_BLOCKS.map((block) => (
+            <Skeleton key={block} variant="block" className={styles.blockSkeleton} />
+          ))}
+        </SkeletonGroup>
+        <Button
+          variant="danger"
+          onClick={() => {
+            openDeletion();
+          }}
+        >
+          {copy.deletion.open}
+        </Button>
+      </>
     ),
-    error: () => request.status === 'error' && <ErrorState error={request.error} telegram={telegram} onRetry={request.retry} />,
+    error: () =>
+      request.status === 'error' && (
+        <>
+          <ErrorState error={request.error} telegram={telegram} onRetry={request.retry} />
+          <Button
+            variant="danger"
+            onClick={() => {
+              openDeletion();
+            }}
+          >
+            {copy.deletion.open}
+          </Button>
+        </>
+      ),
     // Neither a subscription nor a quota: the two blocks say so, the rest of the screen is as ever.
     empty: sections,
     // Nothing in the settings is sold, so nothing here is ever locked. Declared on purpose: its absence is a decision.

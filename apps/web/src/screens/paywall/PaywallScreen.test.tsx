@@ -249,6 +249,42 @@ describe('PaywallScreen', () => {
   });
 });
 
+
+  it('a just-confirmed subscription with no chart says the subscription remains and offers to build a chart', async () => {
+    const afterPayment: Me = { ...meSubscribed, has_chart: false, chart_id: null };
+    const api = fakeApi();
+    api.createInvoice.mockResolvedValue({
+      ...reportInvoice,
+      plan_code: 'month_399',
+      stars: 399,
+      is_subscription: true,
+      subscription_period_sec: 30 * 24 * 60 * 60,
+    });
+    const onBuildChart = vi.fn();
+    const { user } = setup({
+      me: { ...meWithChart, has_chart: false, chart_id: null },
+      afterPayment,
+      telegram: { invoice: 'paid' },
+      api,
+      props: { reportChartId: null, initialPlan: 'month_399', onBuildChart },
+    });
+
+    await user.click(payButton());
+
+    expect(await screen.findByText(copy.subscriptionWithoutChart)).toBeInTheDocument();
+    const build = screen.getByRole('button', { name: copy.buildChart });
+    expect(build).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.leave })).not.toBeInTheDocument();
+    await user.click(build);
+    expect(onBuildChart).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add the missing-chart message for an active subscription when its chart exists', () => {
+    setup({ me: meSubscribed });
+    expect(screen.queryByText(copy.subscriptionWithoutChart)).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: new RegExp(`^${copy.plans.one_149.title}`) })).toBeInTheDocument();
+  });
+
 describe('PaywallScreen: a build that sells no subscriptions (`subscriptions: false`)', () => {
   const subscriptionPlans = ['week_149', 'month_399', 'year_2990'] as const;
 

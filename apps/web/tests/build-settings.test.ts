@@ -18,10 +18,10 @@ describe('the settings of a build, in the words it prints', () => {
   });
 
   it('everything set: the same four lines, in the same order, with the values', () => {
-    const env = { VITE_SUBSCRIPTIONS: 'enabled', VITE_SUPPORT_CONTACT: '@wildcard_astro_soul_support', VITE_BOT_USERNAME: 'wildcard_astro_soul_bot' };
+    const env = { VITE_SUBSCRIPTIONS: 'enabled', VITE_SUPPORT_CONTACT: '@astro_soul_support', VITE_BOT_USERNAME: 'wildcard_astro_soul_bot' };
     expect(readBuildSettings(env).lines).toEqual([
       'subscriptions: ON SALE',
-      'support:       @wildcard_astro_soul_support',
+      'support:       @astro_soul_support',
       'bot:           @wildcard_astro_soul_bot',
       `consent:       ${CONSENT_VERSION}`,
     ]);

@@ -77,6 +77,8 @@ export interface PaywallScreenProps {
   onOpenReport?: () => void;
   /** Leaves the paywall for where the user came from. */
   onClose: () => void;
+  /** Starts the clean onboarding when a newly confirmed subscription survives without its deleted chart. */
+  onBuildChart?: () => void;
   /**
    * The server refused the invoice because the chart the report is for is not the user's
    * (`chart_id` among the rejected fields): it went with the user's data. The caller leads
@@ -133,6 +135,7 @@ export function PaywallScreen({
   onReportPaid,
   onOpenReport,
   onClose,
+  onBuildChart,
   onChartGone,
 }: PaywallScreenProps) {
   const titleId = useId();
@@ -149,6 +152,8 @@ export function PaywallScreen({
   // Opened while a payment is still on its way to the server: the screen starts where that payment left off.
   const [phase, setPhase] = useState<Phase>(awaiting === null ? 'choosing' : 'processing');
   const [problem, setProblem] = useState<Problem | null>(null);
+  // Only a subscription just confirmed by the server, with no chart in that same Me, gets the recovery message.
+  const [subscriptionSuccessWithoutChart, setSubscriptionSuccessWithoutChart] = useState<Me | null>(null);
   /** The purchase the server is being asked about: the plan, and the chart when it is the report of one. */
   const [awaited, setAwaited] = useState<{ plan: PaywallPlan; chartId: string | null } | null>(
     awaiting === null ? null : { plan: awaiting, chartId: awaitingChartId ?? reportChartId },
@@ -184,7 +189,10 @@ export function PaywallScreen({
       if (fresh !== null && grants(fresh, bought, chartId)) {
         // Counted by the app, where the server's answer lands: a payment confirmed from another screen counts the same.
         if (bought === REPORT_PLAN) onReportPaid();
-        else setPhase('choosing');
+        else {
+          if (fresh.subscription.is_active && !fresh.has_chart) setSubscriptionSuccessWithoutChart(fresh);
+          setPhase('choosing');
+        }
         return;
       }
     }
@@ -296,6 +304,17 @@ export function PaywallScreen({
 
   const until = me.subscription.expires_at === null ? '' : formatDay(me.subscription.expires_at);
   const activeLine = until === '' ? copy.active : copy.activeUntil(until);
+  if (subscriptionSuccessWithoutChart !== null) {
+    const successExpiry = subscriptionSuccessWithoutChart.subscription.expires_at;
+    const successLine = successExpiry === null ? copy.active : copy.activeUntil(formatDay(successExpiry));
+    return (
+      <Screen back={back}>
+        <StateView icon={<StarsIcon />} title={successLine} text={copy.subscriptionWithoutChart}>
+          <Button onClick={onBuildChart ?? onClose}>{copy.buildChart}</Button>
+        </StateView>
+      </Screen>
+    );
+  }
   if (offered.length === 0) {
     // Nothing to sell: there is no report to buy here, and the subscription is active, or this build sells none.
     return (
