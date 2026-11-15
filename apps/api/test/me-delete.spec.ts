@@ -6,6 +6,7 @@ import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
 import { FICTIONAL_USER, TEST_BOT_TOKEN, TEST_PEPPER } from './test-env';
 import { makeFakeAstro } from './fake-astro';
+import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
 import { PaymentsService } from '../src/modules/billing/payments.service';
 import { TelegramClient } from '../src/modules/telegram/telegram.client';
 
@@ -13,6 +14,7 @@ import { TelegramClient } from '../src/modules/telegram/telegram.client';
 const PERSONAL_TABLES = ['users', 'profiles', 'charts', 'reports', 'asks', 'forecasts'] as const;
 
 let ctx: TestContext;
+let telegram: FakeTelegram;
 
 function initDataFor(user: Record<string, unknown> = FICTIONAL_USER): string {
   return signInitData({ botToken: TEST_BOT_TOKEN, user });
@@ -70,7 +72,11 @@ async function countRows(table: string): Promise<number> {
 }
 
 beforeAll(async () => {
-  ctx = await createTestContext({ astro: makeFakeAstro() });
+  telegram = makeFakeTelegram();
+  // Bot API подменён: `DELETE /me` теперь зовёт `editUserStarSubscription`,
+  // и тест не должен уходить в настоящий Telegram (это уже стоило одного
+  // невалидного прогона приёмки).
+  ctx = await createTestContext({ astro: makeFakeAstro(), telegram });
 });
 
 afterAll(async () => {
@@ -79,6 +85,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await truncateAll(ctx.db);
+  telegram.starSubscriptionCancels.length = 0;
+  telegram.starCancelOutcome = 'cancelled';
 });
 
 describe('DELETE /api/v1/me', () => {
@@ -238,17 +246,59 @@ describe('DELETE /api/v1/me', () => {
     }
   });
 
-  it('повторное удаление идемпотентно: 204 без ошибки', async () => {
+  it('повторное удаление идемпотентно: 204/204, после второго GET /me — is_new', async () => {
     await seedPersonalData();
 
     await request(ctx.app.getHttpServer())
       .delete('/api/v1/me')
       .set(INIT_DATA_HEADER, initDataFor())
       .expect(204);
+
+    // `GET /me` — это `ensureUser`: пользователь создан заново и пуст. Второй
+    // `DELETE` удаляет именно его. Поведение зафиксировано контрактом 1.5.6
+    // (B-4): всегда 204, 404 не отдаём — клиенту не нужно различать «уже
+    // удалено» и «нечего удалять».
+    const back = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(back.body.is_new).toBe(true);
+
     await request(ctx.app.getHttpServer())
       .delete('/api/v1/me')
       .set(INIT_DATA_HEADER, initDataFor())
       .expect(204);
+
+    const again = await request(ctx.app.getHttpServer())
+      .get('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(again.body).toMatchObject({ is_new: true, subscription: { plan: 'none' } });
+    expect(again.body.entitlements.full_report).toBe(false);
+  });
+
+  it('после удаления можно купить заново: новый инвойс создаётся', async () => {
+    await seedPersonalData();
+
+    await request(ctx.app.getHttpServer())
+      .delete('/api/v1/me')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(204);
+
+    // Человек удалил данные и вернулся — покупка не должна быть заблокирована
+    // инвалидированными инвойсами прошлой жизни (задача D).
+    const invoice = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ plan_code: 'month_399' })
+      .expect(201);
+
+    expect(invoice.body.invoice_link).toMatch(/^https:\/\/t\.me\//);
+    expect(invoice.body.plan_code).toBe('month_399');
+
+    const rows = await ctx.db.query<{ status: string }>(`SELECT status::text AS status FROM invoices`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe('created');
   });
 
   it('без initData → 401 и данные не тронуты', async () => {

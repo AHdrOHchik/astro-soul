@@ -238,9 +238,10 @@ describe('GET /api/v1/reports/{report_id}', () => {
       llm_tokens_out: number;
       prompt_version: string;
       report_structure_version: string;
+      chart_facts_version: string;
     }>(
       `SELECT attempts, llm_cost_rub, llm_tokens_in, llm_tokens_out,
-              prompt_version, report_structure_version
+              prompt_version, report_structure_version, chart_facts_version
          FROM reports`,
     );
     expect(report?.attempts).toBeGreaterThanOrEqual(8);
@@ -252,6 +253,9 @@ describe('GET /api/v1/reports/{report_id}', () => {
     // Контент v1.1: новые разборы пишут новую версию структуры и промптов.
     expect(report?.prompt_version).toBe('prompts_v1.1');
     expect(report?.report_structure_version).toBe('structure_v1.1');
+    // Версия блока фактов: без неё «дешёвый разбор» не отличить от сломанного
+    // отбора (задача C, п. 2).
+    expect(report?.chart_facts_version).toBe('v1.2');
   });
 
   it('в промпт не попадают ПДн — только факты карты', async () => {
@@ -266,9 +270,12 @@ describe('GET /api/v1/reports/{report_id}', () => {
     for (const secret of ['1994-05-17', '14:20', 'Москва', '55.75', '37.61', '777000111', 'Тест', 'test_user']) {
       expect(joined).not.toContain(secret);
     }
-    // Факты при этом на месте: карта в промпте есть.
+    // Факты при этом на месте: в промпте отобранные факторы v1.2, а не полная
+    // карта (задача C). Солнце и Луна в отборе есть всегда.
+    expect(joined).toContain('chart_facts: v1.2');
     expect(joined).toContain('Солнце');
-    expect(joined).toContain('planets:');
+    expect(joined).toContain('sun|');
+    expect(joined).toContain('moon|');
   });
 });
 

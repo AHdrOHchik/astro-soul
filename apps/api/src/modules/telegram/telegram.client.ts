@@ -6,7 +6,29 @@ import { JsonLogger } from '../../common/logger';
 
 /** Таймаут Bot API: платёжные методы не должны висеть дольше. */
 export const TELEGRAM_TIMEOUT_MS = 8000;
+/**
+ * Отмена автопродления при удалении данных: 5 секунд, потому что человек уже
+ * нажал «удалить навсегда» и ждёт ответа. Не успели — удаляем без Telegram,
+ * повтор пойдёт из ночного джоба (задача A, п. 2 задания).
+ */
+export const TELEGRAM_CANCEL_TIMEOUT_MS = 5000;
 export const TELEGRAM_API_BASE = 'https://api.telegram.org';
+
+/**
+ * Результат `editUserStarSubscription`. Метод не бросает: его вызывают ради
+ * побочного эффекта в Telegram, а решение об удалении данных от него не зависит.
+ *
+ *   ok: false, code: 'timeout'      — не ответил за 5 секунд / сеть;
+ *   ok: false, code: 'telegram_error' — ответил `ok:false` (в `description` — текст);
+ *   ok: false, code: 'no_charge_id'  — нет пары (telegram_id, charge_id), звать некого.
+ */
+export type StarSubscriptionCancelResult =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      readonly code: 'timeout' | 'telegram_error' | 'no_charge_id';
+      readonly description: string | null;
+    };
 
 export interface InvoiceLinkParams {
   readonly title: string;
@@ -20,6 +42,14 @@ export interface InvoiceLinkParams {
 
 export interface TelegramUserRef {
   readonly id: number;
+}
+
+/**
+ * Хвост `charge_id` для логов: 6 символов хватает, чтобы найти платёж, а
+ * полный идентификатор в тексте лога не нужен (ПДн-гигиена, задача D).
+ */
+function tail(chargeId: string): string {
+  return chargeId.slice(-6);
 }
 
 /** Ошибка вывода денег/инвойсов: наружу — INTERNAL, детали только в логах. */
@@ -161,10 +191,71 @@ export class TelegramClient {
     return result === true;
   }
 
+  /**
+   * Отключить автопродление звёздной подписки: `editUserStarSubscription`.
+   *
+   * Telegram — отдельная сущность: локальная строка `subscriptions` про
+   * автопродление ничего не знает, и без этого вызова звёзды спишут за
+   * следующий период уже после `DELETE /me`.
+   *
+   * Никогда не бросает. Причина не в «мягкости»: удаление ПДн по 152-ФЗ не
+   * может зависеть от доступности чужого API. Результат пишется в
+   * `subscriptions.telegram_cancel_state`, неуспех повторяет ночной джоб.
+   *
+   * `chargeId` — `telegram_payment_charge_id` последнего успешного
+   * `successful_payment` подписки (а не первый за всё время): по чужому или
+   * просроченному charge_id Telegram отвечает `CHARGE_ID_INVALID`.
+   */
+  async editUserStarSubscription(
+    telegramUserId: number | null,
+    chargeId: string | null,
+  ): Promise<StarSubscriptionCancelResult> {
+    if (telegramUserId === null || chargeId === null || chargeId === '') {
+      return { ok: false, code: 'no_charge_id', description: null };
+    }
+
+    let response: { status: number; ok: boolean; description?: string };
+    try {
+      response = await this.post(
+        'editUserStarSubscription',
+        {
+          user_id: telegramUserId,
+          telegram_payment_charge_id: chargeId,
+          is_canceled: true,
+        },
+        TELEGRAM_CANCEL_TIMEOUT_MS,
+      );
+    } catch (error) {
+      // В лог — только хвост charge_id: он уникален и по нему видно платёж,
+      // но полный идентификатор в тексте лога не нужен (задача D).
+      this.logger.warn('telegram_cancel_unreachable', {
+        reason: error instanceof ApiError ? error.code : 'unknown',
+        charge_tail: tail(chargeId),
+      });
+      return { ok: false, code: 'timeout', description: null };
+    }
+
+    if (!response.ok) {
+      this.logger.warn('telegram_cancel_failed', {
+        status: response.status,
+        description: response.description ?? null,
+        charge_tail: tail(chargeId),
+      });
+      return {
+        ok: false,
+        code: 'telegram_error',
+        description: response.description ?? null,
+      };
+    }
+
+    return { ok: true };
+  }
+
   /** Сырой ответ Bot API: нужен `sendPush`, где важен HTTP-статус. */
   private async post(
     method: string,
     body: Record<string, unknown>,
+    timeoutMs: number = TELEGRAM_TIMEOUT_MS,
   ): Promise<{ status: number; ok: boolean; result?: unknown; description?: string }> {
     let response: Response;
     try {
@@ -172,7 +263,7 @@ export class TelegramClient {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       this.logger.error('telegram_unreachable', {

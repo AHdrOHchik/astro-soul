@@ -1,4 +1,7 @@
-import type { InvoiceLinkParams } from '../src/modules/telegram/telegram.client';
+import type {
+  InvoiceLinkParams,
+  StarSubscriptionCancelResult,
+} from '../src/modules/telegram/telegram.client';
 
 export type PushOutcome = 'sent' | 'blocked' | 'rate_limited' | 'failed';
 
@@ -11,6 +14,11 @@ export interface FakeTelegram {
   readonly answers: { queryId: string; ok: boolean; errorMessage?: string }[];
   readonly messages: { chatId: number | string; text: string }[];
   readonly refunds: { userId: number; chargeId: string }[];
+  /** Вызовы `editUserStarSubscription`: проверяем пару (user_id, charge_id). */
+  readonly starSubscriptionCancels: {
+    userId: number | null;
+    chargeId: string | null;
+  }[];
   /** Пуши удержания: что отправили и чем ответил «Bot API». */
   readonly pushes: {
     chatId: number | string;
@@ -23,6 +31,14 @@ export interface FakeTelegram {
    * По умолчанию `sent`.
    */
   pushOutcome: PushOutcome;
+  /**
+   * Чем отвечает Telegram на отмену автопродления:
+   *   `cancelled` — `{ok:true, result:true}` (по умолчанию);
+   *   `failed`    — `{ok:false}` = 400 CHARGE_ID_INVALID;
+   *   `timeout`   — сеть/таймаут;
+   *   `throws`    — исключение до ответа: проверяем, что удаление всё равно идёт.
+   */
+  starCancelOutcome: 'cancelled' | 'failed' | 'timeout' | 'throws';
   sendPush(
     chatId: number | string,
     text: string,
@@ -32,6 +48,10 @@ export interface FakeTelegram {
   answerPreCheckoutQuery(queryId: string, ok: boolean, errorMessage?: string): Promise<void>;
   sendMessage(chatId: number | string, text: string): Promise<void>;
   refundStarPayment(userId: number, chargeId: string): Promise<boolean>;
+  editUserStarSubscription(
+    userId: number | null,
+    chargeId: string | null,
+  ): Promise<StarSubscriptionCancelResult>;
 }
 
 export function makeFakeTelegram(): FakeTelegram {
@@ -40,6 +60,7 @@ export function makeFakeTelegram(): FakeTelegram {
   const messages: { chatId: number | string; text: string }[] = [];
   const refunds: { userId: number; chargeId: string }[] = [];
   const pushes: FakeTelegram['pushes'] = [];
+  const starSubscriptionCancels: FakeTelegram['starSubscriptionCancels'] = [];
 
   const fake: FakeTelegram = {
     invoiceCalls,
@@ -47,7 +68,9 @@ export function makeFakeTelegram(): FakeTelegram {
     messages,
     refunds,
     pushes,
+    starSubscriptionCancels,
     pushOutcome: 'sent',
+    starCancelOutcome: 'cancelled',
     sendPush(chatId, text, options) {
       const outcome = fake.pushOutcome;
       pushes.push({ chatId, text, outcome, ...(options?.button === undefined ? {} : { button: options.button }) });
@@ -68,6 +91,28 @@ export function makeFakeTelegram(): FakeTelegram {
     refundStarPayment(userId, chargeId) {
       refunds.push({ userId, chargeId });
       return Promise.resolve(true);
+    },
+    editUserStarSubscription(userId, chargeId) {
+      starSubscriptionCancels.push({ userId, chargeId });
+
+      if (userId === null || chargeId === null || chargeId === '') {
+        return Promise.resolve({ ok: false, code: 'no_charge_id', description: null });
+      }
+
+      switch (fake.starCancelOutcome) {
+        case 'failed':
+          return Promise.resolve({
+            ok: false,
+            code: 'telegram_error',
+            description: 'Bad Request: CHARGE_ID_INVALID',
+          });
+        case 'timeout':
+          return Promise.resolve({ ok: false, code: 'timeout', description: null });
+        case 'throws':
+          return Promise.reject(new Error('telegram: соединение закрыто'));
+        default:
+          return Promise.resolve({ ok: true });
+      }
     },
   };
 

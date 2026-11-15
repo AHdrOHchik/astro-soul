@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.5
+  version: 1.5.6
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -170,6 +170,32 @@ info:
       • подписка при удалении переходит в `cancelled` (не `expired`), права — в
         `revoked`; `Me.subscription.is_active` и `Me.entitlements.full_report`
         после удаления всегда `false`.
+
+    1.5.6 — отмена автопродления в Telegram и машинные причины 404:
+      • `DELETE /me` отключает автопродление в Telegram вызовом
+        `editUserStarSubscription(is_canceled: true)`. Раньше отменялась только
+        локальная подписка, а Telegram продолжал списывать звёзды за следующий
+        период уже после удаления данных: сервер такой платёж отклонял и
+        возвращал, но «списали и вернули» — это обращение в поддержку, а не
+        «не списали». Вызов идёт ДО транзакции удаления, его ошибка удаление не
+        блокирует (152-ФЗ): неуспех повторяется ночным джобом, пока не истекло
+        окно возврата (`subscriptions.telegram_cancel_state`);
+      • `DELETE /me` идемпотентен: всегда `204`, в том числе когда удалять
+        нечего. `404` не отдаётся никогда;
+      • `GET /engagement/forecast`: `404` получил `details.reason` —
+        `not_ready` (прогноза ещё нет) или `no_chart` (карты нет). Раньше оба
+        смысла различались только текстом, и приложение после каждого `404`
+        перечитывало `GET /me`. Полный текст отдаётся только при активном
+        `full_forecast` **в момент чтения** кэша, а не генерации;
+      • `POST /engagement/ask`: описан `404` с `details.reason = no_chart`.
+        `402` на вопрос не описывается и не отдаётся: сервер так не отвечает;
+      • `x-analytics-server-events`: добавлено `subscription_cancel_failed`
+        (`props.code = telegram_error | timeout | no_charge_id`);
+      • `GET /admin/metrics`: `subscription_cancel_failed_30d`,
+        `subscriptions_cancelled_pending_telegram`;
+      • `JobRunResult`: `telegram_cancel_retried`, `telegram_cancel_cancelled`,
+        `telegram_cancel_gave_up` — повтор отмены идёт в
+        `pdn_retention_cleanup`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -688,6 +714,9 @@ components:
         pushes_skipped_inactive: { type: integer }
         pushes_deferred: { type: integer }
         pushes_failed: { type: integer }
+        telegram_cancel_retried: { type: integer }
+        telegram_cancel_cancelled: { type: integer }
+        telegram_cancel_gave_up: { type: integer }
       example:
         subscriptions_expired: 0
         expiry_notices_sent: 0
@@ -704,6 +733,9 @@ components:
         pushes_skipped_inactive: 0
         pushes_deferred: 0
         pushes_failed: 0
+        telegram_cancel_retried: 0
+        telegram_cancel_cancelled: 0
+        telegram_cancel_gave_up: 0
 
     Report:
       type: object
@@ -845,19 +877,33 @@ paths:
       tags: [profile]
       summary: Удалить все персональные данные пользователя (ПДн)
       description: |
-        Полное удаление профиля, карт, разборов, прогнозов и вопросов.
+        Удаляются профиль, карты, разборы, прогнозы и вопросы.
 
-        Права и подписка отзываются в той же транзакции: после удаления
-        `Me.subscription.is_active = false`, `Me.entitlements.full_report = false`,
-        `full_report_chart_id = null`, `latest_report_id = null`. Повторный вход
-        тем же `telegram_id` создаёт нового пользователя (`is_new = true`) без
-        покупок — даже если `user_id` совпал (он детерминирован из telegram_id).
+        **Подписка отменяется, доступ закрывается сразу, оплаченный период не
+        возвращается.** После удаления `Me.subscription.is_active = false`,
+        `Me.entitlements.full_report = false`, `full_report_chart_id = null`,
+        `latest_report_id = null`. Повторный вход тем же `telegram_id` создаёт
+        нового пользователя (`is_new = true`) без покупок — даже если `user_id`
+        совпал (он детерминирован из telegram_id).
+
+        **Автопродление в Telegram отключается** вызовом
+        `editUserStarSubscription(is_canceled: true)` — до транзакции удаления,
+        пока известна пара (`telegram_id`, `telegram_payment_charge_id`).
+        Ошибка Telegram удаление не блокирует: удаление ПДн не зависит от
+        доступности чужого API. Неуспех пишется в
+        `subscriptions.telegram_cancel_state` и повторяется ночным джобом в
+        течение окна возврата (30 дней, до 5 попыток).
 
         Обезличивается всё, где был `user_id`: `payments`, `subscriptions`
         (`status = cancelled`), `entitlements` (`status = revoked`), `events`.
-        Обезличенная история платежей сохраняется для бухучёта и возвратов:
-        `telegram_payment_charge_id`, сумма и план остаются, `user_id` — нет.
-        Возврат звёзд по charge_id после удаления остаётся возможным.
+        **Обезличенная история платежей сохраняется** для бухучёта и возвратов:
+        `telegram_payment_charge_id`, план, сумма и дата остаются, `user_id` —
+        нет. `payments.telegram_id` снимается через 30 дней (окно возврата),
+        после чего вернуть звёзды можно только по явному id от поддержки.
+
+        Маршрут **идемпотентен**: всегда `204`, даже если удалять нечего.
+        `404` не отдаётся никогда — клиенту не нужно различать «уже удалено» и
+        «нечего удалять».
       security: [{ TelegramInitData: [] }]
       responses:
         '204':
@@ -1221,7 +1267,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Forecast' }
-        '404': { description: Прогноз ещё не готов }
+        '404':
+          description: |
+            Прогноза нет. `Problem.details.reason`:
+              • `not_ready` — карта есть, но ночной джоб ещё не положил строку:
+                приложение остаётся на экране «готовится» и `GET /me` не
+                перечитывает;
+              • `no_chart` — карты нет или она чужая: приложение уходит в
+                онбординг.
+            Тексты читать не нужно: они для человека, признак — `reason`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /api/v1/engagement/ask:
     post:
@@ -1239,6 +1296,14 @@ paths:
           description: |
             `VALIDATION_FAILED` + `details.field_errors`: вопрос короче 3 или
             длиннее 500 знаков, либо `chart_id` не uuid.
+        '404':
+          description: |
+            Карты нет или она чужая (`NOT_FOUND`), `details.reason = no_chart`.
+            Вопросу без карты некуда идти: клиент ведёт человека в онбординг.
+            `402` на этот маршрут не отдаётся.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
         '429':
           description: |
             Квота исчерпана (`QUOTA_EXCEEDED`), заголовки RateLimit-*.
@@ -1413,6 +1478,18 @@ paths:
                   pending_payments_now:
                     type: integer
                     description: Платежи `processed = false` прямо сейчас
+                  subscription_cancel_failed_30d:
+                    type: integer
+                    description: |
+                      Сколько раз отмена автопродления в Telegram не прошла за
+                      30 дней (события `subscription_cancel_failed`). История, а
+                      не очередь: успешный повтор счётчик не уменьшает.
+                  subscriptions_cancelled_pending_telegram:
+                    type: integer
+                    description: |
+                      Сколько отменённых подписок прямо сейчас ждут повтора в
+                      Telegram (`telegram_cancel_state = 'failed'`). Ноль —
+                      очередь пуста; рост — повтор не справляется.
                   events_30d:
                     type: object
                     description: |
@@ -1516,6 +1593,7 @@ x-analytics-server-events:
   - payment_rejected
   - refund_issued
   - subscription_expired
+  - subscription_cancel_failed
 # payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
 #                    invoice_invalidated | user_deleted | refund_failed)
 #                    refund_failed означает: отказ записан, но звёзды вернуть
@@ -1525,6 +1603,12 @@ x-analytics-server-events:
 #                    Одно имя для всех путей возврата: и поддержка, и
 #                    автовозврат QA-15 пишут `refund_issued`, не `payment_refunded`.
 # subscription_expired — props: last_plan
+# subscription_cancel_failed — props: code (telegram_error | timeout | no_charge_id)
+#                    Отмена автопродления при `DELETE /me` не прошла. `user_id`
+#                    события уже NULL: пишется после обезличивания, поэтому
+#                    связывает не человека, а состояние. Повтор идёт в
+#                    `pdn_retention_cleanup`; после 5 неудач —
+#                    `subscriptions.telegram_cancel_state = 'gave_up'`.
 
 # Ключи, которых не может быть в `props` события (`POST /events`).
 # Совпадает с BANNED_PROP_KEYS в apps/api/src/modules/events/events.dto.ts:

@@ -48,6 +48,15 @@ await bot.api.createInvoiceLink({
 | `paid` | оплачен, доступ выдан | повторно не принимается |
 | `invalidated` | аннулирован вместе с удалением данных | не принимается никогда |
 
+Перед транзакцией — отмена автопродления в Telegram
+(`editUserStarSubscription(is_canceled: true)`, итерация 12): локальная
+`cancelled` подписку в Telegram не отменяет, и звёзды списываются за следующий
+период уже после удаления данных. Пара (`telegram_id`,
+`telegram_payment_charge_id`) читается, пока `user_id` ещё есть; ошибка Bot API
+удаление **не блокирует** (152-ФЗ), результат пишется в
+`subscriptions.telegram_cancel_state` (`none | cancelled | failed | gave_up`) и
+повторяется ночным джобом, пока не истекло окно возврата.
+
 `DELETE /me` делает всё в одной транзакции, в этом порядке:
 1. разрешить/вернуть зависшие платежи (`resolvePending` → `refundStillPendingPayments`);
 2. отменить подписку и обезличить её: `status='cancelled'`, `user_id=NULL`,
@@ -57,9 +66,11 @@ await bot.api.createInvoiceLink({
 4. обезличить платежи: `user_id=NULL`, `invoice_payload=NULL` (в нём `u=<user_id>`),
    `anonymized_at=now()`;
 5. отвязать события: `events.user_id=NULL`, `anonymized_at=now()`;
-6. `UPDATE invoices SET status='invalidated', invalidated_at=now()
+6. записать результат отмены автопродления (`telegram_cancel_state`,
+   `telegram_cancel_attempts`, `telegram_cancel_last_at`);
+7. `UPDATE invoices SET status='invalidated', invalidated_at=now()
    WHERE user_id=$1 AND status='created'`;
-7. удалить квоты и `users`.
+8. удалить квоты и `users`.
 
 `user_id` обнуляется обязательно: он детерминирован из `telegram_id`
 (`HMAC(pepper, "telegram:<id>")`), и оставленный ключ возвращает покупки
@@ -121,6 +132,8 @@ Telegram присылает новый `successful_payment` с тем же `invo
 - по запросу пользователя через поддержку — возвращаем, если с момента оплаты < 24 ч;
 - автоматически — если товар не был доставлен;
 - после возврата доступ отзывается, статус `refunded`, повторная покупка разрешена;
+- автопродление отключается в Telegram вызовом `editUserStarSubscription`
+  (`is_canceled: true`) — иначе следующее списание придёт после удаления данных;
 - возврат по удалённому аккаунту работает: `payments.user_id` уже `NULL`, но
   `telegram_payment_charge_id` и (в окне возврата) `telegram_id` на месте.
 

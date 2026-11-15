@@ -117,12 +117,14 @@ export class ReportsRepository {
     readonly model: string;
     readonly promptVersion: string;
     readonly structureVersion: string;
+    /** Версия блока `chart_facts` в промпте (v1.1 — полная карта, v1.2 — отбор). */
+    readonly chartFactsVersion: string;
   }): Promise<ReportRow> {
     const inserted = await this.db.queryOne<ReportRow>(
       `INSERT INTO reports
          (chart_id, user_id, kind, status, idempotency_key, chart_hash, model, prompt_version,
-          report_structure_version)
-       VALUES ($1, $2, $3::report_kind, 'queued', $4, $5, $6, $7, $8)
+          report_structure_version, chart_facts_version)
+       VALUES ($1, $2, $3::report_kind, 'queued', $4, $5, $6, $7, $8, $9)
        ON CONFLICT (user_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
        RETURNING ${COLUMNS}`,
       [
@@ -134,6 +136,7 @@ export class ReportsRepository {
         input.model,
         input.promptVersion,
         input.structureVersion,
+        input.chartFactsVersion,
       ],
     );
 

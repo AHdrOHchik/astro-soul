@@ -145,7 +145,20 @@ export class GigaChatClient implements LlmProvider {
       return this.parseCompletion(response.body);
     };
 
-    return this.withRetry(call);
+    const result = await this.withRetry(call);
+
+    // Вход и выход — отдельно (задача C, п. 3). У Сбера одна ставка на оба,
+    // поэтому для денег разницы нет, а для решения «что сокращать» — вся:
+    // после `chart_facts v1.2` должен упасть именно вход.
+    this.logger.info('llm_call_ok', {
+      model: result.model,
+      input_tokens: result.usage.promptTokens,
+      output_tokens: result.usage.completionTokens,
+      total_tokens: result.usage.totalTokens,
+      cost_rub: result.usage.costRub,
+    });
+
+    return result;
   }
 
   /** Один повтор на 429/таймаут и на 401 (после сброса кэша). */
