@@ -202,18 +202,70 @@ describe('normalizeSection — форма', () => {
   });
 });
 
-describe('normalizeTeaser — окно в 400 знаков', () => {
-  it('термины в первых знаках → окно сдвигается на абзац без терминов', () => {
-    const body = [
-      'Солнце в Близнецах даёт тебе быстрый ум и привычку переключаться между темами.',
-      sentences(3, 0).join(' '),
-      sentences(3, 3).join(' '),
-    ].join('\n\n');
+describe('normalizeTeaser — окно в 400 знаков, сдвиг только по абзацу', () => {
+  /** Чистый абзац нужной длины: без терминов, ровные предложения. */
+  function cleanParagraph(count: number, offset = 0): string {
+    return sentences(count, offset).join(' ');
+  }
+
+  it('(а) термин в первом абзаце → start = начало второго абзаца, окно ≥ 400', () => {
+    // Термин — в конце первого абзаца, второй чистый: ровно тот случай, когда
+    // сдвиг на границу абзаца убирает термин, не выбрасывая заход целиком.
+    // (Если термин стоит в начале второго абзаца, сдвиг к этой же границе его
+    // не убирает — тогда работает правило (б): start = 0 и пометка.)
+    const first = `${cleanParagraph(3, 0)} Луна во Льве просит признания.`;
+    const second = cleanParagraph(9, 3);
+    const body = [first, second].join('\n\n');
 
     const teaser = normalizeTeaser(body, 400);
+
     expect(teaser.shifted).toBe(true);
     expect(teaser.hasTerms).toBe(false);
+    // Смещение — ровно граница абзаца, а не «где-то внутри первого».
+    expect(teaser.start).toBe(first.length + 2);
     expect(TEASER_TERMS.test(teaser.teaser)).toBe(false);
+    // Окно не короче 400 знаков по содержанию: тизер — не обрубок.
+    expect(teaser.teaser.length).toBeGreaterThanOrEqual(400);
+  });
+
+  it('(а2) термин в начале второго абзаца сдвигом не убирается → start = 0 и пометка', () => {
+    const first = cleanParagraph(3, 0);
+    const second = `Меркурий в Близнецах: ${cleanParagraph(9, 3)}`;
+    const body = [first, second].join('\n\n');
+
+    const teaser = normalizeTeaser(body, 400);
+
+    expect(teaser.start).toBe(0);
+    expect(teaser.hasTerms).toBe(true);
+  });
+
+  it('(б) термин в каждом абзаце → start = 0 и пометка, текст не режется', () => {
+    const body = Array.from({ length: 3 }, (_, index) =>
+      `Меркурий в Близнецах: ${cleanParagraph(4, index * 4)}`,
+    ).join('\n\n');
+
+    const teaser = normalizeTeaser(body, 400);
+
+    expect(teaser.start).toBe(0);
+    expect(teaser.shifted).toBe(false);
+    expect(teaser.hasTerms).toBe(true);
+    expect(teaser.teaser).toBe(body.slice(0, 400));
+    expect(teaser.firstTerm).not.toBeNull();
+  });
+
+  it('(в) термин только в первом абзаце, но после сдвига остаётся < 400 → не сдвигаем', () => {
+    const first = `Солнце в Тельце даёт упорство. ${cleanParagraph(4, 0)}`;
+    // Второй абзац есть, но до 400 знаков от его начала текст не дотягивает.
+    const second = cleanParagraph(2, 4);
+    const body = [first, second].join('\n\n');
+    expect(body.length - (first.length + 2)).toBeLessThan(400);
+
+    const teaser = normalizeTeaser(body, 400);
+
+    expect(teaser.start).toBe(0);
+    expect(teaser.shifted).toBe(false);
+    expect(teaser.hasTerms).toBe(true);
+    expect(teaser.teaser).toBe(body.slice(0, 400));
   });
 
   it('без терминов тизер — ровно первые 400 знаков', () => {
@@ -225,12 +277,23 @@ describe('normalizeTeaser — окно в 400 знаков', () => {
     expect(teaser.hasTerms).toBe(false);
   });
 
-  it('если термины везде — окно остаётся и ставится пометка', () => {
-    const body = Array.from({ length: 4 }, () => 'Марс в Овне требует действия прямо сейчас, без паузы и объяснений.').join('\n\n');
+  it('смещение всегда 0 или начало абзаца — третьего не дано', () => {
+    const body = [
+      'Луна во Льве требует признания. ' + cleanParagraph(3, 0),
+      cleanParagraph(8, 3),
+      cleanParagraph(8, 5),
+    ].join('\n\n');
     const teaser = normalizeTeaser(body, 400);
 
-    expect(teaser.hasTerms).toBe(true);
-    expect(teaser.teaser).toBe(body.slice(0, 400));
+    expect(teaser.start).toBeGreaterThan(0);
+    const boundaries = new Set<number>([0]);
+    let offset = 0;
+    for (const paragraph of splitParagraphs(body)) {
+      const start = body.indexOf(paragraph, offset);
+      boundaries.add(start);
+      offset = start + paragraph.length;
+    }
+    expect(boundaries.has(teaser.start)).toBe(true);
   });
 });
 

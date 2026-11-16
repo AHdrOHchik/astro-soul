@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "rootDir": ".",
-    "noEmit": true
+    "noEmit": true,
+    // Только проверка типов: `test/`-предохранитель запускает Node и читает
+    // `import.meta.url`. Сборки (`tsconfig.build.*`) задают свой `module`.
+    "module": "es2022"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts"]
 }

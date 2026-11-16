@@ -7,7 +7,7 @@
  * изменится, сломается сборка, а не прод.
  */
 
-import type { components, paths } from './contracts/generated';
+import type { components, paths } from './contracts/generated.js';
 
 type Schemas = components['schemas'];
 

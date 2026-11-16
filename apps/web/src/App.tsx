@@ -860,6 +860,8 @@ function Screens({
           api={api}
           telegram={telegram}
           track={track}
+          // The search bounds come from GET /me: this build keeps no copy of the numbers.
+          limits={me.limits}
           query={draft.placeQuery}
           place={draft.place}
           serverError={serverErrors.get('birth_place')}

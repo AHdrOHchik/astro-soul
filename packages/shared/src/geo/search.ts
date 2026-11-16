@@ -1,7 +1,5 @@
-import type { GeoPlace } from '../contracts';
-import { CITIES, CITY_DATASET_VERSION, type CityRecord } from './cities.data';
-import { DEFAULT_LIMIT, MAX_LIMIT, MIN_QUERY_LENGTH } from './limits';
-
+import type { GeoPlace } from '../contracts.js';
+import { CITIES, CITY_DATASET_VERSION, type CityRecord } from './cities.data.js';
 /**
  * Поиск города по локальному справочнику (без сети).
  *
@@ -13,10 +11,10 @@ import { DEFAULT_LIMIT, MAX_LIMIT, MIN_QUERY_LENGTH } from './limits';
  */
 
 /**
- * Границы поиска живут в `./limits`: их импортирует фронт, и он не должен
- * тянуть за собой справочник на 3 000 записей.
+ * Границы поиска приходят параметром, а не из константы: значения живут в
+ * окружении сервера (`GEO_MIN_QUERY_LENGTH` и соседние), а не в коде пакета.
  */
-export { DEFAULT_LIMIT, MAX_LIMIT, MAX_QUERY_LENGTH, MIN_QUERY_LENGTH } from './limits';
+export type { GeoQueryBounds, GeoSearchLimits, MeGeoLimits } from './limits.js';
 
 export { CITY_DATASET_VERSION };
 
@@ -66,19 +64,26 @@ function toGeoPlace(record: CityRecord): GeoPlace {
   };
 }
 
+/** Параметры поиска: границы задаёт вызывающий (у сервера они из окружения). */
+export interface SearchCitiesOptions {
+  /** Сколько кандидатов вернуть; потолок зажимает вызывающий, здесь — как есть. */
+  readonly limit: number;
+  /** Короче этого — пустой массив, а не «первый символ ищи по всей базе». */
+  readonly minQueryLength: number;
+  /** Справочник; подменяется в тестах. */
+  readonly cities?: readonly CityRecord[];
+}
+
 /** Чистая функция — её же использует провайдер в API и тесты. */
-export function searchCities(
-  rawQuery: string,
-  limit: number = DEFAULT_LIMIT,
-  cities: readonly CityRecord[] = CITIES,
-): GeoPlace[] {
+export function searchCities(rawQuery: string, options: SearchCitiesOptions): GeoPlace[] {
   const query = normalizeCityQuery(rawQuery);
 
-  if (query.length < MIN_QUERY_LENGTH) {
+  if (query.length < options.minQueryLength) {
     return [];
   }
 
-  const safeLimit = Math.min(Math.max(limit, 1), MAX_LIMIT);
+  const { cities = CITIES } = options;
+  const safeLimit = Math.max(options.limit, 1);
   const ranked: Ranked[] = [];
 
   for (const record of cities) {

@@ -1,4 +1,4 @@
-import { CITIES, type CityRecord } from './cities.data';
+import { CITIES, type CityRecord } from './cities.data.js';
 
 /**
  * Ближайший город справочника — для часового пояса по координатам.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { CITIES, CITY_DATASET_VERSION } from './cities.data';
-import { CITY_DATASET_META } from './cities.meta';
-import { searchCities } from './search';
+import { CITIES, CITY_DATASET_VERSION } from './cities.data.js';
+import { CITY_DATASET_META } from './cities.meta.js';
+import { searchCities } from './search.js';
 
 /** Страны СНГ из сборки: для них порог населения ниже. */
 const CIS = new Set(['RU', 'BY', 'KZ', 'UA', 'UZ', 'KG', 'TJ', 'TM', 'AZ', 'AM', 'MD', 'GE']);
@@ -10,6 +10,9 @@ const CIS = new Set(['RU', 'BY', 'KZ', 'UA', 'UZ', 'KG', 'TJ', 'TM', 'AZ', 'AM',
 const CIS_MIN_POPULATION = 15_000;
 /** Порог остального мира: крупные города плюс столицы в любом случае. */
 const WORLD_MIN_POPULATION = 300_000;
+
+/** Границы для тестов: в проде они из окружения сервера (`GEO_*`). */
+const BOUNDS = { limit: 5, minQueryLength: 2 };
 
 function isValidTimeZone(tz: string): boolean {
   try {
@@ -80,28 +83,48 @@ describe('справочник городов: отбор и качество д
     expect(CITY_DATASET_META.license).toBe('CC BY 4.0');
     expect(CITY_DATASET_META.attribution).toContain('geonames.org');
   });
+
+  it('названия взяты из GeoNames с пометкой isolanguage = ru, а не выдуманы транслитом', () => {
+    // Итерация 21: раньше кириллица собиралась транслитерацией по
+    // `alternatenames` без языковых пометок, и половина названий была «своей».
+    // Теперь основной источник — индекс `isolanguage = ru`, транслит — фолбэк.
+    expect(CITY_DATASET_META.namesFromRuIndex / CITIES.length).toBeGreaterThan(0.85);
+    expect(CITY_DATASET_META.namesFromRuIndex + CITY_DATASET_META.namesFromCyrillicFallback + CITY_DATASET_META.namesFromLatinFallback).toBe(CITIES.length);
+    // Фолбэк виден списком: первые 20 — чтобы его не приходилось искать сборкой.
+    expect(CITY_DATASET_META.transliteratedNames.length).toBeLessThanOrEqual(20);
+  });
+
+  it('русские названия — привычные, а не транслит: Таллин, Гуанчжоу, Сан-Диего', () => {
+    const names = new Set(CITIES.map((city) => city.name));
+    for (const expected of ['Таллин', 'Гуанчжоу', 'Сан-Диего', 'Нанкин', 'Хошимин', 'Нью-Йорк']) {
+      expect(names.has(expected), `нет «${expected}»`).toBe(true);
+    }
+    for (const wrong of ['Таллинн', 'Гуанжоу', 'Нанкинг']) {
+      expect(names.has(wrong), `остался транслит «${wrong}»`).toBe(false);
+    }
+  });
 });
 
 describe('поиск по расширенному справочнику', () => {
   it('«нижний» находит Нижний Новгород', () => {
-    const names = searchCities('нижний').map((place) => place.name);
+    const names = searchCities('нижний', BOUNDS).map((place) => place.name);
     expect(names).toContain('Нижний Новгород');
   });
 
   it('«ел» находит Елец и Елабугу', () => {
-    const names = searchCities('ел', 10).map((place) => place.name);
+    const names = searchCities('ел', { ...BOUNDS, limit: 10 }).map((place) => place.name);
     expect(names).toContain('Елец');
     expect(names).toContain('Елабуга');
   });
 
   it('ё и е равнозначны, регистр не важен', () => {
-    expect(searchCities('королев', 5).map((place) => place.name)).toContain('Королёв');
-    expect(searchCities('КОРОЛЕВ', 5).map((place) => place.name)).toContain('Королёв');
-    expect(searchCities('ЧЕРЕПОВЕЦ', 5).map((place) => place.name)).toContain('Череповец');
+    expect(searchCities('королев', BOUNDS).map((place) => place.name)).toContain('Королёв');
+    expect(searchCities('КОРОЛЕВ', BOUNDS).map((place) => place.name)).toContain('Королёв');
+    expect(searchCities('ЧЕРЕПОВЕЦ', BOUNDS).map((place) => place.name)).toContain('Череповец');
   });
 
   it('маленький город из нового справочника тоже находится', () => {
     // 32 тысячи человек: такого в стартовом наборе из 149 городов не было.
-    expect(searchCities('Удомля', 5).map((place) => place.name)).toContain('Удомля');
+    expect(searchCities('Удомля', BOUNDS).map((place) => place.name)).toContain('Удомля');
   });
 });

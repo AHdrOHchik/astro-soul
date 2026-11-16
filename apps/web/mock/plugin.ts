@@ -15,6 +15,7 @@ import {
   buildEntitlements,
   buildMe,
   findPlaces,
+  GEO_LIMITS,
   inputKey,
   MOCK_CHART_ID,
   MOCK_CONSENT_VERSION,
@@ -144,8 +145,11 @@ function isConsent(value: unknown): boolean {
   return isRecord(value) && value.accepted === true && typeof value.version === 'string' && /^.{1,32}$/.test(value.version);
 }
 
-/** The limits of the contract for a search query, counted after trimming. */
-const QUERY_LENGTH = { min: 2, max: 120 } as const;
+/**
+ * The limits of the contract for a search query, counted after trimming. They are the
+ * ones the mock announces in `GET /me` (`limits`): the app takes them from there.
+ */
+const QUERY_LENGTH = { min: GEO_LIMITS.geo_min_query_length, max: GEO_LIMITS.geo_max_query_length } as const;
 
 /** The limits of the contract for product events. */
 const EVENTS = {
@@ -652,7 +656,7 @@ function createHandler({
         sendInvalid(res, [{ field: 'limit', message: 'limit — целое число от 1 до 10' }]);
       } else if (query.length < QUERY_LENGTH.min) {
         // 422, not an empty list: `[]` means «no such place», not «too little typed». The app never sends a query this short.
-        sendInvalid(res, [{ field: 'query', message: 'Введи хотя бы 2 буквы' }]);
+        sendInvalid(res, [{ field: 'query', message: `Введи хотя бы ${String(QUERY_LENGTH.min)} буквы` }]);
       } else if (query.length > QUERY_LENGTH.max) {
         sendInvalid(res, [{ field: 'query', message: 'Слишком длинный запрос — введи название города' }]);
       } else if (needle.startsWith('ошибка')) {

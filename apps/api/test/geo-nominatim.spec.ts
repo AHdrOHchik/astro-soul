@@ -14,7 +14,8 @@ import type { CityRecord } from '@astro-soul/shared';
  *     идентификаторов;
  *   • при `GEO_PROVIDER=bundled` внешних запросов ноль;
  *   • пояс берётся у ближайшего города справочника не дальше 300 км, иначе
- *     города нет (`503 GEO_NOT_FOUND`, `details.reason = no_timezone`);
+ *     города нет (`422 VALIDATION_FAILED`, `details.reason = no_timezone`:
+ *     причина постоянная, и 503 «повтори» тут врал бы);
  *   • кэш на 24 часа: два одинаковых запроса — один внешний вызов;
  *   • `429` не повторяем сразу.
  */
@@ -182,12 +183,18 @@ describe('пояс по координатам', () => {
     expect(place?.tz).toBe('Pacific/Honolulu');
   });
 
-  it('точка в океане → 503 GEO_NOT_FOUND, reason=no_timezone', async () => {
+  it('точка в океане → 422 VALIDATION_FAILED с field_errors, а не 503', async () => {
     const fetchImpl = (): Promise<Response> => Promise.resolve(nominatimResponse([OCEAN]));
     const { service } = serviceWith({ fetchImpl });
 
+    // Пояса у точки нет и не будет: 503 читался бы как «повтори».
     await expect(service.resolve('Атлантида', 5)).rejects.toMatchObject({
-      details: { reason: 'no_timezone' },
+      code: 'VALIDATION_FAILED',
+      status: 422,
+      details: {
+        reason: 'no_timezone',
+        field_errors: [{ field: 'query' }],
+      },
     });
   });
 
@@ -207,6 +214,8 @@ describe('пояс по координатам', () => {
     const { service } = serviceWith({ cities, fetchImpl });
 
     await expect(service.resolve('Атлантида', 5)).rejects.toMatchObject({
+      code: 'VALIDATION_FAILED',
+      status: 422,
       details: { reason: 'no_timezone' },
     });
   });
@@ -248,6 +257,8 @@ describe('кэш и лимиты провайдера', () => {
     const { service } = serviceWith({ fetchImpl });
 
     await expect(service.resolve('Атлантида', 5)).rejects.toMatchObject({
+      code: 'GEO_NOT_FOUND',
+      status: 503,
       details: { reason: 'provider_unavailable' },
     });
     expect(calls).toBe(1);

@@ -338,12 +338,30 @@ function isQuota(value: unknown): value is Quota {
  * access is taken as granted only when the server says exactly `true`: a missing or
  * malformed answer never opens anything.
  */
+/**
+ * `limits` of `GET /me`: the two bounds the server checks itself.
+ *
+ * Not numbers — no field: that is an older server (or rubbish), and the client then
+ * blocks nothing and shows the `422` with `field_errors[0].field = query`. This build
+ * keeps no copy of the numbers: it would drift from the server's.
+ */
+function toLimits(value: unknown): Me['limits'] {
+  if (!isRecord(value)) return undefined;
+  const min = value.geo_min_query_length;
+  const max = value.geo_max_query_length;
+  if (typeof min !== 'number' || typeof max !== 'number') return undefined;
+  if (!Number.isInteger(min) || !Number.isInteger(max) || min < 1 || max < min) return undefined;
+  return { geo_min_query_length: min, geo_max_query_length: max };
+}
+
 function toMe(value: unknown): Me {
   if (!isRecord(value) || typeof value.user_id !== 'string') throw invalid();
   const entitlements = isRecord(value.entitlements) ? value.entitlements : {};
   const subscription = isRecord(value.subscription) ? value.subscription : {};
+  const limits = toLimits(value.limits);
   return {
     ...(value as Me),
+    ...(limits === undefined ? {} : { limits }),
     has_chart: value.has_chart === true,
     chart_id: typeof value.chart_id === 'string' ? value.chart_id : null,
     latest_report_id: typeof value.latest_report_id === 'string' ? value.latest_report_id : null,
