@@ -945,6 +945,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Витрина тарифов
+         * @description Что продаётся, за сколько и что это даёт — единственный источник
+         *     этого списка. С 1.5.9 клиент не хранит набор тарифов и их цены: он
+         *     рисует ответ, поэтому смена цены или названия не требует релиза
+         *     клиента, а тестовый тариф можно показать, не правя фронт.
+         *
+         *     Тестовые тарифы (`test_1`, `test_report_1`) попадают в ответ только
+         *     при `PAYMENTS_TEST_PLANS=1`, с `test: true` и после каталога. При
+         *     выключенном флаге их нет в ответе вообще — ни полем, ни «серыми».
+         *
+         *     Ответ не кэшируется (`Cache-Control: no-store`): он зависит от флага
+         *     окружения, и прокси с кэшем показал бы либо старый список без
+         *     тестовых, либо тестовые после выключения.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        /** @description Витрина зависит от окружения процесса, кэшировать её нельзя. */
+                        "Cache-Control"?: "no-store";
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PlansResponse"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/invoice": {
         parameters: {
             query?: never;
@@ -1203,7 +1255,16 @@ export interface paths {
                             /** @description Платежи `processed = false` прямо сейчас */
                             pending_payments_now?: number;
                             /**
-                             * @description Платежи по тестовому тарифу (`test_1`) за 30 дней.
+                             * @description Включены ли тестовые тарифы прямо сейчас
+                             *     (`PAYMENTS_TEST_PLANS=1`). В `test_payments_30d` видно,
+                             *     что тестовые платежи были; здесь — что витрина отдаёт
+                             *     тарифы за 1 ⭐ в эту минуту. `true` на проде означает,
+                             *     что флаг забыт: `check.sh --prod` такое не пропускает,
+                             *     а метрика показывает, если проверку обошли.
+                             */
+                            test_plans_active?: boolean;
+                            /**
+                             * @description Платежи по тестовому тарифу (`test_1`, `test_report_1`) за 30 дней.
                              *     Считаются отдельно и в выручку не входят: это проверка
                              *     оплаты владельцем, а не продажа. Ненулевое значение на
                              *     проде означает забытый `PAYMENTS_TEST_PLANS`.
@@ -1776,10 +1837,70 @@ export interface components {
             based_on: string[];
             quota?: components["schemas"]["Quota"];
         };
-        /** @enum {string} */
+        /**
+         * @description Каталог: то, что продаётся всегда. Тестовые тарифы (`test_1`,
+         *     `test_report_1`) сюда не входят — они приходят в витрине как
+         *     `PlanOffer.plan_code` (`OrderablePlanCode`) и существуют только при
+         *     `PAYMENTS_TEST_PLANS=1`.
+         * @enum {string}
+         */
         PlanCode: "week_149" | "month_399" | "year_2990" | "one_149" | "compat_249" | "solar_590";
+        /**
+         * @description Один тариф на витрине. Тексты приходят с сервера: пока их знал клиент,
+         *     смена названия или цены требовала релиза клиента, а тестовый тариф
+         *     нельзя было показать вообще.
+         */
+        PlanOffer: {
+            plan_code: components["schemas"]["OrderablePlanCode"];
+            /**
+             * @description `subscription` — автопродление через Telegram; `one_off` — разовая
+             *     покупка. От этого зависит, что делает клиент: подписку открывают
+             *     как `subscription_period`, разовый товар — обычным счётом.
+             * @enum {string}
+             */
+            kind: "subscription" | "one_off";
+            /** @description Цена в звёздах. Клиент показывает её как есть, цена в вёрстке не дублируется. */
+            stars: number;
+            /**
+             * @description Период подписки в секундах, `null` для разового товара. `null`, а
+             *     не отсутствие поля: клиенту нужно отличать «без периода» от
+             *     «сервер не сказал».
+             */
+            period_sec: number | null;
+            /** @description Название тарифа, на «ты», без цены. */
+            title: string;
+            /**
+             * @description Что человек получает, одной фразой. Обещанное, но не выпущенное
+             *     названо прямо («появится в ближайшие дни»), а не как готовое.
+             */
+            subtitle: string;
+            /** @description Состав тарифа — из прав этого же плана, а не из текста рядом. */
+            includes: string[];
+            /**
+             * @description Тестовый тариф за 1 ⭐. Такие показываются отдельным блоком ниже
+             *     обычных, а не подмешиваются к продаже. При выключенном флаге в
+             *     ответе нет ни одного плана с `test: true`.
+             */
+            test: boolean;
+        };
+        PlansResponse: {
+            /**
+             * @description Сначала каталог в порядке пейволла, затем (только при включённом
+             *     `PAYMENTS_TEST_PLANS`) тестовые тарифы.
+             */
+            plans: components["schemas"]["PlanOffer"][];
+        };
+        /**
+         * @description Код тарифа на денежном пути. Каталог — значения `PlanCode`; при
+         *     `PAYMENTS_TEST_PLANS=1` дополнительно `test_1` и `test_report_1`.
+         *     Тип — строка намеренно: `PlanCode` — закрытый список того, что
+         *     продаётся всегда, а тестовые коды существуют только при флаге.
+         * @example one_149
+         * @example month_399
+         */
+        OrderablePlanCode: string;
         InvoiceRequest: {
-            plan_code: components["schemas"]["PlanCode"];
+            plan_code: components["schemas"]["OrderablePlanCode"];
             /**
              * Format: uuid
              * @description Для разовых продуктов. Обязателен для `one_149` (полный разбор):
@@ -1795,7 +1916,7 @@ export interface components {
         Invoice: {
             /** @description Ссылка на инвойс для Telegram.WebApp.openInvoice */
             invoice_link: string;
-            plan_code: components["schemas"]["PlanCode"];
+            plan_code: components["schemas"]["OrderablePlanCode"];
             /** @example 399 */
             stars: number;
             is_subscription: boolean;

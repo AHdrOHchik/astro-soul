@@ -1,5 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DbService } from '../../db/db.service';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
 
 /**
  * Метрики продукта (`GET /admin/metrics`, контракт 1.4.0).
@@ -36,6 +38,14 @@ export interface ProductMetrics {
    * забыть выключить `PAYMENTS_TEST_PLANS`.
    */
   readonly test_payments_30d: number;
+  /**
+   * Включены ли тестовые тарифы **сейчас** (`PAYMENTS_TEST_PLANS=1`).
+   *
+   * `test_payments_30d` отвечает на вопрос «были ли тестовые платежи», а этот
+   * флаг — «продаётся ли сейчас за 1 ⭐». На проде `true` значит забытый флаг:
+   * витрина отдаёт тарифы за звезду любой минуты, пока его не снимут.
+   */
+  readonly test_plans_active: boolean;
   readonly events_30d: Readonly<Record<string, number>>;
   readonly funnel_30d: Readonly<Record<string, number>>;
 }
@@ -59,7 +69,10 @@ function ratio(part: number, total: number): number {
 
 @Injectable()
 export class AdminMetricsService {
-  constructor(@Inject(DbService) private readonly db: DbService) {}
+  constructor(
+    @Inject(DbService) private readonly db: DbService,
+    @Inject(APP_ENV) private readonly env: AppEnv,
+  ) {}
 
   async getMetrics(): Promise<ProductMetrics> {
     const [activity, events, funnel, subscriptions, payments, reports, cost, telegramCancel] =
@@ -202,6 +215,9 @@ export class AdminMetricsService {
       subscription_cancel_failed_30d: telegramCancel?.failed ?? 0,
       subscriptions_cancelled_pending_telegram: telegramCancel?.pending ?? 0,
       test_payments_30d: payments?.test ?? 0,
+      // Не из БД: это окружение процесса, поэтому метрика честна в ту же
+      // секунду, когда флаг включили или сняли, — без ожидания платежа.
+      test_plans_active: this.env.PAYMENTS_TEST_PLANS === '1',
       events_30d: eventsByName,
       funnel_30d: funnelByStep,
     };
