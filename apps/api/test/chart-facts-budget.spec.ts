@@ -52,7 +52,17 @@ describe('бюджет chart_facts v1.2', () => {
       const after = chapterInput(key, topFacts);
       // Вход уменьшился: вся экономия — из блока фактов.
       expect(after.length).toBeLessThan(before.length);
-      expect(after.length).toBeLessThanOrEqual(before.length * 0.85);
+
+      // Сравнение по переменной части: правила, системный промпт и few-shot —
+      // константы, и с 1.5.10 к ним добавился абзац формы (196 знаков,
+      // `prompts_v1.3` — требование владельца). Прошлая формула «≤85 % от
+      // всего входа» ломалась именно на этой константе, а не на фактах.
+      const overhead = chapterInput(key, '').length;
+      const beforeFacts = before.length - overhead;
+      const afterFacts = after.length - overhead;
+      expect(afterFacts).toBeLessThanOrEqual(beforeFacts * 0.65 + 1);
+      // И общая страховка от раздувания промпта глав.
+      expect(after.length).toBeLessThanOrEqual(before.length * 0.9);
     }
   });
 

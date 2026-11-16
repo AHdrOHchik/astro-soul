@@ -6,6 +6,8 @@ import { TelegramClient } from '../telegram/telegram.client';
 import { PaymentsService } from '../billing/payments.service';
 import { SubscriptionCancelService } from '../billing/subscription-cancel.service';
 import { EngagementService } from '../engagement/engagement.service';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
 
 /** Через сколько минут недоставленный товар считаем поводом для возврата. */
 export const REFUND_AFTER_MINUTES = 10;
@@ -102,6 +104,7 @@ export class JobsService {
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(EngagementService) private readonly engagement: EngagementService,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
+    @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
 
   /**
@@ -243,6 +246,12 @@ export class JobsService {
    * Платёж ищется через entitlement карты, поэтому возврат идёт ровно за тот
    * заказ, из которого выдан доступ. Повторный запуск ничего не делает:
    * у разбора появляется `refunded_at`, статус — `refunded`.
+   *
+   * **По умолчанию выключен** (`REFUND_ON_REPORT_FAILED`, решение владельца
+   * 2026-11-16): провал модели — не недоставка товара, разбор перезапускают
+   * после починки промпта. Код возврата остался: включение — один флаг.
+   * Выключенный флаг останавливает **и** возврат, **и** запись статуса
+   * `refunded` (раньше строка становилась `refunded` даже без платежа).
    */
   private async refundFailedReports(): Promise<number> {
     const reports = await this.db.query<{ id: string; user_id: string; chart_id: string; kind: string }>(
@@ -253,6 +262,16 @@ export class JobsService {
         LIMIT $1`,
       [BATCH],
     );
+
+    if (reports.length > 0 && this.env.REFUND_ON_REPORT_FAILED !== '1') {
+      // Не «тихий ноль»: видно, что джоб нашёл провалы и сознательно не
+      // возвращает. Иначе выключенный флаг выглядел бы как «возвращать нечего».
+      this.logger.info('report_refund_disabled', {
+        failed: reports.length,
+        flag: 'REFUND_ON_REPORT_FAILED',
+      });
+      return 0;
+    }
 
     let done = 0;
 

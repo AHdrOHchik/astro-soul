@@ -223,6 +223,43 @@ export class ReportsRepository {
     );
   }
 
+  /**
+   * Сырые ответы модели, не прошедшие валидацию (миграция 0022).
+   *
+   * Пишутся по одному, сразу после провала: если конвейер упадёт на
+   * следующем вызове, уже сломанный ответ останется в строке. `raw` — первые
+   * 2000 знаков, `key` и `attempt` — где и на какой попытке.
+   */
+  async addDebug(
+    id: string,
+    entry: { readonly key: string; readonly attempt: number; readonly raw: string; readonly cats: readonly string[] },
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE reports
+          SET debug_json = COALESCE(debug_json, '[]'::jsonb) || $2::jsonb,
+              updated_at = now()
+        WHERE id = $1`,
+      [id, JSON.stringify([entry])],
+    );
+  }
+
+  /**
+   * Последние завершённые разборы — для предохранителя конвейера.
+   *
+   * `ready` в выборке нужен: успешный разбор размыкает цепочку провалов,
+   * поэтому предохранитель не срабатывает вечером после утренней аварии.
+   */
+  async recentOutcomes(limit: number): Promise<{ readonly status: string; readonly error_code: string | null }[]> {
+    return this.db.query<{ status: string; error_code: string | null }>(
+      `SELECT status::text AS status, error_code
+         FROM reports
+        WHERE status IN ('ready', 'failed', 'refunded')
+        ORDER BY updated_at DESC
+        LIMIT $1`,
+      [limit],
+    );
+  }
+
   /** Диагностика неудачной попытки: главы не трогаем, статус не меняем. */
   async saveDiagnostics(
     id: string,

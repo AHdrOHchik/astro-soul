@@ -4,6 +4,7 @@ import type { Response } from 'supertest';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import { FakeLlmProvider } from '../src/modules/llm/fake-llm';
 import type { LlmRequest } from '../src/modules/llm/llm.client';
+import { PROMPT_VERSION } from '../src/modules/reports/prompts';
 import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
 import { FICTIONAL_USER, TEST_BOT_TOKEN } from './test-env';
@@ -251,7 +252,10 @@ describe('GET /api/v1/reports/{report_id}', () => {
     expect(report?.llm_tokens_in ?? 0).toBeGreaterThan(0);
     expect(report?.llm_tokens_out ?? 0).toBeGreaterThan(0);
     // Контент v1.1: новые разборы пишут новую версию структуры и промптов.
-    expect(report?.prompt_version).toBe('prompts_v1.1');
+    // Версия промптов берётся из единственной константы: раньше в БД было
+    // `prompts_v1.1`, а код считал текущими `v1.2` — теперь их не развести.
+    expect(report?.prompt_version).toBe(PROMPT_VERSION);
+    expect(PROMPT_VERSION).toBe('prompts_v1.3');
     expect(report?.report_structure_version).toBe('structure_v1.1');
     // Версия блока фактов: без неё «дешёвый разбор» не отличить от сломанного
     // отбора (задача C, п. 2).
@@ -280,7 +284,10 @@ describe('GET /api/v1/reports/{report_id}', () => {
 });
 
 describe('сбои конвейера', () => {
-  it('падение провайдера → failed, затем report_refund возвращает звёзды', async () => {
+  // Решение владельца 2026-11-16: за провал разбора звёзды автоматически не
+  // возвращаются. Джоб умеет возвращать, но только при явном
+  // `REFUND_ON_REPORT_FAILED=1`.
+  it('падение провайдера → failed без возврата: джоб выключен флагом', async () => {
     const failing = await createTestContext({
       astro: makeFakeAstro(),
       telegram,
@@ -337,14 +344,80 @@ describe('сбои конвейера', () => {
         .post('/api/v1/internal/jobs/run?job=report_refund')
         .set('X-Jobs-Secret', JOBS_SECRET)
         .expect(202);
+      // Флаг выключен: ни возврата, ни подмены статуса на `refunded`.
+      expect(refund.body).toMatchObject({ report_refunds_done: 0 });
+      expect(telegram.refunds).toEqual([]);
+
+      const stillFailed = await request(failing.app.getHttpServer())
+        .get(`/api/v1/reports/${order.body.report_id as string}`)
+        .set(INIT_DATA_HEADER, initDataFor());
+      expect(stillFailed.body.status).toBe('failed');
+    } finally {
+      await failing.close();
+    }
+  });
+
+  it('report_refund возвращает звёзды при REFUND_ON_REPORT_FAILED=1', async () => {
+    const failing = await createTestContext({
+      astro: makeFakeAstro(),
+      telegram,
+      llm: new FakeLlmProvider({ fail: true }),
+      env: { INTERNAL_JOB_SECRET: JOBS_SECRET, REFUND_ON_REPORT_FAILED: '1' },
+    });
+
+    try {
+      const chart = await request(failing.app.getHttpServer())
+        .post('/api/v1/charts')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .send(BIRTH)
+        .expect(201);
+      const chartId = chart.body.chart.chart_id as string;
+      const user = await failing.db.queryOne<{ id: string }>(`SELECT id FROM users`);
+      const userId = user?.id ?? '';
+
+      const payment = await failing.db.queryOne<{ id: string }>(
+        `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
+         VALUES ($1, $2, 'one_149', 149, 'charge-flag-on-1', true)
+         RETURNING id`,
+        [userId, FICTIONAL_USER.id],
+      );
+      await failing.db.query(
+        `INSERT INTO entitlements (user_id, kind, chart_id, payment_id) VALUES ($1, 'report', $2, $3)`,
+        [userId, chartId, payment?.id],
+      );
+
+      const order = await request(failing.app.getHttpServer())
+        .post('/api/v1/reports')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .set('Idempotency-Key', 'flag-on-key')
+        .send({ chart_id: chartId, type: 'full' })
+        .expect(202);
+
+      let status = '';
+      for (let attempt = 0; attempt < 200 && status !== 'failed'; attempt += 1) {
+        const response = await request(failing.app.getHttpServer())
+          .get(`/api/v1/reports/${order.body.report_id as string}`)
+          .set(INIT_DATA_HEADER, initDataFor());
+        status = response.body.status as string;
+        if (status !== 'failed') {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      }
+      expect(status).toBe('failed');
+
+      const refund = await request(failing.app.getHttpServer())
+        .post('/api/v1/internal/jobs/run?job=report_refund')
+        .set('X-Jobs-Secret', JOBS_SECRET)
+        .expect(202);
       expect(refund.body).toMatchObject({ report_refunds_done: 1 });
-      expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-failed-1' }]);
+      expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-flag-on-1' }]);
 
       const refunded = await request(failing.app.getHttpServer())
         .get(`/api/v1/reports/${order.body.report_id as string}`)
         .set(INIT_DATA_HEADER, initDataFor());
       expect(refunded.body.status).toBe('refunded');
     } finally {
+      delete process.env['REFUND_ON_REPORT_FAILED'];
       await failing.close();
     }
   });

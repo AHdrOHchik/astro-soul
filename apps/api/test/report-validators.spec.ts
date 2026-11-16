@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   DISCLAIMER,
+  failureCategory,
+  failureErrorCode,
+  failureErrorCodeForCategories,
   maxOverlap,
   overlapRatio,
   splitSentences,
+  teaserTerms,
   validateSection,
 } from '../src/modules/reports/validators';
 
@@ -109,7 +113,8 @@ describe('P0-5: остальные правила', () => {
 
   it('объём: выход за границы более чем на 30 % — провал, 10–30 % — предупреждение', () => {
     const long = validateSection({ key: 'purpose', bodyMd: 'а'.repeat(1_250 * 1.31), timePrecision: 'exact' });
-    expect(long.failures.map((failure) => failure.rule)).toContain('length');
+    // v1.3: код разделён — «переписал» и «недописал» чинят по-разному.
+    expect(long.failures.map((failure) => failure.rule)).toContain('too_long');
 
     const slightlyLong = validateSection({
       key: 'purpose',
@@ -230,5 +235,60 @@ describe('QA-22: структура главы', () => {
     expect(
       validateSection({ key: 'core', bodyMd: repeated, timePrecision: 'exact' }).failures.map((f) => f.rule),
     ).toContain('sentence_repeat');
+  });
+});
+
+// Живой прогон 2026-11-16: один код `validation` на шесть разных дефектов.
+describe('коды провала и тизер (v1.3)', () => {
+  it('правила раскладываются по шести кодам', () => {
+    expect(failureCategory('too_short')).toBe('too_short');
+    expect(failureCategory('too_long')).toBe('too_long');
+    expect(failureCategory('format_h1')).toBe('format');
+    expect(failureCategory('voice')).toBe('format');
+    expect(failureCategory('ui_reference')).toBe('format');
+    expect(failureCategory('forbidden_fear')).toBe('forbidden_terms');
+    expect(failureCategory('chiron')).toBe('forbidden_terms');
+    expect(failureCategory('unknown_house')).toBe('forbidden_terms');
+    expect(failureCategory('paragraphs')).toBe('paragraphs');
+    expect(failureCategory('paragraph_sentences')).toBe('paragraphs');
+    expect(failureCategory('repeats')).toBe('repeats');
+    expect(failureCategory('sentence_repeat')).toBe('repeats');
+    expect(failureCategory('word_share')).toBe('repeats');
+  });
+
+  it('error_code — самая частая категория с префиксом validation', () => {
+    expect(failureErrorCode([])).toBe('validation');
+    expect(failureErrorCode(['paragraphs', 'paragraph_sentences', 'too_long'])).toBe(
+      'validation:paragraphs',
+    );
+    expect(failureErrorCodeForCategories(['too_short', 'too_short', 'format'])).toBe(
+      'validation:too_short',
+    );
+  });
+
+  it('недобор и перебор объёма — разные правила', () => {
+    const short = validateSection({ key: 'purpose', bodyMd: 'Коротко.', timePrecision: 'exact' });
+    expect(short.failures.map((f) => f.rule)).toContain('too_short');
+
+    const long = validateSection({ key: 'purpose', bodyMd: 'а'.repeat(2_000), timePrecision: 'exact' });
+    expect(long.failures.map((f) => f.rule)).toContain('too_long');
+    expect(long.failures.map((f) => f.rule)).not.toContain('length');
+  });
+
+  it('тизер: термины в первых 400 знаках ловятся, «тринадцать» — нет', () => {
+    expect(teaserTerms('Ты замечаешь, что Луна во Льве делает тебя заметнее.')).toContain('луна');
+    expect(teaserTerms('Ты держишь паузу, потому что так честнее.')).toEqual([]);
+    expect(teaserTerms('Тринадцать раз ты перепроверяешь решение.')).toEqual([]);
+
+    // Вне первых 400 знаков термин не считается.
+    const late = `${'а '.repeat(210)}Луна во Льве`;
+    expect(teaserTerms(late)).toEqual([]);
+
+    const core = validateSection({
+      key: 'core',
+      bodyMd: `${'Ты редко торопишься, и это способ не вкладываться в пустое. '.repeat(4)}Луна во Льве даёт заметность.`,
+      timePrecision: 'exact',
+    });
+    expect(core.warnings.some((warning) => warning.startsWith('teaser_terms'))).toBe(true);
   });
 });

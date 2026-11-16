@@ -129,6 +129,17 @@ export class FakeLlmProvider implements LlmProvider {
       readonly fail?: boolean;
       /** Наблюдатель за запросами: тесты проверяют, что в промпте нет ПДн. */
       readonly onRequest?: (request: LlmRequest) => void;
+      /**
+       * Свой план разбора (JSON). Нужен тестам распределения фокусов: по
+       * умолчанию подставной провайдер отдаёт два фокуса, а живой прогон
+       * 2026-11-16 пришёл с семью.
+       */
+      readonly plan?: string;
+      /**
+       * Свой текст главы: `(section, prompt) => текст`. Нужен, чтобы проверить
+       * поведение на дефектном ответе (одна простыня вместо 3–6 абзацев).
+       */
+      readonly chapterText?: (section: string, prompt: string) => string;
     } = {},
   ) {}
 
@@ -159,6 +170,9 @@ export class FakeLlmProvider implements LlmProvider {
   /** Ответ зависит от стадии: план — JSON, глава — текст, итог — с дисклеймером. */
   private contentFor(prompt: string): string {
     if (prompt.includes('Ответ — строго JSON')) {
+      if (this.options.plan !== undefined) {
+        return this.options.plan;
+      }
       return JSON.stringify({
         thesis:
           'Ты медленно решаешься, но, решившись, почти не отступаешь, и это стоит тебе части возможностей.',
@@ -174,6 +188,10 @@ export class FakeLlmProvider implements LlmProvider {
 
     if (section === 'summary' || prompt.includes('Напиши заключительную главу')) {
       return `${this.filler('summary', 520)} Разбор — инструмент саморефлексии, а не предсказание и не замена специалисту.`;
+    }
+
+    if (this.options.chapterText !== undefined) {
+      return this.options.chapterText(section, prompt);
     }
 
     // Объём берём из запроса: `Объём: 1 200–1 550 знаков`.
