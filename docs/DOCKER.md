@@ -192,7 +192,118 @@ make audit-secrets
 
 ---
 
-## 9. Типовые ошибки
+## 9. Тестовые тарифы за 1 ⭐ (только стенд)
+
+Два тарифа за одну звезду: `test_1` (подписка на неделю) и `test_report_1`
+(разовый разбор одной карты). Оба существуют **только** при
+`PAYMENTS_TEST_PLANS=1`; без флага `POST /billing/invoice` отвечает `422` так
+же, как на несуществующий тариф.
+
+### Витрина от флага не меняется — и не должна
+
+Мини-приложение продаёт то, что перечислено в `apps/web/src/lib/plans.ts`:
+разбор — это `one_149` (149 ⭐), подписки — `week_149`, `month_399`,
+`year_2990`. Тестовых тарифов там нет и появиться не может: их не существует
+в контракте (`PlanCode`), они не входят в `PLAN_CODES`/`PLANS_ORDERED` и не
+возвращаются никаким эндпоинтом. Это и есть защита: цена 1 ⭐ не может
+просочиться на витрину, потому что витрина её не знает.
+
+Поэтому «включил флаг — а в приложении всё те же 149 ⭐» — это ожидаемое
+поведение, а не поломка. Флаг открывает **вызов API**, а не кнопку: счёт за
+1 ⭐ выставляется руками, а оплата в Telegram идёт по обычному пути.
+
+### Где читается флаг
+
+Флаг читает только API, в `apps/api/src/config/env.ts`
+(`PAYMENTS_TEST_PLANS: '0' | '1'`), и только из окружения процесса. Дальше он
+передаётся по цепочке:
+
+1. `.env` в корне репозитория — для `docker compose` это источник подстановок;
+2. `docker-compose.yml`, сервис `api`, строка
+   `PAYMENTS_TEST_PLANS: ${PAYMENTS_TEST_PLANS:-}` — compose отдаёт в контейнер
+   **только** перечисленные в `environment:` переменные. Без этой строки флаг
+   из `.env` до контейнера не доедет, и `POST /billing/invoice` продолжит
+   отвечать `422`;
+3. контейнер `api` — `process.env.PAYMENTS_TEST_PLANS` для Node.
+
+Без Docker (запуск `pnpm dev:api` или `node dist/main.js`) `.env` не читается
+вообще — Node не загружает его сам, поэтому флаг нужно передать в окружение
+явно:
+
+```bash
+PAYMENTS_TEST_PLANS=1 pnpm dev:api
+```
+
+### Включить на стенде
+
+```bash
+# 1. Флаг в корневой .env (один флаг на оба тарифа)
+printf '\nPAYMENTS_TEST_PLANS=1\n' >> .env
+
+# 2. Пересоздать api: у работающего контейнера окружение уже зафиксировано
+docker compose up -d --force-recreate api
+#    (при overlay prod-файла — тот же флаг -f docker-compose.yml -f docker-compose.prod.yml)
+
+# 3. Убедиться, что флаг доехал именно до процесса
+docker compose logs api | head -3
+#   api_started{... "test_plans":true}
+#   test_plans_enabled{"plans":["test_1","test_report_1"], ...}
+
+# 4. И что планы есть в БД: тестовые тарифы кладёт сид, а не миграция
+make migrate && pnpm db:seed     # ожидаемо: plans синхронизированы: 8
+```
+
+Если в логах `"test_plans":false` — флаг не дошёл: проверь строку в
+`docker-compose.yml` (шаг 2 этого раздела) и что `.env` лежит в том же
+каталоге, из которого запускается `docker compose`.
+
+### Выставить счёт за 1 ⭐
+
+Нужны `chart_id` своей карты и `initData` mini-app (другой авторизации в API
+нет). `initData` подписывается токеном бота — скрипт `scripts/qa/init-data.mjs`
+делает это локально и ничего не пишет на диск:
+
+```bash
+# 1. подпись initData для своего telegram id (токен — из .env, не из чата)
+INIT_DATA=$(node scripts/qa/init-data.mjs --token "$TELEGRAM_BOT_TOKEN" --user <ваш_tg_id>)
+
+# 2. id своей карты (наружу в проде смотрит nginx на WEB_HTTP_PORT, по умолчанию 80)
+curl -sS http://localhost/api/v1/charts/current \
+  -H "X-Telegram-Init-Data: $INIT_DATA"
+
+# 3. счёт на разбор за 1 ⭐ для этой карты
+curl -sS -X POST http://localhost/api/v1/billing/invoice \
+  -H "Content-Type: application/json" \
+  -H "X-Telegram-Init-Data: $INIT_DATA" \
+  -d '{"plan_code":"test_report_1","chart_id":"<chart_id>"}'
+```
+
+В ответе — `stars: 1` и `invoice_link`; ссылку открывают в Telegram, платят
+одну звезду, дальше всё как у `one_149`: доступ `report` появляется только на
+этой карте, на второй карте остаётся цена. Повторный счёт на уже купленную
+карту — `422 report_already_owned` (и для `test_report_1`, и для `one_149`).
+Подписка — то же самое с `"plan_code":"test_1"` и без `chart_id`.
+
+Стоимость настоящего разбора при этом не тестовая: ~17,5–23 ₽ за прогон при
+выручке 1,2 ₽. Если проверяется только путь оплаты, поставь `LLM_FAKE=1`,
+чтобы разбор не ходил в GigaChat.
+
+### Выключить и не забыть
+
+```bash
+# 1. Убрать строку из .env (или поставить PAYMENTS_TEST_PLANS=0)
+# 2. Пересоздать контейнер — иначе старое окружение останется жить
+docker compose up -d --force-recreate api
+```
+
+`make check-prod` (`scripts/deploy/check.sh --prod`) считает флаг в `.env`
+ошибкой и не даёт собрать прод с ним; `./check.sh --prod` блокирует запуск,
+если флаг попал в окружение процесса. Два независимых сторожа — потому что
+`docker-compose.yml` пробрасывает флаг, и одного «мы помним» тут мало.
+
+---
+
+## 10. Типовые ошибки
 
 | Симптом | Причина | Решение |
 |---|---|---|
@@ -202,17 +313,20 @@ make audit-secrets
 | Ошибка `VITE_SUBSCRIPTIONS is «...»` при сборке | Опечатка в значении `VITE_SUBSCRIPTIONS` | Допустимо только `enabled`, `off` или пусто |
 | `422 consent.version` у части пользователей после релиза | Старый `index.html` закэширован прокси | Убедись, что прокси не перетирает `Cache-Control: no-cache, must-revalidate` из `docker/conf.d/default.conf` |
 | `webhook` отвечает `403` | Не задан или не совпадает `TELEGRAM_WEBHOOK_SECRET` в URL и заголовке `X-Telegram-Bot-Api-Secret-Token` | Задай `TELEGRAM_WEBHOOK_SECRET` в `.env`, пересоздай `api` и повтори `setWebhook` |
+| Включил `PAYMENTS_TEST_PLANS=1`, а в приложении по-прежнему 149 ⭐ | Витрина статична (`apps/web/src/lib/plans.ts`), тестовых тарифов в ней нет | Так и задумано: счёт за 1 ⭐ выставляется через `POST /billing/invoice` (§9) |
+| `POST /billing/invoice` с `test_report_1` даёт `422`, хотя флаг в `.env` | `docker-compose.yml` не перечисляет переменную в `environment:` или контейнер не пересоздан | Проверь `test_plans` в `api_started` (§9, шаг 3) |
+| `500 invoices_plan_code_fkey` на счёте тестового тарифа | В БД нет строки `plans` для тестового тарифа | `pnpm db:seed` после `make migrate` |
 | `gigachat: TLS-ошибка` | Повреждён или не подключён `GIGACHAT_CA_BUNDLE` | Проверь наличие `docker/certs/russian_trusted_root_ca.cer` и путь `/etc/astro-soul/certs/russian_trusted_root_ca.cer` |
 
 ---
 
-## 10. Памятка для следующего агента (`init-vps`)
+## 11. Памятка для следующего агента (`init-vps`)
 
 1. **TLS и домен (`web`):** возьми `docker/conf.d/ssl.conf.example`, подставь домен, сохрани как `docker/conf.d/ssl.conf`, раскомментируй проброс `443:8443` и монтирование `/etc/letsencrypt` + `ssl.conf` в `docker-compose.prod.yml`. При редиректе `80 → 443` перенастрой `healthcheck` сервиса `web` на `http://127.0.0.1:8080/nginx-health`.
 2. **Крон-джобов (`infra/systemd/`):** в проде порт `api:8080` наружу не публикуется, поэтому в `/etc/astro-soul/jobs.env` укажи `ASTRO_JOBS_URL=http://127.0.0.1/api/v1/internal/jobs/run` (или HTTPS-адрес домена) и точный `INTERNAL_JOB_SECRET`. В `docker/conf.d/default.conf` для `/api/v1/internal/jobs/` уже выставлен `proxy_read_timeout 330s`.
 3. **Что нельзя менять/переопределять:**
    - не открывай порты `postgres`, `redis`, `api` и `astro` наружу в `docker-compose.prod.yml`;
-   - не добавляй `TELEGRAM_API_BASE_URL` и `GIGACHAT_VERIFY_SSL=false` в prod `.env`;
+   - не добавляй `TELEGRAM_API_BASE_URL`, `GIGACHAT_VERIFY_SSL=false` и `PAYMENTS_TEST_PLANS=1` в prod `.env`;
    - не меняй `PSEUDONYM_PEPPER` после первых пользователей (сломает связь подписок и платежей);
    - не редактируй применённые файлы в `migrations/` и не переноси миграции в entrypoint `api`.
 4. **Тома и бэкапы:** данные БД лежат в именованном томе Docker `astro-soul_postgres-data` (`/var/lib/postgresql/data`). Настрой регулярный cron на `make backup-prod` и выгрузку `./backups/*.sql.gz` во внешнее хранилище.

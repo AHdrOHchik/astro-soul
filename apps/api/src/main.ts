@@ -35,12 +35,22 @@ async function bootstrap(): Promise<void> {
   // 0.0.0.0: контейнер должен принимать трафик снаружи, не только из localhost.
   await app.listen(port, '0.0.0.0');
 
+  const testPlans = env.PAYMENTS_TEST_PLANS === '1';
   logger.info('api_started', {
     port,
     env: env.NODE_ENV,
     version: env.APPLICATION_VERSION,
     astro_engine: env.ASTRO_ENGINE,
+    // Единственный способ убедиться, что флаг доехал до процесса: он нигде
+    // больше не виден снаружи, а витрина от него не меняется (см. DOCKER.md).
+    test_plans: testPlans,
   });
+  if (testPlans) {
+    logger.warn('test_plans_enabled', {
+      plans: ['test_1', 'test_report_1'],
+      note: 'тарифы за 1 ⭐ доступны через POST /billing/invoice',
+    });
+  }
 }
 
 bootstrap().catch((error: unknown) => {

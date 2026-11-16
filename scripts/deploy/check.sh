@@ -49,6 +49,14 @@ if [[ "$SYNTAX_ONLY" -eq 0 ]]; then
         err "TELEGRAM_API_BASE_URL задана в prod — запрещено: удали эту переменную из $ENV_FILE и окружения"
       fi
 
+      # Критическая проверка: тестовые тарифы за 1 ⭐ в prod запрещены —
+      # при включённом флаге любой, кто знает код (test_1, test_report_1),
+      # покупает за одну звезду. docker-compose.yml пробрасывает флаг из .env
+      # в контейнер, поэтому проверять нужно и файл, а не только окружение.
+      if [[ -n "${PAYMENTS_TEST_PLANS:-}" ]] || grep -Eq '^[[:space:]]*(export[[:space:]]+)?PAYMENTS_TEST_PLANS=' "$ENV_FILE"; then
+        err "PAYMENTS_TEST_PLANS задана в prod — запрещено: тестовые тарифы test_1 и test_report_1 за 1 ⭐; удали строку из $ENV_FILE"
+      fi
+
       # Критическая проверка: отключение TLS-проверки GigaChat в prod запрещено.
       verify_ssl="${GIGACHAT_VERIFY_SSL:-$(read_dotenv_var GIGACHAT_VERIFY_SSL "$ENV_FILE" || true)}"
       if [[ "${verify_ssl,,}" == "false" || "$verify_ssl" == "0" ]]; then
