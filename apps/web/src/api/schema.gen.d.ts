@@ -705,6 +705,22 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
+                /**
+                 * @description Приём разборов временно закрыт: `UPSTREAM_LLM` +
+                 *     `details.reason = report_breaker_open`. Причина — три разбора
+                 *     подряд упали на валидации текста; брейкер закрывается сам через
+                 *     `details.retry_after_ms` миллисекунд. Деньги не списываются:
+                 *     проверка стоит до создания разбора. Состояние видно в
+                 *     `GET /admin/metrics` (`reports_breaker_open`).
+                 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -1243,6 +1259,27 @@ export interface paths {
                              */
                             llm_cost_rub_30d?: number;
                             reports_failed_30d?: number;
+                            /**
+                             * @description Сколько разборов подряд упало на валидации текста
+                             *     (`error_code` из `too_short`, `too_long`, `format`,
+                             *     `forbidden_terms`, `paragraphs`, `repeats`, а также
+                             *     старый общий `validation`). Успешный разбор серию
+                             *     обнуляет.
+                             */
+                            reports_validation_streak?: number;
+                            /**
+                             * @description Закрыт ли приём новых разборов прямо сейчас: серия
+                             *     `reports_validation_streak` ≥ 3 и последний провал не
+                             *     старше 30 минут. Пока `true`, `POST /reports` отвечает
+                             *     `503` с `details.reason = report_breaker_open`.
+                             */
+                            reports_breaker_open?: boolean;
+                            /**
+                             * Format: date-time
+                             * @description Время последнего провала серии (`null` — серии нет).
+                             *     По нему видно, когда брейкер закроется сам.
+                             */
+                            reports_breaker_last_failed_at?: string | null;
                             /**
                              * @description Платежи, по которым доступ не выдан: нет серверного инвойса,
                              *     сумма не совпала с ценой плана, неизвестный план.
@@ -1814,6 +1851,31 @@ export interface components {
             is_paid?: boolean;
             /** @description Первые 400 символов — для пейволла */
             teaser?: string;
+            /**
+             * @description Главы, которых нет в разборе (контракт 1.5.11). Пусто у полного
+             *     разбора. Непусто, когда часть глав не прошла валидацию даже после
+             *     нормализации: `status` при этом `ready`, а «Итог» заканчивается
+             *     предложением пересобрать разбор (бесплатно) или написать в
+             *     поддержку. Показывать разделы с этими `key` нельзя — их нет.
+             */
+            missing_sections?: ("core" | "emotions" | "talents" | "relations" | "money" | "purpose" | "summary")[];
+            /**
+             * @description Пометки по главам (контракт 1.5.11): нарушения формы/стиля,
+             *     которые не мешают показу, и правки нормализатора. Интерфейс может
+             *     их игнорировать — поле существует, чтобы «текст выглядит неровно»
+             *     отличалось от «модель так и задумала».
+             */
+            warnings?: {
+                /** @enum {string} */
+                section: "core" | "emotions" | "talents" | "relations" | "money" | "purpose" | "summary";
+                /**
+                 * @description `paragraphs`/`repeats`/`format`/`too_long` — нарушение
+                 *     осталось после нормализации; остальные коды — что именно
+                 *     поправил код (`normalize.ts`).
+                 * @enum {string}
+                 */
+                code: "paragraphs" | "too_long" | "repeats" | "format" | "paragraphs_split" | "paragraphs_merged" | "trimmed" | "teaser_terms" | "disclaimer_added";
+            }[];
         };
         Forecast: {
             /** Format: date */

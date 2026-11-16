@@ -456,6 +456,25 @@ function Failure({ view, flow, telegram, supportLink }: FailureProps) {
   const retry = () => {
     flow.order();
   };
+  const breakerOpen =
+    isApiError(error) &&
+    error.code === 'UPSTREAM_LLM' &&
+    error.status === 503 &&
+    error.details?.reason === 'report_breaker_open';
+  if (breakerOpen) {
+    return (
+      <ErrorState
+        error={error}
+        telegram={telegram}
+        title={copy.breakerOpenTitle}
+        text={copy.breakerOpenText}
+        onRetry={retry}
+        retryLabel={copy.retry}
+      >
+        <SupportButton link={supportLink} telegram={telegram} />
+      </ErrorState>
+    );
+  }
   switch (code) {
     case 'VALIDATION_FAILED':
       // Our bug or an outdated build, not the user's doing: the server's words about the field, and the way to support.

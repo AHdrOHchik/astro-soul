@@ -23,6 +23,8 @@ export interface ErrorStateProps {
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Offered only for failures worth repeating. */
   onRetry?: () => void;
+  /** The screen's own wording for its retry action. */
+  retryLabel?: string;
   /** Where the support button of a conflict leads; the contact the app was built with when the screen names none. */
   supportLink?: string;
   /** In place of the title the error code has: for a screen that knows what exactly failed. */
@@ -42,7 +44,7 @@ export interface ErrorStateProps {
  * is in the way, repeating the request does not move it, and the user must not be
  * left with a text alone.
  */
-export function ErrorState({ error, telegram, onRetry, supportLink = config.supportLink, title, text, children }: ErrorStateProps) {
+export function ErrorState({ error, telegram, onRetry, retryLabel = ru.common.retry, supportLink = config.supportLink, title, text, children }: ErrorStateProps) {
   const apiError = isApiError(error) ? error : null;
   const code = apiError?.code ?? 'INTERNAL';
   const unauthorized = code === 'UNAUTHORIZED';
@@ -62,7 +64,7 @@ export function ErrorState({ error, telegram, onRetry, supportLink = config.supp
       text={shownText}
       caption={requestId ? <Reference value={requestId} label={ru.common.requestId(requestId)} /> : undefined}
     >
-      {canRetry && <Button onClick={onRetry}>{ru.common.retry}</Button>}
+      {canRetry && <Button onClick={onRetry}>{retryLabel}</Button>}
       {canClose && (
         <Button
           onClick={() => {
