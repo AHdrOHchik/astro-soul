@@ -13,6 +13,7 @@ import type {
   GeoPlace,
   Invoice,
   Me,
+  PlanOffer,
   Quota,
   Report,
   ReportSection,
@@ -154,6 +155,94 @@ export const reportInvoice: Invoice = {
   subscription_period_sec: null,
 };
 
+/** Fake authenticated tariff response; production code never embeds a copy of this catalogue. */
+export const cataloguePlans: PlanOffer[] = [
+  {
+    plan_code: 'one_149',
+    kind: 'one_off',
+    stars: 149,
+    period_sec: null,
+    title: 'Полный разбор',
+    subtitle: 'Все главы разбора по этой карте. Разовая покупка, без подписки.',
+    includes: ['Все главы разбора по этой карте', 'PDF-файл'],
+    test: false,
+  },
+  {
+    plan_code: 'week_149',
+    kind: 'subscription',
+    stars: 149,
+    period_sec: 604800,
+    title: 'Подписка на неделю',
+    subtitle: 'Полные прогнозы, вопросы карте и другое.',
+    includes: ['Полные прогнозы каждый день', '5 вопросов карте в день'],
+    test: false,
+  },
+  {
+    plan_code: 'month_399',
+    kind: 'subscription',
+    stars: 399,
+    period_sec: 2592000,
+    title: 'Подписка на месяц',
+    subtitle: 'Полные прогнозы, вопросы карте и другое.',
+    includes: ['Полные прогнозы каждый день', '5 вопросов карте в день'],
+    test: false,
+  },
+  {
+    plan_code: 'year_2990',
+    kind: 'subscription',
+    stars: 2990,
+    period_sec: 31536000,
+    title: 'Подписка на год',
+    subtitle: 'Всё, что в подписке на месяц.',
+    includes: ['Полные прогнозы каждый день', '5 вопросов карте в день'],
+    test: false,
+  },
+  {
+    plan_code: 'compat_249',
+    kind: 'one_off',
+    stars: 249,
+    period_sec: null,
+    title: 'Совместимость',
+    subtitle: 'Разбор пары по двум картам.',
+    includes: ['Разбор пары по двум картам', 'PDF-файл'],
+    test: false,
+  },
+  {
+    plan_code: 'solar_590',
+    kind: 'one_off',
+    stars: 590,
+    period_sec: null,
+    title: 'Карта года',
+    subtitle: 'Прогноз на год вперёд.',
+    includes: ['Прогноз на год вперёд', 'PDF-файл'],
+    test: false,
+  },
+];
+
+export const testCataloguePlans: PlanOffer[] = [
+  ...cataloguePlans,
+  {
+    plan_code: 'test_1',
+    kind: 'subscription',
+    stars: 1,
+    period_sec: 604800,
+    title: 'Тестовая подписка',
+    subtitle: 'Проверка оплаты подписки.',
+    includes: ['Полные прогнозы каждый день', '5 вопросов карте в день'],
+    test: true,
+  },
+  {
+    plan_code: 'test_report_1',
+    kind: 'one_off',
+    stars: 1,
+    period_sec: null,
+    title: 'Тестовый разбор',
+    subtitle: 'Проверка оплаты разбора.',
+    includes: ['Все главы разбора по этой карте', 'PDF-файл'],
+    test: true,
+  },
+];
+
 export const REPORT_ID = '00000000-0000-4000-8000-0000000000aa';
 
 /** Two chapters, the way a report in work has them: the first two of seven. */
@@ -221,6 +310,7 @@ export function fakeApi() {
     getCurrentChart: vi.fn<Api['getCurrentChart']>().mockResolvedValue(null),
     sendEvents: vi.fn<Api['sendEvents']>().mockResolvedValue(undefined),
     deleteMe: vi.fn<Api['deleteMe']>().mockResolvedValue(undefined),
+    getPlans: vi.fn<Api['getPlans']>().mockResolvedValue(cataloguePlans),
     createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),
     orderReport: vi.fn<Api['orderReport']>().mockResolvedValue(report),
     getReport: vi.fn<Api['getReport']>().mockResolvedValue(report),
