@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.9
+  version: 1.5.10
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -246,6 +246,22 @@ info:
         сейчас. В `test_payments_30d` видно, что тестовые платежи были, а
         здесь — что тарифы включены и сейчас: «включил и забыл» на проде
         видно в первой же метрике, а не только в логе старта.
+
+    1.5.10 — наблюдаемость разбора (итерация 17). Ничего не удалено:
+      • `POST /reports`: описана ошибка `503 UPSTREAM_LLM` с
+        `details.reason = report_breaker_open`, когда три разбора подряд
+        упали на валидации текста и приём новых закрыт на 30 минут. Раньше
+        такой ответ был возможен, но не был описан — а значит, для клиента
+        его не существовало;
+      • `GET /admin/metrics`: `reports_validation_streak`,
+        `reports_breaker_open`, `reports_breaker_last_failed_at` — серия
+        провалов валидации и состояние того же брейкера. Массовый провал
+        обязан быть виден в метриках, а не только в логах;
+      • `reports.error_code` (не в схеме ответа, а в БД) больше не один:
+        коды провала текста — `too_short`, `too_long`, `format`,
+        `forbidden_terms`, `paragraphs`, `repeats` вместо общего
+        `validation`. Клиентских полей это не добавляет: `Report` не отдаёт
+        `error_code`, и клиент по-прежнему видит только `status: failed`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1337,6 +1353,17 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: |
+            Приём разборов временно закрыт: `UPSTREAM_LLM` +
+            `details.reason = report_breaker_open`. Причина — три разбора
+            подряд упали на валидации текста; брейкер закрывается сам через
+            `details.retry_after_ms` миллисекунд. Деньги не списываются:
+            проверка стоит до создания разбора. Состояние видно в
+            `GET /admin/metrics` (`reports_breaker_open`).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   /api/v1/reports/{report_id}:
     get:
@@ -1627,6 +1654,27 @@ paths:
                       (вход и выход по одной цене). Долларовой оценки больше нет:
                       она всегда была нулём и противоречила рублёвой.
                   reports_failed_30d: { type: integer }
+                  reports_validation_streak:
+                    type: integer
+                    description: |
+                      Сколько разборов подряд упало на валидации текста
+                      (`error_code` из `too_short`, `too_long`, `format`,
+                      `forbidden_terms`, `paragraphs`, `repeats`, а также
+                      старый общий `validation`). Успешный разбор серию
+                      обнуляет.
+                  reports_breaker_open:
+                    type: boolean
+                    description: |
+                      Закрыт ли приём новых разборов прямо сейчас: серия
+                      `reports_validation_streak` ≥ 3 и последний провал не
+                      старше 30 минут. Пока `true`, `POST /reports` отвечает
+                      `503` с `details.reason = report_breaker_open`.
+                  reports_breaker_last_failed_at:
+                    type: [string, 'null']
+                    format: date-time
+                    description: |
+                      Время последнего провала серии (`null` — серии нет).
+                      По нему видно, когда брейкер закроется сам.
                   payments_rejected_30d:
                     type: integer
                     description: |

@@ -6,6 +6,8 @@ import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
 import { FICTIONAL_USER, TEST_BOT_TOKEN, TEST_PEPPER } from './test-env';
 import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
+import { PROMPT_VERSION } from '../src/modules/reports/prompts';
+import { STRUCTURE_VERSION } from '../src/modules/reports/validators';
 
 const ADMIN_TG_ID = String(FICTIONAL_USER.id);
 const JOBS_SECRET = 'test-jobs-secret-0123456789';
@@ -23,6 +25,37 @@ async function ensureUser(userId = userIdFromTelegramId(BigInt(FICTIONAL_USER.id
     .set(INIT_DATA_HEADER, initDataFor())
     .expect(200);
   return userId;
+}
+
+/** Провалившийся разбор с оплатой и правом на разбор: заготовка для возврата. */
+async function failedReportFixture(): Promise<string> {
+  const userId = await ensureUser();
+  const chart = await ctx.db.queryOne<{ id: string }>(
+    `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
+     VALUES ($1, 'hash-report-failed', '{}'::jsonb, 'test', true)
+     RETURNING id`,
+    [userId],
+  );
+  const chartId = chart?.id;
+
+  const payment = await ctx.db.queryOne<{ id: string }>(
+    `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
+     VALUES ($1, $2, 'one_149', 149, 'charge-report-failed', true)
+     RETURNING id`,
+    [userId, FICTIONAL_USER.id],
+  );
+  await ctx.db.query(
+    `INSERT INTO entitlements (user_id, kind, chart_id, payment_id)
+     VALUES ($1, 'report', $2, $3)`,
+    [userId, chartId, payment?.id],
+  );
+  const report = await ctx.db.queryOne<{ id: string }>(
+    `INSERT INTO reports (chart_id, user_id, status, error_code, prompt_version, report_structure_version)
+     VALUES ($1, $2, 'failed', 'paragraphs', $3, $4)
+     RETURNING id`,
+    [chartId, userId, PROMPT_VERSION, STRUCTURE_VERSION],
+  );
+  return report?.id ?? '';
 }
 
 beforeAll(async () => {
@@ -321,51 +354,62 @@ describe('POST /api/v1/internal/jobs/run', () => {
     expect(await ctx.db.query(`SELECT 1 FROM users`)).toHaveLength(1);
   });
 
-  it('report_refund возвращает звёзды за провалившийся разбор один раз', async () => {
-    const userId = await ensureUser();
-    const chart = await ctx.db.queryOne<{ id: string }>(
-      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
-       VALUES ($1, 'hash-report-failed', '{}'::jsonb, 'test', true)
-       RETURNING id`,
-      [userId],
-    );
-    const chartId = chart?.id;
+  it('report_refund по умолчанию не возвращает звёзды за провалившийся разбор', async () => {
+    const reportId = await failedReportFixture();
 
-    const payment = await ctx.db.queryOne<{ id: string }>(
-      `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
-       VALUES ($1, $2, 'one_149', 149, 'charge-report-failed', true)
-       RETURNING id`,
-      [userId, FICTIONAL_USER.id],
-    );
-    await ctx.db.query(
-      `INSERT INTO entitlements (user_id, kind, chart_id, payment_id)
-       VALUES ($1, 'report', $2, $3)`,
-      [userId, chartId, payment?.id],
-    );
-    await ctx.db.query(
-      `INSERT INTO reports (chart_id, user_id, status) VALUES ($1, $2, 'failed')`,
-      [chartId, userId],
-    );
-
-    const first = await request(ctx.app.getHttpServer())
+    const response = await request(ctx.app.getHttpServer())
       .post('/api/v1/internal/jobs/run?job=report_refund')
       .set('X-Jobs-Secret', JOBS_SECRET)
       .expect(202);
 
-    expect(first.body).toMatchObject({ report_refunds_done: 1 });
-    expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-report-failed' }]);
+    // Решение владельца (итерация 17): автовозврата за неудавшийся разбор нет.
+    expect(response.body).toMatchObject({ report_refunds_done: 0 });
+    expect(telegram.refunds).toHaveLength(0);
 
     const report = await ctx.db.queryOne<{ status: string; refunded_at: Date | null }>(
-      `SELECT status, refunded_at FROM reports`,
+      `SELECT status, refunded_at FROM reports WHERE id = $1`,
+      [reportId],
     );
-    expect(report?.status).toBe('refunded');
-    expect(report?.refunded_at).not.toBeNull();
+    expect(report?.status).toBe('failed');
+    expect(report?.refunded_at).toBeNull();
+  });
 
-    const second = await request(ctx.app.getHttpServer())
-      .post('/api/v1/internal/jobs/run?job=report_refund')
-      .set('X-Jobs-Secret', JOBS_SECRET)
-      .expect(202);
-    expect(second.body).toMatchObject({ report_refunds_done: 0 });
-    expect(telegram.refunds).toHaveLength(1);
+  it('report_refund возвращает звёзды за провалившийся разбор один раз при REFUND_ON_REPORT_FAILED=1', async () => {
+    const reportId = await failedReportFixture();
+
+    const refunding = await createTestContext({
+      telegram,
+      env: {
+        ADMIN_TG_ID,
+        INTERNAL_JOB_SECRET: JOBS_SECRET,
+        REFUND_ON_REPORT_FAILED: '1',
+      },
+    });
+
+    try {
+      const first = await request(refunding.app.getHttpServer())
+        .post('/api/v1/internal/jobs/run?job=report_refund')
+        .set('X-Jobs-Secret', JOBS_SECRET)
+        .expect(202);
+
+      expect(first.body).toMatchObject({ report_refunds_done: 1 });
+      expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-report-failed' }]);
+
+      const report = await ctx.db.queryOne<{ status: string; refunded_at: Date | null }>(
+        `SELECT status, refunded_at FROM reports WHERE id = $1`,
+        [reportId],
+      );
+      expect(report?.status).toBe('refunded');
+      expect(report?.refunded_at).not.toBeNull();
+
+      const second = await request(refunding.app.getHttpServer())
+        .post('/api/v1/internal/jobs/run?job=report_refund')
+        .set('X-Jobs-Secret', JOBS_SECRET)
+        .expect(202);
+      expect(second.body).toMatchObject({ report_refunds_done: 0 });
+      expect(telegram.refunds).toHaveLength(1);
+    } finally {
+      await refunding.close();
+    }
   });
 });

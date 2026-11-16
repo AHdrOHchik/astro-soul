@@ -13,6 +13,14 @@ import { UsersRepository } from '../users/users.repository';
 import { CHART_FACTS_VERSION, serializeTopFactors } from './top-factors';
 import { fewShotBlocks } from './corpus';
 import { buildDigest } from './digests';
+import { breakerState, BREAKER_THRESHOLD, type BreakerState } from './breaker';
+import { failureCodeOf, type FailureCode } from './failure-codes';
+import {
+  CONTENT_SECTIONS,
+  distributeFocuses,
+  focusBlockFor,
+  type FocusDistribution,
+} from './focus-map';
 import {
   chapterPrompt,
   planPrompt,
@@ -36,16 +44,6 @@ import {
   type SectionKey,
   type TimePrecision,
 } from './validators';
-
-/** Шесть содержательных глав: «Итог» пишется отдельно, по их сводкам. */
-const CONTENT_SECTIONS: readonly Exclude<SectionKey, 'summary'>[] = [
-  'core',
-  'emotions',
-  'talents',
-  'relations',
-  'money',
-  'purpose',
-];
 
 const ALL_SECTIONS: readonly SectionKey[] = [...CONTENT_SECTIONS, 'summary'];
 
@@ -74,9 +72,37 @@ export interface ReportView {
   readonly teaser?: string;
 }
 
-/** Внутренний провал конвейера: код уходит в `reports.error_code`. */
+/**
+ * Попыток на главу — две: одна генерация и одна перегенерация. Живой прогон
+ * 16.11.2026 записал `attempts: 5` и 4,1 ₽ за неудачу; лимит закреплён
+ * константой, а не числом в цикле.
+ */
+export const MAX_ATTEMPTS = 2;
+
+/** Первые 2000 знаков сырого ответа модели при провале — в лог и в `reports.validation`. */
+export const RAW_EXCERPT_LENGTH = 2_000;
+
+/**
+ * Одна неудачная попытка главы в `reports.validation`.
+ *
+ * `raw_excerpt` — первые 2000 знаков ответа модели: без них диагностика
+ * превращается в гадание (пять попыток прогона 16.11.2026 восстановить было
+ * нечем). ПДн здесь нет: в промпт уходят только `chart_facts`.
+ */
+interface ValidationEntry {
+  readonly key: string;
+  readonly attempt: number;
+  readonly code: FailureCode;
+  readonly failures: readonly string[];
+  readonly chars: number;
+  readonly raw_excerpt: string;
+}
+
+/** Провал конвейера: код уходит в `reports.error_code`. */
+type ReportFailureCode = 'cost_cap' | 'monthly_cap' | 'provider' | 'chart_missing' | FailureCode;
+
 class ReportFailure extends Error {
-  constructor(readonly code: 'cost_cap' | 'monthly_cap' | 'validation') {
+  constructor(readonly code: ReportFailureCode) {
     super(code);
     this.name = 'ReportFailure';
   }
@@ -178,6 +204,24 @@ export class ReportsService {
       });
     }
 
+    // Circuit breaker (итерация 17): три провала валидации подряд — новые
+    // разборы не запускаются. Проверка стоит до `create`, чтобы не завести
+    // разбор, который заведомо упадёт и сожжёт ещё 0,85 ₽.
+    const breaker = await this.breaker();
+    if (breaker.open) {
+      this.logger.warn('report_breaker_open', {
+        streak: breaker.streak,
+        threshold: BREAKER_THRESHOLD,
+        retry_after_ms: breaker.retry_after_ms,
+      });
+      throw new ApiError('UPSTREAM_LLM', 503, {
+        message: 'Разборы временно не собираются — мы уже разбираемся. Попробуй позже',
+        reason: 'report_breaker_open',
+        // `reason` в теле ошибки живёт в `details` (контракт 1.5.10).
+        details: { reason: 'report_breaker_open', retry_after_ms: breaker.retry_after_ms },
+      });
+    }
+
     const facts = this.factsFor(chart.data.chart);
     const report = await this.repo.create({
       chartId: chart.id,
@@ -275,7 +319,7 @@ export class ReportsService {
   private async run(reportId: string): Promise<void> {
     const budget: Budget = { reportId, costRub: 0, attempts: 0 };
     const sectionStatus: Partial<Record<SectionKey, 'ok' | 'regenerated' | 'failed'>> = {};
-    const validation: { key: string; attempt: number; failures: readonly string[] }[] = [];
+    const validation: ValidationEntry[] = [];
 
     try {
       const report = await this.repo.byId(reportId);
@@ -285,7 +329,9 @@ export class ReportsService {
 
       const chart = await this.repo.chartForUser(report.chart_id, report.user_id);
       if (chart === null) {
-        throw new ReportFailure('validation');
+        // Карту удалили, пока разбор стоял в очереди: это не провал текста,
+        // и в circuit breaker такая строка попадать не должна.
+        throw new ReportFailure('chart_missing');
       }
 
       const facts = this.factsFor(chart.data.chart);
@@ -295,6 +341,18 @@ export class ReportsService {
 
       const plan = await this.plan(facts, budget);
       await this.repo.savePlan(reportId, plan);
+
+      // Фокусы плана делятся по главам детерминированно (`focus-map.ts`).
+      // Раньше каждая глава получала весь план: семь тем в 3–6 абзацев не
+      // укладываются, и модель сжимала их в один абзац (`talents`, 16.11.2026).
+      const focuses = distributeFocuses(plan.focuses);
+      const avoid = this.avoidBlock(plan);
+      this.logger.info('report_focus_distribution', {
+        report_id: reportId,
+        focuses_in_plan: plan.focuses.length,
+        per_chapter: focuses.counts,
+        unmapped: focuses.unmapped,
+      });
 
       const chapters: ReportChapter[] = [];
       const written: string[] = [];
@@ -307,7 +365,8 @@ export class ReportsService {
           facts,
           timePrecision,
           thesis: plan.thesis,
-          focusBlock: this.focusBlock(plan),
+          focuses,
+          avoid,
           previousSummary: digests.map((digest, position) => `${position + 1}. ${digest}`).join('\n'),
           previous: written,
           budget,
@@ -393,16 +452,21 @@ export class ReportsService {
       { role: 'user', content: planPrompt(facts) },
     ]);
 
+    // Провал стадии «план» — это формат ответа, а не текст главы: код
+    // `format` отличается от `paragraphs`/`too_short` и в метриках, и в
+    // circuit breaker. Сырой ответ сохраняем по тем же правилам, что и главы.
     let parsed: unknown;
     try {
       parsed = JSON.parse(stripJsonFence(response.content));
     } catch {
-      throw new ReportFailure('validation');
+      this.logPlanFailure(budget.reportId, 'json', response.content);
+      throw new ReportFailure('format');
     }
 
     const plan = parsed as Partial<PlanJson>;
     if (typeof plan.thesis !== 'string' || !Array.isArray(plan.focuses)) {
-      throw new ReportFailure('validation');
+      this.logPlanFailure(budget.reportId, 'shape', response.content);
+      throw new ReportFailure('format');
     }
 
     return {
@@ -412,22 +476,28 @@ export class ReportsService {
     };
   }
 
-  private focusBlock(plan: PlanJson): string {
-    const focuses = plan.focuses
-      .map((focus, index) =>
-        [
-          `${index + 1}.`,
-          focus.topic ?? 'тема',
-          focus.factor === undefined ? '' : `(фактор: ${focus.factor})`,
-          focus.angle === undefined ? '' : `— ${focus.angle}`,
-        ]
-          .filter((part) => part !== '')
-          .join(' '),
-      )
-      .join('\n');
+  /** Сырой ответ стадии «план» при провале: 2000 знаков, как и у глав. */
+  private logPlanFailure(reportId: string, reason: 'json' | 'shape', raw: string): void {
+    this.logger.warn('report_plan_invalid', {
+      report_id: reportId,
+      reason,
+      chars: raw.trim().length,
+      raw_excerpt: raw.trim().slice(0, RAW_EXCERPT_LENGTH),
+    });
+  }
 
-    const avoid = plan.avoid === undefined || plan.avoid.length === 0 ? '' : `\nНе повторять: ${plan.avoid.join('; ')}`;
-    return `${focuses}${avoid}`;
+  /** Общий запрет на повторы: он один на разбор, а не на главу. */
+  private avoidBlock(plan: PlanJson): string {
+    if (plan.avoid === undefined || plan.avoid.length === 0) {
+      return '';
+    }
+    return `Не повторять: ${plan.avoid.join('; ')}`;
+  }
+
+  /** Состояние circuit breaker: серия провалов валидации по последним разборам. */
+  private async breaker(): Promise<BreakerState> {
+    const { streak, lastFailedAt } = await this.repo.validationStreak();
+    return breakerState(streak, lastFailedAt);
   }
 
   private async section(
@@ -437,18 +507,23 @@ export class ReportsService {
       readonly facts: string;
       readonly timePrecision: TimePrecision;
       readonly thesis: string;
-      readonly focusBlock: string;
+      readonly focuses: FocusDistribution;
+      /** Общий `avoid` плана — одинаковый во всех главах. */
+      readonly avoid: string;
       readonly previousSummary: string;
       readonly previous: readonly string[];
       readonly budget: Budget;
-      readonly validation: { key: string; attempt: number; failures: readonly string[] }[];
+      readonly validation: ValidationEntry[];
     },
   ): Promise<{ body: string; regenerated: boolean }> {
+    // Ровно 2–3 фокуса этой главы + общий `avoid`: остальные темы плана в
+    // промпт не попадают, и упоминать их модель не обязана.
+    const own = focusBlockFor(context.focuses, key);
     const prompt = chapterPrompt({
       key,
       chartFacts: context.facts,
       thesis: context.thesis,
-      focusBlock: context.focusBlock,
+      focusBlock: context.avoid === '' ? own : `${own}\n\n${context.avoid}`,
       previousSummary: context.previousSummary === '' ? 'пока ничего' : context.previousSummary,
       timePrecision: context.timePrecision,
       examples: fewShotBlocks(2).map((block) => block.text),
@@ -463,7 +538,7 @@ export class ReportsService {
     readonly timePrecision: TimePrecision;
     readonly previous: readonly string[];
     readonly budget: Budget;
-    readonly validation: { key: string; attempt: number; failures: readonly string[] }[];
+    readonly validation: ValidationEntry[];
   }): Promise<{ body: string; regenerated: boolean }> {
     const prompt = summaryPrompt({
       thesis: context.thesis,
@@ -490,10 +565,10 @@ export class ReportsService {
       readonly timePrecision: TimePrecision;
       readonly previous: readonly string[];
       readonly budget: Budget;
-      readonly validation: { key: string; attempt: number; failures: readonly string[] }[];
+      readonly validation: ValidationEntry[];
     },
   ): Promise<{ body: string; regenerated: boolean }> {
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const response = await this.call(context.budget, [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: prompt },
@@ -517,18 +592,35 @@ export class ReportsService {
         return { body, regenerated: attempt > 1 };
       }
 
+      const code = failureCodeOf({ key, bodyLength: body.length, failures: result.failures });
+      const rawExcerpt = body.slice(0, RAW_EXCERPT_LENGTH);
+
+      // Сырой ответ модели — в лог и в `reports.validation`: без него причину
+      // провала приходится восстанавливать по догадкам.
+      this.logger.warn('report_section_validation_failed', {
+        report_id: context.budget.reportId,
+        section: key,
+        attempt,
+        code,
+        chars: body.length,
+        raw_excerpt: rawExcerpt,
+      });
+
       context.validation.push({
         key,
         attempt,
+        code,
         failures: result.failures.map((failure) => `${failure.rule}: ${failure.detail}`),
+        chars: body.length,
+        raw_excerpt: rawExcerpt,
       });
 
-      if (attempt === 2) {
-        throw new ReportFailure('validation');
+      if (attempt === MAX_ATTEMPTS) {
+        throw new ReportFailure(code);
       }
     }
 
-    throw new ReportFailure('validation');
+    throw new ReportFailure('format');
   }
 
   /**

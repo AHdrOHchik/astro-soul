@@ -6,6 +6,8 @@ import { TelegramClient } from '../telegram/telegram.client';
 import { PaymentsService } from '../billing/payments.service';
 import { SubscriptionCancelService } from '../billing/subscription-cancel.service';
 import { EngagementService } from '../engagement/engagement.service';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
 
 /** Через сколько минут недоставленный товар считаем поводом для возврата. */
 export const REFUND_AFTER_MINUTES = 10;
@@ -101,6 +103,7 @@ export class JobsService {
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(EngagementService) private readonly engagement: EngagementService,
+    @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
@@ -243,8 +246,18 @@ export class JobsService {
    * Платёж ищется через entitlement карты, поэтому возврат идёт ровно за тот
    * заказ, из которого выдан доступ. Повторный запуск ничего не делает:
    * у разбора появляется `refunded_at`, статус — `refunded`.
+   *
+   * **По умолчанию выключено** (`REFUND_ON_REPORT_FAILED=false`, итерация 17,
+   * решение владельца): автовозврата за неудавшийся разбор нет. Код не удалён
+   * — возврат включается флагом `REFUND_ON_REPORT_FAILED=1`; при выключенном
+   * флаге джоб не делает ни одного запроса и оставляет разбор в `failed`.
    */
   private async refundFailedReports(): Promise<number> {
+    if (this.env.REFUND_ON_REPORT_FAILED !== '1') {
+      this.logger.info('report_refund_disabled', { flag: 'REFUND_ON_REPORT_FAILED' });
+      return 0;
+    }
+
     const reports = await this.db.query<{ id: string; user_id: string; chart_id: string; kind: string }>(
       `SELECT id, user_id, chart_id, kind::text AS kind
          FROM reports
