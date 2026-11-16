@@ -1,0 +1,62 @@
+# Git и документация
+.git
+.gitignore
+.github
+docs/
+e2e/
+CHANGELOG.md
+GIT-RULES.md
+README.md
+SPEC.md
+AGENTS.md
+payments.md
+geo.md
+legal.md
+legal-texts-*.md
+Unselected files/
+
+# Node.js / pnpm
+node_modules
+**/node_modules
+dist
+**/dist
+build
+out
+*.tsbuildinfo
+coverage
+.nyc_output
+test-results
+
+# Python (packages/astro)
+**/__pycache__
+**/*.py[cod]
+.venv
+.pytest_cache
+.ruff_cache
+.mypy_cache
+**/*.egg-info
+
+# Секреты, окружение, ключи (НИКОГДА не попадают в контекст сборки и слои)
+.env
+.env.*
+**/.env
+**/.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*privkey*
+infra/systemd/jobs.env
+
+# Логи, бэкапы, временные файлы и IDE
+*.log
+logs
+backups
+*.sql.gz
+*.dump
+.tmp
+tmp
+.DS_Store
+.idea
+.vscode

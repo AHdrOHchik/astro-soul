@@ -1,0 +1,117 @@
+# Production overlay: накладывается поверх docker-compose.yml
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Перед запуском обязательно выполнить scripts/deploy/check.sh --prod (или make up-prod).
+
+x-prod-logging: &prod-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+services:
+  postgres:
+    restart: unless-stopped
+    # В проде порты БД и Redis наружу не публикуются.
+    ports: !reset []
+    logging: *prod-logging
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  redis:
+    restart: unless-stopped
+    ports: !reset []
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  astro:
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  api:
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NODE_ENV: production
+      # Жёстко обнуляем TELEGRAM_API_BASE_URL в prod-образе (entrypoint снимет переменную).
+      # Дополнительно check.sh --prod блокирует запуск, если она есть в prod .env.
+      TELEGRAM_API_BASE_URL: ''
+      GIGACHAT_CA_BUNDLE: ${GIGACHAT_CA_BUNDLE:-/etc/astro-soul/certs/russian_trusted_root_ca.cer}
+      LLM_FAKE: '0'
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  web:
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - '${WEB_HTTP_PORT:-80}:8080'
+      # Раскомментировать после настройки TLS (docker/conf.d/ssl.conf.example) в init-vps:
+      # - '${WEB_HTTPS_PORT:-443}:8443'
+    # volumes:
+    #   - ./docker/conf.d/ssl.conf:/etc/nginx/conf.d/default.conf:ro
+    #   - /etc/letsencrypt:/etc/letsencrypt:ro
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
+  migrate:
+    restart: 'no'
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
