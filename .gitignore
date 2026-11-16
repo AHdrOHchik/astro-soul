@@ -12,6 +12,7 @@ out/
 .env
 .env.*
 !.env.example
+infra/systemd/jobs.env
 
 # тесты
 coverage/
@@ -26,6 +27,19 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
+
+# приватные ключи и локальные сертификаты (публичные root CA .cer разрешены)
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*privkey*
+
+# бэкапы БД
+backups/
+*.sql.gz
+*.dump
 
 # логи и временное
 *.log
