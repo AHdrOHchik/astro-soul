@@ -69,6 +69,9 @@ services:
       TELEGRAM_API_BASE_URL: ''
       GIGACHAT_CA_BUNDLE: ${GIGACHAT_CA_BUNDLE:-/etc/astro-soul/certs/russian_trusted_root_ca.cer}
       LLM_FAKE: '0'
+      # Circuit breaker разборов в проде включён всегда: выключение — только
+      # для ручных прогонов на стенде (check.sh --prod блокирует 0).
+      REPORT_BREAKER_ENABLED: '1'
     logging: *prod-logging
     deploy:
       resources:

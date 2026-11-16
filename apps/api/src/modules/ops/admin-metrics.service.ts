@@ -216,6 +216,11 @@ export class AdminMetricsService {
 
     const series = validationStreak(history);
     const breaker = breakerState(series.streak, series.lastFailedAt);
+    // `reports_validation_streak` — наблюдение и растёт всегда, даже при
+    // выключенном брейкере. А `reports_breaker_open` отвечает на вопрос
+    // «закрыт ли приём прямо сейчас»: при `REPORT_BREAKER_ENABLED=0` он
+    // закрыт не бывает, что бы ни показывала серия.
+    const closed = this.env.REPORT_BREAKER_ENABLED === '1' && breaker.open;
 
     return {
       mau,
@@ -229,7 +234,7 @@ export class AdminMetricsService {
       llm_cost_rub_30d: Math.round(Number(cost?.cost ?? 0) * 10_000) / 10_000,
       reports_failed_30d: reports?.failed ?? 0,
       reports_validation_streak: breaker.streak,
-      reports_breaker_open: breaker.open,
+      reports_breaker_open: closed,
       reports_breaker_last_failed_at: breaker.last_failed_at,
       payments_rejected_30d: payments?.rejected ?? 0,
       amount_mismatch_30d: payments?.mismatch ?? 0,

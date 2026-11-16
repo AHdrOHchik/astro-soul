@@ -63,7 +63,15 @@ if [ "${LLM_FAKE:-}" = "1" ]; then
   report LLM_FAKE 1 "включён подставной провайдер LLM: пользователи получат заглушки"
 fi
 
-# 4. Выключенные лимиты запросов: в тестах это норма, в проде — приглашение
+# 4. Выключенный circuit breaker разборов: без него массовый провал
+#    валидации снова жжёт бюджет на каждом заказе — на проде это не настройка,
+#    а авария.
+if [ "${REPORT_BREAKER_ENABLED:-}" = "0" ]; then
+  report REPORT_BREAKER_ENABLED 0 \
+    "circuit breaker разборов выключен: POST /reports не блокируется даже после трёх провалов подряд"
+fi
+
+# 5. Выключенные лимиты запросов: в тестах это норма, в проде — приглашение
 #    к перебору initData и к бесплатной генерации карт.
 for name in RATE_LIMIT_PER_MIN RATE_LIMIT_CHARTS_PER_MIN RATE_LIMIT_GEO_PER_MIN; do
   value="${!name:-}"

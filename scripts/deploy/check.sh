@@ -57,6 +57,18 @@ if [[ "$SYNTAX_ONLY" -eq 0 ]]; then
         err "PAYMENTS_TEST_PLANS задана в prod — запрещено: тестовые тарифы test_1 и test_report_1 за 1 ⭐; удали строку из $ENV_FILE"
       fi
 
+      # Критическая проверка: выключенный circuit breaker разборов в prod
+      # запрещён. Блокируется само значение `0` (а не только непустая строка):
+      # именно оно означает «брейкер не блокирует».
+      # Проверяются оба источника: экспортированная переменная (её видит
+      # сервис) и строка в .env (её видит compose). Ноль в любом из них —
+      # выключенная защита, и «второй источник перекрывает первый» здесь было
+      # бы ошибкой: маскировать 0 из файла значением 1 в шелле незачем.
+      breaker="$(read_dotenv_var REPORT_BREAKER_ENABLED "$ENV_FILE" || true)"
+      if [[ "${REPORT_BREAKER_ENABLED:-}" == "0" || "$breaker" == "0" ]]; then
+        err "REPORT_BREAKER_ENABLED=0 запрещено в prod — circuit breaker разборов должен быть включён: удали строку из $ENV_FILE (значение 1 — норма)"
+      fi
+
       # Критическая проверка: отключение TLS-проверки GigaChat в prod запрещено.
       verify_ssl="${GIGACHAT_VERIFY_SSL:-$(read_dotenv_var GIGACHAT_VERIFY_SSL "$ENV_FILE" || true)}"
       if [[ "${verify_ssl,,}" == "false" || "$verify_ssl" == "0" ]]; then
