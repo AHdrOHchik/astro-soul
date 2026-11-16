@@ -35,6 +35,76 @@ export const CONTENT_SECTIONS: readonly ContentSection[] = [
 export const CHAPTER_FOCUS_MIN = 2;
 export const CHAPTER_FOCUS_MAX = 3;
 
+/**
+ * Жёсткий лимит: один фактор звучит максимум в трёх главах
+ * (`structure.md` §3.1). Считается любое упоминание — и «главным» (Г), и
+ * «под углом» (у).
+ *
+ * Зачем: живые прогоны 18.11.2026 дали «мотор» разбора почти во всех главах —
+ * квадрат Меркурия к Юпитеру в 6 из 7 глав на `3 Ultra`, Марс секстиль
+ * Юпитер в 5 из 6 на `2 Max`. Человек читал не разбор из семи глав, а один
+ * тезис, пересказанный семь раз, причём три главы начинались одинаково.
+ * Дефект воспроизвёлся на двух моделях, значит дело не в модели.
+ */
+export const MAX_CHAPTERS_PER_FACTOR = 3;
+
+/**
+ * Иерархия значимости (`structure.md` §4): при конфликте берётся следующий
+ * по значимости фактор, а не повторяется сильнейший. Меньше число — главнее.
+ * Правило редакционное: выше = конкретнее для человека.
+ */
+export const SIGNIFICANCE: Readonly<Record<string, number>> = {
+  // 1. Солнце и Луна (и их аспекты) — скелет разбора.
+  sun_sign: 1,
+  sun_house: 1,
+  moon_sign: 1,
+  moon_house: 1,
+  aspects_sun: 1,
+  aspects_moon: 1,
+  // 2. Асцендент, MC и планеты в 1-м доме.
+  ascendant: 2,
+  house_1: 2,
+  mc: 2,
+  // 3–5. Управитель Асцендента, стеллиум, аспекты к углам — бэкенд пока не
+  // отдаёт отдельными строками, шаг пропускается молча (§4).
+  // 6. Самые сильные аспекты между планетами.
+  aspects_mercury: 6,
+  aspects_venus: 6,
+  aspects_mars: 6,
+  aspects_outer: 6,
+  // 7. Балансы стихий и крестов — фон и темп, не единственный аргумент.
+  balances_elements: 7,
+  balances_crosses: 7,
+  // 8. Дома — уточнение сферы, а не основа вывода.
+  house_5: 8,
+  house_6: 8,
+  house_7: 8,
+  house_8: 8,
+  house_9: 8,
+  house_10: 8,
+  house_11: 8,
+  house_12: 8,
+  // Точность времени — служебная строка, идёт последней.
+  time_precision: 9,
+  // Планеты без знака/дома в строке §3: между скелетом и аспектами.
+  sun: 1,
+  moon: 1,
+  mercury: 4,
+  venus: 4,
+  mars: 4,
+  jupiter: 4,
+  saturn: 4,
+  uranus: 4,
+  neptune: 4,
+  pluto: 4,
+  node: 4,
+};
+
+/** Значимость фактора: неизвестное считается самым слабым. */
+export function significanceOf(row: string): number {
+  return SIGNIFICANCE[row] ?? 10;
+}
+
 /** Роли фактора по главам: `main` — «Г», `angle` — «у». */
 export type CoverageRoles = Readonly<Partial<Record<ContentSection, FactorRole>>>;
 
@@ -207,6 +277,12 @@ export interface FocusDistribution {
   readonly counts: Readonly<Record<ContentSection, number>>;
   /** Фокусы, которые не привязались ни к одной строке §3 (их видно в логе). */
   readonly unmapped: readonly number[];
+  /**
+   * Главы, которым не хватило факторов под лимит (0–1 фокус). Их видно в
+   * логе `report_focus_starved`: это сигнал, что план узкий, а не что глава
+   * «сломалась».
+   */
+  readonly starved: readonly ContentSection[];
 }
 
 function scoreOf(focus: AssignedFocus, chapter: ContentSection): number {
@@ -226,15 +302,16 @@ function scoreOf(focus: AssignedFocus, chapter: ContentSection): number {
  * Раскладывает фокусы плана по главам.
  *
  * Правила (все детерминированные):
- *   1. Фокус идёт в главу, где его фактор «главный» (§3, «Г»); если таких глав
- *      несколько — во все, где хватает места (один фактор по §3.1 звучит
- *      максимум в трёх главах).
- *   2. В главе не больше трёх фокусов: два-три — это то, что укладывается в
- *      3–6 абзацев.
- *   3. Если у главы меньше двух фокусов, добираем ближайшими из плана по
- *      порядку — глава не должна остаться без темы. Это единственное место,
- *      где фокус берётся без совпадения по §3, и такие фокусы видно в
- *      `rows: []`.
+ *   1. **Один фактор — максимум три главы** (`MAX_CHAPTERS_PER_FACTOR`).
+ *      Это жёсткий инвариант: как только фактор исчерпал три главы, фокус,
+ *      который его называет, в четвёртую главу не идёт.
+ *   2. Кандидаты главы сортируются по силе связи с главой (роль «Г» сильнее
+ *      «у»), при равенстве — по значимости фактора (§4), при равенстве —
+ *      по номеру в плане. Поэтому при конфликте берётся следующий по
+ *      значимости фактор, а не повторяется сильнейший.
+ *   3. В главе 2–3 фокуса. Если кандидатов не хватает по лимиту — глава
+ *      получает два (или меньше), но **никогда** копию исчерпанного фактора:
+ *      лучше меньше тем, чем одна и та же мысль в седьмой раз.
  *
  * Ничья разрешается порядком глав в `CONTENT_SECTIONS` и номером фокуса в
  * плане — то есть одинаковый план всегда даёт одинаковое распределение.
@@ -251,21 +328,81 @@ export function distributeFocuses(focuses: readonly PlanFocus[]): FocusDistribut
   const byChapter = {} as Record<ContentSection, AssignedFocus[]>;
   const counts = {} as Record<ContentSection, number>;
 
+  // Сколько глав уже используют каждый фактор: по этому счётчику и работает
+  // лимит. Считаем на старте по всем главам разом, чтобы распределение не
+  // зависело от порядка обхода.
+  const usedBy = new Map<string, Set<ContentSection>>();
+  const useOf = (row: string): Set<ContentSection> => {
+    const existing = usedBy.get(row);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const created = new Set<ContentSection>();
+    usedBy.set(row, created);
+    return created;
+  };
+
+  // Фактор, уже звучащий в этой главе через другой фокус, второй раз не
+  // берём: три фокуса про один аспект внутри одной главы — та же калька,
+  // только в миниатюре (так ведёт себя план, где модель повторила «мотор»).
+  const duplicateInChapter = (focus: AssignedFocus, chosen: readonly AssignedFocus[]): boolean =>
+    chosen.some((item) => item.rows.some((row) => focus.rows.includes(row)));
+
+  const canTake = (focus: AssignedFocus, chapter: ContentSection, chosen: readonly AssignedFocus[]): boolean =>
+    !duplicateInChapter(focus, chosen) &&
+    focus.rows.every((row) => {
+      const users = useOf(row);
+      return users.has(chapter) || users.size < MAX_CHAPTERS_PER_FACTOR;
+    });
+
   for (const chapter of CONTENT_SECTIONS) {
-    const relevant = prepared
+    const candidates = prepared
       .map((focus) => ({ focus, score: scoreOf(focus, chapter) }))
       .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score || a.focus.index - b.focus.index)
-      .slice(0, CHAPTER_FOCUS_MAX)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          Math.min(...a.focus.rows.map(significanceOf)) - Math.min(...b.focus.rows.map(significanceOf)) ||
+          a.focus.index - b.focus.index,
+      )
       .map((item) => item.focus);
 
-    const chosen = [...relevant];
-    for (const focus of prepared) {
-      if (chosen.length >= CHAPTER_FOCUS_MIN) {
+    const chosen: AssignedFocus[] = [];
+
+    // Сначала — свои факторы под лимитом, в порядке значимости.
+    for (const focus of candidates) {
+      if (chosen.length >= CHAPTER_FOCUS_MAX) {
         break;
       }
-      if (!chosen.some((item) => item.index === focus.index)) {
+      if (chosen.some((item) => item.index === focus.index)) {
+        continue;
+      }
+      if (!canTake(focus, chapter, chosen)) {
+        continue;
+      }
+      chosen.push(focus);
+    }
+
+    // Добираем до минимума только теми фокусами, что ещё не исчерпали
+    // лимит: копия исчерпанного фактора — ровно тот дефект, который чиним.
+    if (chosen.length < CHAPTER_FOCUS_MIN) {
+      for (const focus of prepared) {
+        if (chosen.length >= CHAPTER_FOCUS_MIN) {
+          break;
+        }
+        if (chosen.some((item) => item.index === focus.index)) {
+          continue;
+        }
+        if (!canTake(focus, chapter, chosen)) {
+          continue;
+        }
         chosen.push(focus);
+      }
+    }
+
+    for (const focus of chosen) {
+      for (const row of focus.rows) {
+        useOf(row).add(chapter);
       }
     }
 
@@ -275,8 +412,43 @@ export function distributeFocuses(focuses: readonly PlanFocus[]): FocusDistribut
   }
 
   const unmapped = prepared.filter((focus) => focus.rows.length === 0).map((focus) => focus.index);
+  const starved = CONTENT_SECTIONS.filter((chapter) => counts[chapter] < CHAPTER_FOCUS_MIN);
 
-  return { byChapter, counts, unmapped: [...unmapped] };
+  return { byChapter, counts, unmapped: [...unmapped], starved };
+}
+
+/** Матрица «фактор × глава»: по ней видно, сколько глав держится на факторе. */
+export interface FactorMatrixRow {
+  readonly factor: string;
+  readonly chapters: readonly ContentSection[];
+  readonly count: number;
+}
+
+/**
+ * Строки матрицы для отчёта и теста. Фактор попадает в строку, если хотя бы
+ * один фокус с этим фактором ушёл в главу. `count > MAX_CHAPTERS_PER_FACTOR`
+ * — нарушение инварианта, его ловит тест.
+ */
+export function factorMatrix(distribution: FocusDistribution): readonly FactorMatrixRow[] {
+  const rows = new Map<string, Set<ContentSection>>();
+
+  for (const chapter of CONTENT_SECTIONS) {
+    for (const focus of distribution.byChapter[chapter]) {
+      for (const row of focus.rows) {
+        const set = rows.get(row) ?? new Set<ContentSection>();
+        set.add(chapter);
+        rows.set(row, set);
+      }
+    }
+  }
+
+  return [...rows.entries()]
+    .map(([factor, chapters]) => ({
+      factor,
+      chapters: CONTENT_SECTIONS.filter((chapter) => chapters.has(chapter)),
+      count: chapters.size,
+    }))
+    .sort((a, b) => significanceOf(a.factor) - significanceOf(b.factor) || a.factor.localeCompare(b.factor));
 }
 
 /** Строка фокуса для промпта главы: та же форма, что была у общего блока. */
@@ -291,7 +463,18 @@ export function focusLine(focus: AssignedFocus, position: number): string {
     .join(' ');
 }
 
-/** `{{focus_block}}` для конкретной главы: только её фокусы, 2–3 строки. */
+/**
+ * `{{focus_block}}` для конкретной главы: только её фокусы, 2–3 строки.
+ *
+ * Пустой блок — не поломка: план узкий, и лимит «фактор ≤ 3 главы» не дал
+ * этой главе своей темы. Тогда глава строится на фактах карты и правилах
+ * главы, и это сказано в промпте прямо, чтобы модель не добирала тему
+ * пересказом соседних глав.
+ */
 export function focusBlockFor(distribution: FocusDistribution, chapter: ContentSection): string {
-  return distribution.byChapter[chapter].map((focus, position) => focusLine(focus, position)).join('\n');
+  const lines = distribution.byChapter[chapter].map((focus, position) => focusLine(focus, position));
+  if (lines.length === 0) {
+    return 'Своих фокусов у этой главы нет: опирайся на факты карты и правила главы, не пересказывай темы других глав.';
+  }
+  return lines.join('\n');
 }

@@ -72,7 +72,7 @@ describe('failureCodeOf', () => {
     expect(codeOfRule('forbidden_esoterics')).toBe('forbidden_terms');
   });
 
-  it('набор кодов — ровно шесть классов из задания', () => {
+  it('набор кодов — девять классов: шесть из итерации 17 и три из 19', () => {
     expect([...FAILURE_CODES]).toEqual([
       'too_short',
       'too_long',
@@ -80,6 +80,9 @@ describe('failureCodeOf', () => {
       'forbidden_terms',
       'paragraphs',
       'repeats',
+      'teaser_terms',
+      'service_terms',
+      'repeated_opener',
     ]);
     // Старый общий код остаётся в «семействе»: такие строки уже лежат в БД.
     expect(VALIDATION_FAILURE_CODES).toContain('validation');

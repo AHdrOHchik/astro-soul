@@ -11,7 +11,7 @@ import {
   VisuallyHidden,
   type ScreenProps,
 } from '@astro-soul/ui';
-import { MAX_QUERY_LENGTH, MIN_QUERY_LENGTH } from '@astro-soul/shared';
+import { MAX_QUERY_LENGTH, MIN_QUERY_LENGTH } from '@astro-soul/shared/geo/limits';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../analytics';
 import { fieldErrorsOf, type Api, type GeoPlace } from '../api';

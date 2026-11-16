@@ -14,11 +14,24 @@
     "clean": "rm -rf dist",
     "test": "vitest run --passWithNoTests",
     "gen:contracts": "openapi-typescript ../../api.openapi.yaml -o src/contracts/generated.ts",
-    "gen:contracts:check": "openapi-typescript ../../api.openapi.yaml -o src/contracts/generated.ts --check"
+    "gen:contracts:check": "openapi-typescript ../../api.openapi.yaml -o src/contracts/generated.ts --check",
+    "build:cities": "node scripts/build-cities.mjs",
+    "check:cities": "node scripts/build-cities.mjs --check"
   },
   "devDependencies": {
     "typescript": "^5.6.3",
     "vitest": "^5.1.0",
     "openapi-typescript": "^7.13.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./geo/limits": {
+      "types": "./dist/geo/limits.d.ts",
+      "default": "./dist/geo/limits.js"
+    },
+    "./package.json": "./package.json"
   }
 }

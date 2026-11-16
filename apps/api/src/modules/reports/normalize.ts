@@ -5,6 +5,8 @@ import {
   SECTIONS,
   SENTENCES_PER_PARAGRAPH_MAX,
   SENTENCES_PER_PARAGRAPH_MIN,
+  TEASER_LENGTH,
+  TEASER_TERMS,
   splitParagraphs,
   splitSentences,
   type SectionKey,
@@ -46,6 +48,13 @@ export interface SectionNormalization {
   /** Человекочитаемые подробности для лога: сколько было и сколько стало. */
   readonly notes: readonly string[];
 }
+
+/**
+ * Список терминов живёт в `validators.ts` (там же, где проверка): тизер и
+ * валидатор обязаны смотреть на один и тот же набор слов. Реэкспорт — чтобы
+ * импорт из `normalize` не сломался у тех, кто уже так делает.
+ */
+export { TEASER_TERMS };
 
 const PARAGRAPH_SEPARATOR = '\n\n';
 const S_MIN = SENTENCES_PER_PARAGRAPH_MIN;
@@ -408,48 +417,90 @@ export function normalizeSection(input: {
 }
 
 /**
- * Астрологические термины, которым не место в первых 400 знаках «Ядра»
- * (`llm-prompts.md` §3.1): планеты, знаки, дома, аспекты, стихии, кресты.
- *
- * Проверка живёт в коде, а не в валидаторе, потому что касается **тизера**
- * (окна из 400 знаков), а не главы целиком: со второго абзаца названия
- * факторов разрешены и нужны.
+ * Тизер — окно в 400 знаков внутри `core`. Термины (планеты, знаки, дома)
+ * в нём запрещены; сама проверка живёт в валидаторе (`validators.ts`,
+ * правило `teaser_terms`), а здесь только выбор окна.
  */
-export const TEASER_TERMS =
-  /солн|лун|меркур|венер|марс|юпитер|сатурн|уран|нептун|плутон|узел|асцендент|дом[аеу]?\b|аспект|трин|квадрат|оппозиц|стихи|крест|овен|телец|близнец|рак\b|лев\b|дев[аеы]|весы|скорпион|стрелец|козерог|водолей|рыб[аы]/iu;
-
 export interface TeaserNormalization {
   readonly teaser: string;
+  /** Смещение начала окна внутри `core`. `0` — окно с самого начала. */
+  readonly start: number;
+  /** Абсолютное смещение первого термина в окне, `null` — терминов нет. */
+  readonly firstTerm: number | null;
   /** Пришлось ли сдвинуть окно: термины были в первых 400 знаках. */
   readonly shifted: boolean;
   /** Термины остались даже после сдвига — тогда это `warning`, а не провал. */
   readonly hasTerms: boolean;
 }
 
+function firstTermAt(text: string): number | null {
+  const matched = TEASER_TERMS.exec(text);
+  // `lastIndex` у регулярки без `g` не сохраняется — `exec` сбрасывает его сам.
+  return matched === null ? null : matched.index;
+}
+
 /**
- * Тизер — первые 400 знаков `core`. Если в них попал астрологический термин,
- * пробуем начать окно с абзаца, где терминов нет: текст при этом не меняется,
- * меняется только точка входа в него. Не вышло — оставляем как есть: тизер
- * без терминов лучше, но оплаченный разбор из-за него не отменяется.
+ * Тизер — окно в 400 знаков `core` без названий планет, знаков и домов.
+ *
+ * Почему это отдельная функция, а не проверка главы: правило существует
+ * **только** для тизера (`llm-prompts.md` §3.1). Живой прогон 18.11.2026
+ * показал, что в `validation` не оставалось следа ни от сдвига, ни от
+ * термина: тизер считался после валидатора и писал только в `normalization`,
+ * а смещение первого термина вообще не измерялось. Теперь смещение
+ * считается и уходит в `validation` (warning `teaser_terms`) и в лог.
+ *
+ * Окно пробуется не только по границам абзацев, но и по границам
+ * предложений: в `core` абзац почти всегда начинается с фактора, и
+ * абзацных границ не хватало, чтобы уйти от термина.
  */
-export function normalizeTeaser(bodyMd: string, length: number): TeaserNormalization {
+export function normalizeTeaser(bodyMd: string, length = TEASER_LENGTH): TeaserNormalization {
   const natural = bodyMd.slice(0, length);
-  if (!TEASER_TERMS.test(natural)) {
-    return { teaser: natural, shifted: false, hasTerms: false };
+  const naturalTerm = firstTermAt(natural);
+  if (naturalTerm === null) {
+    return { teaser: natural, start: 0, firstTerm: null, shifted: false, hasTerms: false };
   }
 
+  const starts = new Set<number>([0]);
   let offset = 0;
   for (const paragraph of splitParagraphs(bodyMd)) {
-    const start = bodyMd.indexOf(paragraph, offset);
-    if (start === -1) {
+    const paragraphStart = bodyMd.indexOf(paragraph, offset);
+    if (paragraphStart === -1) {
+      continue;
+    }
+    starts.add(paragraphStart);
+    let sentenceOffset = paragraphStart;
+    for (const sentence of splitSentences(paragraph)) {
+      const sentenceStart = bodyMd.indexOf(sentence, sentenceOffset);
+      if (sentenceStart === -1) {
+        continue;
+      }
+      starts.add(sentenceStart);
+      sentenceOffset = sentenceStart + sentence.length;
+    }
+    offset = paragraphStart + paragraph.length;
+  }
+
+  for (const start of [...starts].sort((a, b) => a - b)) {
+    if (start === 0) {
       continue;
     }
     const candidate = bodyMd.slice(start, start + length);
-    if (candidate.length >= Math.round(length / 2) && !TEASER_TERMS.test(candidate)) {
-      return { teaser: candidate, shifted: true, hasTerms: false };
+    // Короткий хвост тизером быть не может: пейволл показывает 400 знаков.
+    if (candidate.length < Math.round(length / 2)) {
+      continue;
     }
-    offset = start + paragraph.length;
+    if (firstTermAt(candidate) === null) {
+      return { teaser: candidate, start, firstTerm: null, shifted: true, hasTerms: false };
+    }
   }
 
-  return { teaser: natural, shifted: false, hasTerms: true };
+  // Сдвинуть не удалось: термин в каждом окне. Оставляем как есть и отдаём
+  // фактическое смещение — по нему видно, насколько текст «плотный».
+  return {
+    teaser: natural,
+    start: 0,
+    firstTerm: naturalTerm,
+    shifted: false,
+    hasTerms: true,
+  };
 }

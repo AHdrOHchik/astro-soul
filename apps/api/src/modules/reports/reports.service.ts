@@ -24,6 +24,7 @@ import {
   normalizeSection,
   normalizeTeaser,
   type NormalizationCode,
+  type TeaserNormalization,
 } from './normalize';
 import {
   CONTENT_SECTIONS,
@@ -35,6 +36,7 @@ import {
   chapterPrompt,
   planPrompt,
   PROMPT_VERSION,
+  retryNote,
   SECTION_RULES,
   summaryPrompt,
   SYSTEM_PROMPT,
@@ -50,6 +52,7 @@ import {
   DISCLAIMER,
   SECTIONS,
   STRUCTURE_VERSION,
+  TEASER_LENGTH,
   validateSection,
   type SectionKey,
   type TimePrecision,
@@ -72,6 +75,8 @@ type SectionWrite =
       readonly regenerated: boolean;
       readonly normalized: readonly NormalizationCode[];
       readonly warnings: readonly FailureCode[];
+      /** Окно тизера — считается здесь же, чтобы попасть в `validation`. */
+      readonly teaser?: TeaserNormalization;
     }
   | { readonly ok: false; readonly code: FailureCode };
 
@@ -79,6 +84,8 @@ type SectionWrite =
 interface SectionDiagnostics {
   readonly normalized: readonly string[];
   readonly warnings: readonly string[];
+  /** Числа для разбора: смещение окна тизера и первого термина в нём. */
+  readonly detail?: readonly string[];
 }
 
 /**
@@ -92,8 +99,25 @@ export const MISSING_SECTIONS_NOTE =
 /** Минимум живых глав, при котором разбор ещё показывается. */
 const MIN_LIVE_CHAPTERS = 3;
 
-/** Первые 400 знаков `core` — то, что видно до оплаты. */
-export const TEASER_LENGTH = 400;
+/** Первые 400 знаков `core` — то, что видно до оплаты (контракт). */
+export { TEASER_LENGTH };
+
+/**
+ * Коды пометок, которые контракт 1.5.11 разрешает в `Report.warnings`.
+ * БД хранит больше (служебный словарь, повторы зачинов, недобор «Итога»),
+ * но расширять enum без новой версии контракта нельзя.
+ */
+const CONTRACT_WARNING_CODES = [
+  'paragraphs',
+  'too_long',
+  'repeats',
+  'format',
+  'paragraphs_split',
+  'paragraphs_merged',
+  'trimmed',
+  'teaser_terms',
+  'disclaimer_added',
+] as const;
 
 export interface ReportWarningView {
   readonly section: string;
@@ -149,10 +173,17 @@ export const RAW_EXCERPT_LENGTH = 2_000;
 interface ValidationEntry {
   readonly key: string;
   readonly attempt: number;
-  readonly code: FailureCode;
+  readonly code: string;
+  /**
+   * `error` — главу не показать; `warning` — показали, но нарушение есть.
+   * До итерации 19 в `validation` попадали только провалы, поэтому по живому
+   * прогону нельзя было понять, что «глава прошла с тремя пометками».
+   */
+  readonly severity: 'error' | 'warning';
   readonly failures: readonly string[];
   readonly chars: number;
-  readonly raw_excerpt: string;
+  /** Сырой ответ модели — только для `error`: 2000 знаков (ПДн в нём нет). */
+  readonly raw_excerpt?: string;
 }
 
 /** Провал конвейера: код уходит в `reports.error_code`. */
@@ -371,7 +402,12 @@ export class ReportsService {
     const warnings: ReportWarningView[] =
       status === 'ready'
         ? Object.entries(report.normalization ?? {}).flatMap(([section, diagnostics]) =>
-            (diagnostics?.warnings ?? []).map((code) => ({ section, code })),
+            (diagnostics?.warnings ?? [])
+              // Контракт не меняется: в API уходят только коды из enum
+              // `Report.warnings` (1.5.11). Остальные (`service_terms`,
+              // `repeated_opener`, `too_short`) остаются в БД и в логах.
+              .filter((code) => (CONTRACT_WARNING_CODES as readonly string[]).includes(code))
+              .map((code) => ({ section, code })),
           )
         : [];
 
@@ -433,7 +469,15 @@ export class ReportsService {
         focuses_in_plan: plan.focuses.length,
         per_chapter: focuses.counts,
         unmapped: focuses.unmapped,
+        // Главы, которым не хватило факторов под лимит «≤ 3 главы на фактор».
+        starved: focuses.starved,
       });
+      if (focuses.starved.length > 0) {
+        this.logger.warn('report_focus_starved', {
+          report_id: reportId,
+          sections: focuses.starved,
+        });
+      }
 
       const chapters: ReportChapter[] = [];
       const written: string[] = [];
@@ -473,35 +517,36 @@ export class ReportsService {
         }
 
         sectionStatus[key] = write.regenerated ? 'regenerated' : 'ok';
-        if (write.normalized.length > 0 || write.warnings.length > 0) {
-          normalization[key] = { normalized: write.normalized, warnings: write.warnings };
+
+        // Тизер уже посчитан в `writeSection` — здесь только запоминаем окно
+        // и его смещение. Окно — «первые 400 знаков» по контракту, но при
+        // терминах оно сдвигается внутри `core`: пейволл показывает текст без
+        // названий планет (§3.1). Смещение видно в `normalization` и в логе.
+        const teaserView = write.teaser;
+        if (teaserView !== undefined) {
+          teaser = teaserView.teaser;
+        }
+
+        const details: string[] = [];
+        if (teaserView !== undefined && teaserView.start > 0) {
+          details.push(`teaser_start=${teaserView.start}`);
+        }
+        if (teaserView !== undefined && teaserView.firstTerm !== null) {
+          details.push(`teaser_first_term=${teaserView.firstTerm}`);
+        }
+
+        if (write.normalized.length > 0 || write.warnings.length > 0 || details.length > 0) {
+          normalization[key] = {
+            normalized: write.normalized,
+            warnings: write.warnings,
+            ...(details.length === 0 ? {} : { detail: details }),
+          };
         }
 
         const body = write.body;
         written.push(body);
         digests.push(buildDigest(body));
         chapters.push({ key, title: titleOf(key), body_md: body, order: index });
-
-        if (key === 'core') {
-          // Тизер — окно в 400 знаков, а не первые 400 знаков любой ценой:
-          // планеты и дома в нём запрещены (`llm-prompts.md` §3.1), поэтому
-          // при терминах окно сдвигается на абзац без них.
-          const teaserView = normalizeTeaser(body, TEASER_LENGTH);
-          teaser = teaserView.teaser;
-          const existing = normalization['core'];
-          if (teaserView.hasTerms) {
-            // Термины остались даже после сдвига окна — это пометка, не провал.
-            normalization['core'] = {
-              normalized: existing?.normalized ?? [],
-              warnings: [...(existing?.warnings ?? []), 'teaser_terms'],
-            };
-          } else if (teaserView.shifted) {
-            normalization['core'] = {
-              normalized: [...(existing?.normalized ?? []), 'teaser_terms'],
-              warnings: existing?.warnings ?? [],
-            };
-          }
-        }
 
         await this.repo.saveProgress({
           id: reportId,
@@ -733,23 +778,22 @@ export class ReportsService {
    * Одна глава: генерация → нормализация → валидатор → (при нужде) одна
    * перегенерация.
    *
-   * Что изменилось в итерации 18 и почему:
+   * Правила итерации 19 (три живых прогона 18.11.2026):
    *
-   *   1. **Нормализация идёт до валидатора.** Абзацы, их длина и объём — это
-   *      строковые операции: код делает их точно и бесплатно, а модель на том
-   *      же промпте ошибается снова. Смысл текста при этом не меняется.
-   *   2. **Провал формы больше не убивает главу.** Нарушения делятся на
-   *      `error` (пустой ответ, недобор, запрещённая тема) и `warning`
-   *      (абзацы, перебор длины, повторы). Вторая категория показывается
-   *      человеку с пометкой в `Report.warnings` — оплаченный разбор не
-   *      должен пропадать из-за лишней пустой строки.
-   *   3. **Перегенерация только там, где она помогает:** `too_short`
-   *      (материала мало — нужен другой текст) и `format` (ответ не
-   *      разобрался). Повторять вызов из-за абзацев — платить дважды за то,
-   *      что правится `normalize.ts`.
-   *
-   * Валидаторы при этом не удалены и не ослаблены: они по-прежнему считают
-   * всё, их вердикт уходит в `reports.validation` и в логи.
+   *   1. **Глава не пропадает из-за пометки.** Приговор выносят только
+   *      пустой ответ (< 300 знаков) и неизвестная глава — см.
+   *      `severityOfRule`. `forbidden_terms`, абзацы, повторы, служебный
+   *      словарь и зачины — `warning`: текст отдаётся, нарушение остаётся
+   *      в `reports.validation` и в `normalization`.
+   *   2. **Тизер считается здесь же.** Окно 400 знаков и смещение первого
+   *      термина попадают в `validation` (правило `teaser_terms`), а не
+   *      только в `normalization`: раньше следа в `validation` не было
+   *      вовсе, и владелец не мог понять, сработал сдвиг или нет.
+   *   3. **«Итог» с недобором не выбрасывается.** `summary_short` — это
+   *      `too_short`: один ретрай с тем же промптом («Объём 500–750 знаков»),
+   *      после второго недобора глава отдаётся с `warning too_short`
+   *      (текст не выдумываем). Частоту видно по `report_summary_short`
+   *      в логе и по `normalization.summary.warnings` в БД.
    */
   private async writeSection(
     key: SectionKey,
@@ -762,22 +806,29 @@ export class ReportsService {
     },
   ): Promise<SectionWrite> {
     let lastCode: FailureCode = 'format';
+    let lastChars = 0;
+    let asked = prompt;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const response = await this.call(context.budget, [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: prompt },
+        { role: 'user', content: asked },
       ]);
 
       const raw = response.content.trim();
       const normalization = normalizeSection({ key, bodyMd: raw });
       const body = normalization.body;
+      lastChars = body.length;
+
+      // Тизер существует только у «Ядра»: окно 400 знаков и точка входа.
+      const teaser = key === 'core' ? normalizeTeaser(body) : undefined;
 
       const result = validateSection({
         key,
         bodyMd: body,
         timePrecision: context.timePrecision,
         previous: context.previous,
+        ...(teaser === undefined ? {} : { teaser: teaser.teaser }),
       });
 
       const { errors, warnings } = classifyFailures({
@@ -787,8 +838,6 @@ export class ReportsService {
       });
 
       if (normalization.applied.length > 0) {
-        // Нормализация видна всегда — и в БД, и в логе: иначе «глава прошла»
-        // не отличить от «главу переписал код».
         this.logger.info('report_section_normalized', {
           report_id: context.budget.reportId,
           section: key,
@@ -798,8 +847,46 @@ export class ReportsService {
         });
       }
 
-      if (errors.length === 0) {
+      if (teaser !== undefined && teaser.shifted) {
+        this.logger.info('report_teaser_shifted', {
+          report_id: context.budget.reportId,
+          section: key,
+          start: teaser.start,
+          first_term: teaser.firstTerm,
+        });
+      }
+
+      // «Итог» с недобором: главу не выбрасываем — без неё разбор не
+      // закрывается, а вернуть 66 знаков текста можно только генерацией,
+      // которую мы уже попробовали. Отдаём с пометкой, но **только после
+      // второй попытки**: первая короткая — повод попросить объём ещё раз.
+      const summaryShort =
+        key === 'summary' &&
+        attempt >= MAX_ATTEMPTS &&
+        errors.length > 0 &&
+        errors.every((error) => error.code === 'too_short');
+
+      // Недобор объёма — пометка, но не приговор: один повтор с тем же
+      // промптом («Объём … знаков») иногда добирает текст. Повторяем только
+      // `too_short` — косметика (`format_h1`, повторы) второго вызова не
+      // стоит: это те же деньги за тот же текст.
+      const shortAndRetryable =
+        errors.length === 0 &&
+        warnings.some((warning) => warning.code === 'too_short') &&
+        attempt < MAX_ATTEMPTS;
+
+      if ((errors.length === 0 && !shortAndRetryable) || summaryShort) {
         const warningCodes = [...new Set(warnings.map((warning) => warning.code))];
+        if (summaryShort) {
+          warningCodes.push('too_short');
+          this.logger.warn('report_summary_short', {
+            report_id: context.budget.reportId,
+            chars: body.length,
+            min: SECTIONS.find((section) => section.key === 'summary')?.min ?? 0,
+            attempts: attempt,
+          });
+        }
+
         const normalized: NormalizationCode[] = [...normalization.applied];
 
         // Повторы не правятся постобработкой (это не форма, а содержание),
@@ -807,6 +894,19 @@ export class ReportsService {
         // выглядело как «валидатор пропустил».
         if (warningCodes.includes('repeats') && !normalized.includes('repeats')) {
           normalized.push('repeats');
+        }
+
+        // Каждая пометка остаётся следом в `reports.validation`: иначе по
+        // готовому разбору не видно, что глава прошла «на грани».
+        for (const warning of warnings) {
+          context.validation.push({
+            key,
+            attempt,
+            code: warning.code,
+            severity: 'warning',
+            failures: [`${warning.rule}: ${warning.detail}`],
+            chars: body.length,
+          });
         }
 
         if (warnings.length > 0) {
@@ -833,7 +933,30 @@ export class ReportsService {
           regenerated: attempt > 1,
           normalized,
           warnings: warningCodes,
+          ...(teaser === undefined ? {} : { teaser }),
         };
+      }
+
+      if (shortAndRetryable) {
+        this.logger.warn('report_section_retry_short', {
+          report_id: context.budget.reportId,
+          section: key,
+          attempt,
+          chars: body.length,
+        });
+        // След первой попытки тоже остаётся: иначе по `validation` не видно,
+        // что глава была короче нормы дважды, а не один раз.
+        for (const warning of warnings) {
+          context.validation.push({
+            key,
+            attempt,
+            code: warning.code,
+            severity: 'warning',
+            failures: [`${warning.rule}: ${warning.detail}`],
+            chars: body.length,
+          });
+        }
+        continue;
       }
 
       const code = failureCodeOf({
@@ -854,6 +977,7 @@ export class ReportsService {
         code,
         severity: 'error',
         chars: body.length,
+        failures: errors.map((error) => `${error.rule}: ${error.detail}`),
         raw_excerpt: rawExcerpt,
       });
 
@@ -861,6 +985,7 @@ export class ReportsService {
         key,
         attempt,
         code,
+        severity: 'error',
         failures: errors.map((error) => `${error.rule}: ${error.detail}`),
         chars: body.length,
         raw_excerpt: rawExcerpt,
@@ -870,7 +995,18 @@ export class ReportsService {
       if (!retryable || attempt === MAX_ATTEMPTS) {
         return { ok: false, code };
       }
+
+      // Повтор просит объём прямым текстом: в общем промпте цифра тонет,
+      // а на живом прогоне 18.11.2026 «Итог» дважды вышел короче нормы.
+      asked = `${prompt}\n\n${retryNote(key, body.length)}`;
     }
+
+    this.logger.warn('report_section_dropped', {
+      report_id: context.budget.reportId,
+      section: key,
+      code: lastCode,
+      chars: lastChars,
+    });
 
     return { ok: false, code: lastCode };
   }

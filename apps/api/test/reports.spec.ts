@@ -494,7 +494,10 @@ describe('наблюдаемость конвейера (итерация 17)', 
     }
   });
 
-  it('недобор материала остаётся провалом: код too_short, сырой ответ, две попытки', async () => {
+  it('недобор материала: ретрай, затем глава отдаётся с пометкой too_short', async () => {
+    // Итерация 19: пустой ответ и нераспарсенная глава — единственные
+    // причины убрать главу. Недобор — пометка, а не приговор: живой прогон
+    // 18.11.2026 терял главы именно так.
     const dense = new DenseParagraphProvider();
     const failing = await createTestContext({
       astro: makeFakeAstro(),
@@ -532,36 +535,25 @@ describe('наблюдаемость конвейера (итерация 17)', 
         .expect(202);
 
       const reportId = order.body.report_id as string;
-      let status = '';
-      for (let attempt = 0; attempt < 200 && status !== 'failed'; attempt += 1) {
-        const response = await request(failing.app.getHttpServer())
-          .get(`/api/v1/reports/${reportId}`)
-          .set(INIT_DATA_HEADER, initDataFor());
-        status = response.body.status as string;
-        if (status !== 'failed') {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-      }
-      expect(status).toBe('failed');
+      const ready = await waitForOn(failing, reportId, ['ready', 'failed']);
+      expect(ready.body.status).toBe('ready');
+      expect(ready.body.missing_sections).toEqual([]);
 
       const row = await failing.db.queryOne<{
-        error_code: string;
+        error_code: string | null;
         attempts: number;
-        validation: { key: string; attempt: number; code: string; raw_excerpt: string }[];
+        validation: { key: string; attempt: number; code: string; severity: string }[];
       }>(`SELECT error_code, attempts, validation FROM reports WHERE id = $1`, [reportId]);
 
-      // Семь предложений — это ~500 знаков при минимуме «Ядра» 1200: формы
-      // тут мало, материала тоже. Нормализация такие случаи не выдумывает,
-      // поэтому код — `too_short`, а не `paragraphs`.
-      expect(row?.error_code).toBe('too_short');
-      // План + две попытки одной главы: третьей быть не может.
-      expect(row?.attempts).toBe(1 + MAX_ATTEMPTS);
-      expect(row?.validation).toHaveLength(MAX_ATTEMPTS);
-      expect(row?.validation.map((entry) => entry.attempt)).toEqual([1, 2]);
-      expect(row?.validation[0]?.key).toBe('core');
-      expect(row?.validation[0]?.code).toBe('too_short');
-      // Сырой ответ модели сохранён — по нему можно разобрать провал.
-      expect(row?.validation[0]?.raw_excerpt).toContain('Ты держишь в голове сразу несколько линий');
+      expect(row?.error_code).toBeNull();
+      // План + по две попытки на каждую из шести недобравших глав + «Итог»
+      // (он в диапазоне и пишется с первой попытки): 1 + 6×2 + 1 = 14.
+      // Ретрай по недобору остался, но после второй попытки глава не
+      // выбрасывается — она уходит с пометкой.
+      expect(row?.attempts).toBe(1 + 6 * MAX_ATTEMPTS + 1);
+      const core = (row?.validation ?? []).filter((entry) => entry.key === 'core');
+      expect(core.map((entry) => entry.code)).toEqual(['too_short', 'too_short']);
+      expect(core.every((entry) => entry.severity === 'warning')).toBe(true);
     } finally {
       await failing.close();
     }
@@ -660,10 +652,11 @@ describe('приёмка разбора целиком (итерация 17)', (
       }
     }
 
-    // Все семь глав прошли с первой попытки: провалов нет (`[]` — так пишет
-    // `saveProgress`, `null` бывает только у разбора, который вообще не дошёл
-    // до сохранения диагностики).
-    expect(report?.validation ?? []).toEqual([]);
+    // Все семь глав прошли с первой попытки. С итерации 19 в `validation`
+    // пишутся и пометки (`severity: warning`), поэтому проверяем главное:
+    // жёстких провалов нет, и ни одна глава не перегенерировалась зря.
+    const entries = (report?.validation ?? []) as { severity?: string }[];
+    expect(entries.filter((entry) => entry.severity === 'error')).toEqual([]);
     // Тизер — первые 400 знаков «Ядра», без названий планет, знаков, домов,
     // аспектов и стихий (проверка регуляркой; глазами — в отчёте итерации).
     const teaser = ready.body.teaser as string;
@@ -763,7 +756,7 @@ describe('валидация больше не убивает разбор (ит
     readonly ready: Response;
     readonly row: {
       section_status: Record<string, string> | null;
-      validation: { key: string; attempt: number; code: string }[] | null;
+      validation: { key: string; attempt: number; code: string; severity?: string }[] | null;
       normalization: Record<string, { normalized: string[]; warnings: string[] }> | null;
       attempts: number;
       error_code: string | null;
@@ -807,7 +800,7 @@ describe('валидация больше не убивает разбор (ит
       const ready = await waitForOn(local, order.body.report_id as string, ['ready', 'failed']);
       const row = await local.db.queryOne<{
         section_status: Record<string, string> | null;
-        validation: { key: string; attempt: number; code: string }[] | null;
+        validation: { key: string; attempt: number; code: string; severity?: string }[] | null;
         normalization: Record<string, { normalized: string[]; warnings: string[] }> | null;
         attempts: number;
         error_code: string | null;
@@ -831,7 +824,7 @@ describe('валидация больше не убивает разбор (ит
     expect(sections).toHaveLength(7);
 
     // Главное: ни одного жёсткого провала — модель ответила «плохо по форме».
-    expect(row?.validation ?? []).toEqual([]);
+    expect((row?.validation ?? []).filter((entry) => entry.severity === 'error')).toEqual([]);
     expect(row?.error_code).toBeNull();
     // Перегенераций не было: план + семь глав по одному вызову.
     expect(row?.attempts).toBe(1 + 7);
@@ -861,8 +854,9 @@ describe('валидация больше не убивает разбор (ит
       if (key === 'summary') {
         return summaryBody();
       }
-      // `talents` недобирает материал даже после нормализации.
-      return key === 'talents' ? POOL.slice(0, 4).join(' ') : denseBody();
+      // `talents` — пустой ответ модели: единственная причина убрать главу
+      // (итерация 19). Недобор стал бы пометкой, а не пропажей.
+      return key === 'talents' ? '' : denseBody();
     });
     const { ready, row } = await reportWith(scripted, 'partial-one');
 
@@ -889,17 +883,16 @@ describe('валидация больше не убивает разбор (ит
     // Диагностика: глава помечена failed, попытки и код сохранены.
     expect(row?.section_status?.['talents']).toBe('failed');
     expect(row?.section_status?.['core']).toBe('ok');
-    expect((row?.validation ?? []).map((entry) => entry.code)).toEqual(['too_short', 'too_short']);
-    expect((row?.validation ?? []).every((entry) => entry.key === 'talents')).toBe(true);
+    const failedEntries = (row?.validation ?? []).filter((entry) => entry.severity === 'error');
+    expect(failedEntries.map((entry) => entry.code)).toEqual(['too_short', 'too_short']);
+    expect(failedEntries.every((entry) => entry.key === 'talents')).toBe(true);
     // План + пять живых глав + две попытки `talents` + «Итог».
     expect(row?.attempts).toBe(1 + 5 + 2 + 1);
     expect(row?.error_code).toBeNull();
   });
 
   it('меньше трёх живых глав → failed, а не пустой разбор', async () => {
-    const scripted = new ScriptedProvider((key) =>
-      key === 'core' ? denseBody() : POOL.slice(0, 4).join(' '),
-    );
+    const scripted = new ScriptedProvider((key) => (key === 'core' ? denseBody() : ''));
     const { ready, row } = await reportWith(scripted, 'too-few');
 
     expect(ready.body.status).toBe('failed');

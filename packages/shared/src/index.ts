@@ -2,5 +2,8 @@ export * from './plans';
 export * from './quotas';
 export * from './entitlements';
 export * from './contracts';
+export * from './geo/limits';
 export * from './geo/search';
+export * from './geo/nearest';
 export * from './geo/cities.data';
+export * from './geo/cities.meta';

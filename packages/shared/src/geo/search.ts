@@ -1,5 +1,6 @@
 import type { GeoPlace } from '../contracts';
 import { CITIES, CITY_DATASET_VERSION, type CityRecord } from './cities.data';
+import { DEFAULT_LIMIT, MAX_LIMIT, MIN_QUERY_LENGTH } from './limits';
 
 /**
  * Поиск города по локальному справочнику (без сети).
@@ -12,13 +13,10 @@ import { CITIES, CITY_DATASET_VERSION, type CityRecord } from './cities.data';
  */
 
 /**
- * Минимальная длина запроса: 2 символа (контракт 1.3.0).
- * Короче — 422: пустой массив означает «города нет», а не «ты ввёл мало».
+ * Границы поиска живут в `./limits`: их импортирует фронт, и он не должен
+ * тянуть за собой справочник на 3 000 записей.
  */
-export const MIN_QUERY_LENGTH = 2;
-export const MAX_QUERY_LENGTH = 120;
-export const DEFAULT_LIMIT = 5;
-export const MAX_LIMIT = 10;
+export { DEFAULT_LIMIT, MAX_LIMIT, MAX_QUERY_LENGTH, MIN_QUERY_LENGTH } from './limits';
 
 export { CITY_DATASET_VERSION };
 
