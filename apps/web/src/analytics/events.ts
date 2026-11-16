@@ -97,8 +97,8 @@ export function rejectedFieldOf(field: string): RejectedField {
   return (REJECTED_FIELDS as readonly string[]).includes(field) ? (field as RejectedField) : 'other';
 }
 
-/** What was being bought: a code of the contract's `PlanCode`. */
-type PlanCode = components['schemas']['PlanCode'];
+/** What was being bought: a plan code returned by the server-owned catalogue. */
+type OrderablePlanCode = components['schemas']['OrderablePlanCode'];
 
 /**
  * What an event says besides its name. Every value comes from a closed list in the
@@ -117,12 +117,12 @@ export interface EventProps {
   /** A check of the app's own stopped the user. Which field, never why: the reason would be a fact about the value. */
   validation_failed_client: { step: AnalyticsStep; field: ClientCheckedField };
   /** The user tapped «pay»: before the server is asked for an invoice. */
-  checkout_started: { plan_code: PlanCode };
+  checkout_started: { plan_code: OrderablePlanCode };
   /** The invoice exists and Telegram is showing it. */
-  checkout_opened: { plan_code: PlanCode };
+  checkout_opened: { plan_code: OrderablePlanCode };
   /** The server confirmed the purchase. Telegram's own «paid» is not this event. */
-  payment_succeeded: { plan_code: PlanCode };
-  payment_cancelled: { plan_code: PlanCode };
+  payment_succeeded: { plan_code: OrderablePlanCode };
+  payment_cancelled: { plan_code: OrderablePlanCode };
   /** A finished report is on screen. */
   report_ready_view: { report_id: string };
   /**

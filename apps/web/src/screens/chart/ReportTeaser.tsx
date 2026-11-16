@@ -1,10 +1,8 @@
 import { Button, Card, LockIcon, Skeleton, SkeletonGroup } from '@astro-soul/ui';
 import { useCallback, useId, useState } from 'react';
 import { isApiError, type Api, type Report } from '../../api';
-import { Stars } from '../../components/Stars';
 import { useRequest } from '../../hooks/useRequest';
 import { ru } from '../../i18n/ru';
-import { expectedStars, REPORT_PLAN } from '../../lib/plans';
 import styles from './ReportTeaser.module.css';
 
 const copy = ru.chart;
@@ -182,11 +180,7 @@ function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrd
           <span className={styles.badgeText}>{copy.teaserLocked}</span>
         </p>
       </div>
-      <Button onClick={onBuy}>
-        <span>
-          {copy.teaserCta} <Stars count={expectedStars(REPORT_PLAN)} />
-        </span>
-      </Button>
+      <Button onClick={onBuy}>{copy.teaserCta}</Button>
     </>
   );
 }
