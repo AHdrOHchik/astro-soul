@@ -342,6 +342,52 @@ describe('ReportScreen: the order', () => {
     expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'report', code: 'report_failed' } });
   });
 
+  it('503 report breaker open: clear message, retry and support, and only the status is counted', async () => {
+    const api = fakeApi();
+    api.orderReport.mockRejectedValue(apiError('UPSTREAM_LLM', {
+      status: 503,
+      details: { reason: 'report_breaker_open' },
+      requestId: 'req-breaker',
+    }));
+    const { analytics, user } = setup({ api, props: { ...idle, supportLink: 'https://t.me/astro_support' } });
+
+    await user.click(order());
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(copy.breakerOpenText);
+    const retry = screen.getByRole('button', { name: copy.retry });
+    const support = screen.getByRole('button', { name: ru.support.write });
+    expect(retry).toBeEnabled();
+    expect(support).toBeEnabled();
+    expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'report', code: '503' } });
+    expect(JSON.stringify(analytics.events)).not.toContain('req-breaker');
+  });
+
+  it('503 with another or missing reason, and ordinary 500, keep their ordinary error text', async () => {
+    const api = fakeApi();
+    api.orderReport
+      .mockRejectedValueOnce(apiError('UPSTREAM_LLM', { status: 503, details: { reason: 'maintenance' } }))
+      .mockRejectedValueOnce(apiError('UPSTREAM_LLM', { status: 503 }))
+      .mockRejectedValueOnce(apiError('INTERNAL', { status: 500 }));
+
+    const other = setup({ api, props: idle });
+    await other.user.click(order());
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.UPSTREAM_LLM.text);
+    expect(screen.queryByText(copy.breakerOpenText)).not.toBeInTheDocument();
+    other.unmount();
+
+    const empty = setup({ api, props: idle });
+    await empty.user.click(order());
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.UPSTREAM_LLM.text);
+    expect(screen.queryByText(copy.breakerOpenText)).not.toBeInTheDocument();
+    empty.unmount();
+
+    const internal = setup({ api, props: idle });
+    await internal.user.click(order());
+    expect(await screen.findByRole('alert')).toHaveTextContent(ru.errors.INTERNAL.text);
+    expect(screen.queryByText(copy.breakerOpenText)).not.toBeInTheDocument();
+  });
+
   it('402: on to the paywall, with the reason; right after a purchase the payment is «being processed» instead', async () => {
     const api = fakeApi();
     api.orderReport.mockRejectedValue(apiError('PAYMENT_REQUIRED', { status: 402 }));

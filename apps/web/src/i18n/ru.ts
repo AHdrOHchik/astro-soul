@@ -472,6 +472,8 @@ export const ru = {
     orderRejectedTitle: 'Не удалось заказать разбор',
     /** Owner's wording. */
     rateLimited: 'Слишком часто, попробуй через минуту.',
+    breakerOpenTitle: 'Разбор временно недоступен',
+    breakerOpenText: 'Разбор сейчас не получается. Мы уже разбираемся — попробуй через полчаса.',
   },
 
   /** Screen 8, and its card on the chart screen. The forecast itself is the server's text, never written here. */
