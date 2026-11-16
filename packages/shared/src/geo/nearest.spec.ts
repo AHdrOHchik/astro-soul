@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EARTH_RADIUS_KM, findNearestCity, haversineKm } from './nearest';
+import { EARTH_RADIUS_KM, findNearestCity, haversineKm } from './nearest.js';
 
 describe('haversineKm', () => {
   it('Москва — Санкт-Петербург ≈ 630 км', () => {

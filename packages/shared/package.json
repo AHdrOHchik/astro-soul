@@ -3,35 +3,52 @@
   "version": "0.1.0",
   "private": true,
   "description": "Общие типы, планы и квоты: единственный источник правды по ценам и доступам",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/cjs/index.d.ts",
   "files": [
     "dist"
   ],
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./geo/limits": {
+      "import": {
+        "types": "./dist/esm/geo/limits.d.ts",
+        "default": "./dist/esm/geo/limits.js"
+      },
+      "require": {
+        "types": "./dist/cjs/geo/limits.d.ts",
+        "default": "./dist/cjs/geo/limits.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.esm.json && tsc -p tsconfig.build.cjs.json && node scripts/write-package-types.mjs",
     "typecheck": "pnpm run gen:contracts:check && tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist",
     "test": "vitest run --passWithNoTests",
     "gen:contracts": "openapi-typescript ../../api.openapi.yaml -o src/contracts/generated.ts",
     "gen:contracts:check": "openapi-typescript ../../api.openapi.yaml -o src/contracts/generated.ts --check",
     "build:cities": "node scripts/build-cities.mjs",
-    "check:cities": "node scripts/build-cities.mjs --check"
+    "check:cities": "node scripts/build-cities.mjs --check",
+    "build:esm": "tsc -p tsconfig.build.esm.json",
+    "build:cjs": "tsc -p tsconfig.build.cjs.json"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
+    "openapi-typescript": "^7.13.0",
     "typescript": "^5.6.3",
-    "vitest": "^5.1.0",
-    "openapi-typescript": "^7.13.0"
-  },
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./geo/limits": {
-      "types": "./dist/geo/limits.d.ts",
-      "default": "./dist/geo/limits.js"
-    },
-    "./package.json": "./package.json"
+    "vitest": "^5.1.0"
   }
 }

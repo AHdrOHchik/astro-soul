@@ -1,10 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import {
   CITY_DATASET_VERSION,
-  DEFAULT_LIMIT,
-  MAX_LIMIT,
-  MAX_QUERY_LENGTH,
-  MIN_QUERY_LENGTH,
   findNearestCity,
   normalizeCityQuery,
   searchCities,
@@ -35,12 +31,14 @@ export interface NominatimPlace {
   readonly namedetails?: { readonly name?: string };
 }
 
-/** Машинные причины 503 `GEO_NOT_FOUND`. */
-export type GeoProviderReason =
-  | 'provider_timeout'
-  | 'provider_unavailable'
-  | 'not_configured'
-  | 'no_timezone';
+/**
+ * Машинные причины `GEO_NOT_FOUND` (503) — только те, где повтор имеет смысл.
+ *
+ * `no_timezone` сюда не входит: пояса у точки нет никогда, повтор не поможет.
+ * Это `422 VALIDATION_FAILED` с `details.reason = no_timezone`
+ * (контракт 1.5.12).
+ */
+export type GeoProviderReason = 'provider_timeout' | 'provider_unavailable' | 'not_configured';
 
 /** Сколько городов справочника достаточно, чтобы не ходить наружу. */
 export interface GeoServiceOptions {
@@ -86,23 +84,27 @@ export class GeoService {
     const query = typeof rawQuery === 'string' ? rawQuery.trim() : '';
     const limit = this.parseLimit(rawLimit);
 
-    // Короче двух символов — 422, а не пустой массив: пустой массив по
+    // Короче минимальной длины — 422, а не пустой массив: пустой массив по
     // контракту 1.3.0 означает «города нет», а не «ты ввёл слишком мало».
-    if (query.length < MIN_QUERY_LENGTH) {
-      throw invalidFields(
-        [{ field: 'query', message: 'Введи хотя бы 2 буквы' }],
-        { reason: 'geo_query_too_short' },
+    // Сама длина — из окружения (`GEO_MIN_QUERY_LENGTH`), не из кода.
+    if (query.length < this.env.GEO_MIN_QUERY_LENGTH) {
+      throw this.invalidQuery(
+        'geo_query_too_short',
+        `Введи хотя бы ${String(this.env.GEO_MIN_QUERY_LENGTH)} символа`,
       );
     }
 
-    if (query.length > MAX_QUERY_LENGTH) {
-      throw invalidFields(
-        [{ field: 'query', message: 'Слишком длинный запрос — введи название города' }],
-        { reason: 'geo_query_too_long' },
+    if (query.length > this.env.GEO_MAX_QUERY_LENGTH) {
+      throw this.invalidQuery(
+        'geo_query_too_long',
+        `Слишком длинный запрос — не больше ${String(this.env.GEO_MAX_QUERY_LENGTH)} символов`,
       );
     }
 
-    const local = searchCities(query, limit);
+    const local = searchCities(query, {
+      limit,
+      minQueryLength: this.env.GEO_MIN_QUERY_LENGTH,
+    });
     const enough = local.length >= this.env.GEO_MIN_LOCAL_CANDIDATES;
     if (this.env.GEO_PROVIDER !== 'nominatim' || enough) {
       return local;
@@ -124,28 +126,28 @@ export class GeoService {
   }
 
   /**
-   * `limit` — 1…10 (контракт 1.4.0). Вне диапазона — 422, а не обрезка:
-   * клиент не должен получать другой ответ, чем просил. Отсутствие поля —
-   * значение по умолчанию.
+   * `limit` — потолок задаёт сервер (`GEO_MAX_LIMIT`), а не контракт.
+   *
+   * Решение владельца (итерация 21): число вне диапазона **молча зажимается**,
+   * а не даёт `422`. Причина: `limit` клиент не передаёт вовсе (он ему не нужен),
+   * а если передал — это подсказка, а не требование; отказ на подсказке ломает
+   * поиск ни за что. Мусор вместо числа — по-прежнему `422`: это ошибка формы,
+   * и угадывать за клиента здесь нечего.
    */
   private parseLimit(rawLimit: unknown): number {
+    const max = this.env.GEO_MAX_LIMIT;
+
     if (rawLimit === undefined || rawLimit === null) {
-      return DEFAULT_LIMIT;
+      return Math.min(this.env.GEO_DEFAULT_LIMIT, max);
     }
 
     if (typeof rawLimit !== 'number' || !Number.isInteger(rawLimit)) {
-      throw invalidFields([{ field: 'limit', message: 'limit — целое число от 1 до 10' }], {
+      throw invalidFields([{ field: 'limit', message: 'limit — целое число' }], {
         reason: 'geo_limit_invalid',
       });
     }
 
-    if (rawLimit < 1 || rawLimit > MAX_LIMIT) {
-      throw invalidFields([{ field: 'limit', message: 'limit — целое число от 1 до 10' }], {
-        reason: 'geo_limit_out_of_range',
-      });
-    }
-
-    return rawLimit;
+    return Math.min(Math.max(rawLimit, 1), max);
   }
 
   /**
@@ -270,7 +272,13 @@ export class GeoService {
     }
 
     if (result.length === 0 && rejectedNoTimezone > 0) {
-      throw this.providerUnavailable('no_timezone');
+      // Постоянная причина, а не временная: пояса у этой точки нет и не будет.
+      // 503 здесь читался как «сервис недоступен, повтори» — и человек
+      // повторял запрос, который не мог пройти (контракт 1.5.12).
+      throw this.invalidQuery(
+        'no_timezone',
+        'Для этой точки нет часового пояса — выбери город из списка',
+      );
     }
 
     if (approximate > 0) {
@@ -316,6 +324,21 @@ export class GeoService {
    */
   private providerUnavailable(reason: GeoProviderReason): ApiError {
     return new ApiError('GEO_NOT_FOUND', 503, { reason, details: { reason } });
+  }
+
+  /**
+   * `422` по полю `query` с машинной причиной в `details.reason`.
+   *
+   * Не `invalidFields` из `api-error`: тот кладёт в `details` только
+   * `field_errors`, а клиенту и логам здесь нужна ещё и причина — по ней
+   * видно, это «слишком коротко», «слишком длинно» или «пояса у точки нет».
+   */
+  private invalidQuery(reason: string, message: string): ApiError {
+    return new ApiError('VALIDATION_FAILED', 422, {
+      reason,
+      message,
+      details: { reason, field_errors: [{ field: 'query', message }] },
+    });
   }
 
   get datasetVersion(): string {

@@ -1,4 +1,4 @@
-import type { Plan } from './plans';
+import type { Plan } from './plans.js';
 
 /**
  * Результат `getEntitlements(userId)` — единственного места, где решается,

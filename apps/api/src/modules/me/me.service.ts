@@ -106,6 +106,14 @@ export class MeService {
       entitlements: toEntitlementsDto(entitlements),
       quotas,
       onboarding_step: onboardingStep,
+      // Границы предпроверки ввода для поиска города. Только два числа:
+      // `default/max limit` клиенту не нужны — `limit` он не передаёт, а
+      // потолок решает сервер. Клиент без этого поля (старый сервер) просто
+      // не блокирует ввод и полагается на `422` с `field_errors[0].field = query`.
+      limits: {
+        geo_min_query_length: this.env.GEO_MIN_QUERY_LENGTH,
+        geo_max_query_length: this.env.GEO_MAX_QUERY_LENGTH,
+      },
     };
   }
 

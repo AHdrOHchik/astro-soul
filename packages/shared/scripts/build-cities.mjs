@@ -27,6 +27,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -42,6 +43,23 @@ const CITIES_MIRROR =
   'https://codeload.github.com/nabilashraf/cities1000/tar.gz/refs/heads/master';
 const ADMIN1_MIRROR =
   'https://codeload.github.com/unforgivenvirtuoso/geonames_admin1_to_name/tar.gz/refs/heads/main';
+/**
+ * Русские названия с языковой пометкой `isolanguage = ru` из GeoNames
+ * `alternateNamesV2` (CC BY 4.0).
+ *
+ * Почему не из самого `cities1000`: в его колонке `alternatenames` языковых
+ * пометок нет — «Київ», «Харьков» и «Брэст» лежат вперемешку, и русское
+ * название приходилось угадывать транслитерацией. Человек, набирающий
+ * привычное «Нижний Новгород», в такой угадайке не всегда находил свой город,
+ * а при `GEO_PROVIDER=bundled` фолбэка нет вовсе.
+ *
+ * `download.geonames.org` из сборки недоступен (нет сети до него), поэтому
+ * берём уже собранный из `alternateNamesV2` индекс «страна|ascii-имя → русское
+ * имя» (62 662 записи, тот же GeoNames, та же лицензия). Транслитерация
+ * осталась фолбэком для городов, которых в индексе нет, — их число печатается.
+ */
+const RU_INDEX_MIRROR =
+  'https://api.github.com/repos/zhoock/multi-artist-platform/contents/src/pages/UserDashboard/components/audience/geoAudienceCityRuIndex.json';
 
 /** РФ и СНГ: для них порог населения ниже, чем для остального мира. */
 const CIS_COUNTRIES = new Set([
@@ -436,6 +454,28 @@ function editDistance(a, b) {
   return previous[b.length];
 }
 
+/**
+ * Русское название из индекса `isolanguage = ru` (GeoNames `alternateNamesV2`).
+ *
+ * Ключ — «страна|ascii-имя в нижнем регистре», как в самом индексе. Отсеиваем
+ * то, что не годится для поиска и чтения: сокращения с точкой («Ниж.Одес»),
+ * скобки, цифры, латиницу внутри кириллицы. Такие записи уходят в фолбэк —
+ * транслитерацию, и считаются отдельно.
+ */
+function russianFromIndex(ruIndex, country, asciiName) {
+  if (ruIndex === null) return null;
+  const key = `${country}|${asciiName.trim().toLowerCase().replace(/\s+/gu, ' ')}`;
+  const name = ruIndex[key];
+  if (typeof name !== 'string') return null;
+  if (name.length === 0 || name.length > 40) return null;
+  if (!CYRILLIC.test(name) || LATIN.test(name)) return null;
+  if (/[.()[\]0-9]/u.test(name)) return null;
+  if (NON_RUSSIAN_CYRILLIC.test(name) || NON_RUSSIAN_EXTRA.test(name)) return null;
+  // Одна буква или «—» вместо названия: это не название города.
+  if (name.replace(/[^А-Яа-яЁё]/gu, '').length < 2) return null;
+  return name;
+}
+
 function russianName(alternates, latinName) {
   const russian = alternates.filter(
     (name) => !NON_RUSSIAN_CYRILLIC.test(name) && !NON_RUSSIAN_EXTRA.test(name),
@@ -455,13 +495,21 @@ function russianName(alternates, latinName) {
 }
 
 function parseArgs(argv) {
-  const options = { check: false, fetch: false, cities: null, admin1: null, builtAt: null };
+  const options = {
+    check: false,
+    fetch: false,
+    cities: null,
+    admin1: null,
+    ruIndex: null,
+    builtAt: null,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--check') options.check = true;
     else if (arg === '--fetch') options.fetch = true;
     else if (arg === '--cities') options.cities = argv[++index];
     else if (arg === '--admin1') options.admin1 = argv[++index];
+    else if (arg === '--ru-index') options.ruIndex = argv[++index];
     else if (arg === '--built-at') options.builtAt = argv[++index];
     else throw new Error(`Неизвестный аргумент: ${arg}`);
   }
@@ -479,6 +527,14 @@ function fetchSources() {
   fetchTarball(CITIES_MIRROR, 'cities');
   fetchTarball(ADMIN1_MIRROR, 'admin1');
 
+  // Индекс русских названий — JSON, а не тарбол: качаем как есть.
+  const ruIndexPath = join(dir, 'geoAudienceCityRuIndex.json');
+  execFileSync(
+    'curl',
+    ['-sSL', '-H', 'Accept: application/vnd.github.raw', RU_INDEX_MIRROR, '-o', ruIndexPath],
+    { stdio: 'inherit' },
+  );
+
   const list = execFileSync('find', [dir, '-name', 'cities1000.txt'], { encoding: 'utf8' })
     .split('\n')
     .filter(Boolean);
@@ -490,7 +546,7 @@ function fetchSources() {
     throw new Error('Не нашли cities1000.txt или admin1.json в скачанном архиве');
   }
 
-  return { cities: list[0], admin1: admin1[0], dir };
+  return { cities: list[0], admin1: admin1[0], ruIndex: ruIndexPath, dir };
 }
 
 function readDump(path) {
@@ -529,7 +585,7 @@ function validTimeZone(tz) {
   }
 }
 
-function selectCities(rows, admin1) {
+function selectCities(rows, admin1, ruIndex = null) {
   const overrides = NAME_OVERRIDES.map(([country, name, lat, lon, aliases]) => ({
     country,
     name,
@@ -540,6 +596,9 @@ function selectCities(rows, admin1) {
 
   const selected = [];
   const skipped = { noTimezone: 0, noCoords: 0, district: 0 };
+  // Откуда взялось название: из индекса `isolanguage = ru`; иначе кириллица из
+  // `alternatenames` дампа (транслитерация — рабочий фолбэк); иначе латиница.
+  const nameSource = { ru: 0, cyrillicFallback: 0, latin: 0 };
 
   for (const row of rows) {
     if (EXCLUDED_FEATURE_CODES.has(row.featureCode)) {
@@ -571,8 +630,14 @@ function selectCities(rows, admin1) {
       (name) => !NON_RUSSIAN_CYRILLIC.test(name) && !NON_RUSSIAN_EXTRA.test(name),
     );
 
+    const fromIndex = russianFromIndex(ruIndex, row.country, row.asciiName);
+    const guessed = russianName(alternates, row.name);
+    const source = fromIndex === null ? (guessed === null ? 'latin' : 'cyrillicFallback') : 'ru';
+    nameSource[source] += 1;
+
     selected.push({
-      name: russianName(alternates, row.name) ?? row.name,
+      name: fromIndex ?? guessed ?? row.name,
+      nameSource: source,
       dumpName: row.name,
       asciiName: row.asciiName,
       alternates,
@@ -661,6 +726,7 @@ function selectCities(rows, admin1) {
   return {
     cities: merged,
     skipped,
+    nameSource,
     unusedOverrides: overrides
       .filter((item) => !selected.some((city) => city.override === item))
       .map((item) => item.name),
@@ -787,6 +853,16 @@ function renderMeta(meta) {
     '  readonly criteria: string;',
     '  readonly countries: number;',
     '  readonly count: number;',
+    '  /** Сколько названий взято из GeoNames с пометкой `isolanguage = ru`. */',
+    '  readonly namesFromRuIndex: number;',
+    '  /** Кириллица из `alternatenames` дампа: в индексе `ru` названия не было. */',
+    '  readonly namesFromCyrillicFallback: number;',
+    '  /** Осталось латиницей: кириллического варианта нет ни в индексе, ни в дампе. */',
+    '  readonly namesFromLatinFallback: number;',
+    '  /** Города на транслите — первые 20, чтобы список был виден без запуска сборки. */',
+    '  readonly transliteratedNames: readonly string[];',
+    '  /** sha256 файла `cities.data.ts`: по нему `--check` сверяет данные офлайн. */',
+    '  readonly dataFileSha256: string;',
     '}',
     '',
     'export const CITY_DATASET_META: CityDatasetMeta = {',
@@ -798,27 +874,102 @@ function renderMeta(meta) {
     `  builtAt: ${JSON.stringify(meta.builtAt)},`,
     `  criteria: ${JSON.stringify(meta.criteria)},`,
     `  countries: ${meta.countries},`,
-    `  count: ${meta.count} ,`.replace(' ,', ','),
+    `  count: ${meta.count},`,
+    `  namesFromRuIndex: ${meta.namesFromRuIndex},`,
+    `  namesFromCyrillicFallback: ${meta.namesFromCyrillicFallback},`,
+    `  namesFromLatinFallback: ${meta.namesFromLatinFallback},`,
+    `  transliteratedNames: ${JSON.stringify(meta.transliteratedNames)},`,
+    `  dataFileSha256: ${JSON.stringify(meta.dataFileSha256)},`,
     '};',
     '',
   ].join('\n');
 }
 
+/**
+ * Офлайн-сверка закоммиченного справочника с его метаданными.
+ *
+ * Дамп для этого не нужен (470 МБ в CI никто не тянет): `cities.meta.ts`
+ * хранит sha256 файла `cities.data.ts`, количество записей и версию датасета.
+ * Правка данных руками или рассинхрон меты ловится здесь, а полная пересборка
+ * с дампом остаётся отдельной командой (`--fetch --check`).
+ */
+function offlineCheck() {
+  const data = readFileSync(DATA_FILE, 'utf8');
+  const meta = readFileSync(META_FILE, 'utf8');
+
+  const problems = [];
+  const expectedHash = /dataFileSha256: "([0-9a-f]{64})"/u.exec(meta)?.[1] ?? null;
+  const actualHash = createHash('sha256').update(data).digest('hex');
+  if (expectedHash === null) {
+    problems.push('в метаданных нет dataFileSha256: пересобери справочник');
+  } else if (expectedHash !== actualHash) {
+    problems.push(
+      `cities.data.ts не совпадает с метаданными (sha256 ${actualHash.slice(0, 12)}…, ожидался ${expectedHash.slice(0, 12)}…): файл правили руками`,
+    );
+  }
+
+  const records = data.match(/^  \{ name: /gmu)?.length ?? 0;
+  const expectedCount = Number(/count: (\d+)/u.exec(meta)?.[1] ?? Number.NaN);
+  if (records !== expectedCount) {
+    problems.push(`в файле ${records} записей, в метаданных ${String(expectedCount)}`);
+  }
+
+  const version = /CITY_DATASET_VERSION = '([^']+)'/u.exec(data)?.[1] ?? null;
+  const metaVersion = /version: "([^"]+)"/u.exec(meta)?.[1] ?? null;
+  if (version === null || version !== metaVersion) {
+    problems.push(`версия датасета расходится: файл ${String(version)}, мета ${String(metaVersion)}`);
+  }
+
+  const withoutTz = data.match(/^  \{ name: [^\n]*$/gmu)?.filter((line) => !line.includes('tz: "')) ?? [];
+  if (withoutTz.length > 0) {
+    problems.push(`записей без IANA-пояса: ${withoutTz.length}`);
+  }
+
+  if (problems.length > 0) {
+    process.stdout.write(`Справочник не прошёл сверку:\n  • ${problems.join('\n  • ')}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  process.stdout.write(
+    `Справочник совпадает с метаданными: ${records} записей, версия ${String(version)}, ` +
+      `sha256 ${actualHash.slice(0, 12)}…\n`,
+  );
+}
+
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  let sources = { cities: options.cities, admin1: options.admin1, dir: null };
+  let sources = {
+    cities: options.cities,
+    admin1: options.admin1,
+    ruIndex: options.ruIndex,
+    dir: null,
+  };
 
   if (options.fetch) {
-    sources = { ...fetchSources(), ...sources };
+    // Скачанное главнее пустых аргументов: явные пути по-прежнему выигрывают.
+    const fetched = fetchSources();
+    sources = {
+      cities: sources.cities ?? fetched.cities,
+      admin1: sources.admin1 ?? fetched.admin1,
+      ruIndex: sources.ruIndex ?? fetched.ruIndex,
+      dir: fetched.dir,
+    };
+  }
+
+  // `--check` без дампа — офлайн-сверка с метаданными. Это основной режим для
+  // CI: 470 МБ дампа там не нужны, а рассинхрон ловится тем же хешем.
+  if (options.check && sources.cities === null && sources.admin1 === null) {
+    offlineCheck();
+    return;
   }
 
   if (sources.cities === null || sources.admin1 === null) {
     process.stdout.write(
-      'Нет дампа GeoNames. Передай --cities <cities1000.txt> и --admin1 <admin1.json>,\n' +
-        'либо запусти с --fetch (скачает зеркало дампа во временный каталог).\n',
+      'Нет дампа GeoNames. Передай --cities <cities1000.txt>, --admin1 <admin1.json>' +
+        ' и --ru-index <geoAudienceCityRuIndex.json>,\n' +
+        'либо запусти с --fetch (скачает зеркала во временный каталог).\n',
     );
-    // Проверка, которой нечего проверять, не может считаться успешной:
-    // иначе «справочник совпадает» печатается при пустом каталоге дампа.
     process.exitCode = 1;
     return;
   }
@@ -826,24 +977,42 @@ function main() {
   process.stdout.write(`Читаю ${sources.cities}\n`);
   const rows = readDump(sources.cities);
   const admin1 = JSON.parse(readFileSync(sources.admin1, 'utf8'));
-  const { cities, skipped, unusedOverrides } = selectCities(rows, admin1);
+  const ruIndex =
+    sources.ruIndex === null ? null : JSON.parse(readFileSync(sources.ruIndex, 'utf8'));
+  if (ruIndex === null) {
+    process.stdout.write(
+      '  предупреждение: без --ru-index все названия соберутся транслитерацией\n',
+    );
+  }
+
+  const { cities, skipped, unusedOverrides, nameSource } = selectCities(rows, admin1, ruIndex);
 
   cities.sort((a, b) => (b.population ?? 0) - (a.population ?? 0) || a.name.localeCompare(b.name, 'ru'));
   assertSelection(cities);
 
+  const transliterated = cities.filter((city) => city.nameSource !== 'ru');
+  const cyrillicFallback = transliterated.filter((city) => city.nameSource === 'cyrillicFallback');
+  const latinFallback = transliterated.filter((city) => city.nameSource === 'latin');
   const builtAt = options.builtAt ?? '2026-11-17';
   const meta = {
     datasetVersion: `${builtAt}-geonames-cities1000`,
     source: 'GeoNames cities1000',
-    sourceVersion: `cities1000, ${rows.length} записей в дампе`,
+    sourceVersion: `${rows.length} записей в дампе; русские названия — alternateNamesV2 (isolanguage = ru)`,
     license: 'CC BY 4.0',
     builtAt,
     criteria: 'РФ и СНГ: население > 15 000; остальной мир: столицы и население > 300 000',
     countries: new Set(cities.map((city) => city.country)).size,
     count: cities.length,
+    namesFromRuIndex: cities.filter((city) => city.nameSource === 'ru').length,
+    namesFromCyrillicFallback: cyrillicFallback.length,
+    namesFromLatinFallback: latinFallback.length,
+    transliteratedNames: transliterated
+      .slice(0, 20)
+      .map((city) => `${city.name} (${city.country})`),
   };
 
   const rendered = render(cities, meta);
+  meta.dataFileSha256 = createHash('sha256').update(rendered).digest('hex');
   const metaRendered = renderMeta(meta);
 
   process.stdout.write(
@@ -853,6 +1022,15 @@ function main() {
       `остальной мир: ${cities.filter((c) => !CIS_COUNTRIES.has(c.country)).length}\n` +
       `  стран: ${meta.countries}; пропущено без пояса: ${skipped.noTimezone}, ` +
       `районов/заброшенных: ${skipped.district}, без координат: ${skipped.noCoords}\n` +
+      `  названия: из индекса isolanguage=ru — ${meta.namesFromRuIndex}, ` +
+      `кириллица из дампа — ${meta.namesFromCyrillicFallback}, ` +
+      `латиницей — ${meta.namesFromLatinFallback}\n` +
+      (transliterated.length === 0
+        ? ''
+        : `  транслит: ${transliterated
+            .slice(0, 20)
+            .map((city) => `${city.name} (${city.country})`)
+            .join(', ')}\n`) +
       (unusedOverrides.length > 0
         ? `  ручных названий без пары в дампе: ${unusedOverrides.length} (${unusedOverrides.slice(0, 5).join(', ')})\n`
         : ''),

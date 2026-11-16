@@ -1,5 +1,5 @@
-import type { QuotaCode } from './contracts';
-import type { Entitlements } from './entitlements';
+import type { QuotaCode } from './contracts.js';
+import type { Entitlements } from './entitlements.js';
 
 export type { QuotaCode };
 

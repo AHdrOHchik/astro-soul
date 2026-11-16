@@ -57,13 +57,25 @@ describe('POST /api/v1/geo/resolve', () => {
     expect((response.body as GeoPlace[]).map((place) => place.name)).toContain('Москва');
   });
 
-  it('один символ → 422 «Введи хотя бы 2 буквы», а не пустой массив', async () => {
+  it('один символ → 422 с серверным минимумом, а не пустой массив', async () => {
     const response = await resolve({ query: 'М' }).expect(422);
 
     expect(response.body.code).toBe('VALIDATION_FAILED');
+    // Текст называет минимум из окружения (`GEO_MIN_QUERY_LENGTH`), а не число
+    // из кода: поменяли .env — поменялся и текст.
     expect(response.body.details.field_errors).toEqual([
-      { field: 'query', message: 'Введи хотя бы 2 буквы' },
+      { field: 'query', message: 'Введи хотя бы 2 символа' },
     ]);
+    expect(response.body.details.reason).toBe('geo_query_too_short');
+  });
+
+  it('длиннее GEO_MAX_QUERY_LENGTH → 422 с field_errors по query', async () => {
+    const response = await resolve({ query: 'М'.repeat(121) }).expect(422);
+
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'query', message: 'Слишком длинный запрос — не больше 120 символов' },
+    ]);
+    expect(response.body.details.reason).toBe('geo_query_too_long');
   });
 
   it('уважает limit', async () => {
@@ -71,14 +83,22 @@ describe('POST /api/v1/geo/resolve', () => {
     expect((response.body as GeoPlace[]).length).toBeLessThanOrEqual(2);
   });
 
-  it('limit вне 1…10 → 422, а не обрезка (контракт 1.4.0)', async () => {
-    for (const limit of [0, 11, -1, 100]) {
-      const response = await resolve({ query: 'Москва', limit }).expect(422);
-      expect(response.body.code).toBe('VALIDATION_FAILED');
-      expect(response.body.details.field_errors).toEqual([
-        { field: 'limit', message: expect.any(String) as string },
-      ]);
-    }
+  it('limit больше GEO_MAX_LIMIT → молча зажимается, а не 422 (контракт 1.5.12)', async () => {
+    const response = await resolve({ query: 'Нов', limit: 999 }).expect(200);
+    expect((response.body as GeoPlace[]).length).toBeLessThanOrEqual(10);
+  });
+
+  it('limit=1 — ровно один кандидат; limit≤0 зажимается до одного', async () => {
+    const one = await resolve({ query: 'Нов', limit: 1 }).expect(200);
+    expect((one.body as GeoPlace[]).length).toBe(1);
+
+    const zero = await resolve({ query: 'Нов', limit: 0 }).expect(200);
+    expect((zero.body as GeoPlace[]).length).toBe(1);
+  });
+
+  it('без limit сервер отдаёт GEO_DEFAULT_LIMIT кандидатов', async () => {
+    const response = await resolve({ query: 'Нов' }).expect(200);
+    expect((response.body as GeoPlace[]).length).toBe(5);
   });
 
   it('limit не целое число → 422', async () => {

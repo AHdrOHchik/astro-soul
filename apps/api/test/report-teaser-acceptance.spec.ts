@@ -7,6 +7,7 @@ import { FICTIONAL_USER, TEST_BOT_TOKEN } from './test-env';
 import { makeFakeAstro } from './fake-astro';
 import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
 import { DISCLAIMER, SECTIONS, TEASER_LENGTH } from '../src/modules/reports/validators';
+import { TEASER_TERMS } from '../src/modules/reports/normalize';
 import {
   MAX_CHAPTERS_PER_FACTOR,
   distributeFocuses,
@@ -248,6 +249,8 @@ interface RunResult {
   readonly validation: { key: string; attempt: number; code: string; severity: string; failures?: string[] }[];
   readonly normalization: Record<string, { normalized: string[]; warnings: string[]; detail?: string[] }> | null;
   readonly attempts: number;
+  /** Тизер, который увидит человек до оплаты. */
+  readonly teaser: string | null;
 }
 
 async function runReport(run: number): Promise<RunResult> {
@@ -294,7 +297,8 @@ async function runReport(run: number): Promise<RunResult> {
     normalization: RunResult['normalization'];
     validation: RunResult['validation'] | null;
     attempts: number;
-  }>(`SELECT section_status, normalization, validation, attempts FROM reports WHERE id = $1`, [
+    teaser: string | null;
+  }>(`SELECT section_status, normalization, validation, attempts, teaser FROM reports WHERE id = $1`, [
     reportId,
   ]);
 
@@ -309,6 +313,7 @@ async function runReport(run: number): Promise<RunResult> {
     validation: row?.validation ?? [],
     normalization: row?.normalization ?? null,
     attempts: row?.attempts ?? 0,
+    teaser: row?.teaser ?? null,
   };
 }
 
@@ -348,12 +353,14 @@ describe('приёмка итерации 19: тизер, служебные с�
       expect(core?.body_md.length ?? 0).toBeGreaterThanOrEqual(1_200);
 
       if (run < 3) {
-        // Сдвиг сработал: окно ушло за термин, пометки нет. Смещение бывает
-        // меньше 400 — важно не «дальше 400 знаков», а «дальше термина»:
-        // пейволл показывает окно без названий планет.
+        // Сдвиг сработал: окно ушло за термин на границу абзаца, пометки нет.
+        // Смещение здесь больше 400 — оно равно началу второго абзаца, а не
+        // «86 знаков внутри первого» (итерация 21).
         expect(teaserStart).toBeGreaterThan(0);
-        expect(teaserStart).toBeLessThan(TEASER_LENGTH);
         expect(teaserWarning).toBeUndefined();
+        // Побочная проверка главного свойства: тизер без терминов и не обрубок.
+        expect(TEASER_TERMS.test(result.teaser ?? '')).toBe(false);
+        expect((result.teaser ?? '').length).toBeGreaterThanOrEqual(TEASER_LENGTH);
       } else {
         // Сдвинуть некуда: текст остался, рядом — фактическое смещение.
         expect(teaserWarning).toBeDefined();

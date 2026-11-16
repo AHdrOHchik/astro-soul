@@ -56,6 +56,23 @@ const envSchema = z.object({
   GEO_MIN_LOCAL_CANDIDATES: z.coerce.number().int().min(1).max(10).default(3),
 
   /**
+   * Границы поиска городов (итерация 21). Раньше эти четыре числа лежали в
+   * `packages/shared/src/geo/limits.ts` — то есть в коде, который уезжал и в
+   * клиент. Теперь они здесь, и клиент узнаёт два нужных ему числа из
+   * `GET /me` (`limits`), а не из своей копии: копия разошлась бы с сервером,
+   * и человек получал бы `422` на длине, которую интерфейс считает нормой.
+   *
+   * Значения по умолчанию — те же, что были в коде (2/120/5/10): прод без
+   * правки `.env` после обновления ведёт себя ровно как раньше.
+   */
+  GEO_MIN_QUERY_LENGTH: z.coerce.number().int().min(1).max(100).default(2),
+  GEO_MAX_QUERY_LENGTH: z.coerce.number().int().min(1).max(500).default(120),
+  /** Сколько кандидатов отдавать, если `limit` не передан. */
+  GEO_DEFAULT_LIMIT: z.coerce.number().int().min(1).max(50).default(5),
+  /** Потолок `limit`: больше — молча зажимаем до этого числа. */
+  GEO_MAX_LIMIT: z.coerce.number().int().min(1).max(50).default(10),
+
+  /**
    * Redis для кэша геоподсказок. Не задан — кэш в памяти процесса (и это
    * видно в логе `geo_cache_unavailable`): поиск работает, но кэш не общий.
    */
@@ -229,6 +246,25 @@ const envSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['LLM_MODEL'],
       message: `LLM_MODEL: нет цены для модели (${LLM_MODEL_IDS.join(', ')})`,
+    });
+  }
+
+  // Границы геопоиска проверяются вместе: по отдельности каждая верна, а
+  // вместе они дают «минимум больше максимума» — тогда поиск не работает
+  // никогда. Ошибка называет переменную, которую надо править, а не «конфиг».
+  if (value.GEO_MAX_QUERY_LENGTH < value.GEO_MIN_QUERY_LENGTH) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['GEO_MAX_QUERY_LENGTH'],
+      message: `GEO_MAX_QUERY_LENGTH: должен быть не меньше GEO_MIN_QUERY_LENGTH (${String(value.GEO_MIN_QUERY_LENGTH)})`,
+    });
+  }
+
+  if (value.GEO_MAX_LIMIT < value.GEO_DEFAULT_LIMIT) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['GEO_MAX_LIMIT'],
+      message: `GEO_MAX_LIMIT: должен быть не меньше GEO_DEFAULT_LIMIT (${String(value.GEO_DEFAULT_LIMIT)})`,
     });
   }
 });

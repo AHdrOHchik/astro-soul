@@ -100,6 +100,9 @@ export function buildEntitlements(account: MockAccount, now: number): Entitlemen
 }
 
 /** `GET /me` for the mock's user as it stands at `now`. */
+/** Границы поиска, которые мок-сервер объявляет в `GET /me`; по ним же он судит запрос. */
+export const GEO_LIMITS = { geo_min_query_length: 2, geo_max_query_length: 120 } as const;
+
 export function buildMe(account: MockAccount, now: number): Me {
   const hasChart = account.chartId !== null;
   const entitlements = entitlementsOf(account, now);
@@ -118,6 +121,7 @@ export function buildMe(account: MockAccount, now: number): Me {
         : { plan: subscription.plan, is_active: entitlements.is_active, expires_at: new Date(subscription.expiresAt).toISOString(), auto_renew: true },
     entitlements,
     quotas: quotasOf(account, entitlements, now),
+    limits: GEO_LIMITS,
     onboarding_step: hasChart ? 'done' : 'birth_date',
   };
 }

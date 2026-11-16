@@ -449,9 +449,15 @@ function firstTermAt(text: string): number | null {
  * а смещение первого термина вообще не измерялось. Теперь смещение
  * считается и уходит в `validation` (warning `teaser_terms`) и в лог.
  *
- * Окно пробуется не только по границам абзацев, но и по границам
- * предложений: в `core` абзац почти всегда начинается с фактора, и
- * абзацных границ не хватало, чтобы уйти от термина.
+ * Окно сдвигается **только по границе абзаца**. Приёмочный прогон итерации 19
+ * показал `teaser_start = 86`: термин уходил из окна, но сдвиг случался внутри
+ * первого абзаца — выбрасывался самый сильный заход, а тизер остаётся
+ * единственным текстом, который человек читает до оплаты. Сдвиг на границу
+ * предложения внутри абзаца такого права не даёт, поэтому его больше нет.
+ *
+ * Второе правило — окно никогда не короче `length` знаков **по содержанию**:
+ * сдвиг на 86 знаков при окне 400 формально оставлял 314 знаков текста, то есть
+ * обрубок. Не хватает материала — не сдвигаем вовсе (`start = 0`).
  */
 export function normalizeTeaser(bodyMd: string, length = TEASER_LENGTH): TeaserNormalization {
   const natural = bodyMd.slice(0, length);
@@ -460,33 +466,23 @@ export function normalizeTeaser(bodyMd: string, length = TEASER_LENGTH): TeaserN
     return { teaser: natural, start: 0, firstTerm: null, shifted: false, hasTerms: false };
   }
 
-  const starts = new Set<number>([0]);
+  const starts: number[] = [];
   let offset = 0;
   for (const paragraph of splitParagraphs(bodyMd)) {
     const paragraphStart = bodyMd.indexOf(paragraph, offset);
     if (paragraphStart === -1) {
       continue;
     }
-    starts.add(paragraphStart);
-    let sentenceOffset = paragraphStart;
-    for (const sentence of splitSentences(paragraph)) {
-      const sentenceStart = bodyMd.indexOf(sentence, sentenceOffset);
-      if (sentenceStart === -1) {
-        continue;
-      }
-      starts.add(sentenceStart);
-      sentenceOffset = sentenceStart + sentence.length;
+    if (paragraphStart > 0) {
+      starts.push(paragraphStart);
     }
     offset = paragraphStart + paragraph.length;
   }
 
-  for (const start of [...starts].sort((a, b) => a - b)) {
-    if (start === 0) {
-      continue;
-    }
+  for (const start of starts.sort((a, b) => a - b)) {
     const candidate = bodyMd.slice(start, start + length);
-    // Короткий хвост тизером быть не может: пейволл показывает 400 знаков.
-    if (candidate.length < Math.round(length / 2)) {
+    // Окно короче 400 знаков — не тизер, а обрубок: не сдвигаем.
+    if (candidate.length < length) {
       continue;
     }
     if (firstTermAt(candidate) === null) {

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.11
+  version: 1.5.12
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -285,6 +285,30 @@ info:
         новых разборах не появляется: эти нарушения стали пометками.
         `too_short`, `format`, `forbidden_terms` по-прежнему роняют главу.
 
+    1.5.12 — границы геопоиска задаёт сервер (итерация 21). Ничего не удалено;
+      добавлено одно необязательное поле и уточнены статусы:
+      • `Me.limits` — `{geo_min_query_length, geo_max_query_length}`. Раньше
+        числа 2/120 лежали в `packages/shared/src/geo/limits.ts`, то есть
+        уезжали и в клиент: поменять их можно было только выпуском новой
+        версии мини-аппа, а клиентская копия расходилась с серверной. Теперь
+        они — настройка сервера (`GEO_MIN_QUERY_LENGTH`, `GEO_MAX_QUERY_LENGTH`),
+        а клиент узнаёт их из `GET /me`. Поле **необязательное**: клиент без
+        него не блокирует ввод и полагается на `422` с `field_errors[0].field =
+        query`. `VITE_*` для этого не заводились — второй источник правды;
+      • `POST /geo/resolve`: `query.minLength/maxLength` больше не числа в
+        контракте, а «настройка сервера, значения в `GET /me`». Иначе контракт
+        врёт в первый же день, когда кто-то правит `.env`;
+      • `limit` вне диапазона больше **не** `422`, а молча зажимается до
+        `GEO_MAX_LIMIT`: клиент `limit` не передаёт, а отказ на подсказке ломал
+        бы поиск. Не целое число — по-прежнему `422`;
+      • `422` у `POST /geo/resolve` теперь несёт ещё и `details.reason =
+        no_timezone`: город найден, но достоверного часового пояса у точки нет
+        (явного пояса в ответе провайдера нет, а ближайший город справочника
+        дальше 300 км). Раньше это был `503`, и клиент читал его как «сервис
+        недоступен, повтори» — повторял запрос, который не мог пройти;
+      • `503 GEO_NOT_FOUND` остаётся только за временными причинами:
+        `provider_timeout | provider_unavailable | not_configured`.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
@@ -449,6 +473,24 @@ components:
         onboarding_step:
           type: string
           enum: [birth_date, birth_time, birth_place, done]
+        limits:
+          type: object
+          description: |
+            Границы предпроверки ввода, которые знает сервер (1.5.12). Клиент
+            берёт их отсюда и не хранит свою копию: копия разошлась бы с
+            серверной, и человек получал бы `422` на длине, которую интерфейс
+            считает допустимой. Поле **необязательное**: клиент без него не
+            блокирует ввод и полагается на `422` с `field_errors[0].field = query`.
+          required: [geo_min_query_length, geo_max_query_length]
+          properties:
+            geo_min_query_length:
+              type: integer
+              example: 2
+              description: Минимальная длина `query` в `POST /geo/resolve`
+            geo_max_query_length:
+              type: integer
+              example: 120
+              description: Максимальная длина `query` в `POST /geo/resolve`
 
     Entitlements:
       type: object
@@ -1133,20 +1175,22 @@ paths:
               properties:
                 query:
                   type: string
-                  minLength: 2
-                  maxLength: 120
-                  description: | 
-                    Поиск идёт по мере ввода, начиная с 2 символов. Короче —
-                    `422` с `field_errors[{field: "query"}]`; пустой массив
-                    означает «города нет», а не «слишком короткий запрос».
+                  description: |
+                    Поиск идёт по мере ввода. Минимальная и максимальная длина —
+                    **настройка сервера** (`GEO_MIN_QUERY_LENGTH`,
+                    `GEO_MAX_QUERY_LENGTH`), а не число из контракта: фактические
+                    значения приходят в `GET /me` → `limits.geo_min_query_length`
+                    и `limits.geo_max_query_length`. Короче минимума или длиннее
+                    максимума — `422` с `field_errors[{field: "query"}]`; пустой
+                    массив означает «города нет», а не «слишком короткий запрос».
                 limit:
                   type: integer
-                  default: 5
-                  minimum: 1
-                  maximum: 10
                   description: |
-                    Сколько кандидатов вернуть, 1…10. Вне диапазона — `422`,
-                    без молчаливой обрезки до границы.
+                    Сколько кандидатов вернуть. Клиенту это поле не нужно: без
+                    него сервер берёт `GEO_DEFAULT_LIMIT`, а число больше
+                    `GEO_MAX_LIMIT` **молча зажимает** до потолка (не `422`):
+                    отказ на подсказке ломал бы поиск ни за что. Не целое число —
+                    `422`.
       responses:
         '200':
           description: |
@@ -1159,16 +1203,22 @@ paths:
                 items: { $ref: '#/components/schemas/GeoPlace' }
         '422':
           description: |
-            Запрос короче 2 символов (`VALIDATION_FAILED`) или `limit` вне 1…10.
-            `details.field_errors[0]` = `{field: "query", message: "Введи хотя бы 2 буквы"}`.
+            `VALIDATION_FAILED`, `details.field_errors[0].field` всегда `query`:
+            короче серверного минимума (`details.reason = geo_query_too_short`),
+            длиннее максимума (`geo_query_too_long`), `limit` не целое число
+            (`geo_limit_invalid`) — либо для найденной точки достоверно
+            неизвестен часовой пояс (`details.reason = no_timezone`): пояс
+            «на глаз» не подставляется, и повтор запроса не поможет.
         '429':
           description: 'Слишком частое обновление подсказок: лимит маршрута 120 запросов в минуту'
         '503':
           description: |
-            Провайдер геоданных недоступен (`GEO_NOT_FOUND`). Машинная причина —
-            `details.reason`: `provider_timeout` (не ответил за 2 с),
-            `provider_unavailable` (сеть или статус), `not_configured`
-            (провайдер включён, но не настроен контакт для User-Agent).
+            Провайдер геоданных недоступен (`GEO_NOT_FOUND`) — только временные
+            причины, где повтор имеет смысл. `details.reason`:
+            `provider_timeout` (не ответил за 2 с), `provider_unavailable`
+            (сеть, статус или `429` от провайдера), `not_configured` (провайдер
+            включён, но не настроен контакт для User-Agent). Отсутствие пояса
+            сюда **не** входит: это `422` с `details.reason = no_timezone`.
             Текст `message` готов к показу: «Поиск городов временно недоступен.
             Попробуй ещё раз через минуту.» Пустой результат сюда не относится —
             он отдаётся как 200 [].

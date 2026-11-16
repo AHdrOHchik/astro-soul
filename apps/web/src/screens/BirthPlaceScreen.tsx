@@ -11,10 +11,9 @@ import {
   VisuallyHidden,
   type ScreenProps,
 } from '@astro-soul/ui';
-import { MAX_QUERY_LENGTH, MIN_QUERY_LENGTH } from '@astro-soul/shared/geo/limits';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../analytics';
-import { fieldErrorsOf, type Api, type GeoPlace } from '../api';
+import { fieldErrorsOf, type Api, type GeoPlace, type Me } from '../api';
 import { ErrorState } from '../components/ErrorState';
 import { useClientCheck } from '../hooks/useClientCheck';
 import { usePlaceSearch, type PlaceSearch } from '../hooks/usePlaceSearch';
@@ -30,10 +29,11 @@ const SKELETON_ROWS = [0, 1, 2];
 const placeKey = (place: GeoPlace) => `${place.name}|${String(place.lat)}|${String(place.lon)}`;
 
 /** One line under the field that follows the search; the empty and error states have blocks of their own. */
-function statusText(search: PlaceSearch): string | undefined {
+function statusText(search: PlaceSearch, minQueryLength: number | undefined): string | undefined {
   switch (search.status) {
     case 'idle':
-      return copy.minLength(MIN_QUERY_LENGTH);
+      // Without the server's number there is nothing honest to promise.
+      return minQueryLength === undefined ? undefined : copy.minLength(minQueryLength);
     case 'loading':
       return copy.searching;
     case 'ready':
@@ -45,6 +45,11 @@ function statusText(search: PlaceSearch): string | undefined {
 
 export interface BirthPlaceScreenProps {
   api: Pick<Api, 'resolveGeo'>;
+  /**
+   * The server's own boundaries for a query, from `GET /me` (`limits`). Optional:
+   * an older server sends none, and then the field blocks nothing.
+   */
+  limits?: Me['limits'];
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Reports that a search ran and how it ended, and that the user tried to go on without a place; the query itself is never reported. */
   track: Track;
@@ -66,6 +71,7 @@ export function BirthPlaceScreen({
   api,
   telegram,
   track,
+  limits,
   query,
   place,
   serverError,
@@ -80,7 +86,8 @@ export function BirthPlaceScreen({
   const failure = useRef<HTMLDivElement>(null);
   const [submitted, setSubmitted] = useState(false);
   // While a place is chosen the field shows its name; that must not trigger a new search.
-  const search = usePlaceSearch(api, place === null ? query : '', track);
+  const minQueryLength = limits?.geo_min_query_length;
+  const search = usePlaceSearch(api, place === null ? query : '', track, minQueryLength);
   const missing = place === null && submitted;
   useClientCheck(track, 'birth_place', 'birth_place', missing ? 'missing' : null);
   // The server's own text about the query it was sent belongs at the field, like any other problem with its value.
@@ -138,7 +145,8 @@ export function BirthPlaceScreen({
           autoComplete="off"
           autoCorrect="off"
           spellCheck={false}
-          maxLength={MAX_QUERY_LENGTH}
+          // The server's ceiling, not a copy of it: an older server sends none.
+          maxLength={limits?.geo_max_query_length}
           autoFocus={focusesSearch}
           aria-invalid={error !== undefined || undefined}
           aria-describedby={showsMessage ? messageId : undefined}
@@ -155,7 +163,9 @@ export function BirthPlaceScreen({
             onChange(text, null);
           }}
         />
-        {showsMessage && <FieldMessage id={messageId} error={error} hint={statusText(search)} live />}
+        {showsMessage && (
+          <FieldMessage id={messageId} error={error} hint={statusText(search, minQueryLength)} live />
+        )}
       </Stack>
 
       {place !== null && (

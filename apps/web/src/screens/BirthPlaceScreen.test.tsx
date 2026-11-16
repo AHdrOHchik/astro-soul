@@ -19,7 +19,18 @@ import { BirthPlaceScreen } from './BirthPlaceScreen';
 
 const copy = ru.birthPlace;
 
-function setup(initial: { query?: string; place?: GeoPlace | null; serverError?: string } = {}) {
+/** Границы, какие присылает `GET /me`; числа здесь — только для теста, сборка их не знает. */
+const LIMITS = { geo_min_query_length: 2, geo_max_query_length: 120 };
+
+function setup(
+  initial: {
+    query?: string;
+    place?: GeoPlace | null;
+    serverError?: string;
+    /** `null` — сервер не прислал `limits` (старая версия): поле ничего не блокирует. */
+    limits?: typeof LIMITS | null;
+  } = {},
+) {
   const api = fakeApi();
   const analytics = fakeAnalytics();
   const onNext = vi.fn();
@@ -36,6 +47,7 @@ function setup(initial: { query?: string; place?: GeoPlace | null; serverError?:
         query={query}
         place={place}
         serverError={initial.serverError}
+        limits={initial.limits === null ? undefined : (initial.limits ?? LIMITS)}
         onChange={(nextQuery, nextPlace) => {
           onChange(nextQuery, nextPlace);
           setQuery(nextQuery);
@@ -87,6 +99,18 @@ describe('BirthPlaceScreen', () => {
     expect(api.resolveGeo).toHaveBeenCalledTimes(1);
     expect(api.resolveGeo).toHaveBeenCalledWith('Ка', expect.any(AbortSignal));
     expect(results()).toHaveLength(2);
+  });
+
+  it('blocks nothing when the server sent no limits: its own 422 lands at the field', async () => {
+    const { api, user, input, settle } = setup({ limits: null });
+    expect(screen.queryByText(copy.minLength(2))).not.toBeInTheDocument();
+
+    api.resolveGeo.mockRejectedValueOnce(rejection({ field: 'query', message: 'Введи хотя бы 2 буквы' }));
+    await user.type(input, 'К');
+    await settle();
+
+    expect(api.resolveGeo).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('Введи хотя бы 2 буквы')).toBeInTheDocument();
   });
 
   it('searches once after the user stops typing and lists the places with their time zones', async () => {

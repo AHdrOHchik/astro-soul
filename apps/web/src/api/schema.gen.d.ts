@@ -182,15 +182,21 @@ export interface paths {
                 content: {
                     "application/json": {
                         /**
-                         * @description Поиск идёт по мере ввода, начиная с 2 символов. Короче —
-                         *     `422` с `field_errors[{field: "query"}]`; пустой массив
-                         *     означает «города нет», а не «слишком короткий запрос».
+                         * @description Поиск идёт по мере ввода. Минимальная и максимальная длина —
+                         *     **настройка сервера** (`GEO_MIN_QUERY_LENGTH`,
+                         *     `GEO_MAX_QUERY_LENGTH`), а не число из контракта: фактические
+                         *     значения приходят в `GET /me` → `limits.geo_min_query_length`
+                         *     и `limits.geo_max_query_length`. Короче минимума или длиннее
+                         *     максимума — `422` с `field_errors[{field: "query"}]`; пустой
+                         *     массив означает «города нет», а не «слишком короткий запрос».
                          */
                         query: string;
                         /**
-                         * @description Сколько кандидатов вернуть, 1…10. Вне диапазона — `422`,
-                         *     без молчаливой обрезки до границы.
-                         * @default 5
+                         * @description Сколько кандидатов вернуть. Клиенту это поле не нужно: без
+                         *     него сервер берёт `GEO_DEFAULT_LIMIT`, а число больше
+                         *     `GEO_MAX_LIMIT` **молча зажимает** до потолка (не `422`):
+                         *     отказ на подсказке ломал бы поиск ни за что. Не целое число —
+                         *     `422`.
                          */
                         limit?: number;
                     };
@@ -210,8 +216,12 @@ export interface paths {
                     };
                 };
                 /**
-                 * @description Запрос короче 2 символов (`VALIDATION_FAILED`) или `limit` вне 1…10.
-                 *     `details.field_errors[0]` = `{field: "query", message: "Введи хотя бы 2 буквы"}`.
+                 * @description `VALIDATION_FAILED`, `details.field_errors[0].field` всегда `query`:
+                 *     короче серверного минимума (`details.reason = geo_query_too_short`),
+                 *     длиннее максимума (`geo_query_too_long`), `limit` не целое число
+                 *     (`geo_limit_invalid`) — либо для найденной точки достоверно
+                 *     неизвестен часовой пояс (`details.reason = no_timezone`): пояс
+                 *     «на глаз» не подставляется, и повтор запроса не поможет.
                  */
                 422: {
                     headers: {
@@ -227,10 +237,12 @@ export interface paths {
                     content?: never;
                 };
                 /**
-                 * @description Провайдер геоданных недоступен (`GEO_NOT_FOUND`). Машинная причина —
-                 *     `details.reason`: `provider_timeout` (не ответил за 2 с),
-                 *     `provider_unavailable` (сеть или статус), `not_configured`
-                 *     (провайдер включён, но не настроен контакт для User-Agent).
+                 * @description Провайдер геоданных недоступен (`GEO_NOT_FOUND`) — только временные
+                 *     причины, где повтор имеет смысл. `details.reason`:
+                 *     `provider_timeout` (не ответил за 2 с), `provider_unavailable`
+                 *     (сеть, статус или `429` от провайдера), `not_configured` (провайдер
+                 *     включён, но не настроен контакт для User-Agent). Отсутствие пояса
+                 *     сюда **не** входит: это `422` с `details.reason = no_timezone`.
                  *     Текст `message` готов к показу: «Поиск городов временно недоступен.
                  *     Попробуй ещё раз через минуту.» Пустой результат сюда не относится —
                  *     он отдаётся как 200 [].
@@ -1469,6 +1481,25 @@ export interface components {
             quotas: components["schemas"]["Quota"][];
             /** @enum {string} */
             onboarding_step: "birth_date" | "birth_time" | "birth_place" | "done";
+            /**
+             * @description Границы предпроверки ввода, которые знает сервер (1.5.12). Клиент
+             *     берёт их отсюда и не хранит свою копию: копия разошлась бы с
+             *     серверной, и человек получал бы `422` на длине, которую интерфейс
+             *     считает допустимой. Поле **необязательное**: клиент без него не
+             *     блокирует ввод и полагается на `422` с `field_errors[0].field = query`.
+             */
+            limits?: {
+                /**
+                 * @description Минимальная длина `query` в `POST /geo/resolve`
+                 * @example 2
+                 */
+                geo_min_query_length: number;
+                /**
+                 * @description Максимальная длина `query` в `POST /geo/resolve`
+                 * @example 120
+                 */
+                geo_max_query_length: number;
+            };
         };
         /**
          * @description Права доступа (`Me.entitlements`). Источник правды —
