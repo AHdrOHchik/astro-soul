@@ -62,6 +62,10 @@ type GeoResolveRequest = paths['/api/v1/geo/resolve']['post']['requestBody']['co
 
 /** What can be bought, by the codes of the contract. Prices are not here: the invoice names them. */
 export type PlanCode = components['schemas']['PlanCode'];
+/** A code returned by the server's tariff catalogue; deliberately a string beyond the closed regular catalogue. */
+export type OrderablePlanCode = components['schemas']['OrderablePlanCode'];
+export type PlanOffer = components['schemas']['PlanOffer'];
+export type PlanKind = PlanOffer['kind'];
 export type InvoiceRequest = components['schemas']['InvoiceRequest'];
 /** A Stars invoice: the link Telegram opens, and the price the server put on it. */
 export type Invoice = components['schemas']['Invoice'];
@@ -182,6 +186,7 @@ const PATHS = {
   currentChart: '/api/v1/charts/current',
   events: '/api/v1/events',
   invoice: '/api/v1/billing/invoice',
+  plans: '/api/v1/billing/plans',
   reports: '/api/v1/reports',
   report: '/api/v1/reports/{report_id}',
   forecast: '/api/v1/engagement/forecast',
@@ -216,6 +221,8 @@ export interface Api {
    * `keepalive` lets the browser deliver it while the page is being closed.
    */
   sendEvents(events: ClientEvent[], options?: { keepalive?: boolean }): Promise<void>;
+  /** The server-owned tariff catalogue. Read afresh each time the paywall opens; never persisted by the client. */
+  getPlans(signal?: AbortSignal): Promise<PlanOffer[]>;
   /**
    * Asks the server for a Stars invoice. Sent once: the server counts invoices
    * (3 an hour), so a repeat is made by the user's tap, never by the client.
@@ -450,6 +457,29 @@ function toAskAnswer(value: unknown): AskAnswer {
   };
 }
 
+function isPlanOffer(value: unknown): value is PlanOffer {
+  return (
+    isRecord(value) &&
+    typeof value.plan_code === 'string' &&
+    value.plan_code !== '' &&
+    (value.kind === 'subscription' || value.kind === 'one_off') &&
+    typeof value.stars === 'number' &&
+    Number.isInteger(value.stars) &&
+    value.stars > 0 &&
+    (value.period_sec === null || (typeof value.period_sec === 'number' && Number.isInteger(value.period_sec))) &&
+    typeof value.title === 'string' &&
+    typeof value.subtitle === 'string' &&
+    Array.isArray(value.includes) &&
+    value.includes.every((item: unknown) => typeof item === 'string') &&
+    typeof value.test === 'boolean'
+  );
+}
+
+function toPlans(value: unknown): PlanOffer[] {
+  if (!isRecord(value) || !Array.isArray(value.plans) || !value.plans.every(isPlanOffer)) throw invalid();
+  return value.plans;
+}
+
 export function createApi(options: HttpClientOptions): Api {
   const request = createHttpClient(options);
 
@@ -487,6 +517,10 @@ export function createApi(options: HttpClientOptions): Api {
     async sendEvents(events, { keepalive } = {}) {
       const body: EventsBatch = { events };
       await request<unknown>('POST', PATHS.events, { body, keepalive, retry: false });
+    },
+
+    async getPlans(signal) {
+      return toPlans(await request<unknown>('GET', PATHS.plans, { signal, cache: 'no-store' }));
     },
 
     async createInvoice(input, signal) {

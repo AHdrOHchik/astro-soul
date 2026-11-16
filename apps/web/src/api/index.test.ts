@@ -292,6 +292,43 @@ describe('deleteMe', () => {
   });
 });
 
+describe('getPlans', () => {
+  const offer = {
+    plan_code: 'test_report_1',
+    kind: 'one_off',
+    stars: 1,
+    period_sec: null,
+    title: 'Тестовый разбор',
+    subtitle: 'Текст из ответа API.',
+    includes: ['Пункт один', 'Пункт два'],
+    test: true,
+  };
+
+  it('reads the authenticated catalogue with no-store and returns the server fields unchanged', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { plans: [offer] }));
+
+    await expect(api.getPlans()).resolves.toEqual([offer]);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('/api/v1/billing/plans');
+    expect(init?.method).toBe('GET');
+    expect(init?.cache).toBe('no-store');
+    expect(init?.headers).toMatchObject({ 'X-Telegram-Init-Data': 'init' });
+  });
+
+  it('surfaces 401 instead of turning an unavailable catalogue into an empty list', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(401, { code: 'UNAUTHORIZED', message: 'Сессия устарела.' }));
+    await expect(api.getPlans()).rejects.toMatchObject({ status: 401, code: 'UNAUTHORIZED' });
+  });
+
+  it('rejects malformed plan data as an invalid API response', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, { plans: [{ ...offer, includes: ['ok', 7] }] }));
+    await expect(api.getPlans()).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+});
+
 describe('createInvoice', () => {
   const invoice = { invoice_link: 'https://t.me/$abc', plan_code: 'one_149', stars: 149, is_subscription: false };
 

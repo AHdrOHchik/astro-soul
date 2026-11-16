@@ -1,10 +1,8 @@
-import { priceOf } from '@astro-soul/shared';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChartResult, FieldError } from '../../api';
-import { formatCount, pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import {
   apiError,
@@ -12,6 +10,7 @@ import {
   chartRequest as request,
   chartResult,
   chartWithoutTime,
+  cataloguePlans,
   deferred,
   fakeAnalytics,
   fakeApi,
@@ -26,11 +25,8 @@ import { ChartScreen, type ChartReportProps } from './ChartScreen';
 const copy = ru.chart;
 const WHEEL_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.svg?sig=test-signature`;
 const WHEEL_PNG_URL = `https://api.test/api/v1/charts/${chart.chart_id}/wheel.png?sig=test-signature`;
-// The price is whatever packages/shared says, so a price change there needs no edit here.
-const REPORT_PRICE = priceOf('one_149');
-const TEASER_CTA = `${copy.teaserCta} ${formatCount(REPORT_PRICE)}`;
-/** What a screen reader gets: the star sign is replaced with the word. */
-const TEASER_CTA_NAME = `${TEASER_CTA} ${ru.common.stars[pluralForm(REPORT_PRICE)]}`;
+const TEASER_CTA = copy.teaserCta;
+const TEASER_CTA_NAME = `${TEASER_CTA} 149 звёзд`;
 
 interface SetupOptions {
   /** What `POST /charts` answers with; the fixture chart by default. */
@@ -220,14 +216,14 @@ describe('ChartScreen', () => {
   describe('the full report', () => {
     const teaserBlock = async () => within(await screen.findByRole('region', { name: copy.teaserTitle }));
 
-    it('before a purchase: no text of the report at all, the price from the shared plans, and the way to the paywall for this chart', async () => {
+    it('before a purchase: no report text is revealed, and the teaser leads to the paywall for this chart', async () => {
       const { api, report, user } = setup();
 
       const teaser = await teaserBlock();
       expect(teaser.getByText(copy.teaserLocked)).toBeInTheDocument();
-      const cta = teaser.getByRole('button', { name: TEASER_CTA_NAME });
-      // What is on the screen. Read from the node: toHaveTextContent replaces non-breaking spaces with plain ones.
-      expect(cta.textContent).toContain(`${TEASER_CTA} ${ru.common.starSign}`);
+      const cta = await teaser.findByRole('button', { name: TEASER_CTA_NAME });
+      expect(cta.textContent).toContain('149');
+      expect(cta.textContent).toContain(ru.common.starSign);
       // No report is known: the server is not asked about one.
       expect(api.getReport).not.toHaveBeenCalled();
 
@@ -277,6 +273,35 @@ describe('ChartScreen', () => {
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
       expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
       expect(analytics.names()).not.toContain('error_shown');
+    });
+
+    it('shows a price skeleton on the chart until the catalogue supplies the report price', async () => {
+      const pending = deferred<typeof cataloguePlans>();
+      const api = fakeApi();
+      api.getPlans.mockReturnValue(pending.promise);
+      setup({ api });
+      const teaser = await teaserBlock();
+
+      expect(teaser.getByRole('status')).toHaveTextContent(ru.paywall.loadingPlans);
+      expect(teaser.queryByRole('button', { name: TEASER_CTA_NAME })).not.toBeInTheDocument();
+      pending.resolve(cataloguePlans);
+      expect(await teaser.findByRole('button', { name: TEASER_CTA_NAME })).toHaveTextContent('149');
+      expect(api.getPlans).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not show a buy button without the server price and retries a failed catalogue request', async () => {
+      const api = fakeApi();
+      api.getPlans
+        .mockRejectedValueOnce(apiError('INTERNAL', { status: 500 }))
+        .mockResolvedValueOnce(cataloguePlans);
+      const { user } = setup({ api });
+      const teaser = await teaserBlock();
+
+      expect(await teaser.findByRole('alert')).toHaveTextContent(ru.paywall.plansError);
+      expect(teaser.queryByRole('button', { name: TEASER_CTA_NAME })).not.toBeInTheDocument();
+      await user.click(teaser.getByRole('button', { name: ru.paywall.retryPlans }));
+      expect(await teaser.findByRole('button', { name: TEASER_CTA_NAME })).toHaveTextContent('149');
+      expect(api.getPlans).toHaveBeenCalledTimes(2);
     });
 
     it('paid, with no report known: offers to get it, and a report about another chart does not count', async () => {

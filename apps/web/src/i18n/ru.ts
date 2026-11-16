@@ -1,6 +1,5 @@
 import type { ApiErrorCode, ChartWarning, ForecastFocus, Quota, ReportStatus, Subscription, TimePrecision } from '../api';
 import type { DateIssue, TimeIssue } from '../lib/birth';
-import type { PaywallPlan } from '../lib/plans';
 import type { PluralForm } from './format';
 
 /*
@@ -141,40 +140,6 @@ const chartWarnings: Record<ChartWarning, string> = {
     'Этого места нет в нашем справочнике. Часовой пояс мог определиться по ближайшему крупному городу: если он другой, время рождения в расчёте сдвинуто на час.',
 };
 
-interface PlanCopy {
-  title: string;
-  /** What the purchase gives, by payments.md §1. */
-  description: string;
-}
-
-/**
- * The owner's rule for the subscriptions: a description names only what the app already
- * delivers (the full forecasts, the questions). What payments.md §1 lists besides (the
- * compatibility, the chart of the year) is named as coming, in the owner's words
- * «появится в ближайшие дни». The day one of those is released, its sentence is reworded.
- * The descriptions below are approved by the owner as they are.
- */
-const SOON = 'появится в ближайшие дни';
-
-const plans: Record<PaywallPlan, PlanCopy> = {
-  one_149: {
-    title: 'Полный разбор',
-    description: 'Все главы разбора по этой карте. Разовая покупка, без подписки.',
-  },
-  week_149: {
-    title: 'Подписка на неделю',
-    description: `Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц ${SOON}.`,
-  },
-  month_399: {
-    title: 'Подписка на месяц',
-    description: `Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц ${SOON}.`,
-  },
-  year_2990: {
-    title: 'Подписка на год',
-    description: `Всё, что в подписке на месяц. Карта года ${SOON}.`,
-  },
-};
-
 /** `SubscriptionState.plan` as the settings name it; `none` has no name: there is nothing to name. */
 const subscriptionNames: Record<Exclude<Subscription['plan'], 'none'>, string> = {
   trial: 'Пробный период',
@@ -218,7 +183,7 @@ const reportStates: Record<ReportStatus, string> = {
 /** Owner's wording: what deleting the data does to a subscription. The sentence of the last confirmation that stands out. */
 const SUBSCRIPTION_IS_LOST = 'Подписка отменяется сразу, оплаченный период не возвращается.';
 
-/** Telegram Stars, the app's only currency: «1 звезда», «2 звезды», «149 звёзд». */
+/** Telegram Stars, the app's only currency. */
 const stars: Record<PluralForm, string> = {
   one: 'звезда',
   few: 'звезды',
@@ -401,8 +366,7 @@ export const ru = {
     enterAgain: 'Ввести данные рождения заново',
     teaserTitle: 'Полный разбор',
     teaserLocked: 'Продолжение закрыто',
-    /** The price follows: «Открыть полностью — 149 ⭐». The space before the dash is non-breaking. */
-    teaserCta: 'Открыть полностью\u00a0—',
+    teaserCta: 'Открыть полностью',
     /** While the app asks the server about a report the user already has. */
     reportLoading: 'Проверяем разбор…',
     reportStates,
@@ -414,18 +378,23 @@ export const ru = {
     openReport: 'К разбору',
   },
 
-  /** Screen 7. Prices are never written here: they come with the plan, see lib/plans.ts. */
+  /** Screen 7. Plan names, descriptions and prices come from the authenticated server catalogue. */
   paywall: {
     title: 'Тарифы',
     lead: 'Оплата проходит звёздами Telegram.',
     optionsLabel: 'Что оплатить',
-    plans,
+    loadingPlans: 'Загружаем тарифы…',
+    plansError: 'Не получилось загрузить тарифы',
+    retryPlans: 'Попробовать снова',
+    sessionExpired: 'Сессия устарела, закрой и открой приложение заново',
+    testPlans: 'Тестовые (1 ⭐)',
+    testPlansNote: 'Для проверки оплаты. Не для продажи.',
     /** Under the list when it offers both the report and a subscription: one does not include the other. */
     reportIsSeparate: 'Полный разбор в подписку не входит: он покупается отдельно.',
     /** Under the list while a subscription is chosen. */
     renewal: 'Подписка продлевается автоматически. Отменить её можно в настройках Telegram.',
     terms: 'Пользовательское соглашение и оплата',
-    /** The price follows: «Оплатить 149 ⭐». */
+    /** The server-supplied price follows. */
     pay: 'Оплатить',
     choose: 'Выбери, что оплатить',
     creating: 'Создаём счёт…',

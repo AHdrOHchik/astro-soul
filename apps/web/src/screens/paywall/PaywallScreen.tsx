@@ -1,4 +1,4 @@
-import { Button, Notice, OptionCard, Screen, ScreenHeading, StarsIcon, StateView, VisuallyHidden, type ScreenProps } from '@astro-soul/ui';
+import { Button, Notice, OptionCard, Screen, ScreenHeading, Skeleton, SkeletonGroup, StarsIcon, StateView, VisuallyHidden, type ScreenProps } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../../analytics';
 import {
@@ -12,17 +12,21 @@ import {
   type Api,
   type Invoice,
   type Me,
+  type OrderablePlanCode,
+  type PlanKind,
+  type PlanOffer,
 } from '../../api';
 import { Reference } from '../../components/Reference';
 import { Stars } from '../../components/Stars';
 import { formatDay, formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
-import { expectedStars, grants, REPORT_PLAN, SUBSCRIPTION_PLANS, type PaywallPlan } from '../../lib/plans';
+import { grants, REPORT_PLAN } from '../../lib/plans';
 import { wait } from '../../lib/wait';
 import type { InvoiceStatus, Telegram } from '../../telegram';
 import styles from './PaywallScreen.module.css';
 
 const copy = ru.paywall;
+const isReportOffer = (offer: PlanOffer): boolean => offer.plan_code === REPORT_PLAN || (offer.test && offer.kind === 'one_off');
 
 /**
  * How many times the server is asked whether the purchase arrived, by what Telegram said
@@ -33,7 +37,7 @@ const CONFIRM_ATTEMPTS: Record<Extract<InvoiceStatus, 'paid' | 'pending'>, numbe
 export const CONFIRM_INTERVAL_MS = 2000;
 
 export interface PaywallScreenProps {
-  api: Pick<Api, 'createInvoice'>;
+  api: Pick<Api, 'getPlans' | 'createInvoice'>;
   telegram: Pick<Telegram, 'isTelegram' | 'canPay' | 'openInvoice'>;
   /** Who the user is, by the server's last word. What it grants is all the screen believes about a purchase. */
   me: Me;
@@ -42,10 +46,12 @@ export interface PaywallScreenProps {
    * payment as succeeded when that answer grants a plan Telegram called paid.
    */
   refreshMe: (signal?: AbortSignal) => Promise<Me>;
-  /** The chart the full report is bought for; null when the report is not on offer here. */
+  /** The chart a report purchase is associated with when there is one. */
   reportChartId: string | null;
-  /** The plan chosen before the screen opened, e.g. by the button under the teaser. */
-  initialPlan: PaywallPlan | null;
+  /** Whether this paywall was opened from a full-report flow. */
+  offersReport: boolean;
+  /** Prefer this kind from the live catalogue, e.g. a one-off plan opened from the report teaser. */
+  initialKind: PlanKind | null;
   /**
    * Whether this build sells subscriptions (`VITE_SUBSCRIPTIONS`); it does not unless told to.
    * Without `true` the screen sells the full report alone: the plans are not in the list, and
@@ -59,15 +65,15 @@ export interface PaywallScreenProps {
    * While there is one the screen sells nothing: a second payment for the same thing is the
    * one mistake a paywall can make with the user's money.
    */
-  awaiting?: PaywallPlan | null;
+  awaiting?: { planCode: OrderablePlanCode; kind: PlanKind; report: boolean } | null;
   /**
    * The chart of that purchase when it is the report: the server confirms a report for the
    * chart it was bought for, and that need not be the chart this screen sells one for.
    * Left out, it is this screen's own chart.
    */
   awaitingChartId?: string | null;
-  /** Telegram called the invoice of this plan paid, or about to be. The caller forgets it once the server grants the plan. */
-  onAwaiting?: (plan: PaywallPlan) => void;
+  /** Telegram called the invoice paid, or about to be; retain only its server-supplied code and kind. */
+  onAwaiting?: (plan: PlanOffer, report: boolean) => void;
   track: Track;
   back?: ScreenProps['back'];
   onOpenTerms: () => void;
@@ -93,6 +99,10 @@ export interface PaywallScreenProps {
  * `processing`: it did not arrive in time.
  */
 type Phase = 'choosing' | 'invoicing' | 'paying' | 'confirming' | 'processing';
+type PlansRequest =
+  | { status: 'loading' }
+  | { status: 'ready'; plans: PlanOffer[] }
+  | { status: 'error'; unauthorized: boolean };
 
 /** What went wrong with the last attempt, said next to the button. A cancelled invoice is not one of these. */
 type Problem =
@@ -117,13 +127,26 @@ function problemOf(error: unknown): Problem {
  * The screen never decides that something was paid for. Telegram's «paid» only starts the
  * question to the server; what the server's `Me` grants is the answer.
  */
+function displayablePlans(
+  plans: PlanOffer[],
+  options: { subscriptions: boolean; subscribed: boolean; offersReport: boolean; hasChart: boolean },
+): PlanOffer[] {
+  return plans.filter((offer) => {
+    if (offer.kind === 'subscription' && (!options.subscriptions || options.subscribed)) return false;
+    if (offer.test && offer.kind === 'one_off' && !options.hasChart) return false;
+    if (!offer.test && offer.kind === 'one_off' && !options.offersReport) return false;
+    return true;
+  });
+}
+
 export function PaywallScreen({
   api,
   telegram,
   me,
   refreshMe,
   reportChartId,
-  initialPlan,
+  offersReport,
+  initialKind,
   subscriptions = false,
   reportRequired = false,
   awaiting = null,
@@ -141,26 +164,32 @@ export function PaywallScreen({
   const titleId = useId();
   const groupName = useId();
   const subscribed = me.entitlements.is_active;
-  // The report is sold where there is a chart to buy it for. A subscription is not sold to a
-  // subscriber, and not at all by a build that has them switched off: then the plans are not
-  // made into options in the first place, so there is nothing to hide.
-  const report: PaywallPlan[] = reportChartId === null ? [] : [REPORT_PLAN];
-  const sellsSubscriptions = subscriptions && !subscribed;
-  const offered: PaywallPlan[] = sellsSubscriptions ? [...report, ...SUBSCRIPTION_PLANS] : report;
-  const [chosen, setChosen] = useState<PaywallPlan | null>(initialPlan);
-  const plan = chosen !== null && offered.includes(chosen) ? chosen : null;
+  const [plansRequest, setPlansRequest] = useState<PlansRequest>({ status: 'loading' });
+  const [reloadPlans, setReloadPlans] = useState(0);
+  const [chosen, setChosen] = useState<OrderablePlanCode | null>(null);
+  const visiblePlans = displayablePlans(plansRequest.status === 'ready' ? plansRequest.plans : [], {
+    subscriptions,
+    subscribed,
+    offersReport,
+    hasChart: reportChartId !== null,
+  });
+  const offered = visiblePlans.filter((offer) => !offer.test);
+  const testOffered = visiblePlans.filter((offer) => offer.test);
+  const plan = chosen === null ? null : visiblePlans.find((offer) => offer.plan_code === chosen) ?? null;
   // Opened while a payment is still on its way to the server: the screen starts where that payment left off.
   const [phase, setPhase] = useState<Phase>(awaiting === null ? 'choosing' : 'processing');
   const [problem, setProblem] = useState<Problem | null>(null);
   // Only a subscription just confirmed by the server, with no chart in that same Me, gets the recovery message.
   const [subscriptionSuccessWithoutChart, setSubscriptionSuccessWithoutChart] = useState<Me | null>(null);
-  /** The purchase the server is being asked about: the plan, and the chart when it is the report of one. */
-  const [awaited, setAwaited] = useState<{ plan: PaywallPlan; chartId: string | null } | null>(
-    awaiting === null ? null : { plan: awaiting, chartId: awaitingChartId ?? reportChartId },
+  /** The purchase the server is being asked about: its catalogue kind and associated chart, if any. */
+  const [awaited, setAwaited] = useState<{ planCode: OrderablePlanCode; kind: PlanKind; report: boolean; chartId: string | null } | null>(
+    awaiting === null
+      ? null
+      : { planCode: awaiting.planCode, kind: awaiting.kind, report: awaiting.report, chartId: awaitingChartId ?? (awaiting.report ? reportChartId : null) },
   );
-  // The invoices made on this screen. From the moment there is one, its price is the price, and a second tap opens it again.
-  const [invoices, setInvoices] = useState<Partial<Record<PaywallPlan, Invoice>>>({});
-  const priceOf = (code: PaywallPlan) => invoices[code]?.stars ?? expectedStars(code);
+  // Invoices stay in memory only for this screen, to reopen the same invoice after the user reviews a changed server price.
+  const [invoices, setInvoices] = useState<Partial<Record<OrderablePlanCode, Invoice>>>({});
+  const priceOf = (offer: PlanOffer) => invoices[offer.plan_code]?.stars ?? offer.stars;
 
   // Ends everything the screen started when it is left.
   const life = useRef<AbortController | null>(null);
@@ -172,9 +201,44 @@ export function PaywallScreen({
     };
   }, []);
 
-  /** Asks the server whether the purchase arrived, `attempts` times at most. `chartId` is the chart a report was bought for. */
-  const confirm = async (bought: PaywallPlan, chartId: string | null, attempts: number, signal: AbortSignal) => {
-    setAwaited({ plan: bought, chartId });
+  // A fresh authenticated, no-store catalogue is requested every time this screen mounts.
+  useEffect(() => {
+    const controller = new AbortController();
+    void api
+      .getPlans(controller.signal)
+      .then((plans) => {
+        if (controller.signal.aborted) return;
+        const available = displayablePlans(plans, {
+          subscriptions,
+          subscribed,
+          offersReport,
+          hasChart: reportChartId !== null,
+        });
+        setPlansRequest({ status: 'ready', plans });
+        setChosen((current) => {
+          if (current !== null && available.some((offer) => offer.plan_code === current)) return current;
+          const regular = available.filter((offer) => !offer.test);
+          const preferred = initialKind === null ? undefined : regular.find((offer) => offer.kind === initialKind);
+          return preferred?.plan_code ?? null;
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setPlansRequest({ status: 'error', unauthorized: isApiError(error) && error.code === 'UNAUTHORIZED' });
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [api, initialKind, offersReport, reloadPlans, reportChartId, subscribed, subscriptions]);
+
+  /** Asks the server whether the purchase arrived, `attempts` times at most. */
+  const confirm = async (
+    bought: { planCode: OrderablePlanCode; kind: PlanKind; report: boolean },
+    chartId: string | null,
+    attempts: number,
+    signal: AbortSignal,
+  ) => {
+    setAwaited({ ...bought, chartId });
     setPhase('confirming');
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       let fresh: Me | null = null;
@@ -186,9 +250,9 @@ export function PaywallScreen({
         // A question that got no answer is a question that confirmed nothing.
       }
       if (signal.aborted) return;
-      if (fresh !== null && grants(fresh, bought, chartId)) {
+      if (fresh !== null && grants(fresh, bought.report, chartId)) {
         // Counted by the app, where the server's answer lands: a payment confirmed from another screen counts the same.
-        if (bought === REPORT_PLAN) onReportPaid();
+        if (bought.kind === 'one_off' && chartId !== null) onReportPaid();
         else {
           if (fresh.subscription.is_active && !fresh.has_chart) setSubscriptionSuccessWithoutChart(fresh);
           setPhase('choosing');
@@ -209,15 +273,15 @@ export function PaywallScreen({
       setProblem({ kind: telegram.isTelegram ? 'outdated' : 'unsupported' });
       return;
     }
-    track('checkout_started', { plan_code: plan });
+    track('checkout_started', { plan_code: plan.plan_code });
 
-    let invoice = invoices[plan];
+    let invoice = invoices[plan.plan_code];
     if (invoice === undefined) {
       setPhase('invoicing');
-      // The report is bought for one chart, named here: the server does not guess which.
-      const forChart = plan === REPORT_PLAN && reportChartId !== null ? { chart_id: reportChartId } : null;
+      // A one-off is associated with the chart currently shown, when there is one.
+      const forChart = isReportOffer(plan) && reportChartId !== null ? { chart_id: reportChartId } : null;
       try {
-        invoice = await api.createInvoice({ plan_code: plan, ...forChart }, signal);
+        invoice = await api.createInvoice({ plan_code: plan.plan_code, ...forChart }, signal);
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
         setPhase('choosing');
@@ -232,9 +296,9 @@ export function PaywallScreen({
       }
       if (signal.aborted) return;
       const made = invoice;
-      setInvoices((current) => ({ ...current, [plan]: made }));
-      if (made.stars !== expectedStars(plan)) {
-        // Not the price the list named. The user sees the server's one before anything is opened.
+      setInvoices((current) => ({ ...current, [plan.plan_code]: made }));
+      if (made.stars !== plan.stars) {
+        // The catalogue and invoice differ: show the invoice's server price before opening it.
         setPhase('choosing');
         setProblem({ kind: 'price_changed', stars: made.stars });
         return;
@@ -242,11 +306,11 @@ export function PaywallScreen({
     }
 
     setPhase('paying');
-    track('checkout_opened', { plan_code: plan });
+    track('checkout_opened', { plan_code: plan.plan_code });
     const outcome = await telegram.openInvoice(invoice.invoice_link);
     const maybePaid = outcome === 'paid' || outcome === 'pending';
     // Said before anything else, and even if the screen is gone by now: from here on the app must not offer to pay for this again.
-    if (maybePaid) onAwaiting?.(plan);
+    if (maybePaid) onAwaiting?.(plan, isReportOffer(plan));
     if (signal.aborted) {
       // The screen was left while the invoice was open. The server is still asked: the rest of the app shows what it grants.
       if (maybePaid) void refreshMe().catch(() => undefined);
@@ -255,7 +319,7 @@ export function PaywallScreen({
     switch (outcome) {
       case 'cancelled':
         // The user changed their mind. Not a failure: nothing to say about it.
-        track('payment_cancelled', { plan_code: plan });
+        track('payment_cancelled', { plan_code: plan.plan_code });
         setPhase('choosing');
         return;
       case 'failed':
@@ -270,8 +334,13 @@ export function PaywallScreen({
         return;
       default:
         // Telegram's word that the invoice is paid, or about to be. It only tells when to ask the server.
-        setInvoices((current) => ({ ...current, [plan]: undefined }));
-        await confirm(plan, plan === REPORT_PLAN ? reportChartId : null, CONFIRM_ATTEMPTS[outcome], signal);
+        setInvoices((current) => ({ ...current, [plan.plan_code]: undefined }));
+        await confirm(
+          { planCode: plan.plan_code, kind: plan.kind, report: isReportOffer(plan) },
+          isReportOffer(plan) ? reportChartId : null,
+          CONFIRM_ATTEMPTS[outcome],
+          signal,
+        );
     }
   };
 
@@ -289,7 +358,7 @@ export function PaywallScreen({
           <Button
             onClick={() => {
               const signal = life.current?.signal;
-              if (awaited !== null && signal !== undefined) void confirm(awaited.plan, awaited.chartId, 1, signal);
+              if (awaited !== null && signal !== undefined) void confirm(awaited, awaited.chartId, 1, signal);
             }}
           >
             {copy.checkAgain}
@@ -315,8 +384,41 @@ export function PaywallScreen({
       </Screen>
     );
   }
-  if (offered.length === 0) {
-    // Nothing to sell: there is no report to buy here, and the subscription is active, or this build sells none.
+  if (plansRequest.status === 'loading') {
+    return (
+      <Screen labelledBy={titleId} back={back} busy>
+        <div className={styles.content}>
+          <ScreenHeading id={titleId} title={copy.title} text={copy.lead} focusOnMount />
+          <SkeletonGroup label={copy.loadingPlans} className={styles.options}>
+            {[0, 1, 2].map((item) => <Skeleton key={item} variant="block" />)}
+          </SkeletonGroup>
+        </div>
+      </Screen>
+    );
+  }
+  if (plansRequest.status === 'error') {
+    const expired = plansRequest.unauthorized;
+    return (
+      <Screen back={back}>
+        <StateView
+          icon={<StarsIcon />}
+          title={expired ? copy.sessionExpired : copy.plansError}
+        >
+          {!expired && (
+            <Button
+              onClick={() => {
+                setPlansRequest({ status: 'loading' });
+                setReloadPlans((count) => count + 1);
+              }}
+            >
+              {copy.retryPlans}
+            </Button>
+          )}
+        </StateView>
+      </Screen>
+    );
+  }
+  if (visiblePlans.length === 0) {
     return (
       <Screen back={back}>
         <StateView icon={<StarsIcon />} title={subscribed ? activeLine : copy.nothingOnSale}>
@@ -331,7 +433,28 @@ export function PaywallScreen({
   }
 
   const busy = phase !== 'choosing';
-  const offersReport = offered.includes(REPORT_PLAN);
+  const reportOffer = offered.find((offer) => offer.kind === 'one_off');
+  const renderOffer = (offer: PlanOffer) => (
+    <div key={offer.plan_code} className={styles.offer}>
+      <OptionCard
+        name={groupName}
+        value={offer.plan_code}
+        checked={plan?.plan_code === offer.plan_code}
+        onSelect={(value) => {
+          setChosen(value);
+          setProblem(null);
+        }}
+        title={offer.title}
+        description={offer.subtitle}
+        aside={<Stars count={priceOf(offer)} />}
+      />
+      {offer.includes.length > 0 && (
+        <ul className={styles.includes}>
+          {offer.includes.map((item, index) => <li key={`${String(index)}:${item}`}>{item}</li>)}
+        </ul>
+      )}
+    </div>
+  );
   return (
     <Screen
       labelledBy={titleId}
@@ -348,40 +471,39 @@ export function PaywallScreen({
           >
             <PayLabel phase={phase} price={plan === null ? null : priceOf(plan)} />
           </Button>
+          {plan?.test && <p className={styles.note}>{copy.testPlansNote}</p>}
         </>
       }
     >
       <div className={styles.content}>
         <ScreenHeading id={titleId} title={copy.title} text={copy.lead} focusOnMount />
-        {reportRequired && offersReport && (
+        {reportRequired && reportOffer !== undefined && (
           <Notice>
-            {copy.reportRequired} <Stars count={priceOf(REPORT_PLAN)} />
+            {copy.reportRequired} <Stars count={priceOf(reportOffer)} />
           </Notice>
         )}
         {subscribed && <Notice>{activeLine}</Notice>}
-        <fieldset className={styles.options} disabled={busy}>
-          <legend>
-            <VisuallyHidden>{copy.optionsLabel}</VisuallyHidden>
-          </legend>
-          {offered.map((code) => (
-            <OptionCard
-              key={code}
-              name={groupName}
-              value={code}
-              checked={plan === code}
-              onSelect={(value) => {
-                setChosen(value);
-                // What went wrong was about the plan chosen before.
-                setProblem(null);
-              }}
-              title={copy.plans[code].title}
-              description={copy.plans[code].description}
-              aside={<Stars count={priceOf(code)} />}
-            />
-          ))}
-        </fieldset>
-        {offersReport && sellsSubscriptions && <p className={styles.note}>{copy.reportIsSeparate}</p>}
-        {plan !== null && plan !== REPORT_PLAN && <p className={styles.note}>{copy.renewal}</p>}
+        {offered.length > 0 && (
+          <fieldset className={styles.options} disabled={busy}>
+            <legend>
+              <VisuallyHidden>{copy.optionsLabel}</VisuallyHidden>
+            </legend>
+            {offered.map(renderOffer)}
+          </fieldset>
+        )}
+        {testOffered.length > 0 && (
+          <section className={styles.testOffers} aria-labelledby={`${titleId}-test-plans`}>
+            <h2 id={`${titleId}-test-plans`} className={styles.testTitle}>{copy.testPlans}</h2>
+            <fieldset className={styles.options} disabled={busy}>
+              <legend>
+                <VisuallyHidden>{copy.testPlans}</VisuallyHidden>
+              </legend>
+              {testOffered.map(renderOffer)}
+            </fieldset>
+          </section>
+        )}
+        {offersReport && offered.some((offer) => offer.kind === 'subscription') && <p className={styles.note}>{copy.reportIsSeparate}</p>}
+        {plan?.kind === 'subscription' && <p className={styles.note}>{copy.renewal}</p>}
         <Button variant="ghost" onClick={onOpenTerms}>
           {copy.terms}
         </Button>

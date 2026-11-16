@@ -20,12 +20,10 @@ import { absoluteApiUrl, isApiError, rejectionTextOf, REPORT_SECTION_KEYS, type 
 import { ErrorState } from '../../components/ErrorState';
 import { Markdown } from '../../components/Markdown';
 import { Reference } from '../../components/Reference';
-import { Stars } from '../../components/Stars';
 import { SupportButton } from '../../components/SupportButton';
 import { pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import type { IdempotencyKeys } from '../../lib/idempotency';
-import { expectedStars, REPORT_PLAN } from '../../lib/plans';
 import type { Telegram } from '../../telegram';
 import styles from './ReportScreen.module.css';
 import { useReport, type ReportFlow } from './useReport';
@@ -255,9 +253,7 @@ export function ReportScreen({
               onPaymentRequired(false);
             }}
           >
-            <span>
-              {ru.chart.teaserCta} <Stars count={expectedStars(REPORT_PLAN)} />
-            </span>
+            <span>{ru.chart.teaserCta}</span>
           </Button>
         }
       >

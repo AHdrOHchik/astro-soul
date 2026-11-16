@@ -1,13 +1,13 @@
 import { Button, InfoIcon, Screen, StateView } from '@astro-soul/ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AnalyticsStep, Track } from './analytics';
-import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, Me, Report } from './api';
+import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, Me, OrderablePlanCode, PlanKind, Report } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
 import type { IdempotencyKeys } from './lib/idempotency';
-import { grants, hasReportFor, REPORT_PLAN, type PaywallPlan } from './lib/plans';
+import { grants, hasReportFor } from './lib/plans';
 import type { TermsReload } from './lib/termsReload';
 import { AskScreen } from './screens/ask/AskScreen';
 import { BirthDateScreen } from './screens/BirthDateScreen';
@@ -277,8 +277,8 @@ interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 's
 
 /** What the paywall was opened for. */
 interface PaywallEntry {
-  /** The plan already chosen for the user, e.g. by the button under the teaser. */
-  plan: PaywallPlan | null;
+  /** Prefer the first available offer of this kind, e.g. a one-off from the report teaser. */
+  preferredKind: PlanKind | null;
   /** The full report is on offer: the paywall was opened for it. */
   offersReport: boolean;
   /** The server refused to order a report and that is why the paywall is open. */
@@ -287,8 +287,10 @@ interface PaywallEntry {
 
 /** A purchase Telegram called paid and the server has not granted yet. */
 interface AwaitedPurchase {
-  plan: PaywallPlan;
-  /** The chart the report was bought for; null for a subscription, which is about no chart. */
+  plan: OrderablePlanCode;
+  kind: PlanKind;
+  report: boolean;
+  /** The chart a report purchase was made for; null for products unrelated to a chart report. */
   chartId: string | null;
 }
 
@@ -369,7 +371,7 @@ function Screens({
       if (typeof fresh.latest_report_id === 'string' && !goneReports.current.has(fresh.latest_report_id)) setReportId(fresh.latest_report_id);
       const purchase = awaited.current;
       // A report is confirmed for the chart it was bought for: a report the user has of another chart confirms nothing.
-      if (purchase !== null && grants(fresh, purchase.plan, purchase.chartId)) {
+      if (purchase !== null && grants(fresh, purchase.report, purchase.chartId)) {
         // The one confirmation of a payment there is, counted here once, whichever screen asked the server.
         awaited.current = null;
         setAwaitedPurchase(null);
@@ -394,7 +396,7 @@ function Screens({
   const [openChart, setOpenChart] = useState<OpenChart | null>(null);
   // The zone of that chart's birth place, when the forecast was opened from it: there the server counts the days.
   const [forecastZone, setForecastZone] = useState<string | null>(null);
-  const [paywall, setPaywall] = useState<PaywallEntry>({ plan: null, offersReport: false, reportRequired: false });
+  const [paywall, setPaywall] = useState<PaywallEntry>({ preferredKind: null, offersReport: false, reportRequired: false });
   const [reportEntry, setReportEntry] = useState<ReportEntry>({ reportId: null, orderAtOnce: false, justPaid: false });
   const route = stack[stack.length - 1] ?? home;
   const canGoBack = stack.length > 1;
@@ -532,7 +534,7 @@ function Screens({
   // A subscription is offered where this build sells them and the user has none.
   const canSubscribe = subscriptions && !me.entitlements.is_active;
   const openSubscriptions = () => {
-    setPaywall({ plan: null, offersReport: false, reportRequired: false });
+    setPaywall({ preferredKind: null, offersReport: false, reportRequired: false });
     open('paywall');
   };
 
@@ -605,12 +607,12 @@ function Screens({
           onKnown: setKnownReport,
           onGone: handleReportGone,
           // Whichever chart that payment was for: while one is on its way, no price is offered anywhere.
-          paymentPending: awaitedPurchase?.plan === REPORT_PLAN,
+          paymentPending: awaitedPurchase?.report === true && awaitedPurchase.chartId === cached?.chart.chart_id,
           // The payment was for a chart: `Me` without any says that the chart is gone, and the purchase with it.
           onCheckPayment: refreshMeForChart,
           onBuy: (chart) => {
             setOpenChart(chart);
-            setPaywall({ plan: REPORT_PLAN, offersReport: true, reportRequired: false });
+            setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: false });
             open('paywall');
           },
           onOrder: (chart) => {
@@ -631,7 +633,8 @@ function Screens({
   // The chart a report can be about: the one the user came from, else the one `Me` names.
   const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id, share: null } : null);
   // The chart the paywall sells the report for; null when the report is not on offer there.
-  const paywallChartId = paywall.offersReport ? (reportChart?.chartId ?? null) : null;
+  const paywallChartId = reportChart?.chartId ?? null;
+  const offersReport = paywall.offersReport && paywallChartId !== null;
   // The chart of the payment the app is waiting for; null when there is none, or it is for a subscription.
   const awaitedChartId = awaitedPurchase?.chartId ?? null;
 
@@ -656,15 +659,21 @@ function Screens({
           me={me}
           // A report is paid for a chart. Where the screen sells one, or waits for a payment made for a chart, `Me`
           // without any chart says that the chart is gone, and the purchase with it: the app starts over instead of waiting.
-          refreshMe={paywallChartId !== null || awaitedChartId !== null ? refreshMeForChart : refreshMe}
+          refreshMe={offersReport || awaitedChartId !== null ? refreshMeForChart : refreshMe}
           reportChartId={paywallChartId}
-          initialPlan={paywall.plan}
+          initialKind={paywall.preferredKind}
           subscriptions={subscriptions}
-          reportRequired={paywall.reportRequired}
-          awaiting={awaitedPurchase?.plan ?? null}
+          offersReport={offersReport}
+          reportRequired={paywall.reportRequired && offersReport}
+          awaiting={awaitedPurchase === null ? null : { planCode: awaitedPurchase.plan, kind: awaitedPurchase.kind, report: awaitedPurchase.report }}
           awaitingChartId={awaitedChartId}
-          onAwaiting={(plan) => {
-            awaitPayment({ plan, chartId: plan === REPORT_PLAN ? paywallChartId : null });
+          onAwaiting={(offer, report) => {
+            awaitPayment({
+              plan: offer.plan_code,
+              kind: offer.kind,
+              report,
+              chartId: report ? paywallChartId : null,
+            });
           }}
           track={track}
           back={back}
@@ -750,7 +759,7 @@ function Screens({
           track={track}
           back={back}
           onPaymentRequired={(explain) => {
-            setPaywall({ plan: REPORT_PLAN, offersReport: true, reportRequired: explain });
+            setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: explain });
             replace('paywall');
           }}
           onReportId={setReportId}
