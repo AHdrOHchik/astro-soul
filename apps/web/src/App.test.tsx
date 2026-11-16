@@ -270,7 +270,7 @@ describe('App: a user who already has a chart', () => {
 describe('App: the full report, the paywall and the settings', () => {
   const restored: ChartResult = { ...chartResult, is_restored: true };
   const chartId = chartResult.chart.chart_id;
-  const teaserCta = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) });
+  const teaserCta = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) });
   const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
 
   /** A user who has a chart; `fake` prepares the rest of the server. */
@@ -344,7 +344,7 @@ describe('App: the full report, the paywall and the settings', () => {
     await user.click(await screen.findByRole('button', { name: ru.paywall.leave }));
 
     expect(await screen.findByText(ru.chart.paymentPending)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) })).not.toBeInTheDocument();
 
     // The server has it now: the next question brings the way to the report, and still no price.
     api.getMe.mockResolvedValue(mePaid);
@@ -1480,7 +1480,7 @@ describe('App: the forecast and the question', () => {
 
       // The paywall, reached for the report: the report alone.
       act(() => backHandler(telegram)?.());
-      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) }));
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) }));
       expect(heading()).toHaveTextContent(ru.paywall.title);
       expect(screen.getAllByRole('radio')).toHaveLength(3);
       for (const code of ['week_149', 'month_399', 'year_2990'] as const) {
@@ -1495,7 +1495,7 @@ describe('App: the forecast and the question', () => {
         prepare: (fake) => fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(mePaid),
       });
 
-      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) }));
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) }));
       await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
 
       expect(await screen.findByRole('heading', { level: 1, name: ru.report.queuedTitle })).toBeInTheDocument();
@@ -1570,7 +1570,7 @@ describe('App: the forecast and the question', () => {
       const view = returning(meWithChart, {
         prepare: (fake) => fake.createInvoice.mockRejectedValue(rejection({ field: 'chart_id', message: 'Карта не найдена' })),
       });
-      await view.user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) }));
+      await view.user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) }));
 
       deleteElsewhere(view.api);
       await view.user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
@@ -1631,7 +1631,7 @@ describe('App: the forecast and the question', () => {
       );
       // The whole form, with the consent given, and the chart built from it.
       await fillIn(user);
-      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) }));
+      await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) }));
 
       deleteElsewhere(api);
       await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
@@ -1790,7 +1790,7 @@ describe('App: the forecast and the question', () => {
         await act(() => vi.advanceTimersByTimeAsync(60_000));
         expect(heading()).toHaveTextContent(ru.chart.title);
         // `Me` grants nothing any more: the chart the app was handed offers the price.
-        expect(screen.getByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) })).toBeInTheDocument();
         expect(screen.queryByRole('alert')).not.toBeInTheDocument();
         // At launch, and once after `Me` said there was no chart.
         expect(view.api.getCurrentChart).toHaveBeenCalledTimes(2);
@@ -1873,7 +1873,7 @@ describe('App: the forecast and the question', () => {
     });
 
     describe('a payment for the report is on its way when the data goes: Telegram said «paid», the server has granted nothing', () => {
-      const price = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) });
+      const price = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) });
       const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
       const checkAgain = () => screen.getByRole('button', { name: ru.paywall.checkAgain });
 
@@ -2060,9 +2060,9 @@ describe('App: the full report is paid for a chart, not for the user (`Entitleme
     ...extra,
   });
 
-  const price = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) });
+  const price = () => screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) });
   const noPrice = () => {
-    expect(screen.queryByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}$`) })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}(?: |$)`) })).not.toBeInTheDocument();
   };
   const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
 

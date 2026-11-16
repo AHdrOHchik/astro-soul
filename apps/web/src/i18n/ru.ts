@@ -386,6 +386,7 @@ export const ru = {
     loadingPlans: 'Загружаем тарифы…',
     plansError: 'Не получилось загрузить тарифы',
     retryPlans: 'Попробовать снова',
+    sessionExpired: 'Сессия устарела, закрой и открой приложение заново',
     testPlans: 'Тестовые (1 ⭐)',
     testPlansNote: 'Для проверки оплаты. Не для продажи.',
     /** Under the list when it offers both the report and a subscription: one does not include the other. */

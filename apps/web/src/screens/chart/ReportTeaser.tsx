@@ -1,15 +1,18 @@
 import { Button, Card, LockIcon, Skeleton, SkeletonGroup } from '@astro-soul/ui';
-import { useCallback, useId, useState } from 'react';
-import { isApiError, type Api, type Report } from '../../api';
+import { useCallback, useEffect, useId, useState } from 'react';
+import { isAbortError, isApiError, type Api, type Report } from '../../api';
+import { Stars } from '../../components/Stars';
 import { useRequest } from '../../hooks/useRequest';
 import { ru } from '../../i18n/ru';
+import { REPORT_PLAN } from '../../lib/plans';
 import styles from './ReportTeaser.module.css';
 
 const copy = ru.chart;
 const HIDDEN_LINES = [0, 1, 2];
+type ReportPrice = { status: 'loading' } | { status: 'ready'; stars: number | null } | { status: 'error'; unauthorized: boolean };
 
 export interface ReportTeaserProps {
-  api: Pick<Api, 'getReport'>;
+  api: Pick<Api, 'getPlans' | 'getReport'>;
   /** The chart on screen: a report about another chart is not this chart's report. */
   chartId: string;
   /**
@@ -64,6 +67,27 @@ export function ReportTeaser({
   onOpen,
 }: ReportTeaserProps) {
   const titleId = useId();
+  const needsReportPrice = !fullReport && !paymentPending;
+  const [priceAttempt, setPriceAttempt] = useState(0);
+  const [reportPrice, setReportPrice] = useState<ReportPrice>({ status: 'loading' });
+  useEffect(() => {
+    if (!needsReportPrice) return undefined;
+    const controller = new AbortController();
+    void api
+      .getPlans(controller.signal)
+      .then((plans) => {
+        if (controller.signal.aborted) return;
+        const offer = plans.find((item) => item.plan_code === REPORT_PLAN && !item.test);
+        setReportPrice({ status: 'ready', stars: offer?.stars ?? null });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setReportPrice({ status: 'error', unauthorized: isApiError(error) && error.code === 'UNAUTHORIZED' });
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [api, needsReportPrice, priceAttempt]);
   // The server names the last report of the user, whatever chart it is about: only this chart's counts here.
   const ofThisChart = useCallback((report: Report) => report.chart_id === null || report.chart_id === chartId, [chartId]);
   const load = useCallback(
@@ -112,6 +136,11 @@ export function ReportTeaser({
             onBuy={onBuy}
             onOrder={onOrder}
             onOpen={onOpen}
+            reportPrice={reportPrice}
+            onRetryPrice={() => {
+              setReportPrice({ status: 'loading' });
+              setPriceAttempt((attempt) => attempt + 1);
+            }}
           />
         )}
       </div>
@@ -121,9 +150,11 @@ export function ReportTeaser({
 
 type BodyProps = Pick<ReportTeaserProps, 'fullReport' | 'paymentPending' | 'onCheckPayment' | 'onBuy' | 'onOrder' | 'onOpen'> & {
   report: Report | null;
+  reportPrice: ReportPrice;
+  onRetryPrice: () => void;
 };
 
-function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrder, onOpen }: BodyProps) {
+function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrder, onOpen, reportPrice, onRetryPrice }: BodyProps) {
   const [checking, setChecking] = useState(false);
   if (report !== null && (report.is_paid || report.status === 'failed' || report.status === 'refunded')) {
     // There is a report to open: paid for, or one that failed and has something to say about it.
@@ -166,6 +197,27 @@ function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrd
       </>
     );
   }
+  if (reportPrice.status === 'loading') {
+    return (
+      <>
+        {report !== null && report.teaser !== '' && <p className={styles.opening}>{report.teaser}</p>}
+        <SkeletonGroup label={ru.paywall.loadingPlans}>
+          <Skeleton />
+        </SkeletonGroup>
+      </>
+    );
+  }
+  if (reportPrice.status === 'error') {
+    return reportPrice.unauthorized ? (
+      <p role="alert">{ru.paywall.sessionExpired}</p>
+    ) : (
+      <>
+        <p role="alert">{ru.paywall.plansError}</p>
+        <Button variant="secondary" onClick={onRetryPrice}>{ru.paywall.retryPlans}</Button>
+      </>
+    );
+  }
+
   return (
     <>
       {report !== null && report.teaser !== '' && <p className={styles.opening}>{report.teaser}</p>}
@@ -180,7 +232,11 @@ function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrd
           <span className={styles.badgeText}>{copy.teaserLocked}</span>
         </p>
       </div>
-      <Button onClick={onBuy}>{copy.teaserCta}</Button>
+      {reportPrice.stars !== null && (
+        <Button onClick={onBuy}>
+          {copy.teaserCta} <Stars count={reportPrice.stars} />
+        </Button>
+      )}
     </>
   );
 }
