@@ -18,6 +18,7 @@ import { failureCodeOf, isApiError, serverTextOf, type Api, type Me, type Quota 
 import { ErrorState } from '../../components/ErrorState';
 import { Reference } from '../../components/Reference';
 import { SupportButton } from '../../components/SupportButton';
+import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
 import { useRequest } from '../../hooks/useRequest';
 import { formatDay, formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
@@ -31,7 +32,7 @@ const SKELETON_BLOCKS = [0, 1, 2];
 const DOCUMENTS: readonly LegalDocument[] = ['privacy', 'terms'];
 
 export interface SettingsScreenProps {
-  api: Pick<Api, 'deleteMe'>;
+  api: Pick<Api, 'deleteMe' | 'getCompatibilities' | 'getPlans'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Loads `Me` anew: the subscription and the quotas are shown as the server has them now. */
   refreshMe: (signal?: AbortSignal) => Promise<Me>;
@@ -45,6 +46,8 @@ export interface SettingsScreenProps {
    * the button is then not there, and a subscription the user has is shown as ever.
    */
   onSubscribe?: () => void;
+  onOpenCompatibility?: (chartId: string | null) => void;
+  onBuyCompatibility?: (chartId: string) => void;
   /** The server has deleted everything; the argument is the non-access fact captured when deletion was opened. */
   onDeleted: (hadSubscription: boolean) => void;
 }
@@ -65,6 +68,8 @@ export function SettingsScreen({
   back,
   onOpenDocument,
   onSubscribe,
+  onOpenCompatibility,
+  onBuyCompatibility,
   onDeleted,
 }: SettingsScreenProps) {
   const titleId = useId();
@@ -107,9 +112,12 @@ export function SettingsScreen({
     request.status === 'ready' && (
       <Sections
         me={request.data}
+        api={api}
         support={support}
         onOpenDocument={onOpenDocument}
         onSubscribe={onSubscribe}
+        onOpenCompatibility={onOpenCompatibility}
+        onBuyCompatibility={onBuyCompatibility}
         onDelete={() => {
           openDeletion(request.data);
         }}
@@ -166,13 +174,16 @@ export function SettingsScreen({
 
 interface SectionsProps {
   me: Me;
+  api: Pick<Api, 'getCompatibilities' | 'getPlans'>;
   support: ReactNode;
   onOpenDocument: (name: LegalDocument) => void;
   onSubscribe?: () => void;
+  onOpenCompatibility?: (chartId: string | null) => void;
+  onBuyCompatibility?: (chartId: string) => void;
   onDelete: () => void;
 }
 
-function Sections({ me, support, onOpenDocument, onSubscribe, onDelete }: SectionsProps) {
+function Sections({ me, api, support, onOpenDocument, onSubscribe, onOpenCompatibility, onBuyCompatibility, onDelete }: SectionsProps) {
   const ids = { subscription: useId(), quotas: useId(), documents: useId(), support: useId(), deletion: useId() };
   return (
     <div className={styles.sections}>
@@ -193,6 +204,15 @@ function Sections({ me, support, onOpenDocument, onSubscribe, onDelete }: Sectio
           <Quotas quotas={me.quotas} />
         </div>
       </Card>
+
+      {onOpenCompatibility && onBuyCompatibility && (
+        <CompatibilityEntry
+          api={api}
+          chartId={me.chart_id}
+          onOpenForm={onOpenCompatibility}
+          onBuy={onBuyCompatibility}
+        />
+      )}
 
       <section className={styles.section} aria-labelledby={ids.documents}>
         <h2 id={ids.documents} className={styles.title}>

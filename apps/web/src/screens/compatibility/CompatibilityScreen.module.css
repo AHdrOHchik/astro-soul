@@ -1,0 +1,57 @@
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.checkbox {
+  display: grid;
+  grid-template-columns: var(--size-icon) minmax(0, 1fr);
+  align-items: center;
+  min-height: var(--size-tap);
+}
+
+.checkbox input {
+  width: var(--size-icon);
+  height: var(--size-icon);
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+.sections {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.section {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.section h2 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+}
+
+.state {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-5);
+}

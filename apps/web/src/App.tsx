@@ -16,6 +16,7 @@ import { BirthTimeScreen } from './screens/BirthTimeScreen';
 import { BootScreen } from './screens/BootScreen';
 import { ChartScreen, type OpenChart } from './screens/chart/ChartScreen';
 import { ConsentScreen, type LegalDocument } from './screens/ConsentScreen';
+import { CompatibilityScreen } from './screens/compatibility/CompatibilityScreen';
 import { DocumentScreen } from './screens/DocumentScreen';
 import { ForecastScreen } from './screens/forecast/ForecastScreen';
 import type { KnownForecast } from './screens/forecast/useForecast';
@@ -193,7 +194,8 @@ type Route =
   | 'report'
   | 'forecast'
   | 'ask'
-  | 'settings';
+  | 'settings'
+  | 'compatibility';
 /** Where the stack starts: at the user's chart, or at the welcome screen while there is none. */
 type Home = Extract<Route, 'welcome' | 'current'>;
 
@@ -213,6 +215,7 @@ const STEP_OF: Record<Route, AnalyticsStep> = {
   forecast: 'forecast',
   ask: 'ask',
   settings: 'settings',
+  compatibility: 'compatibility',
 };
 
 /** The screens that collect the chart request, in the order the user passes them. */
@@ -283,6 +286,7 @@ interface PaywallEntry {
   offersReport: boolean;
   /** The server refused to order a report and that is why the paywall is open. */
   reportRequired: boolean;
+  compatibility: boolean;
 }
 
 /** A purchase Telegram called paid and the server has not granted yet. */
@@ -370,9 +374,20 @@ function Screens({
       setMe(fresh);
       if (typeof fresh.latest_report_id === 'string' && !goneReports.current.has(fresh.latest_report_id)) setReportId(fresh.latest_report_id);
       const purchase = awaited.current;
-      // A report is confirmed for the chart it was bought for: a report the user has of another chart confirms nothing.
-      if (purchase !== null && grants(fresh, purchase.report, purchase.chartId)) {
-        // The one confirmation of a payment there is, counted here once, whichever screen asked the server.
+      if (purchase?.plan === 'compat_249') {
+        // A compatibility credit is confirmed only by its own quota endpoint, never by an active subscription in `Me`.
+        try {
+          const compatibility = await api.getCompatibilities(signal);
+          if (signal?.aborted !== true && awaited.current === purchase && compatibility.quota.kind === 'purchase' && compatibility.quota.left > 0) {
+            awaited.current = null;
+            setAwaitedPurchase(null);
+            track('payment_succeeded', { plan_code: purchase.plan });
+          }
+        } catch {
+          // The payment is still awaited: an unread quota grants nothing.
+        }
+      } else if (purchase !== null && grants(fresh, purchase.report, purchase.chartId)) {
+        // A report is confirmed for the chart it was bought for; a subscription is confirmed by Me. Telegram's word is not enough.
         awaited.current = null;
         setAwaitedPurchase(null);
         track('payment_succeeded', { plan_code: purchase.plan });
@@ -396,7 +411,9 @@ function Screens({
   const [openChart, setOpenChart] = useState<OpenChart | null>(null);
   // The zone of that chart's birth place, when the forecast was opened from it: there the server counts the days.
   const [forecastZone, setForecastZone] = useState<string | null>(null);
-  const [paywall, setPaywall] = useState<PaywallEntry>({ preferredKind: null, offersReport: false, reportRequired: false });
+  const [paywall, setPaywall] = useState<PaywallEntry>({ preferredKind: null, offersReport: false, reportRequired: false, compatibility: false });
+  const [compatibilityId, setCompatibilityId] = useState<string | null>(null);
+  const [compatibilityChartId, setCompatibilityChartId] = useState<string | null>(null);
   const [reportEntry, setReportEntry] = useState<ReportEntry>({ reportId: null, orderAtOnce: false, justPaid: false });
   const route = stack[stack.length - 1] ?? home;
   const canGoBack = stack.length > 1;
@@ -474,6 +491,8 @@ function Screens({
     setReportId(null);
     setKnownReport(null);
     setKnownForecast(null);
+    setCompatibilityChartId(null);
+    setCompatibilityId(null);
     // The form starts clean as well: the consent went with the data it was given for.
     setDraft(EMPTY_DRAFT);
     setServerErrors(NO_SERVER_ERRORS);
@@ -534,8 +553,23 @@ function Screens({
   // A subscription is offered where this build sells them and the user has none.
   const canSubscribe = subscriptions && !me.entitlements.is_active;
   const openSubscriptions = () => {
-    setPaywall({ preferredKind: null, offersReport: false, reportRequired: false });
+    setPaywall({ preferredKind: null, offersReport: false, reportRequired: false, compatibility: false });
     open('paywall');
+  };
+  const openCompatibility = (chartId: string | null) => {
+    setCompatibilityChartId(chartId);
+    open('compatibility');
+  };
+  const buyCompatibility = (chartId: string) => {
+    setCompatibilityChartId(chartId);
+    setPaywall({ preferredKind: 'one_off', offersReport: false, reportRequired: false, compatibility: true });
+    open('paywall');
+  };
+  const compatibilityPaid = () => {
+    awaited.current = null;
+    setAwaitedPurchase(null);
+    setCompatibilityId(null);
+    replace('compatibility');
   };
 
   useEffect(() => {
@@ -612,7 +646,7 @@ function Screens({
           onCheckPayment: refreshMeForChart,
           onBuy: (chart) => {
             setOpenChart(chart);
-            setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: false });
+            setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: false, compatibility: false });
             open('paywall');
           },
           onOrder: (chart) => {
@@ -665,6 +699,9 @@ function Screens({
           subscriptions={subscriptions}
           offersReport={offersReport}
           reportRequired={paywall.reportRequired && offersReport}
+          compatibilityPurchase={paywall.compatibility}
+          refreshCompatibility={(signal) => api.getCompatibilities(signal)}
+          onCompatibilityPaid={compatibilityPaid}
           awaiting={awaitedPurchase === null ? null : { planCode: awaitedPurchase.plan, kind: awaitedPurchase.kind, report: awaitedPurchase.report }}
           awaitingChartId={awaitedChartId}
           onAwaiting={(offer, report) => {
@@ -759,7 +796,7 @@ function Screens({
           track={track}
           back={back}
           onPaymentRequired={(explain) => {
-            setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: explain });
+            setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: explain, compatibility: false });
             replace('paywall');
           }}
           onReportId={setReportId}
@@ -767,6 +804,24 @@ function Screens({
           onReportGone={forgetReport}
           onChartGone={handleChartGone}
           isChartThere={isChartThere}
+          onOpenCompatibility={(chartId) => { openCompatibility(chartId); }}
+          onBuyCompatibility={buyCompatibility}
+        />
+      );
+    case 'compatibility':
+      return (
+        <CompatibilityScreen
+          api={api}
+          chartId={compatibilityChartId ?? reportChart?.chartId ?? me.chart_id}
+          compatibilityId={compatibilityId}
+          onCompatibilityId={setCompatibilityId}
+          keys={keys}
+          limits={me.limits}
+          telegram={telegram}
+          supportLink={supportLink}
+          track={track}
+          back={back}
+          onBuy={buyCompatibility}
         />
       );
     case 'settings':
@@ -782,6 +837,8 @@ function Screens({
           back={back}
           onOpenDocument={open}
           onSubscribe={subscriptions ? openSubscriptions : undefined}
+          onOpenCompatibility={openCompatibility}
+          onBuyCompatibility={buyCompatibility}
           onDeleted={onDeleted}
         />
       );

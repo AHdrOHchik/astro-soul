@@ -14,9 +14,10 @@ interface SetupOptions {
   supportLink?: string;
   /** A clock only the test moves: for the tests of the wait before the last button takes taps. */
   manualClock?: boolean;
+  props?: Partial<SettingsScreenProps>;
 }
 
-function setup({ me = meWithChart, api = fakeApi(), supportLink = '', manualClock = false }: SetupOptions = {}) {
+function setup({ me = meWithChart, api = fakeApi(), supportLink = '', manualClock = false, props }: SetupOptions = {}) {
   const telegram = fakeTelegram();
   const analytics = fakeAnalytics();
   const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockImplementation(() => Promise.resolve(me));
@@ -35,6 +36,7 @@ function setup({ me = meWithChart, api = fakeApi(), supportLink = '', manualCloc
       onOpenDocument={onOpenDocument}
       onSubscribe={onSubscribe}
       onDeleted={onDeleted}
+      {...props}
     />,
   );
   return { api, telegram, analytics, refreshMe, onDeleted, onSubscribe, onOpenDocument, user, ...view };
@@ -66,6 +68,16 @@ async function toLastConfirmation(user: ReturnType<typeof setupUser>) {
 }
 
 describe('SettingsScreen', () => {
+  it('offers compatibility in the cabinet using the server quota and opens the current chart', async () => {
+    const onOpenCompatibility = vi.fn();
+    const { user } = setup({ props: { onOpenCompatibility, onBuyCompatibility: vi.fn() } });
+
+    const entry = await screen.findByRole('region', { name: ru.compatibility.title });
+    const button = await within(entry).findByRole('button', { name: ru.compatibility.entryTitle });
+    await user.click(button);
+    expect(onOpenCompatibility).toHaveBeenCalledWith(meWithChart.chart_id);
+  });
+
   it('loading: a skeleton while the server is asked; error: the failure, with a way to repeat', async () => {
     const pending = deferred<Me>();
     const { refreshMe, onDeleted, user } = setup({ me: pending.promise });

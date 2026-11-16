@@ -67,6 +67,11 @@ export type OrderablePlanCode = components['schemas']['OrderablePlanCode'];
 export type PlanOffer = components['schemas']['PlanOffer'];
 export type PlanKind = PlanOffer['kind'];
 export type InvoiceRequest = components['schemas']['InvoiceRequest'];
+export type CompatibilityRequest = components['schemas']['CompatibilityRequest'];
+export type Compatibility = components['schemas']['Compatibility'];
+export type CompatibilitySection = components['schemas']['CompatibilitySection'];
+export type CompatibilityList = components['schemas']['CompatibilityList'];
+export type CompatibilityQuota = components['schemas']['CompatibilityQuota'];
 /** A Stars invoice: the link Telegram opens, and the price the server put on it. */
 export type Invoice = components['schemas']['Invoice'];
 
@@ -189,11 +194,13 @@ const PATHS = {
   plans: '/api/v1/billing/plans',
   reports: '/api/v1/reports',
   report: '/api/v1/reports/{report_id}',
+  compatibility: '/api/v1/compatibility',
+  compatibilityById: '/api/v1/compatibility/{compatibility_id}',
   forecast: '/api/v1/engagement/forecast',
   ask: '/api/v1/engagement/ask',
 } as const satisfies Record<string, keyof paths>;
 
-/** The header of `POST /reports` that makes a repeated order the same order. */
+/** The header of idempotent order endpoints that makes a repeated order the same order. */
 export const IDEMPOTENCY_HEADER = 'Idempotency-Key';
 
 export interface Api {
@@ -235,6 +242,12 @@ export interface Api {
   orderReport(input: ReportRequest, idempotencyKey: string, signal?: AbortSignal): Promise<Report>;
   /** Where the report stands, and as much of it as the server gives out. */
   getReport(reportId: string, signal?: AbortSignal): Promise<Report>;
+  /** Current compatibility history and server-owned remaining quota; never cached between visits. */
+  getCompatibilities(signal?: AbortSignal): Promise<CompatibilityList>;
+  /** Requests one compatibility analysis. The idempotency key makes retries the same request. */
+  orderCompatibility(input: CompatibilityRequest, idempotencyKey: string, signal?: AbortSignal): Promise<components['schemas']['CompatibilityAccepted']>;
+  /** The current status and, when ready, sections for one compatibility. */
+  getCompatibility(id: string, signal?: AbortSignal): Promise<Compatibility>;
   /**
    * The forecast the server has prepared for the chart; null while there is none for today
    * (the contract's 404: a nightly job writes them, a request never does). A read of a cache:
@@ -553,6 +566,36 @@ export function createApi(options: HttpClientOptions): Api {
 
     async getReport(reportId, signal) {
       return toReport(await request<unknown>('GET', PATHS.report.replace('{report_id}', encodeURIComponent(reportId)), { signal }));
+    },
+
+    async getCompatibilities(signal) {
+      const value: unknown = await request('GET', PATHS.compatibility, { signal, cache: 'no-store' });
+      if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.quota)) throw invalid();
+      const quota = value.quota;
+      if (
+        !['purchase', 'subscription', 'none'].includes(String(quota.kind)) ||
+        typeof quota.left !== 'number' ||
+        (quota.resets_at !== null && typeof quota.resets_at !== 'string')
+      ) throw invalid();
+      return value as CompatibilityList;
+    },
+
+    async orderCompatibility(input, idempotencyKey, signal) {
+      const headers = { [IDEMPOTENCY_HEADER]: idempotencyKey };
+      const body = await request<unknown>('POST', PATHS.compatibility, { body: input, headers, signal, retry: false });
+      if (!isRecord(body) || typeof body.compatibility_id !== 'string' || body.status !== 'pending') throw invalid();
+      return body as components['schemas']['CompatibilityAccepted'];
+    },
+
+    async getCompatibility(id, signal) {
+      const value: unknown = await request('GET', PATHS.compatibilityById.replace('{compatibility_id}', encodeURIComponent(id)), { signal });
+      if (
+        !isRecord(value) ||
+        value.id !== id ||
+        !['pending', 'ready', 'failed'].includes(String(value.status)) ||
+        !Array.isArray(value.sections)
+      ) throw invalid();
+      return value as Compatibility;
     },
 
     async getForecast(chartId, signal) {
