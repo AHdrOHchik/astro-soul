@@ -1,4 +1,4 @@
-import { MIN_QUERY_LENGTH } from '@astro-soul/shared';
+import { MIN_QUERY_LENGTH } from '@astro-soul/shared/geo/limits';
 import { useEffect, useState } from 'react';
 import { errorCodeOf, trackRejection, type Track } from '../analytics';
 import { isAbortError, type Api, type GeoPlace } from '../api';

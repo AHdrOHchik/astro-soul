@@ -22,6 +22,9 @@ export default tseslint.config(
       'scripts/qa/**',
       // Генератор корпуса примеров: та же история — .mjs вне tsconfig.
       'scripts/reports/**',
+      // Сборщик справочника городов: node-скрипт с чтением файлов, вне tsconfig
+      // пакета (allowJs в сборку shared не тащим).
+      'packages/shared/scripts/**',
     ],
   },
   js.configs.recommended,

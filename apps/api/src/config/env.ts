@@ -35,6 +35,31 @@ const envSchema = z.object({
     (value) => (value === '' ? undefined : value),
     z.string().email().optional(),
   ),
+  /**
+   * Таймаут запроса к Nominatim. `geo.md`: 2 с — дольше ждать подсказку
+   * бессмысленно, фронт всё равно ушёл дальше.
+   */
+  GEO_NOMINATIM_TIMEOUT_MS: z.coerce.number().int().min(100).default(2_000),
+  /** Политика Nominatim: не больше одного запроса в секунду на процесс. */
+  GEO_NOMINATIM_MIN_INTERVAL_MS: z.coerce.number().int().min(0).default(1_000),
+  /** Сколько живёт ответ Nominatim в кэше (`geo.md`: 24 часа). */
+  GEO_CACHE_TTL_SECONDS: z.coerce.number().int().min(60).default(86_400),
+  /**
+   * Порог доверия к поясу «по ближайшему городу». Дальше него пояс не
+   * подставляем: неверный пояс сдвигает время рождения на часы.
+   */
+  GEO_TZ_MAX_DISTANCE_KM: z.coerce.number().int().min(10).max(2_000).default(300),
+  /**
+   * Сколько кандидатов из справочника считается достаточным ответом. Меньше —
+   * идём в Nominatim (фолбэк): «нашлось одно созвучие» — это ещё не город.
+   */
+  GEO_MIN_LOCAL_CANDIDATES: z.coerce.number().int().min(1).max(10).default(3),
+
+  /**
+   * Redis для кэша геоподсказок. Не задан — кэш в памяти процесса (и это
+   * видно в логе `geo_cache_unavailable`): поиск работает, но кэш не общий.
+   */
+  REDIS_URL: z.preprocess((value) => (value === '' ? undefined : value), z.string().url().optional()),
 
   /** Лимиты запросов в минуту (SPEC). 0 — выключить (только для тестов). */
   RATE_LIMIT_PER_MIN: z.coerce.number().int().min(0).default(60),
