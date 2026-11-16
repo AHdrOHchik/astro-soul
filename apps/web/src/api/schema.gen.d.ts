@@ -705,6 +705,22 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
+                /**
+                 * @description Предохранитель конвейера (`UPSTREAM_LLM`, с 1.5.10): три разбора
+                 *     подряд провалились на валидаторах, новые запуски остановлены, пока
+                 *     промпт не починен и один разбор не соберётся. `details.reason` —
+                 *     `validation_breaker`. Это не «повтори позже»: повтор сработает
+                 *     только после починки, поэтому текст просит зайти позже, а не
+                 *     нажать ещё раз.
+                 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
             };
         };
         delete?: never;
@@ -729,8 +745,10 @@ export interface paths {
          *     «Ядра») и `is_paid: false`; `sections` пустой. После оплаты главы
          *     приходят сразу, как готовы, а полный разбор — при `status: ready`.
          *
-         *     Провал генерации — `status: failed`; звёзды за него возвращает джоб
-         *     `report_refund`, после чего статус становится `refunded`.
+         *     Провал генерации — `status: failed`. Автовозврат звёзд за провал с
+         *     1.5.10 выключен по умолчанию (решение владельца 2026-11-16): разбор
+         *     можно перезапустить после починки промпта. `refunded` — только если
+         *     звёзды действительно вернулись (флаг `REFUND_ON_REPORT_FAILED=1`).
          */
         get: {
             parameters: {
@@ -1791,8 +1809,11 @@ export interface components {
             type: "full" | "compat" | "solar";
             /**
              * @description `generating` — разбор собирается (внутри `planning` и `writing`).
-             *     `failed` — модель или валидаторы не справились; `refunded` — звёзды
-             *     уже вернулись джобом `report_refund`.
+             *     `failed` — модель или валидаторы не справились. `refunded` —
+             *     звёзды действительно вернулись. С 1.5.10 автовозврат за провал
+             *     выключен по умолчанию (`REFUND_ON_REPORT_FAILED`): провалившийся
+             *     разбор остаётся `failed`, а не превращается в `refunded` без
+             *     возврата.
              * @enum {string}
              */
             status: "queued" | "generating" | "ready" | "failed" | "refunded";

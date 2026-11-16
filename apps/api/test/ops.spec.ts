@@ -25,6 +25,40 @@ async function ensureUser(userId = userIdFromTelegramId(BigInt(FICTIONAL_USER.id
   return userId;
 }
 
+/** Карта под разбор: `reports.chart_id` обязателен. */
+async function ensureChart(instance: TestContext, userId: string): Promise<string> {
+  const chart = await instance.db.queryOne<{ id: string }>(
+    `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
+     VALUES ($1, 'hash-report-failed', '{}'::jsonb, 'test', true)
+     RETURNING id`,
+    [userId],
+  );
+  return chart?.id ?? '';
+}
+
+/** Провалившийся разбор с оплатой: заготовка для джоба `report_refund`. */
+async function seedFailedReport(
+  instance: TestContext,
+  userId: string,
+  chartId: string,
+): Promise<void> {
+  const payment = await instance.db.queryOne<{ id: string }>(
+    `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
+     VALUES ($1, $2, 'one_149', 149, 'charge-report-failed', true)
+     RETURNING id`,
+    [userId, FICTIONAL_USER.id],
+  );
+  await instance.db.query(
+    `INSERT INTO entitlements (user_id, kind, chart_id, payment_id)
+     VALUES ($1, 'report', $2, $3)`,
+    [userId, chartId, payment?.id],
+  );
+  await instance.db.query(
+    `INSERT INTO reports (chart_id, user_id, status) VALUES ($1, $2, 'failed')`,
+    [chartId, userId],
+  );
+}
+
 beforeAll(async () => {
   telegram = makeFakeTelegram();
   ctx = await createTestContext({
@@ -321,51 +355,64 @@ describe('POST /api/v1/internal/jobs/run', () => {
     expect(await ctx.db.query(`SELECT 1 FROM users`)).toHaveLength(1);
   });
 
-  it('report_refund возвращает звёзды за провалившийся разбор один раз', async () => {
+  // Автовозврат за провал выключен по умолчанию (решение владельца 2026-11-16),
+  // поэтому джоб проверяется с явно включённым флагом: код возврата остался.
+  it('report_refund возвращает звёзды за провалившийся разбор один раз (флаг включён)', async () => {
+    const flagged = await createTestContext({
+      telegram,
+      env: { ADMIN_TG_ID, INTERNAL_JOB_SECRET: JOBS_SECRET, REFUND_ON_REPORT_FAILED: '1' },
+    });
+
+    try {
+      const userId = await ensureUser();
+      const chartId = await ensureChart(flagged, userId);
+      await seedFailedReport(flagged, userId, chartId);
+
+      const first = await request(flagged.app.getHttpServer())
+        .post('/api/v1/internal/jobs/run?job=report_refund')
+        .set('X-Jobs-Secret', JOBS_SECRET)
+        .expect(202);
+
+      expect(first.body).toMatchObject({ report_refunds_done: 1 });
+      expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-report-failed' }]);
+
+      const report = await flagged.db.queryOne<{ status: string; refunded_at: Date | null }>(
+        `SELECT status::text AS status, refunded_at FROM reports`,
+      );
+      expect(report?.status).toBe('refunded');
+      expect(report?.refunded_at).not.toBeNull();
+
+      const second = await request(flagged.app.getHttpServer())
+        .post('/api/v1/internal/jobs/run?job=report_refund')
+        .set('X-Jobs-Secret', JOBS_SECRET)
+        .expect(202);
+      expect(second.body).toMatchObject({ report_refunds_done: 0 });
+      expect(telegram.refunds).toHaveLength(1);
+    } finally {
+      delete process.env['REFUND_ON_REPORT_FAILED'];
+      await flagged.close();
+    }
+  });
+
+  it('report_refund выключен флагом: ни возврата, ни статуса refunded', async () => {
     const userId = await ensureUser();
-    const chart = await ctx.db.queryOne<{ id: string }>(
-      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
-       VALUES ($1, 'hash-report-failed', '{}'::jsonb, 'test', true)
-       RETURNING id`,
-      [userId],
-    );
-    const chartId = chart?.id;
+    const chartId = await ensureChart(ctx, userId);
+    await seedFailedReport(ctx, userId, chartId);
 
-    const payment = await ctx.db.queryOne<{ id: string }>(
-      `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
-       VALUES ($1, $2, 'one_149', 149, 'charge-report-failed', true)
-       RETURNING id`,
-      [userId, FICTIONAL_USER.id],
-    );
-    await ctx.db.query(
-      `INSERT INTO entitlements (user_id, kind, chart_id, payment_id)
-       VALUES ($1, 'report', $2, $3)`,
-      [userId, chartId, payment?.id],
-    );
-    await ctx.db.query(
-      `INSERT INTO reports (chart_id, user_id, status) VALUES ($1, $2, 'failed')`,
-      [chartId, userId],
-    );
-
-    const first = await request(ctx.app.getHttpServer())
+    const response = await request(ctx.app.getHttpServer())
       .post('/api/v1/internal/jobs/run?job=report_refund')
       .set('X-Jobs-Secret', JOBS_SECRET)
       .expect(202);
 
-    expect(first.body).toMatchObject({ report_refunds_done: 1 });
-    expect(telegram.refunds).toEqual([{ userId: FICTIONAL_USER.id, chargeId: 'charge-report-failed' }]);
+    expect(response.body).toMatchObject({ report_refunds_done: 0 });
+    expect(telegram.refunds).toEqual([]);
 
     const report = await ctx.db.queryOne<{ status: string; refunded_at: Date | null }>(
-      `SELECT status, refunded_at FROM reports`,
+      `SELECT status::text AS status, refunded_at FROM reports`,
     );
-    expect(report?.status).toBe('refunded');
-    expect(report?.refunded_at).not.toBeNull();
-
-    const second = await request(ctx.app.getHttpServer())
-      .post('/api/v1/internal/jobs/run?job=report_refund')
-      .set('X-Jobs-Secret', JOBS_SECRET)
-      .expect(202);
-    expect(second.body).toMatchObject({ report_refunds_done: 0 });
-    expect(telegram.refunds).toHaveLength(1);
+    // Раньше строка становилась `refunded` даже без платежа — это и есть
+    // «статус врёт». Теперь при выключенном флаге она остаётся `failed`.
+    expect(report?.status).toBe('failed');
+    expect(report?.refunded_at).toBeNull();
   });
 });

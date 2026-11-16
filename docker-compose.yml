@@ -140,6 +140,10 @@ services:
       # переменные, которые перечислены здесь: без неё флаг из .env не доедет
       # до контейнера (и «ничего не изменилось» — не баг приложения).
       PAYMENTS_TEST_PLANS: ${PAYMENTS_TEST_PLANS:-}
+      # Автовозврат звёзд за провалившийся разбор: по умолчанию выключен
+      # (решение владельца 2026-11-16). Пустое значение — «не задано»; в
+      # `.env.example` строки нет, чтобы деплой не включал возврат случайно.
+      REFUND_ON_REPORT_FAILED: ${REFUND_ON_REPORT_FAILED:-}
     volumes:
       - ./docker/certs/russian_trusted_root_ca.cer:/etc/astro-soul/certs/russian_trusted_root_ca.cer:ro
     expose:

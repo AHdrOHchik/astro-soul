@@ -63,6 +63,42 @@ const SECOND_PERSON_PLURAL = new RegExp(
 /** Отсылки к интерфейсу: текст должен читаться и в PDF. */
 const UI_REFERENCE = /нажм[\p{L}]*|свайп[\p{L}]*|тап[\p{L}]*|экран[\p{L}]*|цвет[\p{L}]*|кнопк[\p{L}]*/iu;
 
+/** Первые 400 знаков `core` — бесплатный тизер: терминов там быть не должно. */
+export const TEASER_LENGTH = 400;
+
+/**
+ * Термины, которых не должно быть в тизере: планеты, знаки, дома, аспекты,
+ * стихии, кресты. Правило живёт и в промпте (`SECTION_RULES.core`,
+ * `prompts_v1.3` §3): валидатор здесь страхует, а не заменяет промпт.
+ */
+const TEASER_TERMS = new RegExp(
+  [
+    // Планеты и точки.
+    'солнц|лун[аыуеой]|меркури|венер|марс|юпитер|сатурн|уран|нептун|плутон|хирон|лилит|раху|кету',
+    // Знаки: границы — те же, что у остальных правил (кириллица не «слово»).
+    `${NOT_LETTER_BEFORE}(?:овен|овна|телец|тельца|близнец|рак|рака|лев|льва|дева|девы|весы|весов|скорпион|стрелец|козерог|водолей|рыбы|рыб)${NOT_LETTER_AFTER}`,
+    // Дома и углы.
+    `дом(?:а|е|ом|ов|ах|у)?${NOT_LETTER_AFTER}|домашн|асцендент|зенит|${NOT_LETTER_BEFORE}(?:asc|mc)${NOT_LETTER_AFTER}`,
+    // Аспекты.
+    // Падежные окончания перечислены явно: `\p{L}*` после «трин» поймал бы
+    // «тринадцать» — это число, а не аспект.
+    `${NOT_LETTER_BEFORE}(?:аспект\\p{L}*|квадрат\\p{L}*|трин(?:ом|а|ы)?|оппозици\\p{L}*|соединени\\p{L}*|секстил\\p{L}*|квиконс\\p{L}*)${NOT_LETTER_AFTER}`,
+    // Стихии и кресты.
+    'стихи|крест(?:а|е|ом)?',
+  ].join('|'),
+  'iu',
+);
+
+/** Найденные в тизере термины — для отчёта и тестов. */
+export function teaserTerms(text: string): readonly string[] {
+  const teaser = text.slice(0, TEASER_LENGTH);
+  const found = new Set<string>();
+  for (const match of teaser.matchAll(new RegExp(TEASER_TERMS.source, 'giu'))) {
+    found.add(match[0].toLowerCase());
+  }
+  return [...found];
+}
+
 const FORMAT = {
   h1: /^#\s/m,
   table: /\|/,
@@ -294,6 +330,73 @@ function disclaimers(sentences: readonly string[]): number[] {
   return found;
 }
 
+/**
+ * Коды провала вместо одного `validation` (`prompts_v1.3`, §5.5).
+ *
+ * Живой прогон 2026-11-16: три разных дефекта — «мало абзацев», «мало
+ * объёма», «переписал» — приходили одним `error_code: validation`, и по
+ * статистике нельзя было понять, что чинить. Шесть кодов — это шесть разных
+ * починок, и они не смешиваются.
+ */
+export type FailureCategory =
+  | 'too_short'
+  | 'too_long'
+  | 'format'
+  | 'forbidden_terms'
+  | 'paragraphs'
+  | 'repeats';
+
+/** Правило валидатора → код провала. Незнакомое правило — `format`. */
+export function failureCategory(rule: string): FailureCategory {
+  if (rule === 'too_short' || rule === 'too_long') {
+    return rule;
+  }
+  if (rule === 'paragraphs' || rule === 'paragraph_sentences') {
+    return 'paragraphs';
+  }
+  if (rule === 'repeats' || rule === 'sentence_repeat' || rule === 'word_share') {
+    return 'repeats';
+  }
+  if (
+    rule === 'chiron' ||
+    rule.startsWith('forbidden_') ||
+    rule === 'unknown_house' ||
+    rule === 'unknown_house_soft'
+  ) {
+    return 'forbidden_terms';
+  }
+  return 'format';
+}
+
+/** Код провала для `reports.error_code` по уже посчитанным категориям. */
+export function failureErrorCodeForCategories(categories: readonly FailureCategory[]): string {
+  if (categories.length === 0) {
+    return 'validation';
+  }
+  const counts = new Map<FailureCategory, number>();
+  for (const category of categories) {
+    counts.set(category, (counts.get(category) ?? 0) + 1);
+  }
+  let best: FailureCategory = categories[0] ?? 'format';
+  let bestCount = -1;
+  for (const [category, count] of counts) {
+    if (count > bestCount) {
+      best = category;
+      bestCount = count;
+    }
+  }
+  return `validation:${best}`;
+}
+
+/**
+ * Код провала для `reports.error_code`: самая частая категория среди всех
+ * неудачных попыток. Префикс `validation:` оставлен, чтобы старые запросы в
+ * статистике (`error_code = 'validation'`) не потерялись.
+ */
+export function failureErrorCode(rules: readonly string[]): string {
+  return failureErrorCodeForCategories(rules.map(failureCategory));
+}
+
 export function validateSection(input: ValidationInput): ValidationResult {
   const failures: { rule: string; detail: string }[] = [];
   const warnings: string[] = [];
@@ -308,10 +411,18 @@ export function validateSection(input: ValidationInput): ValidationResult {
   // 1. Пустое тело и объём (±30 % — провал, 10–30 % — предупреждение).
   if (body.length < 300) {
     failures.push({ rule: 'too_short', detail: `${body.length} < 300` });
-  } else if (body.length > range.max * 1.3 || body.length < range.min * 0.7) {
+  } else if (body.length > range.max * 1.3) {
+    // v1.3 (живой прогон 2026-11-16): код объёма разделён на два. Раньше был
+    // один `length`, и в статистике нельзя было отличить «недописал» от
+    // «переписал»: чинят их по-разному.
     failures.push({
-      rule: 'length',
-      detail: `${body.length} вне ${range.min}–${range.max} более чем на 30 %`,
+      rule: 'too_long',
+      detail: `${body.length} > ${range.max} более чем на 30 %`,
+    });
+  } else if (body.length < range.min * 0.7) {
+    failures.push({
+      rule: 'too_short',
+      detail: `${body.length} < ${range.min} более чем на 30 %`,
     });
   } else if (body.length > range.max || body.length < range.min) {
     warnings.push(`length_off: ${body.length} вне ${range.min}–${range.max}`);
@@ -372,6 +483,16 @@ export function validateSection(input: ValidationInput): ValidationResult {
   const overlap = maxOverlap(body, input.previous ?? []);
   if (overlap > 0.12) {
     failures.push({ rule: 'repeats', detail: `${Math.round(overlap * 100)}% > 12%` });
+  }
+
+  // 8.5. Тизер: первые 400 знаков `core` без терминов. Это предупреждение, а не
+  // провал: перегенерировать из-за одного слова дороже, чем показать тизер с
+  // «Луной» (стоимость — 0,5 ₽/1000 токенов, см. отчёт прогона 2026-11-16).
+  if (input.key === 'core') {
+    const terms = teaserTerms(body);
+    if (terms.length > 0) {
+      warnings.push(`teaser_terms: ${terms.join(', ')}`);
+    }
   }
 
   // 9. Дисклеймер дословно — в «Итоге».
