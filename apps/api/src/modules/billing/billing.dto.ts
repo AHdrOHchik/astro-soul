@@ -1,15 +1,29 @@
 import { z } from 'zod';
-import { PLANS, PLAN_CODES, type PlanCode } from '@astro-soul/shared';
+import { ALL_PLAN_CODES, PLANS, type PlanCode } from '@astro-soul/shared';
 import { invalidFields, type FieldErrorInput } from '../../common/api-error';
 
+/**
+ * `plan_code` проверяется по полному списку (каталог + тестовые): тестовый
+ * тариф — это не «неизвестный код», а существующий план, который выключен
+ * флагом. Флаг проверяется ниже, чтобы ответ был один и тот же — `422`,
+ * как будто плана нет.
+ */
 export const invoiceRequestSchema = z.object({
-  plan_code: z.enum(PLAN_CODES),
+  plan_code: z.enum(ALL_PLAN_CODES),
   chart_id: z.string().uuid().nullish(),
 });
 
 export type InvoiceRequestBody = z.infer<typeof invoiceRequestSchema>;
 
-export function parseInvoiceRequest(body: unknown): { planCode: PlanCode; chartId: string | null } {
+export interface InvoiceRequestOptions {
+  /** `PAYMENTS_TEST_PLANS=1`: без него тестовых тарифов не существует. */
+  readonly testPlansEnabled: boolean;
+}
+
+export function parseInvoiceRequest(
+  body: unknown,
+  options: InvoiceRequestOptions,
+): { planCode: PlanCode; chartId: string | null } {
   const parsed = invoiceRequestSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -28,6 +42,16 @@ export function parseInvoiceRequest(body: unknown): { planCode: PlanCode; chartI
 
   const chartId = parsed.data.chart_id ?? null;
   const plan = PLANS[parsed.data.plan_code];
+
+  // Тестовый тариф без флага — «такого плана нет»: тот же `422`, тот же
+  // `reason`, что у несуществующего кода. Отдельный ответ (`403`, «включи
+  // флаг») подсказывал бы клиенту, что тариф существует.
+  if (plan.testOnly && !options.testPlansEnabled) {
+    throw invalidFields(
+      [{ field: 'plan_code', message: 'plan_code — один из тарифов каталога' }],
+      { reason: 'invoice_request_invalid' },
+    );
+  }
 
   // Полный разбор покупается для конкретной карты: без `chart_id` платёж
   // пришлось бы «прикреплять» к первой карте задним числом — это сюрприз,
@@ -82,7 +106,9 @@ export function parseInvoicePayload(raw: string): InvoicePayload | null {
 
     if (
       typeof plan !== 'string' ||
-      !(PLAN_CODES as readonly string[]).includes(plan) ||
+      // Полный список: инвойс тестового тарифа — такой же настоящий инвойс,
+      // и его `successful_payment` обязан дойти до сверки суммы.
+      !(ALL_PLAN_CODES as readonly string[]).includes(plan) ||
       typeof userId !== 'string' ||
       !UUID_SHAPE.test(userId) ||
       typeof idemKey !== 'string' ||

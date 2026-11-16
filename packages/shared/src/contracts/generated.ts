@@ -1169,6 +1169,11 @@ export interface paths {
                             paying?: number;
                             conversion_to_paid?: number;
                             churn_30d?: number;
+                            /**
+                             * @description Звёзды за 30 дней без возвратов и отказов. Платежи по
+                             *     тестовому тарифу (`is_test`) не входят: это проверка
+                             *     оплаты, а не выручка.
+                             */
                             stars_received_30d?: number;
                             /**
                              * @description Стоимость LLM за 30 дней в рублях — сумма `reports.llm_cost_rub`.
@@ -1189,6 +1194,13 @@ export interface paths {
                             refunded_30d?: number;
                             /** @description Платежи `processed = false` прямо сейчас */
                             pending_payments_now?: number;
+                            /**
+                             * @description Платежи по тестовому тарифу (`test_1`) за 30 дней.
+                             *     Считаются отдельно и в выручку не входят: это проверка
+                             *     оплаты владельцем, а не продажа. Ненулевое значение на
+                             *     проде означает забытый `PAYMENTS_TEST_PLANS`.
+                             */
+                            test_payments_30d?: number;
                             /**
                              * @description Сколько раз отмена автопродления в Telegram не прошла за
                              *     30 дней (события `subscription_cancel_failed`). История, а

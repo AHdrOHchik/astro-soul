@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.6
+  version: 1.5.7
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -196,6 +196,21 @@ info:
       • `JobRunResult`: `telegram_cancel_retried`, `telegram_cancel_cancelled`,
         `telegram_cancel_gave_up` — повтор отмены идёт в
         `pdn_retention_cleanup`.
+
+    1.5.7 — тестовый тариф для проверки настоящей оплаты (итерация 13). Схемы
+    расширены одним полем; тестовый `plan_code` в контракт **не** добавлен:
+      • `GET /admin/metrics`: `test_payments_30d` — платежи по тестовому тарифу
+        за 30 дней. Денежные агрегаты (`stars_received_30d`,
+        `payments_rejected_30d`, `amount_mismatch_30d`, `refunded_30d`,
+        `pending_payments_now`), `paying` и `conversion_to_paid` тестовые
+        платежи не учитывают;
+      • `PlanCode` по-прежнему перечисляет только каталог: тариф `test_1`
+        (1 ⭐, неделя) существует при `PAYMENTS_TEST_PLANS=1` и только для
+        владельца — в каталоге пейволла и в этом перечислении его нет. При
+        выключенном флаге `POST /billing/invoice` с `plan_code = test_1`
+        отвечает `422 VALIDATION_FAILED`, как на несуществующий план;
+      • `SubscriptionState.plan` не менялся: тестовая подписка отдаёт `month`
+        (права как у `month_399`), «тестовость» живёт в `payments.is_test`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1457,7 +1472,12 @@ paths:
                   paying: { type: integer }
                   conversion_to_paid: { type: number }
                   churn_30d: { type: number }
-                  stars_received_30d: { type: integer }
+                  stars_received_30d:
+                    type: integer
+                    description: |
+                      Звёзды за 30 дней без возвратов и отказов. Платежи по
+                      тестовому тарифу (`is_test`) не входят: это проверка
+                      оплаты, а не выручка.
                   llm_cost_rub_30d:
                     type: number
                     description: |
@@ -1478,6 +1498,13 @@ paths:
                   pending_payments_now:
                     type: integer
                     description: Платежи `processed = false` прямо сейчас
+                  test_payments_30d:
+                    type: integer
+                    description: |
+                      Платежи по тестовому тарифу (`test_1`) за 30 дней.
+                      Считаются отдельно и в выручку не входят: это проверка
+                      оплаты владельцем, а не продажа. Ненулевое значение на
+                      проде означает забытый `PAYMENTS_TEST_PLANS`.
                   subscription_cancel_failed_30d:
                     type: integer
                     description: |

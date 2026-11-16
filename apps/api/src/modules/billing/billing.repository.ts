@@ -37,6 +37,8 @@ export interface NewPayment {
   readonly providerChargeId: string | null;
   readonly invoicePayload: string;
   readonly subscriptionExpiresAt: Date | null;
+  /** Платёж по тестовому тарифу (`test_1`): в выручку и конверсию не идёт. */
+  readonly isTest: boolean;
 }
 
 export interface NewRejectedPayment extends NewPayment {
@@ -179,8 +181,8 @@ export class BillingRepository {
       `INSERT INTO payments (
          user_id, telegram_id, plan_code, currency, total_amount,
          telegram_payment_charge_id, provider_payment_charge_id, invoice_payload,
-         subscription_expires_at, status, processed
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'paid', false)
+         subscription_expires_at, status, processed, is_test
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'paid', false, $10)
        ON CONFLICT (telegram_payment_charge_id) DO NOTHING
        RETURNING id`,
       [
@@ -193,6 +195,7 @@ export class BillingRepository {
         payment.providerChargeId,
         payment.invoicePayload,
         payment.subscriptionExpiresAt,
+        payment.isTest,
       ],
     );
 
@@ -225,8 +228,8 @@ export class BillingRepository {
       `INSERT INTO payments (
          user_id, telegram_id, plan_code, currency, total_amount,
          telegram_payment_charge_id, provider_payment_charge_id, invoice_payload,
-         subscription_expires_at, status, processed, reject_reason
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'rejected', false, $10)
+         subscription_expires_at, status, processed, reject_reason, is_test
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'rejected', false, $10, $11)
        ON CONFLICT (telegram_payment_charge_id) DO NOTHING
        RETURNING id`,
       [
@@ -240,6 +243,7 @@ export class BillingRepository {
         payment.invoicePayload,
         payment.subscriptionExpiresAt,
         payment.rejectReason,
+        payment.isTest,
       ],
     );
 

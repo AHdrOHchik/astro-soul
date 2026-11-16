@@ -15,8 +15,8 @@ export async function seedPlans(pool: Pool): Promise<number> {
     for (const plan of Object.values(PLANS)) {
       await client.query(
         `INSERT INTO plans (code, kind, subscription_plan, stars, period_seconds,
-                            title, description, price_label, sort, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+                            title, description, price_label, sort, is_active, test_only)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (code) DO UPDATE SET
            kind = EXCLUDED.kind,
            subscription_plan = EXCLUDED.subscription_plan,
@@ -26,7 +26,8 @@ export async function seedPlans(pool: Pool): Promise<number> {
            description = EXCLUDED.description,
            price_label = EXCLUDED.price_label,
            sort = EXCLUDED.sort,
-           is_active = true,
+           is_active = EXCLUDED.is_active,
+           test_only = EXCLUDED.test_only,
            updated_at = now()`,
         [
           plan.code,
@@ -38,6 +39,10 @@ export async function seedPlans(pool: Pool): Promise<number> {
           plan.description,
           plan.priceLabel,
           plan.sort,
+          // Тестовый тариф лежит в таблице только потому, что на неё ссылаются
+          // инвойсы и платежи; активным в каталоге он не бывает.
+          !plan.testOnly,
+          plan.testOnly,
         ],
       );
     }
