@@ -95,7 +95,7 @@ export interface ChartReportProps {
 }
 
 export interface ChartScreenProps {
-  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getReport' | 'getForecast'>;
+  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getPlans' | 'getReport' | 'getForecast'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
@@ -305,7 +305,7 @@ function ChartSkeleton() {
 }
 
 interface ChartViewProps {
-  api: Pick<Api, 'getReport' | 'getForecast'>;
+  api: Pick<Api, 'getPlans' | 'getReport' | 'getForecast'>;
   result: ChartResult;
   apiBaseUrl: string;
   botUsername: string;

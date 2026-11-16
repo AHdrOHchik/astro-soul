@@ -659,7 +659,7 @@ function Screens({
           me={me}
           // A report is paid for a chart. Where the screen sells one, or waits for a payment made for a chart, `Me`
           // without any chart says that the chart is gone, and the purchase with it: the app starts over instead of waiting.
-          refreshMe={(offersReport && paywallChartId !== null) || awaitedChartId !== null ? refreshMeForChart : refreshMe}
+          refreshMe={offersReport || awaitedChartId !== null ? refreshMeForChart : refreshMe}
           reportChartId={paywallChartId}
           initialKind={paywall.preferredKind}
           subscriptions={subscriptions}

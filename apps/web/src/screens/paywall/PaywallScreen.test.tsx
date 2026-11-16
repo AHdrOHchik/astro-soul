@@ -1,9 +1,10 @@
+import { StrictMode } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Me, PlanOffer } from '../../api';
+import { createApi, type Me, type PlanOffer } from '../../api';
+import { ru } from '../../i18n/ru';
 import { formatMoment } from '../../i18n/format';
 import type { InvoiceOutcome } from '../../telegram';
-import { ru } from '../../i18n/ru';
 import {
   apiError,
   chart,
@@ -31,9 +32,10 @@ interface SetupOptions {
   telegram?: Parameters<typeof fakeTelegram>[0];
   api?: ReturnType<typeof fakeApi>;
   props?: Partial<PaywallScreenProps>;
+  strict?: boolean;
 }
 
-function setup({ me = meWithChart, afterPayment = me, telegram: host, api = fakeApi(), props }: SetupOptions = {}) {
+function setup({ me = meWithChart, afterPayment = me, telegram: host, api = fakeApi(), props, strict = false }: SetupOptions = {}) {
   const telegram = fakeTelegram(host);
   const analytics = fakeAnalytics();
   const refreshMe = vi.fn<PaywallScreenProps['refreshMe']>().mockResolvedValue(afterPayment);
@@ -41,7 +43,7 @@ function setup({ me = meWithChart, afterPayment = me, telegram: host, api = fake
   const onClose = vi.fn();
   const onAwaiting = vi.fn<NonNullable<PaywallScreenProps['onAwaiting']>>();
   const user = setupUser();
-  const view = render(
+  const screenElement = (
     <PaywallScreen
       api={api}
       telegram={telegram}
@@ -58,8 +60,9 @@ function setup({ me = meWithChart, afterPayment = me, telegram: host, api = fake
       onClose={onClose}
       onAwaiting={onAwaiting}
       {...props}
-    />,
+    />
   );
+  const view = render(strict ? <StrictMode>{screenElement}</StrictMode> : screenElement);
   return { api, telegram, analytics, refreshMe, onReportPaid, onClose, onAwaiting, user, ...view };
 }
 
@@ -76,10 +79,60 @@ afterEach(() => {
 });
 
 describe('PaywallScreen', () => {
+  it('renders the server response envelope as a tariff with its 149-star price', async () => {
+    const body = {
+      plans: [
+        {
+          plan_code: 'one_149',
+          kind: 'one_off',
+          stars: 149,
+          period_sec: null,
+          title: 'Полный разбор',
+          subtitle: 'Все главы разбора по этой карте. Разовая покупка, без подписки.',
+          includes: ['Все главы разбора по этой карте', 'PDF-файл'],
+          test: false,
+        },
+      ],
+    };
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const liveApi = createApi({ baseUrl: 'https://api.test', getInitData: () => 'signed-init-data', fetch: fetchMock });
+    const api = fakeApi();
+    api.getPlans.mockImplementation((signal) => liveApi.getPlans(signal));
+    setup({ api, props: { subscriptions: false } });
+
+    expect(await screen.findByRole('radio', { name: /Полный разбор 149 звёзд/ })).toBeChecked();
+    expect(await payButton()).toHaveTextContent('Оплатить 149');
+    expect(screen.getByText('Все главы разбора по этой карте. Разовая покупка, без подписки.')).toBeInTheDocument();
+  });
+
+  it('does not turn the StrictMode cleanup AbortError into a catalogue error', async () => {
+    const pending = deferred<PlanOffer[]>();
+    const api = fakeApi();
+    api.getPlans
+      .mockImplementationOnce((signal) => new Promise<PlanOffer[]>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+      }))
+      .mockReturnValueOnce(pending.promise);
+    setup({ api, strict: true });
+
+    await waitFor(() => {
+      expect(api.getPlans).toHaveBeenCalledTimes(2);
+    });
+    expect(screen.getByRole('status')).toHaveTextContent(copy.loadingPlans);
+    expect(screen.queryByRole('heading', { name: copy.plansError })).not.toBeInTheDocument();
+    pending.resolve(cataloguePlans);
+    expect(await option(offer('one_149').title)).toBeInTheDocument();
+  });
+
   it('offers the report and subscriptions with server-supplied details and prices', async () => {
-    const { analytics } = setup();
+    const { analytics, api } = setup();
 
     expect(await option(offer('one_149').title)).toBeChecked();
+    expect(api.getPlans).toHaveBeenCalledTimes(1);
     expect(await screen.findAllByRole('radio')).toHaveLength(6);
     expect(await option(offer('month_399').title)).toHaveAccessibleName(`${offer('month_399').title} 399 ${ru.common.stars.many}`);
     expect(await payButton()).toHaveTextContent(`${copy.pay} 149`);
@@ -121,10 +174,10 @@ describe('PaywallScreen', () => {
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
   });
 
-  it('shows a retryable error on failure, including an expired initData response', async () => {
+  it('shows a retryable error after a server failure', async () => {
     const api = fakeApi();
     api.getPlans
-      .mockRejectedValueOnce(apiError('UNAUTHORIZED', { status: 401 }))
+      .mockRejectedValueOnce(apiError('INTERNAL', { status: 500 }))
       .mockResolvedValueOnce(cataloguePlans);
     const { user } = setup({ api });
 
@@ -132,6 +185,26 @@ describe('PaywallScreen', () => {
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: copy.retryPlans }));
     expect(await option(offer('one_149').title)).toBeInTheDocument();
+  });
+
+  it('shows a retryable error after a network failure', async () => {
+    const api = fakeApi();
+    api.getPlans.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce(cataloguePlans);
+    const { user } = setup({ api });
+
+    expect(await screen.findByRole('heading', { name: copy.plansError })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: copy.retryPlans }));
+    expect(await option(offer('one_149').title)).toBeInTheDocument();
+    expect(api.getPlans).toHaveBeenCalledTimes(2);
+  });
+
+  it('explains an expired initData session instead of offering a futile retry', async () => {
+    const api = fakeApi();
+    api.getPlans.mockRejectedValue(apiError('UNAUTHORIZED', { status: 401 }));
+    setup({ api });
+
+    expect(await screen.findByRole('heading', { name: copy.sessionExpired })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.retryPlans })).not.toBeInTheDocument();
   });
 
   it('keeps the loading skeleton in the card area until the catalogue arrives', async () => {

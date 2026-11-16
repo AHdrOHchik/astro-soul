@@ -99,6 +99,10 @@ export interface PaywallScreenProps {
  * `processing`: it did not arrive in time.
  */
 type Phase = 'choosing' | 'invoicing' | 'paying' | 'confirming' | 'processing';
+type PlansRequest =
+  | { status: 'loading' }
+  | { status: 'ready'; plans: PlanOffer[] }
+  | { status: 'error'; unauthorized: boolean };
 
 /** What went wrong with the last attempt, said next to the button. A cancelled invoice is not one of these. */
 type Problem =
@@ -160,10 +164,10 @@ export function PaywallScreen({
   const titleId = useId();
   const groupName = useId();
   const subscribed = me.entitlements.is_active;
-  const [plansRequest, setPlansRequest] = useState<{ status: 'loading' | 'error' | 'ready'; plans: PlanOffer[] }>({ status: 'loading', plans: [] });
+  const [plansRequest, setPlansRequest] = useState<PlansRequest>({ status: 'loading' });
   const [reloadPlans, setReloadPlans] = useState(0);
   const [chosen, setChosen] = useState<OrderablePlanCode | null>(null);
-  const visiblePlans = displayablePlans(plansRequest.plans, {
+  const visiblePlans = displayablePlans(plansRequest.status === 'ready' ? plansRequest.plans : [], {
     subscriptions,
     subscribed,
     offersReport,
@@ -200,7 +204,6 @@ export function PaywallScreen({
   // A fresh authenticated, no-store catalogue is requested every time this screen mounts.
   useEffect(() => {
     const controller = new AbortController();
-    setPlansRequest({ status: 'loading', plans: [] });
     void api
       .getPlans(controller.signal)
       .then((plans) => {
@@ -220,7 +223,8 @@ export function PaywallScreen({
         });
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted && !isAbortError(error)) setPlansRequest({ status: 'error', plans: [] });
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setPlansRequest({ status: 'error', unauthorized: isApiError(error) && error.code === 'UNAUTHORIZED' });
       });
     return () => {
       controller.abort();
@@ -393,10 +397,23 @@ export function PaywallScreen({
     );
   }
   if (plansRequest.status === 'error') {
+    const expired = plansRequest.unauthorized;
     return (
       <Screen back={back}>
-        <StateView icon={<StarsIcon />} title={copy.plansError}>
-          <Button onClick={() => setReloadPlans((count) => count + 1)}>{copy.retryPlans}</Button>
+        <StateView
+          icon={<StarsIcon />}
+          title={expired ? copy.sessionExpired : copy.plansError}
+        >
+          {!expired && (
+            <Button
+              onClick={() => {
+                setPlansRequest({ status: 'loading' });
+                setReloadPlans((count) => count + 1);
+              }}
+            >
+              {copy.retryPlans}
+            </Button>
+          )}
         </StateView>
       </Screen>
     );
