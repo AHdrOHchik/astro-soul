@@ -30,6 +30,12 @@ export interface ProductMetrics {
   readonly subscription_cancel_failed_30d: number;
   /** Сколько отменённых подписок всё ещё ждут повтора в Telegram. */
   readonly subscriptions_cancelled_pending_telegram: number;
+  /**
+   * Платежи по тестовому тарифу (`test_1`) за 30 дней — отдельная цифра, а не
+   * часть выручки: владелец должен видеть свою тестовую звезду, чтобы не
+   * забыть выключить `PAYMENTS_TEST_PLANS`.
+   */
+  readonly test_payments_30d: number;
   readonly events_30d: Readonly<Record<string, number>>;
   readonly funnel_30d: Readonly<Record<string, number>>;
 }
@@ -81,13 +87,24 @@ export class AdminMetricsService {
           [FUNNEL_STEPS],
         ),
         this.db.queryOne<{ paying: number; churned_30d: number; base: number }>(
+          // Подписка, оплаченная тестовым тарифом, — не продажа: в `paying`
+          // (а значит, и в конверсии) она не участвует. Признак берём с
+          // платежа по charge_id подписки: у `subscriptions` своего флага нет
+          // намеренно — «тестовость» это свойство платежа, а не доступа.
           `SELECT
-             count(*) FILTER (WHERE status = 'active' AND expires_at > now())::int AS paying,
              count(*) FILTER (
-               WHERE status IN ('expired', 'cancelled') AND updated_at >= now() - ${WINDOW}
+               WHERE s.status = 'active' AND s.expires_at > now() AND t.id IS NULL
+             )::int AS paying,
+             count(*) FILTER (
+               WHERE s.status IN ('expired', 'cancelled')
+                 AND s.updated_at >= now() - ${WINDOW}
+                 AND t.id IS NULL
              )::int AS churned_30d,
-             count(*)::int AS base
-           FROM subscriptions`,
+             count(*) FILTER (WHERE t.id IS NULL)::int AS base
+           FROM subscriptions s
+           LEFT JOIN payments t
+             ON t.telegram_payment_charge_id = s.telegram_payment_charge_id
+            AND t.is_test`,
         ),
         this.db.queryOne<{
           stars: number;
@@ -95,28 +112,37 @@ export class AdminMetricsService {
           mismatch: number;
           refunded: number;
           pending: number;
+          test: number;
         }>(
           // `rejected` — деньги не за доступ: в выручку не попадают (QA-11).
+          // `is_test` исключён из всех денежных агрегатов: тестовая звезда
+          // владельца — не выручка, не отказ и не «зависший платёж».
           `SELECT
              COALESCE(sum(total_amount) FILTER (
-               WHERE status NOT IN ('refunded', 'rejected') AND paid_at >= now() - ${WINDOW}
+               WHERE status NOT IN ('refunded', 'rejected')
+                 AND paid_at >= now() - ${WINDOW}
+                 AND NOT is_test
              ), 0)::int AS stars,
              count(*) FILTER (
-               WHERE status = 'rejected' AND paid_at >= now() - ${WINDOW}
+               WHERE status = 'rejected' AND paid_at >= now() - ${WINDOW} AND NOT is_test
              )::int AS rejected,
              count(*) FILTER (
                WHERE status = 'rejected' AND reject_reason = 'amount_mismatch'
-                 AND paid_at >= now() - ${WINDOW}
+                 AND paid_at >= now() - ${WINDOW} AND NOT is_test
              )::int AS mismatch,
              count(*) FILTER (
-               WHERE status = 'refunded' AND refunded_at >= now() - ${WINDOW}
+               WHERE status = 'refunded' AND refunded_at >= now() - ${WINDOW} AND NOT is_test
              )::int AS refunded,
              count(*) FILTER (
-               WHERE (status = 'paid' AND processed = false)
+               WHERE ((status = 'paid' AND processed = false)
                   OR (status = 'rejected'
                       AND reject_reason IN ('invoice_invalidated', 'user_deleted')
-                      AND refunded_at IS NULL)
-             )::int AS pending
+                      AND refunded_at IS NULL))
+                 AND NOT is_test
+             )::int AS pending,
+             count(*) FILTER (
+               WHERE is_test AND paid_at >= now() - ${WINDOW}
+             )::int AS test
            FROM payments`,
         ),
         this.db.queryOne<{ failed: number }>(
@@ -175,6 +201,7 @@ export class AdminMetricsService {
       pending_payments_now: payments?.pending ?? 0,
       subscription_cancel_failed_30d: telegramCancel?.failed ?? 0,
       subscriptions_cancelled_pending_telegram: telegramCancel?.pending ?? 0,
+      test_payments_30d: payments?.test ?? 0,
       events_30d: eventsByName,
       funnel_30d: funnelByStep,
     };

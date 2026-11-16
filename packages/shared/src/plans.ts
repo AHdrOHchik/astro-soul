@@ -4,7 +4,7 @@
  * Хардкод цены в обработчике платежа — ошибка ревью.
  */
 
-/** Коды планов из payments.md §1. */
+/** Коды планов из payments.md §1 — каталог, который видит клиент. */
 export const PLAN_CODES = [
   'one_149',
   'week_149',
@@ -14,7 +14,36 @@ export const PLAN_CODES = [
   'solar_590',
 ] as const;
 
-export type PlanCode = (typeof PLAN_CODES)[number];
+/**
+ * Тестовые тарифы: существуют в коде, но не в каталоге.
+ *
+ * Нужны владельцу, чтобы пройти настоящие денежные пути в клиенте Telegram за
+ * 1 ⭐, а не за 149–399: `test_1` — подписка (как `month_399`),
+ * `test_report_1` — разовый разбор (как `one_149`). Два пути устроены
+ * по-разному (автопродление против `entitlements.report` на карту), поэтому
+ * и тарифов два, а флаг — один.
+ *
+ * Такой тариф нельзя «просто добавить в таблицу цен»: любая забытая строка в
+ * каталоге — это прод, где подписка или разбор стоит звезду. Поэтому у плана
+ * есть признак `testOnly`, а у сервера — флаг `PAYMENTS_TEST_PLANS`: при
+ * выключенном флаге `POST /billing/invoice` с этим кодом отвечает `422`, как
+ * будто плана нет.
+ *
+ * В каталог (`PLAN_CODES`), в порядок пейволла (`PLANS_ORDERED`) и в контракт
+ * эти коды не попадают никогда: клиент о них не знает, вызывает их только
+ * владелец руками (payments.md §1.1).
+ *
+ * Флаг один на оба тарифа намеренно: два выключателя означают, что один из
+ * них забудут выключить.
+ */
+export const TEST_PLAN_CODES = ['test_1', 'test_report_1'] as const;
+
+/** Всё, что сервер умеет выставлять в инвойсе: каталог + тестовые. */
+export const ALL_PLAN_CODES = [...PLAN_CODES, ...TEST_PLAN_CODES] as const;
+
+export type CataloguePlanCode = (typeof PLAN_CODES)[number];
+export type TestPlanCode = (typeof TEST_PLAN_CODES)[number];
+export type PlanCode = (typeof ALL_PLAN_CODES)[number];
 
 export type PlanKind = 'one_off' | 'subscription';
 
@@ -34,6 +63,11 @@ export interface SubscriptionGrant {
 
 export interface PlanBase {
   readonly code: PlanCode;
+  /**
+   * План существует только при `PAYMENTS_TEST_PLANS=1` и никогда не попадает
+   * в каталог для клиента. Учёт тестовых платежей — `payments.is_test`.
+   */
+  readonly testOnly: boolean;
   /** Значение `plan` в `SubscriptionState` для подписок, `none` для разовых товаров. */
   readonly subscriptionPlan: SubscriptionPlan;
   /** Цена в звёздах (XTR). Только целое число. */
@@ -67,6 +101,7 @@ export type Plan = OneOffPlan | SubscriptionPlanDefinition;
 export const PLANS: Readonly<Record<PlanCode, Plan>> = {
   one_149: {
     code: 'one_149',
+    testOnly: false,
     kind: 'one_off',
     subscriptionPlan: 'none',
     stars: 149,
@@ -79,6 +114,7 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
   },
   week_149: {
     code: 'week_149',
+    testOnly: false,
     kind: 'subscription',
     subscriptionPlan: 'week',
     stars: 149,
@@ -91,6 +127,7 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
   },
   month_399: {
     code: 'month_399',
+    testOnly: false,
     kind: 'subscription',
     subscriptionPlan: 'month',
     stars: 399,
@@ -103,6 +140,7 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
   },
   year_2990: {
     code: 'year_2990',
+    testOnly: false,
     kind: 'subscription',
     subscriptionPlan: 'year',
     stars: 2990,
@@ -115,6 +153,7 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
   },
   compat_249: {
     code: 'compat_249',
+    testOnly: false,
     kind: 'one_off',
     subscriptionPlan: 'none',
     stars: 249,
@@ -127,6 +166,7 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
   },
   solar_590: {
     code: 'solar_590',
+    testOnly: false,
     kind: 'one_off',
     subscriptionPlan: 'none',
     stars: 590,
@@ -137,13 +177,71 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     priceLabel: 'Карта года',
     sort: 60,
   },
+  /**
+   * Тестовый тариф владельца: 1 ⭐ за неделю, права как у `month_399`.
+   *
+   * Неделя, а не месяц, — намеренно: если тестовую подписку забудут отменить,
+   * следующее списание случится через неделю, и это ошибка за 1 ⭐, а не
+   * повторный платёж, о котором узнают из жалобы. `subscriptionPlan` — `month`:
+   * контракт `SubscriptionState.plan` не расширяется, «тестовость» живёт в
+   * `plan_code` и в `payments.is_test`, а не в правах.
+   */
+  test_1: {
+    code: 'test_1',
+    testOnly: true,
+    kind: 'subscription',
+    subscriptionPlan: 'month',
+    stars: 1,
+    periodSeconds: 604800,
+    grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: false },
+    title: 'Тестовая подписка — 1 звезда',
+    description: 'Неделя доступа за 1 ⭐. Только для проверки оплаты владельцем',
+    priceLabel: 'Тест',
+    sort: 90,
+  },
+  /**
+   * Тестовый разовый разбор: 1 ⭐, права как у `one_149`.
+   *
+   * `subscriptionPeriod: null` — принципиально: с `subscription_period`
+   * Telegram превратил бы разовый товар в подписку, и это был бы третий вид
+   * тестового платежа вместо второго. Доступ — `entitlements (kind = 'report')`
+   * для конкретной карты из `payload.chartId`, а не подписка.
+   */
+  test_report_1: {
+    code: 'test_report_1',
+    testOnly: true,
+    kind: 'one_off',
+    subscriptionPlan: 'none',
+    stars: 1,
+    periodSeconds: null,
+    grant: 'report',
+    title: 'Тестовый полный разбор — 1 звезда',
+    description: 'Разбор личности за 1 ⭐ для одной карты. Только для проверки оплаты',
+    priceLabel: 'Тест-разбор',
+    sort: 91,
+  },
 } as const;
 
-/** Планы в порядке пейволла. */
-export const PLANS_ORDERED: readonly Plan[] = Object.values(PLANS).sort((a, b) => a.sort - b.sort);
+/**
+ * Планы в порядке пейволла. Тестовые исключены всегда: это список для
+ * клиента, а не каталог сервера (`ALL_PLAN_CODES` — для второго).
+ */
+export const PLANS_ORDERED: readonly Plan[] = Object.values(PLANS)
+  .filter((plan) => !plan.testOnly)
+  .sort((a, b) => a.sort - b.sort);
 
-export function isPlanCode(value: unknown): value is PlanCode {
+/**
+ * Код из каталога. Тестовые коды сюда не входят намеренно: этой проверкой
+ * отвечают на вопрос «это план, который видит клиент», а не «сервер умеет
+ * такой выставить» (для второго — `ALL_PLAN_CODES`).
+ */
+export function isPlanCode(value: unknown): value is CataloguePlanCode {
   return typeof value === 'string' && (PLAN_CODES as readonly string[]).includes(value);
+}
+
+/** Тестовый тариф: существует только при явно включённом флаге. */
+export function isTestPlanCode(value: unknown): value is TestPlanCode {
+  return typeof value === 'string' && (TEST_PLAN_CODES as readonly string[]).includes(value);
 }
 
 /**

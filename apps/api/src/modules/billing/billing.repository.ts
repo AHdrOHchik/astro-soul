@@ -37,6 +37,8 @@ export interface NewPayment {
   readonly providerChargeId: string | null;
   readonly invoicePayload: string;
   readonly subscriptionExpiresAt: Date | null;
+  /** Платёж по тестовому тарифу (`test_1`): в выручку и конверсию не идёт. */
+  readonly isTest: boolean;
 }
 
 export interface NewRejectedPayment extends NewPayment {
@@ -160,6 +162,30 @@ export class BillingRepository {
     );
   }
 
+  /**
+   * Куплен ли уже полный разбор **этой** карты.
+   *
+   * Проверка не смотрит ни на `plan_code`, ни на цену: иначе на тарифе за
+   * 1 ⭐ защита от двойной покупки «не сработала бы, потому что дёшево».
+   * Считается только активный `entitlements (kind = 'report')` для карты:
+   * после возврата запись `revoked`, и купить снова можно.
+   */
+  async hasActiveReportGrant(userId: string, chartId: string): Promise<boolean> {
+    const row = await this.db.queryOne<{ one: number }>(
+      `SELECT 1 AS one
+         FROM entitlements
+        WHERE user_id = $1
+          AND kind = 'report'
+          AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > now())
+          AND chart_id = $2
+        LIMIT 1`,
+      [userId, chartId],
+    );
+
+    return row !== null;
+  }
+
   // --- платежи (в транзакции) ---------------------------------------------
 
   /** `SELECT ... FOR UPDATE`: вторая доставка того же charge_id ждёт первую. */
@@ -179,8 +205,8 @@ export class BillingRepository {
       `INSERT INTO payments (
          user_id, telegram_id, plan_code, currency, total_amount,
          telegram_payment_charge_id, provider_payment_charge_id, invoice_payload,
-         subscription_expires_at, status, processed
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'paid', false)
+         subscription_expires_at, status, processed, is_test
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'paid', false, $10)
        ON CONFLICT (telegram_payment_charge_id) DO NOTHING
        RETURNING id`,
       [
@@ -193,6 +219,7 @@ export class BillingRepository {
         payment.providerChargeId,
         payment.invoicePayload,
         payment.subscriptionExpiresAt,
+        payment.isTest,
       ],
     );
 
@@ -225,8 +252,8 @@ export class BillingRepository {
       `INSERT INTO payments (
          user_id, telegram_id, plan_code, currency, total_amount,
          telegram_payment_charge_id, provider_payment_charge_id, invoice_payload,
-         subscription_expires_at, status, processed, reject_reason
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'rejected', false, $10)
+         subscription_expires_at, status, processed, reject_reason, is_test
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'rejected', false, $10, $11)
        ON CONFLICT (telegram_payment_charge_id) DO NOTHING
        RETURNING id`,
       [
@@ -240,6 +267,7 @@ export class BillingRepository {
         payment.invoicePayload,
         payment.subscriptionExpiresAt,
         payment.rejectReason,
+        payment.isTest,
       ],
     );
 
@@ -356,12 +384,37 @@ export class BillingRepository {
 
   // --- выдача доступа ------------------------------------------------------
 
-  async grantEntitlement(client: PoolClient, grant: GrantInput): Promise<void> {
-    await client.query(
+  /**
+   * Выдать доступ разовым товаром. Идемпотентно по смыслу «одна покупка —
+   * один доступ»: если активный доступ на эту же карту уже есть, вторая
+   * запись не создаётся.
+   *
+   * Это вторая линия обороны, а не единственная: `POST /billing/invoice`
+   * отказывает в счёте на уже купленный разбор, поэтому до оплаты дело
+   * обычно не доходит. Здесь закрывается гонка «два счёта выставлены до
+   * оплаты» — деньги за второй платёж всё равно вернутся, но второй
+   * `entitlement` не появится.
+   *
+   * Возвращает `false`, если доступ уже был и запись не создана.
+   */
+  async grantEntitlement(client: PoolClient, grant: GrantInput): Promise<boolean> {
+    const result = await client.query<{ id: string }>(
       `INSERT INTO entitlements (user_id, kind, chart_id, partner_chart_id, payment_id)
-       VALUES ($1, $2, $3, $4, $5)`,
+       SELECT $1, $2, $3, $4, $5
+        WHERE NOT EXISTS (
+                SELECT 1 FROM entitlements
+                 WHERE user_id = $1
+                   AND kind = $2
+                   AND status = 'active'
+                   AND (expires_at IS NULL OR expires_at > now())
+                   AND chart_id IS NOT DISTINCT FROM $3
+                   AND partner_chart_id IS NOT DISTINCT FROM $4
+              )
+       RETURNING id`,
       [grant.userId, grant.kind, grant.chartId, grant.partnerChartId, grant.paymentId],
     );
+
+    return result.rowCount !== null && result.rowCount > 0;
   }
 
   /**

@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { PLANS, type Invoice, type SubscriptionState } from '@astro-soul/shared';
+import { PLANS, type Invoice, type PlanCodeName, type SubscriptionState } from '@astro-soul/shared';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
 import { invalidFields, rateLimited } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import type { VerifiedInitData } from '../auth/init-data';
@@ -28,6 +30,7 @@ export class BillingService {
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
+    @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
 
   /**
@@ -36,7 +39,11 @@ export class BillingService {
    * защита от двойного тапа, а не блокировка (payments.md §5).
    */
   async createInvoice(auth: VerifiedInitData, body: unknown): Promise<Invoice> {
-    const { planCode, chartId } = parseInvoiceRequest(body);
+    // Тестовые тарифы (`test_1` за 1 ⭐) существуют только при явном флаге —
+    // иначе `parseInvoiceRequest` отвечает `422`, как будто плана нет.
+    const { planCode, chartId } = parseInvoiceRequest(body, {
+      testPlansEnabled: this.env.PAYMENTS_TEST_PLANS === '1',
+    });
     const plan = PLANS[planCode];
 
     const { userId } = await this.users.ensureUser({
@@ -52,6 +59,17 @@ export class BillingService {
         throw invalidFields(
           [{ field: 'chart_id', message: 'Карта не найдена' }],
           { reason: 'chart_not_found' },
+        );
+      }
+
+      // Двойная покупка разбора. Проверка смотрит на доступ, а не на цену и не
+      // на «тестовый» признак: на тарифе за 1 ⭐ она обязана срабатывать так же,
+      // как на 149 ⭐, иначе тест не проверяет то, ради чего он.
+      if (plan.kind === 'one_off' && plan.grant === 'report' && (await this.repo.hasActiveReportGrant(userId, chartId))) {
+        this.logger.info('invoice_refused_already_owned', { user_id: userId, plan: planCode, chart_id: chartId });
+        throw invalidFields(
+          [{ field: 'chart_id', message: 'Разбор для этой карты уже куплен — открой его' }],
+          { reason: 'report_already_owned' },
         );
       }
     }
@@ -85,6 +103,11 @@ export class BillingService {
       props: { plan: planCode, stars: plan.stars, has_chart: chartId !== null },
     });
 
+    if (plan.testOnly) {
+      // Видно в логах, не в метриках: тестовый счёт — не продажа.
+      this.logger.warn('invoice_created_test_plan', { user_id: userId, plan: planCode });
+    }
+
     return this.toInvoice(planCode, invoiceLink);
   }
 
@@ -103,7 +126,10 @@ export class BillingService {
 
     return {
       invoice_link: invoiceLink,
-      plan_code: planCode,
+      // Тестовый код в контракт не входит намеренно (`PlanCode` — каталог для
+      // клиента): приведение узкое и только для ответа владельцу, который сам
+      // включил флаг. Молча расширять enum контракта ради теста — хуже.
+      plan_code: planCode as PlanCodeName,
       stars: plan.stars,
       is_subscription: plan.kind === 'subscription',
       subscription_period_sec: plan.kind === 'subscription' ? plan.periodSeconds : null,

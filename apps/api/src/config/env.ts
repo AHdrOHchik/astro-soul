@@ -148,6 +148,19 @@ const envSchema = z.object({
    */
   LLM_FAKE: z.preprocess((value) => (value === '' ? undefined : value), z.enum(['0', '1']).optional()),
 
+  /**
+   * Тестовые тарифы (`test_1` за 1 ⭐, payments.md §1.1). По умолчанию
+   * выключены: при выключенном флаге `POST /billing/invoice` с тестовым
+   * `plan_code` отвечает `422`, как будто плана нет.
+   *
+   * Включать только на стенде и только руками: `check.sh --prod` не даёт
+   * запустить прод с этой переменной, а `.env.example` её не подсказывает.
+   */
+  PAYMENTS_TEST_PLANS: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.enum(['0', '1']).optional(),
+  ),
+
   APPLICATION_VERSION: z.string().min(1).default('0.1.0'),
 }).superRefine((value, ctx) => {
   // Цена токена берётся из таблицы моделей: неизвестная модель — это не

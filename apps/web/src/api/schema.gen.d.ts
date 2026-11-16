@@ -964,6 +964,11 @@ export interface paths {
          *     подставляет карту явно, даже если она у пользователя одна — скрытой
          *     привязки к «первой карте» нет (1.5.2). Для остальных планов `chart_id`
          *     необязателен; если передан — проверяется, что карта своя.
+         *
+         *     Счёт на разбор по карте, за которую разбор уже куплен, не выставляется
+         *     (`422`, `details.reason = report_already_owned`): второй раз платить
+         *     не за что, а списание за уже имеющийся товар — возврат и переписка.
+         *     Проверка смотрит на доступ к карте, а не на цену плана.
          */
         post: {
             parameters: {
@@ -988,8 +993,11 @@ export interface paths {
                     };
                 };
                 /**
-                 * @description Неизвестный план, чужая карта или отсутствует `chart_id` у
-                 *     `one_149` — `VALIDATION_FAILED` + `details.field_errors[{field, message}]`.
+                 * @description Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`
+                 *     или разбор для этой карты уже куплен — `VALIDATION_FAILED` +
+                 *     `details.field_errors[{field, message}]`; `details.reason` уточняет
+                 *     причину (`chart_not_found`, `chart_required_for_report`,
+                 *     `report_already_owned`, `invoice_request_invalid`).
                  */
                 422: {
                     headers: {
@@ -1169,6 +1177,11 @@ export interface paths {
                             paying?: number;
                             conversion_to_paid?: number;
                             churn_30d?: number;
+                            /**
+                             * @description Звёзды за 30 дней без возвратов и отказов. Платежи по
+                             *     тестовому тарифу (`is_test`) не входят: это проверка
+                             *     оплаты, а не выручка.
+                             */
                             stars_received_30d?: number;
                             /**
                              * @description Стоимость LLM за 30 дней в рублях — сумма `reports.llm_cost_rub`.
@@ -1189,6 +1202,13 @@ export interface paths {
                             refunded_30d?: number;
                             /** @description Платежи `processed = false` прямо сейчас */
                             pending_payments_now?: number;
+                            /**
+                             * @description Платежи по тестовому тарифу (`test_1`) за 30 дней.
+                             *     Считаются отдельно и в выручку не входят: это проверка
+                             *     оплаты владельцем, а не продажа. Ненулевое значение на
+                             *     проде означает забытый `PAYMENTS_TEST_PLANS`.
+                             */
+                            test_payments_30d?: number;
                             /**
                              * @description Сколько раз отмена автопродления в Telegram не прошла за
                              *     30 дней (события `subscription_cancel_failed`). История, а

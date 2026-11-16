@@ -1,5 +1,49 @@
 # Changelog
 
+## Итерация 13 — тестовые тарифы за 1 ⭐, которых нет в проде
+
+- **A: тариф `test_1`.** В `packages/shared/src/plans.ts` появился тариф с
+  признаком `testOnly: true`: подписка за 1 ⭐ на неделю (604800 сек), права
+  как у `month_399`. Флаг `PAYMENTS_TEST_PLANS` по умолчанию выключен; при
+  выключенном `POST /billing/invoice` с `plan_code = test_1` отвечает
+  `422 VALIDATION_FAILED` — тем же телом, что на несуществующий план. В
+  каталог (`PLAN_CODES`, `PLANS_ORDERED`), в пейволл и в контракт тариф не
+  попадает никогда. Миграция `0021`: `plans.test_only` (строка есть, потому
+  что на `plans.code` ссылаются инвойсы и платежи) и `payments.is_test`.
+  Проверка суммы в `successful_payment` не ослаблена: 2 ⭐ за `test_1` —
+  `amount_mismatch` без доступа. Возврат 1 ⭐ проходит обычным
+  `refundStarPayment` и отзывает доступ.
+- **Учёт.** Тестовые платежи не входят в `stars_received_30d`, `paying`,
+  `conversion_to_paid`, `payments_rejected_30d`, `amount_mismatch_30d`,
+  `refunded_30d`, `pending_payments_now`; видны отдельным
+  `test_payments_30d`. `SubscriptionState.plan` остался `month`: enum
+  контракта не расширялся.
+- **B: `check.sh --prod`.** Новый предполётный скрипт блокирует запуск с
+  `PAYMENTS_TEST_PLANS=1`, подменённым `TELEGRAM_API_BASE_URL`, `LLM_FAKE=1`
+  и выключенными лимитами; без `--prod` те же находки — предупреждения.
+  Негативные тесты — `apps/api/test/prod-guard.spec.ts`.
+- **Контракт 1.5.7.** `GET /admin/metrics`: `test_payments_30d`; описание
+  `stars_received_30d` уточнено (без тестовых). `PlanCode` не расширялся.
+- **Документация.** `payments.md` §1.1, новый `docs/DOCKER.md` §«Тестовый
+  тариф» (как включить, как не забыть выключить), `.env.example` переменную
+  не подсказывает.
+- **C: второй тестовый тариф — разовый разбор `test_report_1`.** 1 ⭐, права
+  как у `one_149`, без `subscription_period` (иначе Telegram сделал бы из него
+  подписку). Тот же флаг `PAYMENTS_TEST_PLANS`, второго флага нет. Доступ —
+  `entitlements (kind = 'report')` на карту из `payload.chartId`:
+  `full_report = true`, `full_report_chart_id` = эта карта, на второй карте —
+  цена. Тариф в каталог пейволла и в контракт не попадает.
+- **Двойная покупка разбора (контракт 1.5.8).** `POST /billing/invoice` на
+  карту, за которую разбор уже куплен, отвечает `422`
+  (`details.reason = report_already_owned`, `field_errors[0].field =
+  chart_id`) — для `one_149` тоже, потому что проверка смотрит на доступ, а не
+  на цену. `grantEntitlement` больше не создаёт второй активный доступ на ту
+  же карту (вторая линия обороны для «два счёта выставлены до оплаты»). После
+  возврата доступ отозван, покупка снова разрешена.
+- **Инструкция для разового пути.** `docs/DOCKER.md`: 7 шагов, включая
+  проверку второй карты (цена вместо «К разбору») и совет `LLM_FAKE=1` там,
+  где качество текста не проверяется.
+
 ## Итерация 12 — отмена подписки в Telegram, причины 404, `chart_facts` v1.2
 
 - **A: `DELETE /me` отключает автопродление в Telegram.** Локальная `cancelled`

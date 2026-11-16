@@ -303,6 +303,9 @@ export class PaymentsService {
           providerChargeId: payment.provider_payment_charge_id ?? null,
           invoicePayload: payment.invoice_payload,
           subscriptionExpiresAt: requestedExpiresAt,
+          // Тестовый тариф отмечается на платеже: проверка суммы для него
+          // та же (1 ⭐ = 1 ⭐), а вот в выручку и конверсию он не идёт.
+          isTest: plan.testOnly,
         }));
 
       // Гонка двух доставок: строку успел вставить параллельный обработчик.
@@ -338,6 +341,15 @@ export class PaymentsService {
       return outcome;
     }
 
+    if (plan.testOnly) {
+      // Тестовая оплата владельца: доступ выдан как обычно, но в метриках это
+      // не продажа (`payments.is_test`, /admin/metrics `test_payments_30d`).
+      this.logger.warn('test_payment_processed', {
+        charge_tail: chargeId.slice(-6),
+        stars: payment.total_amount,
+      });
+    }
+
     await this.events.log({
       name: outcome.renewed ? 'subscription_renewed' : 'payment_processed',
       userId: payload.u,
@@ -370,6 +382,9 @@ export class PaymentsService {
     readonly refund?: boolean;
   }): Promise<void> {
     const chargeId = input.payment.telegram_payment_charge_id;
+    // Отказ по тестовому тарифу — тоже тестовый: иначе «amount_mismatch» от
+    // собственной проверки владельца попадёт в счётчик проблем с деньгами.
+    const testPlan = input.planCode === null ? undefined : PLANS[input.planCode];
 
     this.logger.warn('payment_rejected', {
       code: input.code,
@@ -399,6 +414,7 @@ export class PaymentsService {
         invoicePayload: input.payment.invoice_payload,
         subscriptionExpiresAt: null,
         rejectReason: input.code,
+        isTest: testPlan?.testOnly === true,
       });
 
       // Повторная доставка того же charge_id уже записана — второй раз не считаем.
@@ -556,7 +572,7 @@ export class PaymentsService {
       return { expiresAt: subscription.expiresAt, renewed };
     }
 
-    await this.repo.grantEntitlement(client, {
+    const granted = await this.repo.grantEntitlement(client, {
       userId: input.userId,
       kind: input.plan.grant,
       chartId: input.chartId,
@@ -564,6 +580,19 @@ export class PaymentsService {
       partnerChartId: null,
       paymentId: input.paymentId,
     });
+
+    if (!granted) {
+      // Второй оплаты за тот же разбор быть не должно: `POST /billing/invoice`
+      // такой счёт не выставляет. Но если два счёта всё же были выставлены до
+      // оплаты, доступ остаётся один — второй платёж виден в `payments`
+      // и разбирается возвратом, а не второй строкой `entitlements`.
+      this.logger.warn('entitlement_already_granted', {
+        user_id: input.userId,
+        kind: input.plan.grant,
+        plan: input.plan.code,
+        chart_id: input.chartId,
+      });
+    }
 
     return { expiresAt: null, renewed: false };
   }
