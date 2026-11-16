@@ -3,7 +3,9 @@ import {
   CHAPTER_FOCUS_MAX,
   CHAPTER_FOCUS_MIN,
   CONTENT_SECTIONS,
+  MAX_CHAPTERS_PER_FACTOR,
   distributeFocuses,
+  factorMatrix,
   factorRows,
   focusBlockFor,
 } from '../src/modules/reports/focus-map';
@@ -56,14 +58,25 @@ describe('distributeFocuses', () => {
     }
   });
 
-  it('план из двух фокусов не оставляет главу без темы', () => {
+  it('узкий план: лимит «фактор ≤ 3 главы» важнее темы в каждой главе', () => {
+    // Итерация 19: два фактора могут закрыть максимум шесть глав-слотов, то
+    // есть три главы по два фокуса. Раньше добор шёл без лимита, и та же
+    // пара факторов пересказывалась во всех шести главах (живой прогон:
+    // «мотор» в 6 из 7 глав). Теперь глава без своих факторов честно
+    // помечается `starved`, а промпт говорит ей опираться на факты карты.
     const distribution = distributeFocuses([
       { topic: 'скорость решений', factor: 'Солнце в Тельце' },
       { topic: 'видимость', factor: 'Луна в Льве' },
     ]);
 
-    for (const chapter of CONTENT_SECTIONS) {
-      expect(distribution.counts[chapter]).toBeGreaterThanOrEqual(1);
+    const covered = CONTENT_SECTIONS.filter((chapter) => distribution.counts[chapter] > 0);
+    expect(covered.length).toBeGreaterThan(0);
+    expect(distribution.starved.length).toBeGreaterThan(0);
+
+    // Главное: ни один фактор не звучит больше чем в трёх главах.
+    const matrix = factorMatrix(distribution);
+    for (const row of matrix) {
+      expect(row.count).toBeLessThanOrEqual(MAX_CHAPTERS_PER_FACTOR);
     }
   });
 

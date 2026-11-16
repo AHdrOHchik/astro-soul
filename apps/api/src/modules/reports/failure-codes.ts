@@ -18,6 +18,9 @@ export const FAILURE_CODES = [
   'forbidden_terms',
   'paragraphs',
   'repeats',
+  'teaser_terms',
+  'service_terms',
+  'repeated_opener',
 ] as const;
 
 export type FailureCode = (typeof FAILURE_CODES)[number];
@@ -30,6 +33,9 @@ export type FailureCode = (typeof FAILURE_CODES)[number];
  */
 const PRIORITY: readonly FailureCode[] = [
   'forbidden_terms',
+  'service_terms',
+  'repeated_opener',
+  'teaser_terms',
   'paragraphs',
   'repeats',
   'too_short',
@@ -52,8 +58,20 @@ export function codeOfRule(rule: string): FailureCode {
   if (rule === 'repeats' || rule === 'sentence_repeat' || rule === 'word_share') {
     return 'repeats';
   }
+  if (rule === 'summary_short') {
+    return 'too_short';
+  }
   if (rule.startsWith('forbidden_')) {
     return 'forbidden_terms';
+  }
+  if (rule === 'teaser_terms') {
+    return 'teaser_terms';
+  }
+  if (rule === 'service_terms') {
+    return 'service_terms';
+  }
+  if (rule === 'repeated_opener') {
+    return 'repeated_opener';
   }
   return 'format';
 }
@@ -85,53 +103,50 @@ export function failureCodeOf(input: FailureInput): FailureCode {
 }
 
 /**
- * Насколько нарушение серьёзно (итерация 18).
+ * Насколько нарушение серьёзно (итерация 18, пересмотрено в 19).
  *
- * `error` — текст нельзя показывать: пустой ответ/недобор материала,
- * запрещённая тема (диагноз, смерть, гарантии дохода, «карма»), Хирон, дома
- * при неизвестном времени рождения, разметка, которую фронт не отрендерит
- * (H1, таблица, ссылка, HTML), и «Итог» без дисклеймера. Здесь честнее
- * перегенерировать главу, а если не вышло — убрать её.
+ * Правило владельца после трёх живых прогонов: **разбор обязан собраться**,
+ * поэтому приговор главе выносят только два случая:
  *
- * `warning` — нарушение **формы и стиля**: абзацы, перебор объёма, повторы,
- * «вы» вместо «ты», отсылки к интерфейсу. Это правится нормализатором или
- * переживается человеком: оплаченный разбор не должен пропадать из-за
- * лишнего предложения в абзаце.
+ *   • `too_short` — пустой или почти пустой ответ модели (< 300 знаков),
+ *     показывать нечего;
+ *   • `section_unknown` — глава, которую конвейер не знает (нераспарсенная
+ *     глава: её нет в структуре).
+ *
+ * Всё остальное — `warning`: текст отдаётся человеку, а нарушение остаётся
+ * в `reports.validation` и в `normalization`, чтобы его видели QA и метрики.
+ * Живой прогон 18.11.2026 потерял `emotions` (1 064 знака, идеальная форма)
+ * из-за `forbidden_terms` — а слово «Луна» в главе про Луну обязательно.
+ *
+ * Отдельно: `forbidden_*` (§5.4 — здоровье, смерть, дети, гарантии дохода,
+ * эзотерика) теперь тоже `warning`. Это осознанное решение владельца:
+ * глава не должна пропадать из-за одного слова. Если понадобится вернуть
+ * запрет — это одна строка в `SEVERITY_ERROR_RULES`.
  */
 export type FailureSeverity = 'error' | 'warning';
 
-const WARNING_RULES = new Set([
-  'paragraphs',
-  'paragraph_sentences',
-  'repeats',
-  'sentence_repeat',
-  'word_share',
-  // Стиль: «вы», отсылки к кнопкам. Текст понятен — значит, показываем.
-  'voice',
-  'ui_reference',
-]);
+/** Правила, которые не дают показать главу. Всё остальное — предупреждение. */
+const SEVERITY_ERROR_RULES = new Set(['too_short', 'section_unknown']);
 
-/** Правило валидатора → серьёзность. Неизвестное правило считаем ошибкой. */
+/** Правило валидатора → серьёзность. Неизвестное правило — предупреждение. */
 export function severityOfRule(rule: string): FailureSeverity {
-  if (WARNING_RULES.has(rule)) {
-    return 'warning';
-  }
-  // `length` в обе стороны: перебор — форма, недобор — ошибка (см. ниже).
+  // `length` — это недобор/перебор по объёму: недобор показываем с пометкой,
+  // перебор обрезает нормализатор. Ни то, ни другое не повод убрать главу.
   if (rule === 'length') {
     return 'warning';
   }
-  return 'error';
+  return SEVERITY_ERROR_RULES.has(rule) ? 'error' : 'warning';
 }
 
 /**
  * Коды, которые имеет смысл лечить перегенерацией.
  *
- * `too_short` — глава недобрала материала; `format` — ответ не разобрался;
- * `forbidden_terms` — тема, которую нельзя показывать (постобработкой не
- * лечится, только другим текстом). Всё остальное — форма: её правит
- * `normalize.ts`, и вторая попытка дала бы тот же текст за те же деньги.
+ * `too_short` — глава недобрала материала: второй заход с тем же промптом
+ * («Объём 500–750 знаков») иногда добирает; `format` — ответ не разобрался
+ * вовсе. Всё остальное — форма или стиль: их либо правит `normalize.ts`,
+ * либо они не стоят ещё 0,85 ₽ за тот же текст.
  */
-export const RETRY_CODES: readonly FailureCode[] = ['too_short', 'format', 'forbidden_terms'];
+export const RETRY_CODES: readonly FailureCode[] = ['too_short', 'format'];
 
 export function isRetryable(code: FailureCode): boolean {
   return RETRY_CODES.includes(code);
@@ -151,8 +166,10 @@ export interface ClassifiedFailures {
 /**
  * Делит нарушения валидатора на «нельзя показывать» и «покажем с пометкой».
  *
- * `length` валидатор отдаёт в обе стороны, поэтому направление уточняется
- * длиной тела: перебор — предупреждение, недобор — ошибка.
+ * Решает только `severityOfRule`; `length` валидатор отдаёт в обе стороны,
+ * поэтому код уточняется длиной тела (перебор — `too_long`, недобор —
+ * `too_short`), но серьёзность у обоих одна: показываем с пометкой, перебор
+ * к тому же обрезает нормализатор.
  */
 export function classifyFailures(input: FailureInput): ClassifiedFailures {
   const range = SECTIONS.find((section) => section.key === input.key);
@@ -167,9 +184,7 @@ export function classifyFailures(input: FailureInput): ClassifiedFailures {
           : 'too_short'
         : codeOfRule(failure.rule);
     const entry: ClassifiedFailure = { rule: failure.rule, detail: failure.detail, code };
-    if (code === 'too_short' && failure.rule === 'length') {
-      errors.push(entry);
-    } else if (severityOfRule(failure.rule) === 'error') {
+    if (severityOfRule(failure.rule) === 'error') {
       errors.push(entry);
     } else {
       warnings.push(entry);

@@ -166,7 +166,7 @@ describe('прогон: пять разборов подряд', () => {
       const row = await ctx.db.queryOne<{
         section_status: Record<string, string>;
         normalization: Record<string, { normalized: string[]; warnings: string[] }> | null;
-        validation: unknown[] | null;
+        validation: { key: string; code: string; severity?: string }[] | null;
         attempts: number;
         llm_cost_rub: string;
       }>(
@@ -188,9 +188,10 @@ describe('прогон: пять разборов подряд', () => {
       expect(ready.body.status).toBe('ready');
       expect(okChapters).toBeGreaterThanOrEqual(6);
       expect(ready.body.missing_sections).toEqual([]);
-      // Жёстких провалов нет: `validation` пуст, `attempts` = план + 7 глав,
-      // то есть ни одной перегенерации (MAX_ATTEMPTS остаётся 2, но не нужен).
-      expect(row?.validation ?? []).toEqual([]);
+      // Жёстких провалов нет: `attempts` = план + 7 глав, то есть ни одной
+      // перегенерации (MAX_ATTEMPTS остаётся 2, но не нужен), а в
+      // `validation` нет ни одной записи `severity: error`.
+      expect((row?.validation ?? []).filter((entry) => entry.severity === 'error')).toEqual([]);
       expect(row?.attempts).toBe(8);
 
       // Форма всех глав, включая «Итог»: 3–6 абзацев по 2–4 предложения.

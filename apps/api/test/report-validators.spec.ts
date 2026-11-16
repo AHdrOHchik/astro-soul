@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DISCLAIMER,
   maxOverlap,
+  openerOf,
   overlapRatio,
   splitSentences,
   validateSection,
@@ -230,5 +231,149 @@ describe('QA-22: структура главы', () => {
     expect(
       validateSection({ key: 'core', bodyMd: repeated, timePrecision: 'exact' }).failures.map((f) => f.rule),
     ).toContain('sentence_repeat');
+  });
+});
+
+describe('итерация 19: правила, которые не должны убивать главу', () => {
+  /** Правила без структурных шумов — их проверяем отдельно. */
+  const clean = (result: ReturnType<typeof validateSection>): string[] =>
+    result.failures.map((failure) => failure.rule).filter((rule) => !STRUCTURAL.has(rule));
+
+  it('термины проверяются только в тизере и только у `core`', () => {
+    const text = 'Луна в Близнецах даёт быстрый ум. Марс секстилем Юпитеру добавляет азарта.';
+
+    // Глава целиком: термины обязательны, правил о них нет.
+    expect(clean(rules(text, 'exact', 'core'))).not.toContain('teaser_terms');
+
+    // Тизер: термин в первых 400 знаках — пометка с фактическим смещением.
+    const withTeaser = validateSection({
+      key: 'core',
+      bodyMd: body(text),
+      timePrecision: 'exact',
+      teaser: 'Ты быстро связываешь факты, но не считаешь это достижением. Луна в Близнецах…',
+    });
+    const failure = withTeaser.failures.find((item) => item.rule === 'teaser_terms');
+    expect(failure).toBeDefined();
+    // Смещение считается по окну тизера, а не по главе: именно этих чисел
+    // не хватало в живом прогоне 18.11.2026.
+    expect(failure?.detail).toMatch(/«Лун\p{L}*» на \d+-м знаке тизера/u);
+
+    // Не `core` — тизер не проверяется вовсе, даже если передан.
+    const emotions = validateSection({
+      key: 'emotions',
+      bodyMd: body(text),
+      timePrecision: 'exact',
+      teaser: 'Луна в Близнецах',
+    });
+    expect(clean(emotions)).not.toContain('teaser_terms');
+  });
+
+  it('термины запрещены только в первых 400 знаках, а не во всём `core`', () => {
+    const long = `${'Ты замечаешь детали раньше остальных. '.repeat(12)}Луна в Близнецах.`;
+    const teaser = long.slice(0, 400);
+    const result = validateSection({
+      key: 'core',
+      bodyMd: body(long.length > 1_200 ? long : `${long} Луна в Близнецах.`),
+      timePrecision: 'exact',
+      teaser,
+    });
+
+    // В окне 400 знаков термина нет — правило молчит, хотя дальше он есть.
+    expect(clean(result)).not.toContain('teaser_terms');
+  });
+
+  it('служебный словарь: warning по всему тексту, текст не правится', () => {
+    const text = 'Цена точки утечки — согласие на отсроченные вознаграждения.';
+    expect(clean(rules(text))).toContain('service_terms');
+
+    const details = rules(text).failures.filter((failure) => failure.rule === 'service_terms');
+    expect(details.map((failure) => failure.detail)).toContain('точка утечки');
+  });
+
+  it('служебный словарь ловит все слова из списка', () => {
+    for (const term of [
+      'точка утечки',
+      'слой скорости',
+      'слой прочности',
+      'карта покрытия',
+      'фокус',
+      'промпт',
+      'план разбора',
+    ]) {
+      const result = rules(`Здесь есть ${term} и больше ничего.`);
+      expect(clean(result), term).toContain('service_terms');
+    }
+  });
+
+  it('повтор зачина ловится по первым пяти словам, а не по 8-граммам', () => {
+    // Одинаковое начало, разное продолжение: 8-граммы расходятся, а зачин —
+    // тот самый, что дал три одинаковые главы на `2 Max`.
+    const opener = 'Марс в секстиле с Юпитером даёт оптимизм и готовность пробовать новое.';
+    const money = `${opener} Покупки ты обсуждаешь медленно и без азарта, зато решение держишь годами.`;
+    const talents = `${opener} Новое ты берёшь короткими заходами и быстро проверяешь на деле.`;
+    // Заполнитель нумеруется: одинаковые предложения дают одинаковые
+    // 8-граммы и рисуют ложное пересечение в 8-граммах.
+    const pad = (text: string, filler: (step: number) => string): string => {
+      let result = text;
+      let step = 0;
+      while (result.length < 1_300) {
+        step += 1;
+        result += filler(step);
+      }
+      return result;
+    };
+
+    const current = validateSection({
+      key: 'money',
+      bodyMd: pad(money, (step) => ` Деньги проверяют идею номер ${step} на прочность.`),
+      timePrecision: 'exact',
+      previous: [pad(talents, (step) => ` Способность проявляется коротким заходом ${step} на деле.`)],
+    });
+
+    expect(clean(current)).toContain('repeated_opener');
+    // По 8-граммам такое же начало не проваливает главу: пересечение ниже 12 %.
+    expect(clean(current)).not.toContain('repeats');
+  });
+
+  it('разные зачины не дают пометки', () => {
+    const result = validateSection({
+      key: 'money',
+      bodyMd: body('Деньги ты считаешь способом проверить идею на прочность.'),
+      timePrecision: 'exact',
+      previous: [body('Марс в секстиле с Юпитером даёт оптимизм и готовность пробовать новое.')],
+    });
+    expect(clean(result)).not.toContain('repeated_opener');
+  });
+
+  it('openerOf нормализует регистр и пунктуацию', () => {
+    expect(openerOf('«Марс в секстиле с Юпитером» даёт оптимизм.')).toBe(
+      'марс в секстиле с юпитером',
+    );
+  });
+
+  it('«Итог» короче 500 знаков — отдельное правило без допуска 30 %', () => {
+    const short = 'Три действия: скажи вслух цену, откажись от лишнего, назначь финал.'.repeat(6);
+    const result = validateSection({
+      key: 'summary',
+      bodyMd: `${short}\n\n${DISCLAIMER}`,
+      timePrecision: 'exact',
+    });
+
+    expect(result.failures.map((failure) => failure.rule)).toContain('summary_short');
+  });
+
+  it('длинный «Итог» правило не трогает', () => {
+    const ok = 'Первое действие — скажи цену вслух. Второе — откажись от лишнего. Третье — назначь финал.'.repeat(8);
+    const result = validateSection({
+      key: 'summary',
+      bodyMd: `${ok}\n\n${DISCLAIMER}`,
+      timePrecision: 'exact',
+    });
+    expect(result.failures.map((failure) => failure.rule)).not.toContain('summary_short');
+  });
+
+  it('запрещённые темы больше не error, но по-прежнему считаются', () => {
+    // Правило никуда не делось: оно видно в `failures`, но главу не убирает.
+    expect(clean(rules('Врач сказал, что это диагноз.'))).toContain('forbidden_health');
   });
 });

@@ -60,6 +60,49 @@ const SECOND_PERSON_PLURAL = new RegExp(
   'iu',
 );
 
+/**
+ * Астрологические термины. Запрещены **только** в тизере — первых 400 знаках
+ * `core` (`llm-prompts.md` §3.1, `structure.md` §2.1): тизер видит человек,
+ * который ещё не заплатил, и названия планет ему ничего не объясняют.
+ *
+ * В остальном тексте эти слова обязательны: глава про Луну в 6-м доме без
+ * слова «Луна» не пишется. Живой прогон 18.11.2026 на `GigaChat 2 Max`
+ * потерял главу `emotions` из-за того, что проверка терминов считалась
+ * правилом главы, а не правилом тизера.
+ */
+export const TEASER_LENGTH = 400;
+
+export const TEASER_TERMS =
+  /солн|лун|меркур|венер|марс|юпитер|сатурн|уран|нептун|плутон|узел|асцендент|дом[аеу]?\b|аспект|трин|квадрат|оппозиц|стихи|крест|овен|телец|близнец|рак\b|лев\b|дев[аеы]|весы|скорпион|стрелец|козерог|водолей|рыб[аы]/iu;
+
+/**
+ * Служебный словарь разбора: внутренние имена из `structure.md`, которые
+ * просочились в текст живого прогона («Цена точки утечки — согласие на
+ * отсроченные вознаграждения…», глава `money`). Человеку они ничего не
+ * говорят, но текст читается как выдержка из нашего ТЗ.
+ *
+ * Проверка по всему тексту всех глав, `severity: warning`: смысл не правим,
+ * только показываем, что словарь течёт, и фиксируем это в `validation`.
+ */
+export const SERVICE_TERMS: readonly { readonly term: string; readonly pattern: RegExp }[] = [
+  { term: 'точка утечки', pattern: /точк[аи]\s+утечк/iu },
+  { term: 'слой скорости', pattern: /сло[йя]\s+скорост/iu },
+  { term: 'слой прочности', pattern: /сло[йя]\s+прочност/iu },
+  { term: 'карта покрытия', pattern: /карт[аы]\s+покрыти/iu },
+  { term: 'фокус', pattern: /(?<![\p{L}\p{N}])фокус[\p{L}]*/iu },
+  { term: 'промпт', pattern: /(?<![\p{L}\p{N}])промпт[\p{L}]*/iu },
+  { term: 'план разбора', pattern: /план[\p{L}]*\s+разбор/iu },
+];
+
+/**
+ * Зачины абзацев. Первые пять слов первого предложения абзаца не должны
+ * повторяться в другой главе: живой прогон на `Max` дал три главы, которые
+ * начинались одинаково — «Марс в секстиле с Юпитером даёт оптимизм и
+ * готовность пробовать новое». По 8-граммам такая калька не ловится:
+ * пересечение каждого предложения по отдельности ниже 12 %.
+ */
+export const OPENER_WORDS = 5;
+
 /** Отсылки к интерфейсу: текст должен читаться и в PDF. */
 const UI_REFERENCE = /нажм[\p{L}]*|свайп[\p{L}]*|тап[\p{L}]*|экран[\p{L}]*|цвет[\p{L}]*|кнопк[\p{L}]*/iu;
 
@@ -223,6 +266,12 @@ export interface ValidationInput {
   readonly timePrecision: TimePrecision;
   /** Тексты уже написанных глав — для проверки повторов по 8-граммам. */
   readonly previous?: readonly string[];
+  /**
+   * Тизер `core` (окно до 400 знаков после сдвига). Передаётся только для
+   * `core`: проверка астрологических терминов существует **только** для
+   * тизера, а не для главы.
+   */
+  readonly teaser?: string;
 }
 
 export interface ValidationResult {
@@ -230,6 +279,23 @@ export interface ValidationResult {
   readonly failures: readonly { readonly rule: string; readonly detail: string }[];
   /** Сигнал: глава может уйти, но стоит посмотреть (в `reports.validation`). */
   readonly warnings: readonly string[];
+}
+
+/**
+ * Первые слова первого предложения абзаца — «зачин». Приводится к нижнему
+ * регистру, пунктуация по краям срезается: «Марс в секстиле с Юпитером…»
+ * и «марс в секстиле с юпитером» — один и тот же зачин.
+ */
+export function openerOf(paragraph: string): string {
+  const first = splitSentences(paragraph)[0] ?? '';
+  const words = first
+    .toLowerCase()
+    .replace(/[«»"„“”()]/gu, '')
+    .split(/\s+/u)
+    .map((word) => word.replace(/[.,:;!?…—-]+$/u, ''))
+    .filter((word) => word !== '');
+
+  return words.slice(0, OPENER_WORDS).join(' ');
 }
 
 /** Делит текст на предложения: точка/!/?/… с последующим пробелом или концом. */
@@ -306,15 +372,32 @@ export function validateSection(input: ValidationInput): ValidationResult {
   }
 
   // 1. Пустое тело и объём (±30 % — провал, 10–30 % — предупреждение).
-  if (body.length < 300) {
-    failures.push({ rule: 'too_short', detail: `${body.length} < 300` });
-  } else if (body.length > range.max * 1.3 || body.length < range.min * 0.7) {
+  //
+  // Объём считается **без дисклеймера**: нормализатор дописывает его сам, и в
+  // живом прогоне 18.11.2026 «Итог» на 434 знака проходил как 515 — ровно
+  // на длине фразы про саморефлексию. Дисклеймер — служебная подпись, а не
+  // текст главы, поэтому он не должен закрывать недобор.
+  const volume = body.endsWith(DISCLAIMER)
+    ? body.slice(0, body.length - DISCLAIMER.length).trimEnd()
+    : body;
+
+  if (volume.length < 300) {
+    failures.push({ rule: 'too_short', detail: `${volume.length} < 300` });
+  } else if (volume.length > range.max * 1.3 || volume.length < range.min * 0.7) {
     failures.push({
       rule: 'length',
-      detail: `${body.length} вне ${range.min}–${range.max} более чем на 30 %`,
+      detail: `${volume.length} вне ${range.min}–${range.max} более чем на 30 %`,
     });
-  } else if (body.length > range.max || body.length < range.min) {
-    warnings.push(`length_off: ${body.length} вне ${range.min}–${range.max}`);
+  } else if (volume.length > range.max || volume.length < range.min) {
+    warnings.push(`length_off: ${volume.length} вне ${range.min}–${range.max}`);
+  }
+
+  // «Итог» — исключение по допуску: 434 знака при минимуме 500 прошли как
+  // `length_off` (13 % недобора < 30 %), и разбор ушёл человеку с огрызком
+  // вместо трёх действий. Для `summary` минимум проверяется без допуска:
+  // недобор → `summary_short` (ретрай), после ретрая — `warning`, а не отказ.
+  if (input.key === 'summary' && volume.length < range.min) {
+    failures.push({ rule: 'summary_short', detail: `${volume.length} < ${range.min}` });
   }
 
   // 2. Формат.
@@ -412,6 +495,50 @@ export function validateSection(input: ValidationInput): ValidationResult {
 
   for (const sentence of repeatedSentences(body)) {
     failures.push({ rule: 'sentence_repeat', detail: sentence });
+  }
+
+  // 12. Служебный словарь разбора: внутренние термины не должны доходить до
+  // человека. Warning: текст не правим, но фиксируем каждый случай.
+  for (const service of SERVICE_TERMS) {
+    if (service.pattern.test(body)) {
+      failures.push({ rule: 'service_terms', detail: service.term });
+    }
+  }
+
+  // 13. Зачины абзацев: калька «одно и то же начало» ловится не по 8-граммам,
+  // а по первым пяти словам первого предложения абзаца.
+  const openers = new Map<string, string>();
+  for (const previousBody of input.previous ?? []) {
+    for (const paragraph of splitParagraphs(previousBody)) {
+      const opener = openerOf(paragraph);
+      if (opener !== '') {
+        openers.set(opener, 'previous');
+      }
+    }
+  }
+  for (const paragraph of paragraphs) {
+    const opener = openerOf(paragraph);
+    if (opener === '') {
+      continue;
+    }
+    if (openers.has(opener)) {
+      failures.push({ rule: 'repeated_opener', detail: `${opener}…` });
+    } else {
+      openers.set(opener, 'current');
+    }
+  }
+
+  // 14. Астрологические термины — только в тизере и только у `core`.
+  // Остальной текст главы их требует: это разбор карты, а не эзотерика.
+  const teaser = input.teaser;
+  if (input.key === 'core' && teaser !== undefined) {
+    const matched = TEASER_TERMS.exec(teaser);
+    if (matched !== null) {
+      failures.push({
+        rule: 'teaser_terms',
+        detail: `«${matched[0]}» на ${matched.index}-м знаке тизера`,
+      });
+    }
   }
 
   return { failures, warnings };

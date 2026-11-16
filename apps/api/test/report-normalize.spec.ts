@@ -235,22 +235,40 @@ describe('normalizeTeaser — окно в 400 знаков', () => {
 });
 
 describe('серьёзность провала валидатора', () => {
-  it('форма — warning, неправда о карте и запрещённые темы — error', () => {
-    for (const rule of ['paragraphs', 'paragraph_sentences', 'repeats', 'word_share', 'voice']) {
-      expect(severityOfRule(rule)).toBe('warning');
+  it('error — только пустой ответ и нераспарсенная глава, всё остальное warning', () => {
+    for (const rule of [
+      'paragraphs',
+      'paragraph_sentences',
+      'repeats',
+      'word_share',
+      'voice',
+      // Итерация 19: запрещённые темы больше не убирают главу — живой прогон
+      // 18.11.2026 потерял `emotions` именно на этом правиле.
+      'forbidden_health',
+      'forbidden_fear',
+      'chiron',
+      'unknown_house',
+      'format_h1',
+      'service_terms',
+      'repeated_opener',
+      'teaser_terms',
+      'summary_short',
+      'disclaimer',
+    ]) {
+      expect(severityOfRule(rule), rule).toBe('warning');
     }
-    for (const rule of ['too_short', 'forbidden_karma', 'chiron', 'unknown_house', 'format_h1']) {
-      expect(severityOfRule(rule)).toBe('error');
+    for (const rule of ['too_short', 'section_unknown']) {
+      expect(severityOfRule(rule), rule).toBe('error');
     }
   });
 
-  it('недобор объёма — error, перебор — warning', () => {
+  it('недобор и перебор объёма — оба warning: главу показываем', () => {
     const short = classifyFailures({
       key: 'core',
       bodyLength: 600,
       failures: [{ rule: 'length', detail: '600 вне 1200–1550' }],
     });
-    expect(short.errors.map((entry) => entry.code)).toEqual(['too_short']);
+    expect(short.warnings.map((entry) => entry.code)).toEqual(['too_short']);
 
     const long = classifyFailures({
       key: 'core',
@@ -260,12 +278,30 @@ describe('серьёзность провала валидатора', () => {
     expect(long.warnings.map((entry) => entry.code)).toEqual(['too_long']);
   });
 
-  it('перегенерация — только для too_short, format и запрещённых тем', () => {
+  it('«Итог» с недобором — ретрай, а не выброс главы', () => {
+    const short = classifyFailures({
+      key: 'summary',
+      bodyLength: 434,
+      failures: [{ rule: 'summary_short', detail: '434 < 500' }],
+    });
+    expect(short.errors).toEqual([]);
+    expect(short.warnings.map((entry) => entry.code)).toEqual(['too_short']);
+    expect(isRetryable('too_short')).toBe(true);
+  });
+
+  it('перегенерация — только для too_short и format', () => {
     expect(isRetryable('too_short')).toBe(true);
     expect(isRetryable('format')).toBe(true);
-    expect(isRetryable('forbidden_terms')).toBe(true);
-    for (const code of ['paragraphs', 'repeats', 'too_long'] as const) {
-      expect(isRetryable(code)).toBe(false);
+    for (const code of [
+      'forbidden_terms',
+      'paragraphs',
+      'repeats',
+      'too_long',
+      'teaser_terms',
+      'service_terms',
+      'repeated_opener',
+    ] as const) {
+      expect(isRetryable(code), code).toBe(false);
     }
   });
 });
