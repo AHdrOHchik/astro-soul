@@ -134,6 +134,12 @@ services:
       LLM_MONTHLY_CAP_RUB_REPORT: ${LLM_MONTHLY_CAP_RUB_REPORT:-2000}
       LLM_MONTHLY_CAP_RUB_FORECAST: ${LLM_MONTHLY_CAP_RUB_FORECAST:-2000}
       LLM_FAKE: ${LLM_FAKE:-0}
+      # Тестовые тарифы за 1 ⭐ (test_1, test_report_1): по умолчанию пусто —
+      # флага нет в .env.example, и без явной строки в .env он выключен.
+      # Строка нужна, потому что compose подставляет из .env только те
+      # переменные, которые перечислены здесь: без неё флаг из .env не доедет
+      # до контейнера (и «ничего не изменилось» — не баг приложения).
+      PAYMENTS_TEST_PLANS: ${PAYMENTS_TEST_PLANS:-}
     volumes:
       - ./docker/certs/russian_trusted_root_ca.cer:/etc/astro-soul/certs/russian_trusted_root_ca.cer:ro
     expose:
