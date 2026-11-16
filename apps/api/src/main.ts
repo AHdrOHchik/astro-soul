@@ -51,6 +51,16 @@ async function bootstrap(): Promise<void> {
       note: 'тарифы за 1 ⭐ доступны через POST /billing/invoice',
     });
   }
+
+  // Выключенный брейкер — не «мелочь в .env»: без него массовый провал
+  // валидации снова жжёт бюджет на каждом заказе. Один WARN на старте, чтобы
+  // это было видно в логах того же дня, а не выяснялось по счёту.
+  if (env.REPORT_BREAKER_ENABLED === '0') {
+    logger.warn('report_breaker_disabled', {
+      flag: 'REPORT_BREAKER_ENABLED',
+      note: 'circuit breaker разборов не блокирует запуск: POST /reports не отвечает 503 report_breaker_open',
+    });
+  }
 }
 
 bootstrap().catch((error: unknown) => {

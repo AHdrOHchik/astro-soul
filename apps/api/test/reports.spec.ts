@@ -9,8 +9,8 @@ import { FICTIONAL_USER, TEST_BOT_TOKEN } from './test-env';
 import { makeFakeAstro } from './fake-astro';
 import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
 import { FORMA_BLOCK, PROMPT_VERSION } from '../src/modules/reports/prompts';
-import { MAX_ATTEMPTS } from '../src/modules/reports/reports.service';
-import { STRUCTURE_VERSION } from '../src/modules/reports/validators';
+import { MAX_ATTEMPTS, MISSING_SECTIONS_NOTE } from '../src/modules/reports/reports.service';
+import { DISCLAIMER, STRUCTURE_VERSION } from '../src/modules/reports/validators';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../src/modules/llm/llm.client';
 
 const BIRTH = {
@@ -108,6 +108,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   delete process.env['LLM_REPORT_CAP_RUB'];
+  delete process.env['REPORT_BREAKER_ENABLED'];
 });
 
 /** Пользователь с картой: карта строится тем же API, что и в проде. */
@@ -493,7 +494,7 @@ describe('наблюдаемость конвейера (итерация 17)', 
     }
   });
 
-  it('провал валидации: свой код, сырой ответ модели и ровно две попытки', async () => {
+  it('недобор материала остаётся провалом: код too_short, сырой ответ, две попытки', async () => {
     const dense = new DenseParagraphProvider();
     const failing = await createTestContext({
       astro: makeFakeAstro(),
@@ -549,14 +550,16 @@ describe('наблюдаемость конвейера (итерация 17)', 
         validation: { key: string; attempt: number; code: string; raw_excerpt: string }[];
       }>(`SELECT error_code, attempts, validation FROM reports WHERE id = $1`, [reportId]);
 
-      // Конкретный класс провала вместо общего `validation`.
-      expect(row?.error_code).toBe('paragraphs');
+      // Семь предложений — это ~500 знаков при минимуме «Ядра» 1200: формы
+      // тут мало, материала тоже. Нормализация такие случаи не выдумывает,
+      // поэтому код — `too_short`, а не `paragraphs`.
+      expect(row?.error_code).toBe('too_short');
       // План + две попытки одной главы: третьей быть не может.
       expect(row?.attempts).toBe(1 + MAX_ATTEMPTS);
       expect(row?.validation).toHaveLength(MAX_ATTEMPTS);
       expect(row?.validation.map((entry) => entry.attempt)).toEqual([1, 2]);
       expect(row?.validation[0]?.key).toBe('core');
-      expect(row?.validation[0]?.code).toBe('paragraphs');
+      expect(row?.validation[0]?.code).toBe('too_short');
       // Сырой ответ модели сохранён — по нему можно разобрать провал.
       expect(row?.validation[0]?.raw_excerpt).toContain('Ты держишь в голове сразу несколько линий');
     } finally {
@@ -668,3 +671,326 @@ describe('приёмка разбора целиком (итерация 17)', (
     expect(TEASER_TERMS.test(teaser)).toBe(false);
   });
 });
+
+/**
+ * Запас предложений для «плотного» провайдера: 16 штук по ~90 знаков дают
+ * нужный объём главы, но одной простынёй — ровно то, что модель отдавала
+ * в живом прогоне.
+ */
+const POOL = [
+  'Ты быстро собираешь связи между людьми и темами, не задерживаясь на одной линии.',
+  'Скорость для тебя не трюк, а способ не застрять в чужой нерешительности надолго.',
+  'Когда тебя торопят, ответ становится резче, чем ты собирался сказать вслух при всех.',
+  'Раздражение уходит в сарказм, и это самый короткий путь выпустить пар без потерь.',
+  'Выводы приходят раньше чувств, поэтому близкие иногда не успевают за твоим темпом.',
+  'Ясность ты ценишь выше тепла, но тепла всё равно хочется, и это не противоречие.',
+  'В работе тебе важнее видеть движение, чем получить готовую оценку своих усилий.',
+  'Пауза в разговоре тебя не пугает: ты умеешь ждать, если видишь смысл в ожидании.',
+  'Новые люди тянутся к тебе за конкретикой, а не за участием, и это стоит помнить.',
+  'Усталость ты замечаешь поздно, обычно уже на стадии, когда всё вокруг раздражает.',
+  'Просьбу о помощи ты формулируешь как задачу, и это работает лучше любой жалобы.',
+  'Тебе легче начать, чем закончить, поэтому финал стоит назначать себе заранее.',
+  'Резкие решения даются тебе проще постепенных: пока тянешь, ты теряешь интерес.',
+  'Объяснять очевидное ты не любишь, но объясняешь хорошо, когда видишь собеседника.',
+  'Ошибку ты признаёшь быстро и без торга, и это экономит тебе много времени.',
+  'Тишина для тебя рабочее состояние, а не пустота, которую нужно чем-то заполнить.',
+];
+
+/** Провайдер с заданным текстом по главам: план и «Итог» — из одного места. */
+class ScriptedProvider implements LlmProvider {
+  readonly name = 'scripted-stub';
+  calls = 0;
+  private readonly attempts = new Map<string, number>();
+
+  constructor(private readonly render: (key: string, attempt: number) => string) {}
+
+  complete(input: LlmRequest): Promise<LlmResponse> {
+    this.calls += 1;
+    const prompt = input.messages.map((message) => message.content).join('\n');
+
+    if (prompt.includes('Ответ — строго JSON')) {
+      return Promise.resolve(
+        this.answer(
+          JSON.stringify({
+            thesis: 'Ты быстро связываешь факты, но не считаешь это достижением.',
+            focuses: [
+              { topic: 'скорость ума', factor: 'Меркурий в Близнецах', angle: 'связи на ходу' },
+              { topic: 'триггер', factor: 'Марс в Овне', angle: 'реакция на давление' },
+            ],
+            avoid: ['не повторять про скорость'],
+          }),
+        ),
+      );
+    }
+
+    const key = prompt.includes('заключительную главу «Итог')
+      ? 'summary'
+      : (/Глава: ([a-z]+)\./u.exec(prompt)?.[1] ?? 'core');
+
+    const attempt = (this.attempts.get(key) ?? 0) + 1;
+    this.attempts.set(key, attempt);
+    return Promise.resolve(this.answer(this.render(key, attempt)));
+  }
+
+  private answer(content: string): LlmResponse {
+    return {
+      content,
+      model: this.name,
+      usage: { promptTokens: 800, completionTokens: 200, totalTokens: 1_000, costRub: 0.5 },
+    };
+  }
+}
+
+/** Одна простыня из 16 предложений: 1440 знаков, ни одного деления на абзацы. */
+function denseBody(): string {
+  return POOL.join(' ');
+}
+
+/** «Итог» с дисклеймером отдельным абзацем — как требует контракт. */
+function summaryBody(): string {
+  return [POOL.slice(1, 4).join(' '), POOL.slice(5, 8).join(' '), POOL.slice(9, 12).join(' '), DISCLAIMER].join(
+    '\n\n',
+  );
+}
+
+describe('валидация больше не убивает разбор (итерация 18)', () => {
+  /** Заказ разбора в отдельном приложении со своим провайдером. */
+  async function reportWith(
+    llm: LlmProvider,
+    key: string,
+    env: Readonly<Record<string, string>> = {},
+  ): Promise<{
+    readonly ready: Response;
+    readonly row: {
+      section_status: Record<string, string> | null;
+      validation: { key: string; attempt: number; code: string }[] | null;
+      normalization: Record<string, { normalized: string[]; warnings: string[] }> | null;
+      attempts: number;
+      error_code: string | null;
+    } | null;
+    readonly db: TestContext['db'];
+  }> {
+    const local = await createTestContext({
+      astro: makeFakeAstro(),
+      telegram,
+      llm,
+      env: { INTERNAL_JOB_SECRET: JOBS_SECRET, ADMIN_TG_ID: String(FICTIONAL_USER.id), ...env },
+    });
+
+    try {
+      const chart = await request(local.app.getHttpServer())
+        .post('/api/v1/charts')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .send(BIRTH)
+        .expect(201);
+      const chartId = chart.body.chart.chart_id as string;
+      const user = await local.db.queryOne<{ id: string }>(`SELECT id FROM users`);
+      const userId = user?.id ?? '';
+
+      const payment = await local.db.queryOne<{ id: string }>(
+        `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
+         VALUES ($1, $2, 'one_149', 149, $3, true) RETURNING id`,
+        [userId, FICTIONAL_USER.id, `charge-${key}`],
+      );
+      await local.db.query(
+        `INSERT INTO entitlements (user_id, kind, chart_id, payment_id) VALUES ($1, 'report', $2, $3)`,
+        [userId, chartId, payment?.id],
+      );
+
+      const order = await request(local.app.getHttpServer())
+        .post('/api/v1/reports')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .set('Idempotency-Key', key)
+        .send({ chart_id: chartId, type: 'full' })
+        .expect(202);
+
+      const ready = await waitForOn(local, order.body.report_id as string, ['ready', 'failed']);
+      const row = await local.db.queryOne<{
+        section_status: Record<string, string> | null;
+        validation: { key: string; attempt: number; code: string }[] | null;
+        normalization: Record<string, { normalized: string[]; warnings: string[] }> | null;
+        attempts: number;
+        error_code: string | null;
+      }>(
+        `SELECT section_status, validation, normalization, attempts, error_code FROM reports WHERE id = $1`,
+        [order.body.report_id],
+      );
+
+      return { ready, row, db: local.db };
+    } finally {
+      await local.close();
+    }
+  }
+
+  it('плотная простыня проходит с первой попытки: форма правится кодом', async () => {
+    const scripted = new ScriptedProvider((key) => (key === 'summary' ? summaryBody() : denseBody()));
+    const { ready, row } = await reportWith(scripted, 'dense-normalized');
+
+    expect(ready.body.status).toBe('ready');
+    const sections = ready.body.sections as { key: string; body_md: string }[];
+    expect(sections).toHaveLength(7);
+
+    // Главное: ни одного жёсткого провала — модель ответила «плохо по форме».
+    expect(row?.validation ?? []).toEqual([]);
+    expect(row?.error_code).toBeNull();
+    // Перегенераций не было: план + семь глав по одному вызову.
+    expect(row?.attempts).toBe(1 + 7);
+    expect(Object.values(row?.section_status ?? {}).every((status) => status === 'ok')).toBe(true);
+
+    // В БД видно, что именно поправила нормализация.
+    expect(row?.normalization?.['core']?.normalized).toContain('paragraphs_split');
+
+    // И форма действительно приведена: 3–6 абзацев по 2–4 предложения.
+    for (const section of sections.filter((item) => item.key !== 'summary')) {
+      const paragraphs = section.body_md.split(/\n\s*\n/u).filter((block) => block.trim() !== '');
+      expect(paragraphs.length).toBeGreaterThanOrEqual(3);
+      expect(paragraphs.length).toBeLessThanOrEqual(6);
+      for (const paragraph of paragraphs) {
+        const sentences = paragraph.split(/(?<=[.!?…])\s+/u).filter((item) => item.trim() !== '');
+        expect(sentences.length).toBeGreaterThanOrEqual(2);
+        expect(sentences.length).toBeLessThanOrEqual(4);
+      }
+    }
+
+    // Полный разбор: ничего не потеряно, пометок о нехватке глав нет.
+    expect(ready.body.missing_sections).toEqual([]);
+  });
+
+  it('одна несобранная глава → ready, missing_sections и хвост про пересборку', async () => {
+    const scripted = new ScriptedProvider((key) => {
+      if (key === 'summary') {
+        return summaryBody();
+      }
+      // `talents` недобирает материал даже после нормализации.
+      return key === 'talents' ? POOL.slice(0, 4).join(' ') : denseBody();
+    });
+    const { ready, row } = await reportWith(scripted, 'partial-one');
+
+    expect(ready.body.status).toBe('ready');
+    const sections = ready.body.sections as { key: string; body_md: string }[];
+    expect(sections.map((section) => section.key)).toEqual([
+      'core',
+      'emotions',
+      'relations',
+      'money',
+      'purpose',
+      'summary',
+    ]);
+
+    // Контракт 1.5.11: чего не хватает — сказано явно.
+    expect(ready.body.missing_sections).toEqual(['talents']);
+    expect(Array.isArray(ready.body.warnings)).toBe(true);
+
+    // «Итог» закрывается фразой владельца, а не обрывом на шестой главе.
+    const summary = sections.find((section) => section.key === 'summary');
+    expect(summary?.body_md.endsWith(MISSING_SECTIONS_NOTE)).toBe(true);
+    expect(summary?.body_md).toContain(DISCLAIMER);
+
+    // Диагностика: глава помечена failed, попытки и код сохранены.
+    expect(row?.section_status?.['talents']).toBe('failed');
+    expect(row?.section_status?.['core']).toBe('ok');
+    expect((row?.validation ?? []).map((entry) => entry.code)).toEqual(['too_short', 'too_short']);
+    expect((row?.validation ?? []).every((entry) => entry.key === 'talents')).toBe(true);
+    // План + пять живых глав + две попытки `talents` + «Итог».
+    expect(row?.attempts).toBe(1 + 5 + 2 + 1);
+    expect(row?.error_code).toBeNull();
+  });
+
+  it('меньше трёх живых глав → failed, а не пустой разбор', async () => {
+    const scripted = new ScriptedProvider((key) =>
+      key === 'core' ? denseBody() : POOL.slice(0, 4).join(' '),
+    );
+    const { ready, row } = await reportWith(scripted, 'too-few');
+
+    expect(ready.body.status).toBe('failed');
+    expect(row?.error_code).toBe('too_short');
+    // «Ядро» живо, остальные пять — по две попытки каждая.
+    expect(row?.section_status?.['core']).toBe('ok');
+    expect(row?.section_status?.['emotions']).toBe('failed');
+  });
+
+  it('REPORT_BREAKER_ENABLED=0: серия провалов растёт, но запуск не блокируется', async () => {
+    const local = await createTestContext({
+      astro: makeFakeAstro(),
+      telegram,
+      llm: provider,
+      env: {
+        INTERNAL_JOB_SECRET: JOBS_SECRET,
+        ADMIN_TG_ID: String(FICTIONAL_USER.id),
+        REPORT_BREAKER_ENABLED: '0',
+      },
+    });
+
+    try {
+      const chart = await request(local.app.getHttpServer())
+        .post('/api/v1/charts')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .send(BIRTH)
+        .expect(201);
+      const chartId = chart.body.chart.chart_id as string;
+      const user = await local.db.queryOne<{ id: string }>(`SELECT id FROM users`);
+      const userId = user?.id ?? '';
+
+      for (let index = 0; index < 3; index += 1) {
+        await local.db.query(
+          `INSERT INTO reports (chart_id, user_id, status, error_code, prompt_version, report_structure_version)
+           VALUES ($1, $2, 'failed', 'too_short', $3, $4)`,
+          [chartId, userId, PROMPT_VERSION, STRUCTURE_VERSION],
+        );
+      }
+
+      // Метрика серии считается и при выключенном флаге: провалы никуда не делись.
+      const metricsBefore = await request(local.app.getHttpServer())
+        .get('/api/v1/admin/metrics')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .expect(200);
+      expect(metricsBefore.body.reports_validation_streak).toBe(3);
+      expect(metricsBefore.body.reports_breaker_open).toBe(false);
+
+      const payment = await local.db.queryOne<{ id: string }>(
+        `INSERT INTO payments (user_id, telegram_id, plan_code, total_amount, telegram_payment_charge_id, processed)
+         VALUES ($1, $2, 'one_149', 149, 'charge-breaker-off', true) RETURNING id`,
+        [userId, FICTIONAL_USER.id],
+      );
+      await local.db.query(
+        `INSERT INTO entitlements (user_id, kind, chart_id, payment_id) VALUES ($1, 'report', $2, $3)`,
+        [userId, chartId, payment?.id],
+      );
+
+      // Не 503: запуск разрешён, хотя брейкер открыт.
+      const order = await request(local.app.getHttpServer())
+        .post('/api/v1/reports')
+        .set(INIT_DATA_HEADER, initDataFor())
+        .set('Idempotency-Key', 'breaker-off-key')
+        .send({ chart_id: chartId, type: 'full' })
+        .expect(202);
+
+      const ready = await waitForOn(local, order.body.report_id as string, ['ready', 'failed']);
+      expect(ready.body.status).toBe('ready');
+      expect(ready.body.missing_sections).toEqual([]);
+    } finally {
+      await local.close();
+    }
+  });
+});
+
+/** Ожидание статуса в конкретном контексте (а не в общем `ctx`). */
+async function waitForOn(
+  local: TestContext,
+  reportId: string,
+  statuses: readonly string[],
+): Promise<Response> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await request(local.app.getHttpServer())
+      .get(`/api/v1/reports/${reportId}`)
+      .set(INIT_DATA_HEADER, initDataFor());
+
+    if (statuses.includes(response.body.status as string)) {
+      return response;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  throw new Error(`разбор ${reportId} не дошёл до ${statuses.join('/')}`);
+}

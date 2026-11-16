@@ -14,7 +14,17 @@ import { CHART_FACTS_VERSION, serializeTopFactors } from './top-factors';
 import { fewShotBlocks } from './corpus';
 import { buildDigest } from './digests';
 import { breakerState, BREAKER_THRESHOLD, type BreakerState } from './breaker';
-import { failureCodeOf, type FailureCode } from './failure-codes';
+import {
+  classifyFailures,
+  failureCodeOf,
+  isRetryable,
+  type FailureCode,
+} from './failure-codes';
+import {
+  normalizeSection,
+  normalizeTeaser,
+  type NormalizationCode,
+} from './normalize';
 import {
   CONTENT_SECTIONS,
   distributeFocuses,
@@ -47,8 +57,48 @@ import {
 
 const ALL_SECTIONS: readonly SectionKey[] = [...CONTENT_SECTIONS, 'summary'];
 
+/**
+ * Итог одной главы (итерация 18).
+ *
+ * `ok: false` — главу не удалось собрать и показывать её нечего (пустой ответ,
+ * недобор материала, запрещённая тема). Такая глава попадает в
+ * `missing_sections`, но разбор из-за неё не пропадает: пока живы три главы
+ * и «Итог», человек получает то, что собралось.
+ */
+type SectionWrite =
+  | {
+      readonly ok: true;
+      readonly body: string;
+      readonly regenerated: boolean;
+      readonly normalized: readonly NormalizationCode[];
+      readonly warnings: readonly FailureCode[];
+    }
+  | { readonly ok: false; readonly code: FailureCode };
+
+/** Что нормализатор сделал с главой — в `reports.normalization`. */
+interface SectionDiagnostics {
+  readonly normalized: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Хвост частичного разбора — последний абзац «Итога» (текст владельца).
+ * Человек должен понимать, что видит не весь разбор, и что пересборка
+ * бесплатна; иначе частичный разбор выглядит как «нам не хватило глав».
+ */
+export const MISSING_SECTIONS_NOTE =
+  'Часть глав не удалось собрать. Попробуй пересобрать разбор — это бесплатно, или напиши в поддержку.';
+
+/** Минимум живых глав, при котором разбор ещё показывается. */
+const MIN_LIVE_CHAPTERS = 3;
+
 /** Первые 400 знаков `core` — то, что видно до оплаты. */
 export const TEASER_LENGTH = 400;
+
+export interface ReportWarningView {
+  readonly section: string;
+  readonly code: string;
+}
 
 export interface ReportSectionView {
   readonly key: string;
@@ -70,6 +120,13 @@ export interface ReportView {
   readonly sections: readonly ReportSectionView[];
   readonly is_paid: boolean;
   readonly teaser?: string;
+  /**
+   * Главы, которых нет в разборе (контракт 1.5.11). Пусто у полного разбора;
+   * непусто, когда часть глав не прошла и разбор отдан частичным.
+   */
+  readonly missing_sections: readonly string[];
+  /** Главы с пометками формы: `{section, code}` (контракт 1.5.11). */
+  readonly warnings: readonly ReportWarningView[];
 }
 
 /**
@@ -207,8 +264,12 @@ export class ReportsService {
     // Circuit breaker (итерация 17): три провала валидации подряд — новые
     // разборы не запускаются. Проверка стоит до `create`, чтобы не завести
     // разбор, который заведомо упадёт и сожжёт ещё 0,85 ₽.
+    //
+    // Итерация 18: блокировку можно выключить переменной окружения
+    // `REPORT_BREAKER_ENABLED=0` — только отказ в запуске, всё остальное
+    // (лимит попыток, валидаторы, капы, окно 30 минут) остаётся.
     const breaker = await this.breaker();
-    if (breaker.open) {
+    if (this.env.REPORT_BREAKER_ENABLED === '1' && breaker.open) {
       this.logger.warn('report_breaker_open', {
         streak: breaker.streak,
         threshold: BREAKER_THRESHOLD,
@@ -298,6 +359,22 @@ export class ReportsService {
         }))
       : [];
 
+    // Частичный разбор: какие главы не собрались. Только для `ready` —
+    // у собирающегося разбора «не хватает» всех глав, и это не новость.
+    const present = new Set(chapters.map((chapter) => chapter.key));
+    const missing_sections: string[] =
+      status === 'ready' ? ALL_SECTIONS.filter((key) => !present.has(key)) : [];
+
+    // Пометки по главам: что нормализатор поправил (`normalized`) и какие
+    // нарушения формы остались (`warnings`). Фронт не обязан их показывать,
+    // но без них частичный разбор не отличить от «модель так и задумала».
+    const warnings: ReportWarningView[] =
+      status === 'ready'
+        ? Object.entries(report.normalization ?? {}).flatMap(([section, diagnostics]) =>
+            (diagnostics?.warnings ?? []).map((code) => ({ section, code })),
+          )
+        : [];
+
     const view: ReportView = {
       report_id: report.id,
       chart_id: report.chart_id,
@@ -310,6 +387,8 @@ export class ReportsService {
       sections,
       is_paid: paid,
       ...(report.teaser === null ? {} : { teaser: report.teaser }),
+      missing_sections,
+      warnings,
     };
 
     return view;
@@ -320,6 +399,8 @@ export class ReportsService {
     const budget: Budget = { reportId, costRub: 0, attempts: 0 };
     const sectionStatus: Partial<Record<SectionKey, 'ok' | 'regenerated' | 'failed'>> = {};
     const validation: ValidationEntry[] = [];
+    // Что нормализация поправила: нужно и в `ready`, и в `failed`.
+    const normalization: Record<string, SectionDiagnostics> = {};
 
     try {
       const report = await this.repo.byId(reportId);
@@ -357,10 +438,11 @@ export class ReportsService {
       const chapters: ReportChapter[] = [];
       const written: string[] = [];
       const digests: string[] = [];
+      const failed: { key: SectionKey; code: FailureCode }[] = [];
       let teaser: string | null = null;
 
       for (const [index, key] of CONTENT_SECTIONS.entries()) {
-        const { body, regenerated } = await this.section(key, {
+        const write = await this.section(key, {
           reportId,
           facts,
           timePrecision,
@@ -373,16 +455,68 @@ export class ReportsService {
           validation,
         });
 
-        sectionStatus[key] = regenerated ? 'regenerated' : 'ok';
+        // Глава не вышла. «Ядро» роняет разбор сразу: без него показывать
+        // нечего, и дописывать остальные шесть глав за деньги незачем.
+        // Остальные — копятся в `missing_sections`, разбор продолжается.
+        if (!write.ok) {
+          sectionStatus[key] = 'failed';
+          failed.push({ key, code: write.code });
+          this.logger.warn('report_section_missing', {
+            report_id: reportId,
+            section: key,
+            code: write.code,
+          });
+          if (key === 'core') {
+            throw new ReportFailure(write.code);
+          }
+          continue;
+        }
+
+        sectionStatus[key] = write.regenerated ? 'regenerated' : 'ok';
+        if (write.normalized.length > 0 || write.warnings.length > 0) {
+          normalization[key] = { normalized: write.normalized, warnings: write.warnings };
+        }
+
+        const body = write.body;
         written.push(body);
         digests.push(buildDigest(body));
         chapters.push({ key, title: titleOf(key), body_md: body, order: index });
 
         if (key === 'core') {
-          teaser = body.slice(0, TEASER_LENGTH);
+          // Тизер — окно в 400 знаков, а не первые 400 знаков любой ценой:
+          // планеты и дома в нём запрещены (`llm-prompts.md` §3.1), поэтому
+          // при терминах окно сдвигается на абзац без них.
+          const teaserView = normalizeTeaser(body, TEASER_LENGTH);
+          teaser = teaserView.teaser;
+          const existing = normalization['core'];
+          if (teaserView.hasTerms) {
+            // Термины остались даже после сдвига окна — это пометка, не провал.
+            normalization['core'] = {
+              normalized: existing?.normalized ?? [],
+              warnings: [...(existing?.warnings ?? []), 'teaser_terms'],
+            };
+          } else if (teaserView.shifted) {
+            normalization['core'] = {
+              normalized: [...(existing?.normalized ?? []), 'teaser_terms'],
+              warnings: existing?.warnings ?? [],
+            };
+          }
         }
 
-        await this.repo.saveProgress({ id: reportId, status: 'writing', chapters, teaser });
+        await this.repo.saveProgress({
+          id: reportId,
+          status: 'writing',
+          chapters,
+          teaser,
+          normalization,
+        });
+      }
+
+      // Меньше трёх живых глав — показывать нечего: это `failed`, как и
+      // раньше. Код — провал первой несобранной главы, чтобы в метриках
+      // осталась причина, а не «частичный разбор».
+      if (chapters.length < MIN_LIVE_CHAPTERS) {
+        throw new ReportFailure(failed[0]?.code ?? 'format');
       }
 
       const summary = await this.summary({
@@ -392,13 +526,33 @@ export class ReportsService {
         previous: written,
         budget,
         validation,
+        missing: failed.map((entry) => entry.key),
       });
 
+      // «Итог» — обязательная глава: без него разбор не закрывается.
+      if (!summary.ok) {
+        sectionStatus.summary = 'failed';
+        throw new ReportFailure(summary.code);
+      }
+
       sectionStatus.summary = summary.regenerated ? 'regenerated' : 'ok';
+      if (summary.normalized.length > 0 || summary.warnings.length > 0) {
+        normalization['summary'] = {
+          normalized: summary.normalized,
+          warnings: summary.warnings,
+        };
+      }
+
+      // Хвост частичного разбора: человек видит, что глав не хватает, и что
+      // пересборка бесплатна. Приписывается после валидатора — это текст
+      // сервиса, а не модели, и объём «Итога» им не проверяется.
+      const summaryBody =
+        failed.length === 0 ? summary.body : `${summary.body}\n\n${MISSING_SECTIONS_NOTE}`;
+
       chapters.push({
         key: 'summary',
         title: titleOf('summary'),
-        body_md: summary.body,
+        body_md: summaryBody,
         order: CONTENT_SECTIONS.length,
       });
 
@@ -410,6 +564,7 @@ export class ReportsService {
         digests,
         validation,
         sectionStatus,
+        normalization,
       });
 
       this.logger.info('report_ready', {
@@ -417,6 +572,17 @@ export class ReportsService {
         attempts: budget.attempts,
         cost_rub: budget.costRub,
         chapters: chapters.length,
+        // Частичный разбор виден в логе без похода в БД: сколько глав не
+        // собралось и какие именно.
+        missing_sections: failed.map((entry) => entry.key),
+        normalized: Object.values(normalization).reduce(
+          (sum, diagnostics) => sum + diagnostics.normalized.length,
+          0,
+        ),
+        warnings: Object.values(normalization).reduce(
+          (sum, diagnostics) => sum + diagnostics.warnings.length,
+          0,
+        ),
       });
     } catch (error) {
       const code =
@@ -436,7 +602,7 @@ export class ReportsService {
 
       await this.repo.fail(reportId, code);
       // Отметки о главах остаются в `reports.section_status`: видно, где встали.
-      await this.repo.saveDiagnostics(reportId, sectionStatus, validation);
+      await this.repo.saveDiagnostics(reportId, sectionStatus, validation, normalization);
     }
   }
 
@@ -515,7 +681,7 @@ export class ReportsService {
       readonly budget: Budget;
       readonly validation: ValidationEntry[];
     },
-  ): Promise<{ body: string; regenerated: boolean }> {
+  ): Promise<SectionWrite> {
     // Ровно 2–3 фокуса этой главы + общий `avoid`: остальные темы плана в
     // промпт не попадают, и упоминать их модель не обязана.
     const own = focusBlockFor(context.focuses, key);
@@ -529,7 +695,7 @@ export class ReportsService {
       examples: fewShotBlocks(2).map((block) => block.text),
     });
 
-    return this.withValidation(key, prompt, context);
+    return this.writeSection(key, prompt, context);
   }
 
   private async summary(context: {
@@ -539,14 +705,23 @@ export class ReportsService {
     readonly previous: readonly string[];
     readonly budget: Budget;
     readonly validation: ValidationEntry[];
-  }): Promise<{ body: string; regenerated: boolean }> {
+    /** Главы, которые уже не собрать: «Итог» не должен их пересказывать. */
+    readonly missing: readonly SectionKey[];
+  }): Promise<SectionWrite> {
     const prompt = summaryPrompt({
       thesis: context.thesis,
       digests: context.digests,
       timePrecision: context.timePrecision,
     });
 
-    return this.withValidation('summary', prompt, {
+    if (context.missing.length > 0) {
+      this.logger.warn('report_summary_partial', {
+        report_id: context.budget.reportId,
+        missing_sections: context.missing,
+      });
+    }
+
+    return this.writeSection('summary', prompt, {
       timePrecision: context.timePrecision,
       previous: context.previous,
       budget: context.budget,
@@ -555,10 +730,28 @@ export class ReportsService {
   }
 
   /**
-   * Генерация с одной перегенерацией. Перегенерация — тот же промпт: правки
-   * «по месту» меняли бы текст инструкции, а промпты версионируются.
+   * Одна глава: генерация → нормализация → валидатор → (при нужде) одна
+   * перегенерация.
+   *
+   * Что изменилось в итерации 18 и почему:
+   *
+   *   1. **Нормализация идёт до валидатора.** Абзацы, их длина и объём — это
+   *      строковые операции: код делает их точно и бесплатно, а модель на том
+   *      же промпте ошибается снова. Смысл текста при этом не меняется.
+   *   2. **Провал формы больше не убивает главу.** Нарушения делятся на
+   *      `error` (пустой ответ, недобор, запрещённая тема) и `warning`
+   *      (абзацы, перебор длины, повторы). Вторая категория показывается
+   *      человеку с пометкой в `Report.warnings` — оплаченный разбор не
+   *      должен пропадать из-за лишней пустой строки.
+   *   3. **Перегенерация только там, где она помогает:** `too_short`
+   *      (материала мало — нужен другой текст) и `format` (ответ не
+   *      разобрался). Повторять вызов из-за абзацев — платить дважды за то,
+   *      что правится `normalize.ts`.
+   *
+   * Валидаторы при этом не удалены и не ослаблены: они по-прежнему считают
+   * всё, их вердикт уходит в `reports.validation` и в логи.
    */
-  private async withValidation(
+  private async writeSection(
     key: SectionKey,
     prompt: string,
     context: {
@@ -567,14 +760,19 @@ export class ReportsService {
       readonly budget: Budget;
       readonly validation: ValidationEntry[];
     },
-  ): Promise<{ body: string; regenerated: boolean }> {
+  ): Promise<SectionWrite> {
+    let lastCode: FailureCode = 'format';
+
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const response = await this.call(context.budget, [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: prompt },
       ]);
 
-      const body = response.content.trim();
+      const raw = response.content.trim();
+      const normalization = normalizeSection({ key, bodyMd: raw });
+      const body = normalization.body;
+
       const result = validateSection({
         key,
         bodyMd: body,
@@ -582,17 +780,69 @@ export class ReportsService {
         previous: context.previous,
       });
 
-      if (result.failures.length === 0) {
+      const { errors, warnings } = classifyFailures({
+        key,
+        bodyLength: body.length,
+        failures: result.failures,
+      });
+
+      if (normalization.applied.length > 0) {
+        // Нормализация видна всегда — и в БД, и в логе: иначе «глава прошла»
+        // не отличить от «главу переписал код».
+        this.logger.info('report_section_normalized', {
+          report_id: context.budget.reportId,
+          section: key,
+          applied: normalization.applied,
+          notes: normalization.notes,
+          chars: { raw: raw.length, normalized: body.length },
+        });
+      }
+
+      if (errors.length === 0) {
+        const warningCodes = [...new Set(warnings.map((warning) => warning.code))];
+        const normalized: NormalizationCode[] = [...normalization.applied];
+
+        // Повторы не правятся постобработкой (это не форма, а содержание),
+        // поэтому они остаются в тексте — но с пометкой, чтобы это не
+        // выглядело как «валидатор пропустил».
+        if (warningCodes.includes('repeats') && !normalized.includes('repeats')) {
+          normalized.push('repeats');
+        }
+
+        if (warnings.length > 0) {
+          this.logger.warn('report_section_warnings', {
+            report_id: context.budget.reportId,
+            section: key,
+            attempt,
+            warnings: warnings.map((warning) => `${warning.rule}: ${warning.detail}`),
+            codes: warningCodes,
+          });
+        }
+
         if (attempt > 1) {
           this.logger.warn('report_section_regenerated', {
             section: key,
+            attempt,
             warnings: result.warnings,
           });
         }
-        return { body, regenerated: attempt > 1 };
+
+        return {
+          ok: true,
+          body,
+          regenerated: attempt > 1,
+          normalized,
+          warnings: warningCodes,
+        };
       }
 
-      const code = failureCodeOf({ key, bodyLength: body.length, failures: result.failures });
+      const code = failureCodeOf({
+        key,
+        bodyLength: body.length,
+        failures: errors.map((error) => ({ rule: error.rule, detail: error.detail })),
+      });
+      lastCode = code;
+
       const rawExcerpt = body.slice(0, RAW_EXCERPT_LENGTH);
 
       // Сырой ответ модели — в лог и в `reports.validation`: без него причину
@@ -602,6 +852,7 @@ export class ReportsService {
         section: key,
         attempt,
         code,
+        severity: 'error',
         chars: body.length,
         raw_excerpt: rawExcerpt,
       });
@@ -610,17 +861,18 @@ export class ReportsService {
         key,
         attempt,
         code,
-        failures: result.failures.map((failure) => `${failure.rule}: ${failure.detail}`),
+        failures: errors.map((error) => `${error.rule}: ${error.detail}`),
         chars: body.length,
         raw_excerpt: rawExcerpt,
       });
 
-      if (attempt === MAX_ATTEMPTS) {
-        throw new ReportFailure(code);
+      const retryable = errors.some((error) => isRetryable(error.code));
+      if (!retryable || attempt === MAX_ATTEMPTS) {
+        return { ok: false, code };
       }
     }
 
-    throw new ReportFailure('format');
+    return { ok: false, code: lastCode };
   }
 
   /**

@@ -134,6 +134,8 @@ services:
       LLM_MONTHLY_CAP_RUB_REPORT: ${LLM_MONTHLY_CAP_RUB_REPORT:-2000}
       LLM_MONTHLY_CAP_RUB_FORECAST: ${LLM_MONTHLY_CAP_RUB_FORECAST:-2000}
       LLM_FAKE: ${LLM_FAKE:-0}
+      # Circuit breaker разборов: на стенде можно выключить для ручных прогонов.
+      REPORT_BREAKER_ENABLED: ${REPORT_BREAKER_ENABLED:-1}
       # Автовозврат звёзд за неудавшийся разбор (джоб report_refund).
       # По умолчанию 0 — решение владельца: возврата нет. Строка нужна здесь,
       # потому что compose подставляет из .env только перечисленные переменные.

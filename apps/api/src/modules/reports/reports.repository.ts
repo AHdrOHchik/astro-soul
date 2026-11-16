@@ -11,6 +11,15 @@ export interface ReportChapter {
   readonly order: number;
 }
 
+/**
+ * Что нормализатор сделал с главой (итерация 18): коды из `normalize.ts`.
+ * `null` — глава не потребовала правок (или запись старая).
+ */
+export interface SectionDiagnostics {
+  readonly normalized: readonly string[];
+  readonly warnings: readonly string[];
+}
+
 export interface ReportRow {
   readonly id: string;
   readonly chart_id: string;
@@ -25,6 +34,7 @@ export interface ReportRow {
   readonly created_at: Date;
   readonly updated_at: Date;
   readonly refunded_at: Date | null;
+  readonly normalization: Record<string, SectionDiagnostics> | null;
 }
 
 export interface ChartRowForReport {
@@ -39,7 +49,7 @@ export interface ChartRowForReport {
 }
 
 const COLUMNS = `id, chart_id, user_id, kind::text AS kind, status::text AS status, chapters,
-  llm_cost_rub, error_code, teaser, model, created_at, updated_at, refunded_at`;
+  llm_cost_rub, error_code, teaser, model, created_at, updated_at, refunded_at, normalization`;
 
 @Injectable()
 export class ReportsRepository {
@@ -175,6 +185,7 @@ export class ReportsRepository {
     readonly digests?: readonly string[];
     readonly validation?: unknown;
     readonly sectionStatus?: unknown;
+    readonly normalization?: unknown;
   }): Promise<void> {
     await this.db.query(
       `UPDATE reports
@@ -184,6 +195,7 @@ export class ReportsRepository {
               digests = COALESCE($5::jsonb, digests),
               validation = COALESCE($6::jsonb, validation),
               section_status = COALESCE($7::jsonb, section_status),
+              normalization = COALESCE($8::jsonb, normalization),
               updated_at = now(),
               finished_at = CASE WHEN $2 = 'ready' THEN now() ELSE finished_at END
         WHERE id = $1`,
@@ -195,6 +207,7 @@ export class ReportsRepository {
         input.digests === undefined ? null : JSON.stringify(input.digests),
         input.validation === undefined ? null : JSON.stringify(input.validation),
         input.sectionStatus === undefined ? null : JSON.stringify(input.sectionStatus),
+        input.normalization === undefined ? null : JSON.stringify(input.normalization),
       ],
     );
   }
@@ -229,11 +242,13 @@ export class ReportsRepository {
     id: string,
     sectionStatus: unknown,
     validation: unknown,
+    normalization: unknown = null,
   ): Promise<void> {
     await this.db.query(
-      `UPDATE reports SET section_status = $2::jsonb, validation = $3::jsonb, updated_at = now()
+      `UPDATE reports SET section_status = $2::jsonb, validation = $3::jsonb,
+              normalization = COALESCE($4::jsonb, normalization), updated_at = now()
         WHERE id = $1`,
-      [id, JSON.stringify(sectionStatus), JSON.stringify(validation)],
+      [id, JSON.stringify(sectionStatus), JSON.stringify(validation), normalization === null ? null : JSON.stringify(normalization)],
     );
   }
 

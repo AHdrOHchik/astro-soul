@@ -1851,6 +1851,31 @@ export interface components {
             is_paid?: boolean;
             /** @description Первые 400 символов — для пейволла */
             teaser?: string;
+            /**
+             * @description Главы, которых нет в разборе (контракт 1.5.11). Пусто у полного
+             *     разбора. Непусто, когда часть глав не прошла валидацию даже после
+             *     нормализации: `status` при этом `ready`, а «Итог» заканчивается
+             *     предложением пересобрать разбор (бесплатно) или написать в
+             *     поддержку. Показывать разделы с этими `key` нельзя — их нет.
+             */
+            missing_sections?: ("core" | "emotions" | "talents" | "relations" | "money" | "purpose" | "summary")[];
+            /**
+             * @description Пометки по главам (контракт 1.5.11): нарушения формы/стиля,
+             *     которые не мешают показу, и правки нормализатора. Интерфейс может
+             *     их игнорировать — поле существует, чтобы «текст выглядит неровно»
+             *     отличалось от «модель так и задумала».
+             */
+            warnings?: {
+                /** @enum {string} */
+                section: "core" | "emotions" | "talents" | "relations" | "money" | "purpose" | "summary";
+                /**
+                 * @description `paragraphs`/`repeats`/`format`/`too_long` — нарушение
+                 *     осталось после нормализации; остальные коды — что именно
+                 *     поправил код (`normalize.ts`).
+                 * @enum {string}
+                 */
+                code: "paragraphs" | "too_long" | "repeats" | "format" | "paragraphs_split" | "paragraphs_merged" | "trimmed" | "teaser_terms" | "disclaimer_added";
+            }[];
         };
         Forecast: {
             /** Format: date */
