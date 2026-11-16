@@ -68,6 +68,8 @@ export interface JobRunResult {
   readonly refunds_done: number;
   readonly report_refunds_done: number;
   readonly pdn_users_deleted: number;
+  /** Данные партнёров (синастрия) старше 24 месяцев — удалены тем же джобом. */
+  readonly pdn_compat_partners_deleted: number;
   /** Отмена автопродления в Telegram, повторенная ночным джобом (задача A). */
   readonly telegram_cancel_retried: number;
   readonly telegram_cancel_cancelled: number;
@@ -125,6 +127,7 @@ export class JobsService {
       refunds_done: 0,
       report_refunds_done: 0,
       pdn_users_deleted: 0,
+      pdn_compat_partners_deleted: 0,
       telegram_cancel_retried: 0,
       telegram_cancel_cancelled: 0,
       telegram_cancel_gave_up: 0,
@@ -187,7 +190,9 @@ export class JobsService {
     }
 
     if (pick('pdn_retention_cleanup')) {
-      result.pdn_users_deleted = await this.cleanupPdn();
+      const retention = await this.cleanupPdn();
+      result.pdn_users_deleted = retention.users;
+      result.pdn_compat_partners_deleted = retention.compatPartners;
 
       // Отмена автопродления в Telegram живёт в том же ночном прогоне: это
       // тоже удержание, и отдельный таймер здесь ни к чему. Повтор идёт по
@@ -261,7 +266,7 @@ export class JobsService {
     const reports = await this.db.query<{ id: string; user_id: string; chart_id: string; kind: string }>(
       `SELECT id, user_id, chart_id, kind::text AS kind
          FROM reports
-        WHERE status = 'failed' AND refunded_at IS NULL
+        WHERE status = 'failed' AND refunded_at IS NULL AND kind = 'report'
         ORDER BY updated_at
         LIMIT $1`,
       [BATCH],
@@ -322,7 +327,7 @@ export class JobsService {
    *
    * Повторный запуск идемпотентен: удалённых пользователей он уже не находит.
    */
-  private async cleanupPdn(): Promise<number> {
+  private async cleanupPdn(): Promise<{ users: number; compatPartners: number }> {
     const deleted = await this.db.withTransaction(async (client) => {
       // Ключ блокировки — произвольная константа: важно, что она одна на джоб.
       await client.query(`SELECT pg_advisory_xact_lock(91_004_001)`);
@@ -350,7 +355,22 @@ export class JobsService {
         await client.query(`DELETE FROM users WHERE id = $1`, [row.id]);
       }
 
-      return candidates.rows.length;
+      // Данные партнёров по совместимости (итерация 23): отдельный таймер им
+      // не нужен — срок хранения тот же, что у остальных ПДн. Удаляются только
+      // строки `compat_partners`: купленный текст лежит в `reports` и ПДн
+      // партнёра не содержит (там углы и факты), а `compat_partner_id` станет
+      // NULL по `ON DELETE SET NULL`. Так человек не теряет оплаченное, а
+      // третье лицо, которое согласия не давало, — перестаёт быть в базе.
+      const partners = await client.query(
+        `DELETE FROM compat_partners
+          WHERE created_at < now() - make_interval(months => $1::int)`,
+        [RETENTION_MONTHS],
+      );
+
+      return {
+        users: candidates.rows.length,
+        compatPartners: partners.rowCount ?? 0,
+      };
     });
 
     // Окно возврата истекло — снимаем telegram_id у уже обезличенных платежей.
@@ -366,8 +386,12 @@ export class JobsService {
       [PAYMENT_REFUND_WINDOW_DAYS],
     );
 
-    if (deleted > 0) {
-      this.logger.info('pdn_retention_cleanup', { deleted, months: RETENTION_MONTHS });
+    if (deleted.users > 0 || deleted.compatPartners > 0) {
+      this.logger.info('pdn_retention_cleanup', {
+        deleted: deleted.users,
+        compat_partners: deleted.compatPartners,
+        months: RETENTION_MONTHS,
+      });
     }
 
     if (cleared.length > 0) {

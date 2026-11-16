@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PLANS, type Invoice, type SubscriptionState } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
-import { invalidFields, rateLimited } from '../../common/api-error';
+import { ApiError, invalidFields, rateLimited } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import type { VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
@@ -86,6 +86,31 @@ export class BillingService {
           { reason: 'report_already_owned' },
         );
       }
+    }
+
+    // Двойная покупка совместимости (итерация 23): товар разовый и не
+    // привязан к карте, поэтому проверка идёт по пользователю. Те же 422 и
+    // тот же `reason`, что у `POST /compatibility`: клиенту не нужно
+    // различать, на каком экране его остановили. Поле `chart_id` — потому что
+    // подсвечивать надо выбор пары, а не тариф.
+    if (plan.kind === 'one_off' && plan.grant === 'compat' && (await this.repo.hasUnusedCompatGrant(userId))) {
+      this.logger.info('invoice_refused_already_owned', {
+        user_id: userId,
+        plan: planCode,
+      });
+      // Собираем ответ руками, а не через `invalidFields`: тот перезаписывает
+      // `details`, и `details.reason` (на него смотрит контракт 1.6.0) из него
+      // пропал бы — остался бы только `field_errors`.
+      throw new ApiError('VALIDATION_FAILED', 422, {
+        message: 'Совместимость уже куплена — закажи разбор пары',
+        reason: 'compat_already_owned',
+        details: {
+          reason: 'compat_already_owned',
+          field_errors: [
+            { field: 'chart_id', message: 'Совместимость уже куплена — закажи разбор пары' },
+          ],
+        },
+      });
     }
 
     // Б-3: сначала переиспользуем уже выставленный счёт — иначе лимит

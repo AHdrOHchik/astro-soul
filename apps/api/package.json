@@ -12,7 +12,8 @@
     "dev": "tsx watch src/main.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed-plans.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "compat:dry-run": "tsx scripts/compat-dry-run.ts"
   },
   "dependencies": {
     "@astro-soul/shared": "workspace:*",

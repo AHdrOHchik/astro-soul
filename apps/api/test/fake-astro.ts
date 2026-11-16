@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { ApiError } from '../src/common/api-error';
 import type { AstroChartData, WheelTheme } from '../src/modules/astro/astro.client';
 import { engineChartPayload } from './fixtures/chart-payload';
+import { compatFactsPayload } from './fixtures/compat-facts';
 
 /**
  * Подмена сайдкара в интеграционных тестах: без Python-процесса и сети.
@@ -11,6 +12,7 @@ export interface FakeAstro {
   isConfigured: boolean;
   createChart(input: unknown): Promise<AstroChartData>;
   transits(date: string, data: AstroChartData): Promise<never>;
+  synastry(a: AstroChartData, b: AstroChartData): Promise<unknown>;
   wheelSvg(data: AstroChartData, theme: WheelTheme, size?: number): Promise<string>;
   health(): Promise<'ok' | 'down'>;
 }
@@ -46,6 +48,14 @@ export function makeFakeAstro(options: { readonly down?: boolean } = {}): FakeAs
           },
         },
       });
+    },
+    synastry(): Promise<unknown> {
+      if (options.down === true) {
+        return Promise.reject(new ApiError('INTERNAL', 503, { reason: 'astro_unavailable' }));
+      }
+      // Факты посчитаны настоящим движком (`fixtures/compat-facts.ts`):
+      // подмена не выдумывает углы, иначе валидаторы проверяли бы воздух.
+      return Promise.resolve(compatFactsPayload);
     },
     transits(): Promise<never> {
       return Promise.reject(new Error('транзиты в этих тестах не используются'));

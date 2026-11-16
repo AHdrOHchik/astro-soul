@@ -60,7 +60,10 @@ export class MeService {
   /** Последний разбор пользователя любого незавершённого/готового статуса. */
   private async latestReportId(userId: string): Promise<string | null> {
     const row = await this.db.queryOne<{ id: string }>(
-      `SELECT id FROM reports WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      `SELECT id FROM reports
+        WHERE user_id = $1 AND kind = 'report'
+        ORDER BY created_at DESC
+        LIMIT 1`,
       [userId],
     );
     return row?.id ?? null;
@@ -235,11 +238,31 @@ export class MeService {
       const invalidated = await this.payments.invalidateInvoices(client, userId);
 
       await client.query(`DELETE FROM quotas WHERE user_id = $1`, [userId]);
+
+      // Совместимость (итерация 23): данные партнёра — ПДн третьего лица,
+      // которое согласия не давало. Они удаляются здесь же, в этой
+      // транзакции, а не «каскадом когда-нибудь»: `compat_partners` висит на
+      // `users` каскадом, но проверять удаление ПДн по намерению схемы, а не
+      // по запросу, — это как раз тот случай, когда «каскад был» узнают из
+      // инцидента. Заказы удаляются первыми: `reports.compat_partner_id`
+      // стоит `ON DELETE SET NULL`, и молча осиротевший разбор остался бы
+      // в базе без пары, за которую заплатили.
+      const compatRows = await client.query(
+        `DELETE FROM reports WHERE user_id = $1 AND kind = 'compat'`,
+        [userId],
+      );
+      const partnerRows = await client.query(
+        `DELETE FROM compat_partners WHERE user_id = $1`,
+        [userId],
+      );
+
       await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
 
       this.logger.info('account_deleted', {
         invoices_invalidated: invalidated,
         telegram_cancel_state: cancel.state,
+        compatibilities_deleted: compatRows.rowCount ?? 0,
+        compat_partners_deleted: partnerRows.rowCount ?? 0,
       });
     });
 

@@ -63,9 +63,18 @@ export class ReportsRepository {
     );
   }
 
+  /**
+   * Заказ разбора по ключу идемпотентности.
+   *
+   * `kind = 'report'` появился в итерации 23: ключи у разбора и совместимости
+   * живут в одном пространстве (`user_id`, `idempotency_key`), и без фильтра
+   * повтор с тем же ключом вернул бы чужой заказ — человек вместо разбора
+   * получил бы ссылку на совместимость.
+   */
   async findByIdempotencyKey(userId: string, key: string): Promise<ReportRow | null> {
     return this.db.queryOne<ReportRow>(
-      `SELECT ${COLUMNS} FROM reports WHERE user_id = $1 AND idempotency_key = $2`,
+      `SELECT ${COLUMNS} FROM reports
+        WHERE user_id = $1 AND idempotency_key = $2 AND kind = 'report'`,
       [userId, key],
     );
   }
@@ -93,7 +102,10 @@ export class ReportsRepository {
   }
 
   async byId(id: string): Promise<ReportRow | null> {
-    return this.db.queryOne<ReportRow>(`SELECT ${COLUMNS} FROM reports WHERE id = $1`, [id]);
+    return this.db.queryOne<ReportRow>(
+      `SELECT ${COLUMNS} FROM reports WHERE id = $1 AND kind = 'report'`,
+      [id],
+    );
   }
 
   /** Последний разбор по карте любого статуса: повторный заказ не плодит дубли. */
@@ -262,7 +274,8 @@ export class ReportsRepository {
 
   async owned(id: string, userId: string): Promise<ReportRow | null> {
     return this.db.queryOne<ReportRow>(
-      `SELECT ${COLUMNS} FROM reports WHERE id = $1 AND user_id = $2`,
+      `SELECT ${COLUMNS} FROM reports
+        WHERE id = $1 AND user_id = $2 AND kind = 'report'`,
       [id, userId],
     );
   }
@@ -276,10 +289,20 @@ export class ReportsRepository {
    * выражать рекурсией в запросе. `validation`, записанный до итерации 17,
    * тоже считается — иначе брейкер не увидел бы прогон 16.11.2026.
    */
+  /**
+   * Серия провалов валидации **разборов**.
+   *
+   * `kind = 'report'` появился в итерации 23: до совместимости в `reports`
+   * других видов не было, и запрос без фильтра был корректен. Теперь без него
+   * провал четырёх разделов совместимости закрывал бы продажу разборов —
+   * то есть чужой брейкер. У совместимости свой такой же запрос в
+   * `compat.repository.ts`.
+   */
   async validationStreak(limit = 20): Promise<{ streak: number; lastFailedAt: Date | null }> {
     const rows = await this.db.query<ReportHistoryRow>(
       `SELECT error_code, updated_at
          FROM reports
+        WHERE kind = 'report'
         ORDER BY created_at DESC
         LIMIT $1`,
       [limit],

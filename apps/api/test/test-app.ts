@@ -17,7 +17,10 @@ export interface TestContext {
 
 export interface TestContextOptions {
   /** Подмена сайдкара движка: в тестах не поднимаем Python-процесс. */
-  readonly astro?: Pick<AstroClient, 'createChart' | 'transits' | 'wheelSvg' | 'health' | 'isConfigured'>;
+  readonly astro?: Pick<
+    AstroClient,
+    'createChart' | 'transits' | 'synastry' | 'wheelSvg' | 'health' | 'isConfigured'
+  >;
   /** Подмена Bot API: никаких сетевых вызовов в тестах. */
   readonly telegram?: Pick<
     TelegramClient,
@@ -74,6 +77,9 @@ export async function createTestContext(options: TestContextOptions = {}): Promi
 const TABLES = [
   'events',
   'quotas',
+  // Партнёр совместимости: у него нет FK на `charts`, но есть на `users`,
+  // поэтому TRUNCATE users не всегда доходит до него в том же порядке.
+  'compat_partners',
   'entitlements',
   'payments',
   'invoices',

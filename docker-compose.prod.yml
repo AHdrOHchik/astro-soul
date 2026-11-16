@@ -72,6 +72,8 @@ services:
       # Circuit breaker разборов в проде включён всегда: выключение — только
       # для ручных прогонов на стенде (check.sh --prod блокирует 0).
       REPORT_BREAKER_ENABLED: '1'
+      # То же для совместимости: свой брейкер включён в проде всегда.
+      COMPAT_BREAKER_ENABLED: '1'
     logging: *prod-logging
     deploy:
       resources:
