@@ -797,6 +797,210 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/compatibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * История совместимостей и остаток квоты
+         * @description Список без текстов: `titles_only` содержит только заголовки готовых
+         *     разделов, чтобы витрина не весила мегабайт. Текст — в
+         *     `GET /compatibility/{id}`.
+         *
+         *     `quota.kind`: `purchase` — есть неизрасходованная разовая покупка;
+         *     `subscription` — подписка, окно открыто или закрыто (`left` = 1 или 0);
+         *     `none` — права нет. `resets_at` заполнен только у подписки с закрытым
+         *     окном. Квота считается на чтении — отдельного сброса по расписанию нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CompatibilityList"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Заказать разбор совместимости (асинхронно)
+         * @description Собирается четыре раздела: «Что совпадает», «Где трёт», «Как вы
+         *     разговариваете», «Что сделать на этой неделе». Готовность — через
+         *     `GET /compatibility/{id}`.
+         *
+         *     Доступ проверяется здесь: разовая покупка `compat_249` даёт одну
+         *     совместимость, подписка — одну в 30 дней (скользящее окно от последней
+         *     готовой). Квота списывается **только** при `ready`: провал возвращает
+         *     право сам, без заявки и без джоба.
+         *
+         *     Идемпотентность: `Idempotency-Key` обязателен (до 64 символов,
+         *     буквы/цифры/`-_.:`). Повтор с тем же ключом отдаёт тот же
+         *     `compatibility_id` и не списывает второй раз.
+         *
+         *     Пока совместимость собирается, повторный заказ по тому же
+         *     пользователю — `422 compat_already_owned`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CompatibilityRequest"];
+                };
+            };
+            responses: {
+                /** @description В очереди, `status: pending` */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["CompatibilityAccepted"];
+                    };
+                };
+                /**
+                 * @description Нет права на совместимость: `PAYMENT_REQUIRED`,
+                 *     `details.reason = compat_not_paid`. Ни разовой покупки, ни активной
+                 *     подписки.
+                 */
+                402: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Карты нет или она чужая (NOT_FOUND) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Одно из трёх, различимых по `details.reason`:
+                 *       • `compat_request_invalid` — нет `Idempotency-Key`, лишнее поле в
+                 *         теле (в том числе любое свободное поле о партнёре), дата в
+                 *         будущем, место без координат или пояса;
+                 *         `details.field_errors[{field, message}]`;
+                 *       • `compat_quota_exhausted` — подписка уже дала совместимость в
+                 *         текущем окне; `details.resets_at` — когда окно откроется;
+                 *       • `compat_already_owned` — оплаченная совместимость ещё не
+                 *         израсходована или предыдущая ещё собирается;
+                 *         `details.field_errors[0].field = chart_id`.
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Брейкер совместимости закрыт: `UPSTREAM_LLM`,
+                 *     `details.reason = compat_breaker_open`, задержка в
+                 *     `details.retry_after_ms`. Отдельный от `report_breaker_open`:
+                 *     провалы разборов совместимость не закрывают и наоборот.
+                 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/compatibility/{compatibility_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Разбор совместимости
+         * @description `status: pending` покрывает внутренние стадии `queued | planning |
+         *     writing`. `sections` пустой, пока `status` не `ready`.
+         *
+         *     `warnings` — только закрытые коды контракта (`length_off`, `trimmed`,
+         *     `disclaimer_added`). Внутренние пометки (`service_terms`,
+         *     `repeated_opener`, `partner_pronoun`) остаются в БД и в логах: это
+         *     диагностика для нас, а не сообщение человеку.
+         *
+         *     `error_code` есть только при `status: failed` — это код причины
+         *     (`paragraphs`, `too_short`, `format`, `provider`, `cost_cap`,
+         *     `monthly_cap`, `engine`). Право на совместимость при `failed` не
+         *     списывается.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    compatibility_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Compatibility"];
+                    };
+                };
+                /** @description NOT_FOUND — совместимости нет или она чужая */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/engagement/forecast": {
         parameters: {
             query?: never;
@@ -1073,11 +1277,15 @@ export interface paths {
                     };
                 };
                 /**
-                 * @description Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`
-                 *     или разбор для этой карты уже куплен — `VALIDATION_FAILED` +
+                 * @description Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`,
+                 *     разбор для этой карты уже куплен или неизрасходованная
+                 *     совместимость уже есть — `VALIDATION_FAILED` +
                  *     `details.field_errors[{field, message}]`; `details.reason` уточняет
                  *     причину (`chart_not_found`, `chart_required_for_report`,
-                 *     `report_already_owned`, `invoice_request_invalid`).
+                 *     `report_already_owned`, `compat_already_owned`,
+                 *     `invoice_request_invalid`). `compat_already_owned` (1.6.0)
+                 *     приходит с `field_errors[0].field = chart_id`: подсвечивать надо
+                 *     выбор пары, а не тариф.
                  */
                 422: {
                     headers: {
@@ -1844,6 +2052,130 @@ export interface components {
             telegram_cancel_retried?: number;
             telegram_cancel_cancelled?: number;
             telegram_cancel_gave_up?: number;
+        };
+        /**
+         * @description Вход `POST /compatibility`. `additionalProperties: false` — не
+         *     придирка, а правило продукта: свободное поле о партнёре (имя, заметка,
+         *     метка) — это ПДн третьего лица, которое уехало бы в БД и в промпт.
+         *     Клиент, приславший лишнее поле, получает `422`, а не молчаливое
+         *     принятие.
+         */
+        CompatibilityRequest: {
+            /**
+             * Format: uuid
+             * @description Своя карта. Чужая — `404`.
+             */
+            chart_id: string;
+            /**
+             * @description Тип отношений кодом, а не текстом.
+             * @enum {string}
+             */
+            relationship: "romantic" | "friend" | "family" | "colleague";
+            partner: components["schemas"]["CompatibilityPartner"];
+        };
+        /**
+         * @description Минимум, при котором движок считает пару: дата, необязательное время и
+         *     место. Имени нет — и не появится: модели оно не нужно, а человеку
+         *     показывать партнёра по имени мы не собираемся.
+         */
+        CompatibilityPartner: {
+            /**
+             * Format: date
+             * @description Не раньше 1900-01-01 и не позже сегодняшнего дня.
+             */
+            birth_date: string;
+            /**
+             * @description `null` или отсутствие — «время неизвестно». Тогда дома и оверлеи не
+             *     считаются вообще: блок `house_overlays` в фактах отсутствует, а не
+             *     заполняется догадкой.
+             */
+            birth_time?: string | null;
+            place: components["schemas"]["CompatibilityPlace"];
+        };
+        /** @description Место рождения партнёра. Название города берётся сервером из справочника по координатам. */
+        CompatibilityPlace: {
+            /** @description Идентификатор города справочника, если клиент его выбрал. */
+            city_id?: string | null;
+            lat: number;
+            lon: number;
+            /**
+             * @description IANA-пояс. Не угадывается: без пояса заказ не создаётся (`422`),
+             *     потому что «примерно тот же пояс» даёт сдвиг домов на часы.
+             */
+            tz: string;
+        };
+        CompatibilityAccepted: {
+            /** Format: uuid */
+            compatibility_id: string;
+            /** @enum {string} */
+            status: "pending";
+        };
+        CompatibilitySection: {
+            /** @enum {string} */
+            key: "clicks" | "friction" | "scenario" | "steps";
+            /**
+             * @description «Что совпадает», «Где трёт», «Как вы разговариваете», «Что сделать
+             *     на этой неделе». Приходит с сервера: текст заголовка может
+             *     меняться без релиза клиента.
+             */
+            title: string;
+            order: number;
+            /**
+             * @description Markdown без H1. Абзацы 2–4, в каждом 2–4 предложения; в `steps` —
+             *     ровно три пункта маркером «—» и подпись про саморефлексию.
+             *     Астрологических терминов в первых 200 знаках нет.
+             */
+            text: string;
+        };
+        Compatibility: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "pending" | "ready" | "failed";
+            /** @description Пусто, пока `status` не `ready`. При `failed` — тоже пусто. */
+            sections: components["schemas"]["CompatibilitySection"][];
+            /** @description Пометки формы. Только закрытый перечень кодов. */
+            warnings: {
+                /** @enum {string} */
+                section: "clicks" | "friction" | "scenario" | "steps";
+                /** @enum {string} */
+                code: "length_off" | "trimmed" | "disclaimer_added";
+            }[];
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * @description Заполняется только при `status: failed`.
+             * @enum {string}
+             */
+            error_code?: "paragraphs" | "too_short" | "too_long" | "format" | "forbidden_terms" | "repeats" | "teaser_terms" | "service_terms" | "repeated_opener" | "provider" | "cost_cap" | "monthly_cap" | "engine" | "chart_missing";
+        };
+        CompatibilityListItem: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "pending" | "ready" | "failed";
+            /** @enum {string|null} */
+            relationship: "romantic" | "friend" | "family" | "colleague" | null;
+            /** Format: date-time */
+            created_at: string;
+            /** @description Заголовки готовых разделов, без текста. Пусто, пока `status` не `ready`. */
+            titles_only: string[];
+        };
+        CompatibilityQuota: {
+            /** @enum {string} */
+            kind: "purchase" | "subscription" | "none";
+            /** @description Сколько совместимостей можно заказать прямо сейчас. */
+            left: number;
+            /**
+             * Format: date-time
+             * @description Когда окно подписки откроется снова. `null` — ждать нечего:
+             *     разовая покупка не сгорает, а у `none` окна нет вообще.
+             */
+            resets_at: string | null;
+        };
+        CompatibilityList: {
+            items: components["schemas"]["CompatibilityListItem"][];
+            quota: components["schemas"]["CompatibilityQuota"];
         };
         Report: {
             /** Format: uuid */

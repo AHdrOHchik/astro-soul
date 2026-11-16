@@ -71,6 +71,21 @@ export class AstroClient {
     return this.post<AstroTransitReport>('/transits', { date, data });
   }
 
+  /**
+   * `POST /synastry` — факты пары (`compatibility_facts` v1.0).
+   *
+   * Тип ответа намеренно `unknown`: разбирает его `parseCompatibilityFacts`
+   * в модуле совместимости. Иначе астро-модуль пришлось бы импортировать в
+   * compat, а compat-факты — в астро-клиент, и один цикл импортов тянул бы
+   * за собой второй.
+   */
+  async synastry(a: AstroChartData, b: AstroChartData): Promise<unknown> {
+    return this.post<unknown>('/synastry', {
+      a: { chart: a.chart, internal: a.internal, omitted_planets: a.omitted_planets },
+      b: { chart: b.chart, internal: b.internal, omitted_planets: b.omitted_planets },
+    });
+  }
+
   async wheelSvg(data: AstroChartData, theme: WheelTheme, size = 560): Promise<string> {
     const response = await this.post<{ svg: string }>('/wheel', { data, theme, size });
     return response.svg;

@@ -1,0 +1,733 @@
+import { Inject, Injectable } from '@nestjs/common';
+import { ApiError, notFound } from '../../common/api-error';
+import { JsonLogger } from '../../common/logger';
+import { findNearestCity, type GeoPlace } from '@astro-soul/shared';
+import { APP_ENV } from '../../config/env.module';
+import type { AppEnv } from '../../config/env';
+import { DbService } from '../../db/db.service';
+import type { VerifiedInitData } from '../auth/init-data';
+import { AstroClient, type AstroChartData } from '../astro/astro.client';
+import { LLM_PROVIDER } from '../llm/llm.module';
+import { LlmError, type LlmMessage, type LlmProvider, type LlmResponse } from '../llm/llm.client';
+import { UsersRepository } from '../users/users.repository';
+import { breakerState, BREAKER_THRESHOLD, type BreakerState } from '../reports/breaker';
+import type { FailureCode } from '../reports/failure-codes';
+import { MAX_ATTEMPTS, RAW_EXCERPT_LENGTH } from '../reports/reports.service';
+import {
+  COMPAT_FACTS_VERSION,
+  factsBlock,
+  factorLine,
+  factorsOf,
+  parseCompatibilityFacts,
+  type CompatibilityFacts,
+} from './compat-facts';
+import { distributeSections, MAX_SECTIONS_PER_FACTOR } from './compat-focus-map';
+import { COMPAT_PROMPT_VERSION, COMPAT_SYSTEM_PROMPT, compatSectionPrompt } from './compat-prompts';
+import { parseCompatRequest, compatRefused, type Relationship } from './compat.dto';
+import { CompatRepository, type CompatReportRow, type CompatSection } from './compat.repository';
+import { COMPAT_SECTIONS, COMPAT_SECTION_TITLES, COMPAT_STRUCTURE_VERSION, COMPAT_CONTRACT_WARNINGS, normalizeCompatSection, validateCompatSection, type CompatSectionKey } from './compat-validators';
+import { quotaOf, type CompatQuota } from './compat-quota';
+import { parseIdempotencyKey } from '../reports/reports.dto';
+
+/**
+ * Потолок стоимости одной совместимости по умолчанию, рубли.
+ *
+ * Значение живёт в `LLM_COMPAT_CAP_RUB` (`env.ts`), константа — только его
+ * документация и дефолт окружения. В расчёте используется переменная, чтобы
+ * стенд мог поставить меньший потолок.
+ */
+export const COMPAT_CAP_RUB = 25;
+
+/** Статус в контракте: `queued|planning|writing` — это `pending`. */
+type CompatStatus = 'pending' | 'ready' | 'failed';
+
+export interface CompatSectionView {
+  readonly key: string;
+  readonly title: string;
+  readonly order: number;
+  readonly text: string;
+}
+
+export interface CompatWarningView {
+  readonly section: string;
+  readonly code: string;
+}
+
+/** Тело ответа `GET /compatibility/{id}` (контракт 1.6.0). */
+export interface CompatibilityView {
+  readonly id: string;
+  readonly status: CompatStatus;
+  readonly sections: readonly CompatSectionView[];
+  readonly warnings: readonly CompatWarningView[];
+  readonly created_at: string;
+  readonly error_code?: string;
+}
+
+/** Элемент `GET /compatibility` — без текста: список не должен весить мегабайт. */
+export interface CompatibilityListItem {
+  readonly id: string;
+  readonly status: CompatStatus;
+  readonly relationship: Relationship | null;
+  readonly created_at: string;
+  readonly titles_only: readonly string[];
+}
+
+export interface CompatibilityListView {
+  readonly items: readonly CompatibilityListItem[];
+  readonly quota: CompatQuota;
+}
+
+/** Ответ `POST /compatibility` — 202 и ничего лишнего. */
+export interface CompatibilityAccepted {
+  readonly compatibility_id: string;
+  readonly status: 'pending';
+}
+
+/**
+ * Куда попадает `error_code`. Внешние причины (`timeout`, `rate_limited`,
+ * `auth`, `tls`, `config`) приходят из `LlmError` и пишутся как есть: по ним
+ * поддержка отличает «модель не ответила» от «текст не прошёл валидатор».
+ */
+type CompatFailureCode =
+  | FailureCode
+  | 'provider'
+  | 'cost_cap'
+  | 'monthly_cap'
+  | 'chart_missing'
+  | 'engine'
+  | 'timeout'
+  | 'rate_limited'
+  | 'auth'
+  | 'tls'
+  | 'config';
+
+class CompatFailure extends Error {
+  constructor(readonly code: CompatFailureCode) {
+    super(code);
+    this.name = 'CompatFailure';
+  }
+}
+
+interface Budget {
+  readonly compatibilityId: string;
+  costRub: number;
+  attempts: number;
+}
+
+interface ValidationEntry {
+  readonly key: string;
+  readonly attempt: number;
+  readonly code: string;
+  readonly severity: 'error' | 'warning';
+  readonly failures: readonly string[];
+  readonly chars: number;
+  readonly raw_excerpt?: string;
+}
+
+type SectionWrite =
+  | {
+      readonly ok: true;
+      readonly body: string;
+      readonly regenerated: boolean;
+      readonly normalized: readonly string[];
+      readonly warnings: readonly { readonly code: string }[];
+    }
+  | { readonly ok: false; readonly code: FailureCode };
+
+/**
+ * Конвейер совместимости.
+ *
+ * Тот же, что у разбора (очередь, блокировка, две попытки на раздел, свой
+ * брейкер), но с тремя отличиями, каждое из которых — требование владельца:
+ *
+ *   1. Данные партнёра живут только в `compat_partners` и не покидают API:
+ *      в модель уходят `compatibility_facts`, где нет ни даты, ни места.
+ *   2. Квота списывается **только** при `ready`. Провал не списывает ничего,
+ *      поэтому «возврат кредита» — это отсутствие операции, а не второй джоб.
+ *   3. Факты распределяются детерминированно, и один факт звучит максимум в
+ *      двух разделах (`MAX_SECTIONS_PER_FACTOR`).
+ */
+@Injectable()
+export class CompatService {
+  constructor(
+    @Inject(CompatRepository) private readonly repo: CompatRepository,
+    @Inject(DbService) private readonly db: DbService,
+    @Inject(UsersRepository) private readonly users: UsersRepository,
+    @Inject(AstroClient) private readonly astro: AstroClient,
+    @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
+    @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(JsonLogger) private readonly logger: JsonLogger,
+  ) {}
+
+  async order(
+    auth: VerifiedInitData,
+    idempotencyHeader: string | undefined,
+    body: unknown,
+  ): Promise<CompatibilityAccepted> {
+    const idempotencyKey = parseIdempotencyKey(idempotencyHeader);
+    const input = parseCompatRequest(body);
+    const userId = this.users.userIdFor(auth.telegramUserId);
+
+    const chart = await this.repo.chartForUser(input.chart_id, userId);
+    if (chart === null) {
+      throw notFound({ message: 'Такой карты нет. Построй карту заново', reason: 'chart_not_found' });
+    }
+
+    // Повтор с тем же ключом отдаёт тот же заказ: идемпотентность важнее
+    // квоты — человек уже заплатил, второй раз платить ему не за что.
+    const byKey = await this.repo.findByIdempotencyKey(userId, idempotencyKey);
+    if (byKey !== null) {
+      return { compatibility_id: byKey.id, status: 'pending' };
+    }
+
+    const breaker = await this.breaker();
+    if (this.env.COMPAT_BREAKER_ENABLED === '1' && breaker.open) {
+      this.logger.warn('compat_breaker_open', {
+        streak: breaker.streak,
+        threshold: BREAKER_THRESHOLD,
+        retry_after_ms: breaker.retry_after_ms,
+      });
+      throw new ApiError('UPSTREAM_LLM', 503, {
+        message: 'Совместимости временно не собираются — мы уже разбираемся. Попробуй позже',
+        reason: 'compat_breaker_open',
+        details: { reason: 'compat_breaker_open', retry_after_ms: breaker.retry_after_ms },
+      });
+    }
+
+    const partner = this.partnerInput(input);
+    const subscription = await this.repo.subscription(userId);
+    const lastReadyAt = await this.repo.lastReadyAt(userId);
+
+    // Проверка квоты и создание заказа — в одной транзакции. Иначе два
+    // одновременных нажатия проходят проверку оба, и человек получает две
+    // совместимости за одну покупку.
+    const created = await this.db.withTransaction(async (client) => {
+      const inflight = await this.repo.inFlight(client, userId);
+      const credit = await this.repo.unusedPurchase(client, userId);
+
+      if (inflight > 0) {
+        throw compatRefused({
+          reason: 'compat_already_owned',
+          message: 'Совместимость по этой карте уже собирается — дождись её',
+          field: 'chart_id',
+        });
+      }
+
+      if (credit === null) {
+        const quota = quotaOf({
+          purchaseCredit: false,
+          subscription:
+            subscription === null
+              ? null
+              : { startedAt: subscription.created_at, expiresAt: subscription.expires_at },
+          lastReadyAt,
+        });
+
+        if (quota.kind === 'none') {
+          throw new ApiError('PAYMENT_REQUIRED', 402, {
+            message: 'Совместимость — отдельная покупка или подписка',
+            reason: 'compat_not_paid',
+            details: {
+              reason: 'compat_not_paid',
+              field_errors: [{ field: 'chart_id', message: 'Нет права на совместимость' }],
+            },
+          });
+        }
+
+        if (quota.left === 0) {
+          throw compatRefused({
+            reason: 'compat_quota_exhausted',
+            message: 'Совместимость по подписке уже собрана — следующая после сброса окна',
+            field: 'chart_id',
+            resetsAt: quota.resets_at,
+          });
+        }
+      }
+
+      const partnerId = await this.repo.createPartner(client, userId, partner);
+      return this.repo.createReport(client, {
+        chartId: chart.id,
+        userId,
+        idempotencyKey,
+        model: this.llm.name,
+        promptVersion: COMPAT_PROMPT_VERSION,
+        structureVersion: COMPAT_STRUCTURE_VERSION,
+        factsVersion: COMPAT_FACTS_VERSION,
+        partnerId,
+        creditEntitlementId: credit?.id ?? null,
+      });
+    });
+
+    this.logger.info('compat_queued', {
+      compatibility_id: created.id,
+      relationship: input.relationship,
+      model: this.llm.name,
+    });
+
+    void this.run(created.id).catch((error: unknown) => {
+      this.logger.error('compat_runner_crashed', {
+        compatibility_id: created.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return { compatibility_id: created.id, status: 'pending' };
+  }
+
+  async get(auth: VerifiedInitData, compatibilityId: string): Promise<CompatibilityView> {
+    const userId = this.users.userIdFor(auth.telegramUserId);
+    const row = await this.repo.owned(compatibilityId, userId);
+
+    if (row === null) {
+      throw notFound({ message: 'Такой совместимости нет. Обнови приложение', reason: 'compatibility_not_found' });
+    }
+
+    return this.view(row);
+  }
+
+  async list(auth: VerifiedInitData): Promise<CompatibilityListView> {
+    const userId = this.users.userIdFor(auth.telegramUserId);
+    const rows = await this.repo.listForUser(userId);
+
+    const [credit, subscription, lastReadyAt] = await Promise.all([
+      this.repo.hasActivePurchase(userId),
+      this.repo.subscription(userId),
+      this.repo.lastReadyAt(userId),
+    ]);
+
+    const quota = quotaOf({
+      purchaseCredit: credit,
+      subscription:
+        subscription === null
+          ? null
+          : { startedAt: subscription.created_at, expiresAt: subscription.expires_at },
+      lastReadyAt,
+    });
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        status: this.statusOf(row),
+        relationship: row.relationship,
+        created_at: row.created_at.toISOString(),
+        titles_only: this.statusOf(row) === 'ready' ? this.titlesOf(row) : [],
+      })),
+      quota,
+    };
+  }
+
+  /** Состояние брейкера совместимости — только по `kind = 'compat'`. */
+  async breaker(): Promise<BreakerState> {
+    const { streak, lastFailedAt } = await this.repo.validationStreak();
+    return breakerState(streak, lastFailedAt);
+  }
+
+  // --- конвейер ------------------------------------------------------------
+
+  private async run(compatibilityId: string): Promise<void> {
+    const budget: Budget = { compatibilityId, costRub: 0, attempts: 0 };
+    const sectionStatus: Partial<Record<CompatSectionKey, 'ok' | 'regenerated' | 'failed'>> = {};
+    const validation: ValidationEntry[] = [];
+    const normalization: Record<string, { normalized: string[]; warnings: string[] }> = {};
+
+    try {
+      const report = await this.repo.byId(compatibilityId);
+      if (report === null) {
+        return;
+      }
+
+      const owner = await this.repo.chartForUser(report.chart_id, report.user_id);
+      if (owner === null) {
+        // Карту удалили, пока заказ стоял в очереди: это не провал текста,
+        // и в брейкер такая строка попадать не должна.
+        throw new CompatFailure('chart_missing');
+      }
+
+      const partner = report.compat_partner_id === null
+        ? null
+        : await this.repo.partner(report.compat_partner_id);
+      if (partner === null) {
+        throw new CompatFailure('chart_missing');
+      }
+
+      await this.repo.start(compatibilityId);
+
+      // Партнёрская карта считается здесь и не сохраняется: она нужна один
+      // раз, а её вход — ПДн, которым незачем лежать в `charts`.
+      const partnerChart = await this.partnerChart(partner);
+      const facts = await this.facts(owner.data as AstroChartData, partnerChart);
+      await this.repo.saveFacts(compatibilityId, facts);
+
+      const factors = factorsOf(facts);
+      const distribution = distributeSections(factors);
+
+      this.logger.info('compat_focus_distribution', {
+        compatibility_id: compatibilityId,
+        factors: factors.length,
+        per_section: distribution.counts,
+        max_sections_per_factor: MAX_SECTIONS_PER_FACTOR,
+        starved: distribution.starved,
+        unmapped: distribution.unmapped,
+      });
+
+      const sections: CompatSection[] = [];
+      const written: string[] = [];
+
+      for (const key of COMPAT_SECTIONS) {
+        const focus = distribution.bySection[key];
+        const focusBlock =
+          focus.length === 0
+            ? 'Фактов для этого раздела нет: пиши на общих фактах пары, но не выдумывай новых.'
+            : focus.map((factor, index) => factorLine(factor, index)).join('\n');
+
+        const section = await this.section(key, {
+          compatibilityId,
+          facts: factsBlock(facts),
+          focusBlock,
+          previous: written,
+          budget,
+          validation,
+          normalization,
+        });
+
+        if (!section.ok) {
+          sectionStatus[key] = 'failed';
+          throw new CompatFailure(section.code);
+        }
+
+        sectionStatus[key] = section.regenerated ? 'regenerated' : 'ok';
+        sections.push({
+          key,
+          title: COMPAT_SECTION_TITLES[key],
+          text: section.body,
+          order: sections.length,
+        });
+        written.push(section.body);
+      }
+
+      await this.db.withTransaction(async (client) => {
+        await this.repo.saveProgress({
+          id: compatibilityId,
+          status: 'ready',
+          sections,
+          validation,
+          sectionStatus,
+          normalization,
+        });
+        // Списание — только сейчас, вместе со статусом `ready`. Провал выше
+        // до этой строки не доходит, и кредит остаётся неизрасходованным.
+        if (report.credit_entitlement_id !== null) {
+          await this.repo.consumePurchase(client, report.credit_entitlement_id, compatibilityId);
+        }
+      });
+
+      this.logger.info('compat_ready', {
+        compatibility_id: compatibilityId,
+        attempts: budget.attempts,
+        cost_rub: budget.costRub,
+        sections: sections.length,
+        chars: sections.map((section) => section.text.length),
+        prompt_version: COMPAT_PROMPT_VERSION,
+      });
+    } catch (error) {
+      const code: CompatFailureCode =
+        error instanceof CompatFailure
+          ? error.code
+          : error instanceof LlmError
+            ? error.code
+            : 'provider';
+
+      this.logger.error('compat_failed', {
+        compatibility_id: compatibilityId,
+        code,
+        attempts: budget.attempts,
+        cost_rub: budget.costRub,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      await this.repo.fail(compatibilityId, code, {
+        validation,
+        sectionStatus,
+        normalization,
+      });
+    }
+  }
+
+  private async section(
+    key: CompatSectionKey,
+    context: {
+      readonly compatibilityId: string;
+      readonly facts: string;
+      readonly focusBlock: string;
+      readonly previous: readonly string[];
+      readonly budget: Budget;
+      readonly validation: ValidationEntry[];
+      readonly normalization: Record<string, { normalized: string[]; warnings: string[] }>;
+    },
+  ): Promise<SectionWrite> {
+    let lastCode: FailureCode = 'format';
+    let lastChars = 0;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const prompt = compatSectionPrompt({
+        key,
+        facts: context.facts,
+        focusBlock: context.focusBlock,
+        previousSummary: this.summaryOf(context.previous),
+      });
+
+      // Вторая попытка получает тот же промпт: перегенерация после отказа
+      // раньше давала другой текст, и сравнить две попытки было нельзя.
+      const messages: LlmMessage[] = [
+        { role: 'system', content: COMPAT_SYSTEM_PROMPT },
+        { role: 'user', content: prompt },
+      ];
+
+      const response = await this.call(context.budget, messages);
+      const normalized = normalizeCompatSection({ key, bodyMd: response.content });
+      const checked = validateCompatSection({
+        key,
+        bodyMd: normalized.body,
+        previous: context.previous,
+      });
+
+      lastChars = normalized.body.trim().length;
+
+      if (checked.failures.length === 0) {
+        const warnings = checked.warnings;
+        if (normalized.applied.length > 0 || warnings.length > 0) {
+          context.normalization[key] = {
+            normalized: [...normalized.applied],
+            warnings: warnings.map((warning) => warning.code),
+          };
+        }
+
+        this.logger.info('compat_section_ok', {
+          compatibility_id: context.compatibilityId,
+          section: key,
+          attempt,
+          chars: lastChars,
+          normalized: normalized.applied,
+          warnings: warnings.map((warning) => warning.code),
+        });
+
+        return {
+          ok: true,
+          body: normalized.body,
+          regenerated: attempt > 1,
+          normalized: normalized.applied,
+          warnings,
+        };
+      }
+
+      lastCode = this.codeOf(checked.failures[0]?.rule ?? 'format');
+      context.validation.push({
+        key,
+        attempt,
+        code: lastCode,
+        severity: 'error',
+        failures: checked.failures.map((failure) => `${failure.rule}: ${failure.detail}`),
+        chars: lastChars,
+        // Сырой ответ — 2 000 знаков: в промпте только факты пары, ПДн нет.
+        raw_excerpt: response.content.trim().slice(0, RAW_EXCERPT_LENGTH),
+      });
+
+      this.logger.warn('compat_section_rejected', {
+        compatibility_id: context.compatibilityId,
+        section: key,
+        attempt,
+        code: lastCode,
+        chars: lastChars,
+        failures: checked.failures.map((failure) => failure.rule),
+      });
+    }
+
+    this.logger.warn('compat_section_dropped', {
+      compatibility_id: context.compatibilityId,
+      section: key,
+      code: lastCode,
+      chars: lastChars,
+    });
+
+    return { ok: false, code: lastCode };
+  }
+
+  /** Правило валидатора → код `failure-codes.ts` (контракт не расширяем). */
+  private codeOf(rule: string): FailureCode {
+    switch (rule) {
+      case 'paragraphs':
+      case 'sentences':
+      case 'paragraphs_split':
+        return 'paragraphs';
+      case 'too_short':
+      case 'length':
+        return 'too_short';
+      case 'format_h1':
+      case 'format_table':
+      case 'format_link':
+      case 'format_html':
+      case 'format_list':
+      case 'steps_count':
+      case 'steps_only_list':
+      case 'ui_reference':
+        return 'format';
+      case 'repeats':
+        return 'repeats';
+      default:
+        return 'format';
+    }
+  }
+
+  /** Короткая сводка написанного — чтобы модель не начинала раздел так же. */
+  private summaryOf(previous: readonly string[]): string {
+    if (previous.length === 0) {
+      return 'Раздел первый.';
+    }
+    return previous
+      .map((body, index) => {
+        const first = body.split(/(?<=[.!?])\s+/u)[0] ?? '';
+        return `${index + 1}. ${first.slice(0, 180)}`;
+      })
+      .join('\n');
+  }
+
+  private async facts(owner: AstroChartData, partner: AstroChartData): Promise<CompatibilityFacts> {
+    if (!this.astro.isConfigured) {
+      throw new CompatFailure('engine');
+    }
+    const raw = await this.astro.synastry(owner, partner);
+    try {
+      return parseCompatibilityFacts(raw);
+    } catch {
+      throw new CompatFailure('engine');
+    }
+  }
+
+  /** Карта партнёра: вход — ПДн, выход — только числа движка. */
+  private async partnerChart(partner: {
+    readonly birthDate: string;
+    readonly birthTime: string | null;
+    readonly lat: number;
+    readonly lon: number;
+    readonly tz: string;
+  }): Promise<AstroChartData> {
+    const place = this.placeOf(partner);
+    return this.astro.createChart({
+      birth_date: partner.birthDate,
+      birth_time: partner.birthTime,
+      time_precision: partner.birthTime === null ? 'unknown' : 'exact',
+      birth_place: place,
+    });
+  }
+
+  /**
+   * Место партнёра для движка. Название берём из справочника по координатам:
+   * человек его не вводил, а движку оно нужно только для подписи.
+   */
+  private placeOf(partner: { readonly lat: number; readonly lon: number; readonly tz: string }): GeoPlace {
+    const nearest = findNearestCity(partner.lat, partner.lon, 150);
+    return {
+      name: nearest?.record.name ?? 'Неизвестное место',
+      country: nearest?.record.country ?? 'ZZ',
+      region: nearest?.record.region ?? null,
+      lat: partner.lat,
+      lon: partner.lon,
+      tz: partner.tz,
+    };
+  }
+
+  private partnerInput(input: ReturnType<typeof parseCompatRequest>) {
+    return {
+      relationship: input.relationship,
+      birthDate: input.partner.birth_date,
+      birthTime: input.partner.birth_time ?? null,
+      cityId: input.partner.place.city_id ?? null,
+      lat: input.partner.place.lat,
+      lon: input.partner.place.lon,
+      tz: input.partner.place.tz,
+    };
+  }
+
+  private statusOf(row: CompatReportRow): CompatStatus {
+    if (row.status === 'ready') {
+      return 'ready';
+    }
+    if (row.status === 'failed' || row.status === 'refunded') {
+      return 'failed';
+    }
+    return 'pending';
+  }
+
+  private titlesOf(row: CompatReportRow): string[] {
+    return (row.sections ?? []).map((section) => section.title);
+  }
+
+  private view(row: CompatReportRow): CompatibilityView {
+    const status = this.statusOf(row);
+    const sections: CompatSectionView[] =
+      status === 'ready'
+        ? (row.sections ?? []).map((section, index) => ({
+            key: section.key,
+            title: section.title,
+            order: section.order ?? index,
+            text: section.text,
+          }))
+        : [];
+
+    // В контракт уходят только закрытые коды: служебный словарь и род
+    // партнёра остаются в БД и в логах.
+    const warnings: CompatWarningView[] =
+      status === 'ready'
+        ? Object.entries(
+            (row.normalization ?? {}) as Record<string, { warnings?: readonly string[] }>,
+          ).flatMap(([section, diagnostics]) =>
+            (diagnostics.warnings ?? [])
+              .filter((code) => (COMPAT_CONTRACT_WARNINGS as readonly string[]).includes(code))
+              .map((code) => ({ section, code })),
+          )
+        : [];
+
+    const view: CompatibilityView = {
+      id: row.id,
+      status,
+      sections,
+      warnings,
+      created_at: row.created_at.toISOString(),
+      ...(status === 'failed' && row.error_code !== null ? { error_code: row.error_code } : {}),
+    };
+
+    return view;
+  }
+
+  /** Один вызов провайдера: лимиты проверяются до следующего вызова. */
+  private async call(budget: Budget, messages: readonly LlmMessage[]): Promise<LlmResponse> {
+    const capRub = this.env.LLM_COMPAT_CAP_RUB;
+    if (budget.costRub >= capRub) {
+      throw new CompatFailure('cost_cap');
+    }
+
+    const monthCost = await this.repo.monthCostRub();
+    if (monthCost >= this.env.LLM_MONTHLY_CAP_RUB_REPORT) {
+      throw new CompatFailure('monthly_cap');
+    }
+
+    const response = await this.llm.complete({ messages });
+    budget.costRub = Math.round((budget.costRub + response.usage.costRub) * 10_000) / 10_000;
+    budget.attempts += 1;
+    await this.repo.addCost(
+      budget.compatibilityId,
+      {
+        costRub: response.usage.costRub,
+        promptTokens: response.usage.promptTokens,
+        completionTokens: response.usage.completionTokens,
+      },
+      1,
+    );
+
+    if (budget.costRub > capRub) {
+      throw new CompatFailure('cost_cap');
+    }
+
+    return response;
+  }
+}

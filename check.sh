@@ -71,6 +71,13 @@ if [ "${REPORT_BREAKER_ENABLED:-}" = "0" ]; then
     "circuit breaker разборов выключен: POST /reports не блокируется даже после трёх провалов подряд"
 fi
 
+# 4б. То же для совместимости: у неё свой брейкер, и выключенный по недосмотру
+#     он жжёт бюджет на каждом заказе ровно так же.
+if [ "${COMPAT_BREAKER_ENABLED:-}" = "0" ]; then
+  report COMPAT_BREAKER_ENABLED 0 \
+    "circuit breaker совместимости выключен: POST /compatibility не блокируется даже после трёх провалов подряд"
+fi
+
 # 5. Выключенные лимиты запросов: в тестах это норма, в проде — приглашение
 #    к перебору initData и к бесплатной генерации карт.
 for name in RATE_LIMIT_PER_MIN RATE_LIMIT_CHARTS_PER_MIN RATE_LIMIT_GEO_PER_MIN; do

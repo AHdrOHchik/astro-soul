@@ -58,6 +58,17 @@ export interface ProductMetrics {
   readonly test_plans_active: boolean;
   readonly events_30d: Readonly<Record<string, number>>;
   readonly funnel_30d: Readonly<Record<string, number>>;
+  /**
+   * Совместимость (итерация 23). Отдельные цифры, а не «reports + compat»:
+   * у продукта свой брейкер, свой потолок стоимости и своя квота, и общий
+   * счётчик скрыл бы, что продаётся, а что нет.
+   */
+  readonly compat_ready_30d: number;
+  readonly compat_failed_30d: number;
+  /** Сколько совместимостей можно выдать прямо сейчас (кредиты + окна подписок). */
+  readonly compat_credits_left: number;
+  readonly compat_validation_streak: number;
+  readonly compat_breaker_open: boolean;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -85,8 +96,19 @@ export class AdminMetricsService {
   ) {}
 
   async getMetrics(): Promise<ProductMetrics> {
-    const [activity, events, funnel, subscriptions, payments, reports, cost, history, telegramCancel] =
-      await Promise.all([
+    const [
+      activity,
+      events,
+      funnel,
+      subscriptions,
+      payments,
+      reports,
+      cost,
+      history,
+      compat,
+      compatHistory,
+      telegramCancel,
+    ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
              FROM events
@@ -169,9 +191,10 @@ export class AdminMetricsService {
            FROM payments`,
         ),
         this.db.queryOne<{ failed: number }>(
+          // Только разборы: у совместимости своя цифра (`compat_failed_30d`).
           `SELECT count(*)::int AS failed
              FROM reports
-            WHERE status = 'failed'
+            WHERE status = 'failed' AND kind = 'report'
               AND updated_at >= now() - ${WINDOW}`,
         ),
         this.db.queryOne<{ cost: string }>(
@@ -183,6 +206,38 @@ export class AdminMetricsService {
         this.db.query<ReportHistoryRow>(
           `SELECT error_code, updated_at
              FROM reports
+            WHERE kind = 'report'
+            ORDER BY created_at DESC
+            LIMIT 20`,
+        ),
+        // Совместимость: готовые и провалившиеся за 30 дней + остаток прав.
+        this.db.queryOne<{ ready: number; failed: number; credits: number }>(
+          `SELECT
+             count(*) FILTER (WHERE status = 'ready')::int AS ready,
+             count(*) FILTER (WHERE status = 'failed')::int AS failed,
+             (
+               (SELECT count(*) FROM entitlements
+                 WHERE kind = 'compat' AND status = 'active' AND used_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > now()))
+               +
+               (SELECT count(*) FROM subscriptions s
+                 WHERE s.status = 'active' AND s.expires_at > now()
+                   AND NOT EXISTS (
+                         SELECT 1 FROM reports r2
+                          WHERE r2.user_id = s.user_id AND r2.kind = 'compat'
+                            AND r2.status = 'ready'
+                            AND COALESCE(r2.finished_at, r2.updated_at)
+                                >= GREATEST(s.created_at, now() - interval '30 days')
+                       ))
+             )::int AS credits
+           FROM reports
+          WHERE kind = 'compat' AND created_at >= now() - ${WINDOW}`,
+        ),
+        // Свой счётчик брейкера: только `kind = 'compat'`.
+        this.db.query<ReportHistoryRow>(
+          `SELECT error_code, updated_at
+             FROM reports
+            WHERE kind = 'compat'
             ORDER BY created_at DESC
             LIMIT 20`,
         ),
@@ -222,6 +277,10 @@ export class AdminMetricsService {
     // закрыт не бывает, что бы ни показывала серия.
     const closed = this.env.REPORT_BREAKER_ENABLED === '1' && breaker.open;
 
+    const compatSeries = validationStreak(compatHistory);
+    const compatBreaker = breakerState(compatSeries.streak, compatSeries.lastFailedAt);
+    const compatClosed = this.env.COMPAT_BREAKER_ENABLED === '1' && compatBreaker.open;
+
     return {
       mau,
       paying,
@@ -248,6 +307,11 @@ export class AdminMetricsService {
       test_plans_active: this.env.PAYMENTS_TEST_PLANS === '1',
       events_30d: eventsByName,
       funnel_30d: funnelByStep,
+      compat_ready_30d: compat?.ready ?? 0,
+      compat_failed_30d: compat?.failed ?? 0,
+      compat_credits_left: compat?.credits ?? 0,
+      compat_validation_streak: compatBreaker.streak,
+      compat_breaker_open: compatClosed,
     };
   }
 }

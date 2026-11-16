@@ -54,7 +54,9 @@ export class EntitlementsService {
       // Готовый разбор — тоже доступ: он уже куплен, даже если запись
       // `entitlements` успела истечь (разовый продукт живёт вечно).
       this.db.queryOne<{ one: number }>(
-        `SELECT 1 AS one FROM reports WHERE user_id = $1 AND status = 'ready' LIMIT 1`,
+        `SELECT 1 AS one FROM reports
+          WHERE user_id = $1 AND status = 'ready' AND kind = 'report'
+          LIMIT 1`,
         [userId],
       ),
     ]);
@@ -105,7 +107,8 @@ export class EntitlementsService {
 
     const ready = await this.db.queryOne<{ chart_id: string | null }>(
       `SELECT chart_id FROM reports
-        WHERE user_id = $1 AND status = 'ready' AND chart_id IS NOT NULL
+        WHERE user_id = $1 AND status = 'ready' AND kind = 'report'
+          AND chart_id IS NOT NULL
         ORDER BY created_at DESC
         LIMIT 1`,
       [userId],

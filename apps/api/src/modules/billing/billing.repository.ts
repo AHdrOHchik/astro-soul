@@ -186,6 +186,30 @@ export class BillingRepository {
     return row !== null;
   }
 
+  /**
+   * Есть ли неизрасходованная разовая совместимость (`compat_249`).
+   *
+   * `used_at IS NULL` — кредит не потрачен; `status = 'active'` — не отозван
+   * (после возврата запись `revoked`, и купить снова можно). Карты здесь нет
+   * намеренно: покупка совместимости не привязана к карте, пара выбирается
+   * при заказе.
+   */
+  async hasUnusedCompatGrant(userId: string): Promise<boolean> {
+    const row = await this.db.queryOne<{ one: number }>(
+      `SELECT 1 AS one
+         FROM entitlements
+        WHERE user_id = $1
+          AND kind = 'compat'
+          AND status = 'active'
+          AND used_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+        LIMIT 1`,
+      [userId],
+    );
+
+    return row !== null;
+  }
+
   // --- платежи (в транзакции) ---------------------------------------------
 
   /** `SELECT ... FOR UPDATE`: вторая доставка того же charge_id ждёт первую. */

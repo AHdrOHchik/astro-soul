@@ -192,6 +192,15 @@ def _house_of(longitude: float, cusps: tuple[float, ...]) -> int:
     return 1
 
 
+def houseOf(longitude: float, cusps: tuple[float, ...]) -> int:
+    """Номер дома по куспидам — публичная обёртка для синастрии.
+
+    Тот же расчёт, что у натальной карты: второго правила «планета в доме»
+    быть не должно, иначе оверлеи и карта разойдутся на одном и том же угле.
+    """
+    return _house_of(longitude, cusps)
+
+
 def _aspect_between(
     longitude_a: float,
     longitude_b: float,

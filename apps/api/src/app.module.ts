@@ -9,6 +9,7 @@ import { DbModule } from './db/db.module';
 import { InitDataMiddleware } from './modules/auth/init-data.middleware';
 import { BillingModule } from './modules/billing/billing.module';
 import { ChartsModule } from './modules/charts/charts.module';
+import { CompatModule } from './modules/compat/compat.module';
 import { EventsModule } from './modules/events/events.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
@@ -31,6 +32,7 @@ import { ReportsModule } from './modules/reports/reports.module';
     EngagementModule,
     OpsModule,
     ReportsModule,
+    CompatModule,
   ],
   providers: [
     RequestIdMiddleware,

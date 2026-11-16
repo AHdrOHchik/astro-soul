@@ -11,6 +11,7 @@
     POST /chart       — натальная карта (контракт + внутренние числа + хеш входа)
     POST /transits    — транзиты на дату по сохранённой карте
     POST /wheel       — SVG-колесо (тема dark|light)
+    POST /synastry    — факты совместимости двух карт (`compatibility_facts` v1.0)
 """
 
 from __future__ import annotations
@@ -25,7 +26,8 @@ from pydantic import BaseModel, Field
 
 from .constants import DEFAULT_ENGINE_MODE, ENGINE_VERSION
 from .engine import EngineConfigError, calcChart, transitsFor
-from .types import BirthInput, GeoPlace
+from .synastry import compatFacts
+from .types import BirthInput, Chart, GeoPlace
 from .wheel import WHEEL_THEMES, renderWheel
 from .wire import chart_from_wire, chart_to_wire
 
@@ -67,6 +69,18 @@ class TransitsIn(BaseModel):
     date: date_type
     data: ChartDataIn
     engine: Literal["fallback", "swisseph"] | None = None
+
+
+class SynastryIn(BaseModel):
+    """Две уже посчитанные карты: своя и партнёра.
+
+    ПДн здесь нет: в запросе только то, что API хранит в `charts.data`
+    (положения, дома, аспекты). Поэтому и логировать нечего, кроме факта
+    вызова; идентификаторы пишет API, а не сайдкар.
+    """
+
+    a: ChartDataIn
+    b: ChartDataIn
 
 
 class WheelIn(BaseModel):
@@ -126,6 +140,26 @@ def transits(payload: TransitsIn) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     return report.to_dict()
+
+
+def _chart_of(payload: ChartDataIn) -> Chart:
+    return chart_from_wire(
+        {
+            "chart": payload.chart,
+            "internal": payload.internal,
+            "omitted_planets": payload.omitted_planets,
+        }
+    )
+
+
+@app.post("/synastry")
+def synastry(payload: SynastryIn) -> dict[str, Any]:
+    try:
+        facts = compatFacts(_chart_of(payload.a), _chart_of(payload.b))
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return facts
 
 
 @app.post("/wheel")

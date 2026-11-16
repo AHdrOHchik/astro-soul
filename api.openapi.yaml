@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.12
+  version: 1.6.0
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -309,6 +309,36 @@ info:
       • `503 GEO_NOT_FOUND` остаётся только за временными причинами:
         `provider_timeout | provider_unavailable | not_configured`.
 
+    1.6.0 — совместимость с партнёром (синастрия), итерация 23. Ничего не
+      удалено и не переименовано; добавлено три маршрута и их схемы:
+      • `POST /compatibility` — заказ разбора пары. Доступ: разовая покупка
+        `compat_249` (одна совместимость) либо подписка (одна в 30 дней,
+        скользящее окно). Тело — `chart_id`, `relationship` из закрытого
+        перечня и `partner` (дата, необязательное время, место). Свободного
+        текста о партнёре в контракте нет и не будет: это ПДн третьего лица,
+        и минимизация здесь — требование, а не настройка. Ответ `202
+        {compatibility_id, status: "pending"}`;
+      • `GET /compatibility/{id}` — `sections` (4 штуки: `clicks`, `friction`,
+        `scenario`, `steps`), `warnings` из закрытого перечня кодов и
+        `created_at`. Пока идёт сборка — `status: pending` и пустые `sections`;
+      • `GET /compatibility` — история без текстов (`titles_only`) и остаток
+        квоты `quota {kind, left, resets_at}`, где `kind` — `purchase`,
+        `subscription` или `none`;
+      • ошибки: `402` без права на совместимость (`details.reason =
+        compat_not_paid`), `422` при исчерпанной квоте подписки
+        (`compat_quota_exhausted` + `resets_at`) и при уже оплаченной, но не
+        израсходованной покупке (`compat_already_owned`), `503` при закрытом
+        брейкере совместимости (`compat_breaker_open` — отдельный от
+        `report_breaker_open`, ни один не закрывает другой);
+      • `compat_249` больше не «появится в ближайшие дни»: товар выпущен, и
+        подписки обещают его как готовый. Состав тарифов и цены не менялись;
+      • ПДн партнёра (дата, время, координаты, часовой пояс) не уходят ни в
+        логи, ни в LLM: модель получает только `compatibility_facts` (углы,
+        светила, баланс стихий), а в логах — `user_id`, `chart_id`,
+        `compatibility_id` и `relationship`. `DELETE /me` удаляет заказы и
+        данные партнёра в той же транзакции; срок хранения брошенных
+        заказов — 24 месяца, тем же джобом, что и у разборов.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
@@ -324,6 +354,7 @@ tags:
   - name: profile
   - name: charts
   - name: reports
+  - name: compatibility
   - name: engagement
   - name: billing
   - name: internal
@@ -866,6 +897,176 @@ components:
         telegram_cancel_retried: 0
         telegram_cancel_cancelled: 0
         telegram_cancel_gave_up: 0
+
+    CompatibilityRequest:
+      type: object
+      description: |
+        Вход `POST /compatibility`. `additionalProperties: false` — не
+        придирка, а правило продукта: свободное поле о партнёре (имя, заметка,
+        метка) — это ПДн третьего лица, которое уехало бы в БД и в промпт.
+        Клиент, приславший лишнее поле, получает `422`, а не молчаливое
+        принятие.
+      additionalProperties: false
+      required: [chart_id, relationship, partner]
+      properties:
+        chart_id:
+          type: string
+          format: uuid
+          description: Своя карта. Чужая — `404`.
+        relationship:
+          type: string
+          enum: [romantic, friend, family, colleague]
+          description: Тип отношений кодом, а не текстом.
+        partner:
+          $ref: '#/components/schemas/CompatibilityPartner'
+
+    CompatibilityPartner:
+      type: object
+      description: |
+        Минимум, при котором движок считает пару: дата, необязательное время и
+        место. Имени нет — и не появится: модели оно не нужно, а человеку
+        показывать партнёра по имени мы не собираемся.
+      additionalProperties: false
+      required: [birth_date, place]
+      properties:
+        birth_date:
+          type: string
+          format: date
+          description: Не раньше 1900-01-01 и не позже сегодняшнего дня.
+        birth_time:
+          type: [string, 'null']
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          description: |
+            `null` или отсутствие — «время неизвестно». Тогда дома и оверлеи не
+            считаются вообще: блок `house_overlays` в фактах отсутствует, а не
+            заполняется догадкой.
+        place:
+          $ref: '#/components/schemas/CompatibilityPlace'
+
+    CompatibilityPlace:
+      type: object
+      description: Место рождения партнёра. Название города берётся сервером из справочника по координатам.
+      additionalProperties: false
+      required: [lat, lon, tz]
+      properties:
+        city_id:
+          type: [string, 'null']
+          maxLength: 64
+          description: Идентификатор города справочника, если клиент его выбрал.
+        lat: { type: number, minimum: -90, maximum: 90 }
+        lon: { type: number, minimum: -180, maximum: 180 }
+        tz:
+          type: string
+          maxLength: 64
+          description: |
+            IANA-пояс. Не угадывается: без пояса заказ не создаётся (`422`),
+            потому что «примерно тот же пояс» даёт сдвиг домов на часы.
+
+    CompatibilityAccepted:
+      type: object
+      required: [compatibility_id, status]
+      properties:
+        compatibility_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending] }
+
+    CompatibilitySection:
+      type: object
+      required: [key, title, order, text]
+      properties:
+        key: { type: string, enum: [clicks, friction, scenario, steps] }
+        title:
+          type: string
+          description: |
+            «Что совпадает», «Где трёт», «Как вы разговариваете», «Что сделать
+            на этой неделе». Приходит с сервера: текст заголовка может
+            меняться без релиза клиента.
+        order: { type: integer, minimum: 0, maximum: 3 }
+        text:
+          type: string
+          description: |
+            Markdown без H1. Абзацы 2–4, в каждом 2–4 предложения; в `steps` —
+            ровно три пункта маркером «—» и подпись про саморефлексию.
+            Астрологических терминов в первых 200 знаках нет.
+
+    Compatibility:
+      type: object
+      required: [id, status, sections, warnings, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, ready, failed]
+        sections:
+          type: array
+          description: Пусто, пока `status` не `ready`. При `failed` — тоже пусто.
+          items: { $ref: '#/components/schemas/CompatibilitySection' }
+        warnings:
+          type: array
+          description: Пометки формы. Только закрытый перечень кодов.
+          items:
+            type: object
+            required: [section, code]
+            properties:
+              section: { type: string, enum: [clicks, friction, scenario, steps] }
+              code: { type: string, enum: [length_off, trimmed, disclaimer_added] }
+        created_at: { type: string, format: date-time }
+        error_code:
+          type: string
+          enum:
+            - paragraphs
+            - too_short
+            - too_long
+            - format
+            - forbidden_terms
+            - repeats
+            - teaser_terms
+            - service_terms
+            - repeated_opener
+            - provider
+            - cost_cap
+            - monthly_cap
+            - engine
+            - chart_missing
+          description: 'Заполняется только при `status: failed`.'
+
+    CompatibilityListItem:
+      type: object
+      required: [id, status, relationship, created_at, titles_only]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, ready, failed] }
+        relationship: { type: [string, 'null'], enum: [romantic, friend, family, colleague, null] }
+        created_at: { type: string, format: date-time }
+        titles_only:
+          type: array
+          description: Заголовки готовых разделов, без текста. Пусто, пока `status` не `ready`.
+          items: { type: string }
+
+    CompatibilityQuota:
+      type: object
+      required: [kind, left, resets_at]
+      properties:
+        kind: { type: string, enum: [purchase, subscription, none] }
+        left:
+          type: integer
+          minimum: 0
+          maximum: 1
+          description: Сколько совместимостей можно заказать прямо сейчас.
+        resets_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            Когда окно подписки откроется снова. `null` — ждать нечего:
+            разовая покупка не сгорает, а у `none` окна нет вообще.
+
+    CompatibilityList:
+      type: object
+      required: [items, quota]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CompatibilityListItem' }
+        quota: { $ref: '#/components/schemas/CompatibilityQuota' }
 
     Report:
       type: object
@@ -1506,6 +1707,131 @@ paths:
               schema: { $ref: '#/components/schemas/Report' }
         '404': { description: NOT_FOUND — разбора нет или он чужой }
 
+  /api/v1/compatibility:
+    post:
+      tags: [compatibility]
+      summary: Заказать разбор совместимости (асинхронно)
+      description: |
+        Собирается четыре раздела: «Что совпадает», «Где трёт», «Как вы
+        разговариваете», «Что сделать на этой неделе». Готовность — через
+        `GET /compatibility/{id}`.
+
+        Доступ проверяется здесь: разовая покупка `compat_249` даёт одну
+        совместимость, подписка — одну в 30 дней (скользящее окно от последней
+        готовой). Квота списывается **только** при `ready`: провал возвращает
+        право сам, без заявки и без джоба.
+
+        Идемпотентность: `Idempotency-Key` обязателен (до 64 символов,
+        буквы/цифры/`-_.:`). Повтор с тем же ключом отдаёт тот же
+        `compatibility_id` и не списывает второй раз.
+
+        Пока совместимость собирается, повторный заказ по тому же
+        пользователю — `422 compat_already_owned`.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 64 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompatibilityRequest' }
+      responses:
+        '202':
+          description: 'В очереди, `status: pending`'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompatibilityAccepted' }
+        '402':
+          description: |
+            Нет права на совместимость: `PAYMENT_REQUIRED`,
+            `details.reason = compat_not_paid`. Ни разовой покупки, ни активной
+            подписки.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: Карты нет или она чужая (NOT_FOUND)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            Одно из трёх, различимых по `details.reason`:
+              • `compat_request_invalid` — нет `Idempotency-Key`, лишнее поле в
+                теле (в том числе любое свободное поле о партнёре), дата в
+                будущем, место без координат или пояса;
+                `details.field_errors[{field, message}]`;
+              • `compat_quota_exhausted` — подписка уже дала совместимость в
+                текущем окне; `details.resets_at` — когда окно откроется;
+              • `compat_already_owned` — оплаченная совместимость ещё не
+                израсходована или предыдущая ещё собирается;
+                `details.field_errors[0].field = chart_id`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: |
+            Брейкер совместимости закрыт: `UPSTREAM_LLM`,
+            `details.reason = compat_breaker_open`, задержка в
+            `details.retry_after_ms`. Отдельный от `report_breaker_open`:
+            провалы разборов совместимость не закрывают и наоборот.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    get:
+      tags: [compatibility]
+      summary: История совместимостей и остаток квоты
+      description: |
+        Список без текстов: `titles_only` содержит только заголовки готовых
+        разделов, чтобы витрина не весила мегабайт. Текст — в
+        `GET /compatibility/{id}`.
+
+        `quota.kind`: `purchase` — есть неизрасходованная разовая покупка;
+        `subscription` — подписка, окно открыто или закрыто (`left` = 1 или 0);
+        `none` — права нет. `resets_at` заполнен только у подписки с закрытым
+        окном. Квота считается на чтении — отдельного сброса по расписанию нет.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompatibilityList' }
+
+  /api/v1/compatibility/{compatibility_id}:
+    get:
+      tags: [compatibility]
+      summary: Разбор совместимости
+      description: |
+        `status: pending` покрывает внутренние стадии `queued | planning |
+        writing`. `sections` пустой, пока `status` не `ready`.
+
+        `warnings` — только закрытые коды контракта (`length_off`, `trimmed`,
+        `disclaimer_added`). Внутренние пометки (`service_terms`,
+        `repeated_opener`, `partner_pronoun`) остаются в БД и в логах: это
+        диагностика для нас, а не сообщение человеку.
+
+        `error_code` есть только при `status: failed` — это код причины
+        (`paragraphs`, `too_short`, `format`, `provider`, `cost_cap`,
+        `monthly_cap`, `engine`). Право на совместимость при `failed` не
+        списывается.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: compatibility_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Compatibility' }
+        '404': { description: NOT_FOUND — совместимости нет или она чужая }
+
   /api/v1/engagement/forecast:
     get:
       tags: [engagement]
@@ -1651,11 +1977,15 @@ paths:
               schema: { $ref: '#/components/schemas/Invoice' }
         '422':
           description: |
-            Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`
-            или разбор для этой карты уже куплен — `VALIDATION_FAILED` +
+            Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`,
+            разбор для этой карты уже куплен или неизрасходованная
+            совместимость уже есть — `VALIDATION_FAILED` +
             `details.field_errors[{field, message}]`; `details.reason` уточняет
             причину (`chart_not_found`, `chart_required_for_report`,
-            `report_already_owned`, `invoice_request_invalid`).
+            `report_already_owned`, `compat_already_owned`,
+            `invoice_request_invalid`). `compat_already_owned` (1.6.0)
+            приходит с `field_errors[0].field = chart_id`: подсвечивать надо
+            выбор пары, а не тариф.
         '429':
           description: 'Слишком много инвойсов (антифрод): 3 в час, 10 в сутки — Problem.code = RATE_LIMITED'
 
