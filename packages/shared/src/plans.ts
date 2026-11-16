@@ -29,9 +29,11 @@ export const PLAN_CODES = [
  * выключенном флаге `POST /billing/invoice` с этим кодом отвечает `422`, как
  * будто плана нет.
  *
- * В каталог (`PLAN_CODES`), в порядок пейволла (`PLANS_ORDERED`) и в контракт
- * эти коды не попадают никогда: клиент о них не знает, вызывает их только
- * владелец руками (payments.md §1.1).
+ * В каталог (`PLAN_CODES`), в порядок пейволла (`PLANS_ORDERED`) и в
+ * контрактный `PlanCode` эти коды не попадают никогда. До 1.5.9 клиент о них
+ * не знал вообще; теперь витрина (`GET /billing/plans`) отдаёт их **только**
+ * при включённом флаге и с `test: true`, чтобы клиент рисовал их отдельным
+ * блоком, а не подмешивал к продаже (payments.md §1.1, §6.1).
  *
  * Флаг один на оба тарифа намеренно: два выключателя означают, что один из
  * них забудут выключить.
@@ -76,6 +78,17 @@ export interface PlanBase {
   readonly title: string;
   /** Описание инвойса (ru). */
   readonly description: string;
+  /**
+   * Название тарифа на витрине (`GET /billing/plans`), без цены: цену клиент
+   * берёт из `stars`, чтобы «149 ⭐» в вёрстке не расходилось с счётом.
+   */
+  readonly paywallTitle: string;
+  /**
+   * Что человек получает — одной фразой, на «ты». Формулировки подписок
+   * совпадают с согласованными владельцем: обещанное, но не выпущенное
+   * названо «появится в ближайшие дни», а не как готовое.
+   */
+  readonly paywallSubtitle: string;
   /** Подпись суммы в `prices[]` инвойса (ru). */
   readonly priceLabel: string;
   /** Порядок на пейволле. */
@@ -110,6 +123,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Разбор личности — полный разбор',
     description: 'Шесть глав по вашей натальной карте и PDF',
     priceLabel: 'Разбор',
+    paywallTitle: 'Полный разбор',
+    paywallSubtitle:
+      'Все главы разбора по этой карте. Разовая покупка, без подписки.',
     sort: 10,
   },
   week_149: {
@@ -123,6 +139,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Разбор личности — подписка на неделю',
     description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
     priceLabel: 'Неделя',
+    paywallTitle: 'Подписка на неделю',
+    paywallSubtitle:
+      'Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц появится в ближайшие дни.',
     sort: 20,
   },
   month_399: {
@@ -136,6 +155,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Разбор личности — подписка на месяц',
     description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
     priceLabel: 'Месяц',
+    paywallTitle: 'Подписка на месяц',
+    paywallSubtitle:
+      'Полные прогнозы, 5 вопросов карте в день. Совместимость раз в месяц появится в ближайшие дни.',
     sort: 30,
   },
   year_2990: {
@@ -149,6 +171,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Разбор личности — подписка на год',
     description: 'Всё, что в месячной подписке, плюс карта года',
     priceLabel: 'Год',
+    paywallTitle: 'Подписка на год',
+    paywallSubtitle:
+      'Всё, что в подписке на месяц. Карта года появится в ближайшие дни.',
     sort: 40,
   },
   compat_249: {
@@ -162,6 +187,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Совместимость с партнёром',
     description: 'Разбор пары по двум натальным картам',
     priceLabel: 'Совместимость',
+    paywallTitle: 'Совместимость с партнёром',
+    paywallSubtitle:
+      'Разбор пары по двум картам. Разовая покупка, без подписки.',
     sort: 50,
   },
   solar_590: {
@@ -175,6 +203,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Карта года',
     description: 'Прогноз на год вперёд по солярной карте',
     priceLabel: 'Карта года',
+    paywallTitle: 'Карта года',
+    paywallSubtitle:
+      'Прогноз на год вперёд по солярной карте. Разовая покупка, без подписки.',
     sort: 60,
   },
   /**
@@ -197,6 +228,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Тестовая подписка — 1 звезда',
     description: 'Неделя доступа за 1 ⭐. Только для проверки оплаты владельцем',
     priceLabel: 'Тест',
+    paywallTitle: 'Тестовая подписка',
+    paywallSubtitle:
+      '1 ⭐ за неделю доступа, права как у месячной. Только для проверки оплаты.',
     sort: 90,
   },
   /**
@@ -218,6 +252,9 @@ export const PLANS: Readonly<Record<PlanCode, Plan>> = {
     title: 'Тестовый полный разбор — 1 звезда',
     description: 'Разбор личности за 1 ⭐ для одной карты. Только для проверки оплаты',
     priceLabel: 'Тест-разбор',
+    paywallTitle: 'Тестовый разбор',
+    paywallSubtitle:
+      '1 ⭐ за полный разбор одной карты. Только для проверки оплаты.',
     sort: 91,
   },
 } as const;

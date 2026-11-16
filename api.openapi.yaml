@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.8
+  version: 1.5.9
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -224,6 +224,28 @@ info:
         счёта выставлены до оплаты»); платёж при этом виден в `payments`;
       • тариф-разбор за 1 ⭐ (`test_report_1`) существует только при
         `PAYMENTS_TEST_PLANS=1` и в `PlanCode` не входит — как и `test_1`.
+
+    1.5.9 — витрина как данные, а не как хардкод клиента (итерация 14):
+      • новый `GET /billing/plans`: набор тарифов, цены, периоды, тексты и
+        состав отдаёт сервер. Раньше список знал клиент
+        (`apps/web/src/lib/plans.ts`), поэтому тестовый тариф нельзя было
+        показать без правки фронта, а смена цены не меняла того, что видит
+        человек, до релиза клиента. Ответ — `PlansResponse`;
+      • тестовые тарифы (`test_1`, `test_report_1`) попадают в витрину
+        **только** при `PAYMENTS_TEST_PLANS=1` и приходят с `test: true`.
+        При выключенном флаге в ответе нет ни одного упоминания о них — не
+        «серых», не «скрытых», никак;
+      • `Cache-Control: no-store` на витрине: ответ зависит от флага, и
+        закэшированный список пережил бы и включение, и выключение;
+      • `PlanCode` **не** расширен: он остаётся закрытым перечислением
+        каталога. В деньгах (`InvoiceRequest.plan_code`, `Invoice.plan_code`,
+        `PlanOffer.plan_code`) используется `OrderablePlanCode` — строка,
+        потому что набор кодов, который сервер принимает к оплате, зависит от
+        окружения, а перечисление, зависящее от окружения, — не перечисление;
+      • `GET /admin/metrics`: `test_plans_active` — включён ли флаг прямо
+        сейчас. В `test_payments_30d` видно, что тестовые платежи были, а
+        здесь — что тарифы включены и сейчас: «включил и забыл» на проде
+        видно в первой же метрике, а не только в логе старта.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -835,13 +857,82 @@ components:
 
     PlanCode:
       type: string
+      description: |
+        Каталог: то, что продаётся всегда. Тестовые тарифы (`test_1`,
+        `test_report_1`) сюда не входят — они приходят в витрине как
+        `PlanOffer.plan_code` (`OrderablePlanCode`) и существуют только при
+        `PAYMENTS_TEST_PLANS=1`.
       enum: [week_149, month_399, year_2990, one_149, compat_249, solar_590]
+
+    PlanOffer:
+      type: object
+      description: |
+        Один тариф на витрине. Тексты приходят с сервера: пока их знал клиент,
+        смена названия или цены требовала релиза клиента, а тестовый тариф
+        нельзя было показать вообще.
+      required: [plan_code, kind, stars, period_sec, title, subtitle, includes, test]
+      properties:
+        plan_code: { $ref: '#/components/schemas/OrderablePlanCode' }
+        kind:
+          type: string
+          enum: [subscription, one_off]
+          description: |
+            `subscription` — автопродление через Telegram; `one_off` — разовая
+            покупка. От этого зависит, что делает клиент: подписку открывают
+            как `subscription_period`, разовый товар — обычным счётом.
+        stars:
+          type: integer
+          description: Цена в звёздах. Клиент показывает её как есть, цена в вёрстке не дублируется.
+        period_sec:
+          type: [integer, 'null']
+          description: |
+            Период подписки в секундах, `null` для разового товара. `null`, а
+            не отсутствие поля: клиенту нужно отличать «без периода» от
+            «сервер не сказал».
+        title:
+          type: string
+          description: Название тарифа, на «ты», без цены.
+        subtitle:
+          type: string
+          description: |
+            Что человек получает, одной фразой. Обещанное, но не выпущенное
+            названо прямо («появится в ближайшие дни»), а не как готовое.
+        includes:
+          type: array
+          items: { type: string }
+          description: Состав тарифа — из прав этого же плана, а не из текста рядом.
+        test:
+          type: boolean
+          description: |
+            Тестовый тариф за 1 ⭐. Такие показываются отдельным блоком ниже
+            обычных, а не подмешиваются к продаже. При выключенном флаге в
+            ответе нет ни одного плана с `test: true`.
+
+    PlansResponse:
+      type: object
+      required: [plans]
+      properties:
+        plans:
+          type: array
+          items: { $ref: '#/components/schemas/PlanOffer' }
+          description: |
+            Сначала каталог в порядке пейволла, затем (только при включённом
+            `PAYMENTS_TEST_PLANS`) тестовые тарифы.
+
+    OrderablePlanCode:
+      type: string
+      description: |
+        Код тарифа на денежном пути. Каталог — значения `PlanCode`; при
+        `PAYMENTS_TEST_PLANS=1` дополнительно `test_1` и `test_report_1`.
+        Тип — строка намеренно: `PlanCode` — закрытый список того, что
+        продаётся всегда, а тестовые коды существуют только при флаге.
+      examples: [one_149, month_399]
 
     InvoiceRequest:
       type: object
       required: [plan_code]
       properties:
-        plan_code: { $ref: '#/components/schemas/PlanCode' }
+        plan_code: { $ref: '#/components/schemas/OrderablePlanCode' }
         chart_id:
           type: string
           format: uuid
@@ -860,7 +951,7 @@ components:
         invoice_link:
           type: string
           description: Ссылка на инвойс для Telegram.WebApp.openInvoice
-        plan_code: { $ref: '#/components/schemas/PlanCode' }
+        plan_code: { $ref: '#/components/schemas/OrderablePlanCode' }
         stars: { type: integer, example: 399 }
         is_subscription: { type: boolean }
         subscription_period_sec: { type: [integer, 'null'], example: 2592000 }
@@ -1359,6 +1450,35 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SubscriptionState' }
 
+  /api/v1/billing/plans:
+    get:
+      tags: [billing]
+      summary: Витрина тарифов
+      description: |
+        Что продаётся, за сколько и что это даёт — единственный источник
+        этого списка. С 1.5.9 клиент не хранит набор тарифов и их цены: он
+        рисует ответ, поэтому смена цены или названия не требует релиза
+        клиента, а тестовый тариф можно показать, не правя фронт.
+
+        Тестовые тарифы (`test_1`, `test_report_1`) попадают в ответ только
+        при `PAYMENTS_TEST_PLANS=1`, с `test: true` и после каталога. При
+        выключенном флаге их нет в ответе вообще — ни полем, ни «серыми».
+
+        Ответ не кэшируется (`Cache-Control: no-store`): он зависит от флага
+        окружения, и прокси с кэшем показал бы либо старый список без
+        тестовых, либо тестовые после выключения.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: ['no-store'] }
+              description: Витрина зависит от окружения процесса, кэшировать её нельзя.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlansResponse' }
+
   /api/v1/billing/invoice:
     post:
       tags: [billing]
@@ -1519,10 +1639,19 @@ paths:
                   pending_payments_now:
                     type: integer
                     description: Платежи `processed = false` прямо сейчас
+                  test_plans_active:
+                    type: boolean
+                    description: |
+                      Включены ли тестовые тарифы прямо сейчас
+                      (`PAYMENTS_TEST_PLANS=1`). В `test_payments_30d` видно,
+                      что тестовые платежи были; здесь — что витрина отдаёт
+                      тарифы за 1 ⭐ в эту минуту. `true` на проде означает,
+                      что флаг забыт: `check.sh --prod` такое не пропускает,
+                      а метрика показывает, если проверку обошли.
                   test_payments_30d:
                     type: integer
                     description: |
-                      Платежи по тестовому тарифу (`test_1`) за 30 дней.
+                      Платежи по тестовому тарифу (`test_1`, `test_report_1`) за 30 дней.
                       Считаются отдельно и в выручку не входят: это проверка
                       оплаты владельцем, а не продажа. Ненулевое значение на
                       проде означает забытый `PAYMENTS_TEST_PLANS`.

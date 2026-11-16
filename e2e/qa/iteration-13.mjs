@@ -82,7 +82,8 @@ function client(base, telegramId = TG_ID) {
     } catch {
       body = text;
     }
-    return { status: response.status, body };
+    // Заголовки нужны проверкам кэша (`Cache-Control` на витрине).
+    return { status: response.status, body, headers: Object.fromEntries(response.headers) };
   };
 
   return { call, me: () => call('/me') };
@@ -221,12 +222,15 @@ async function on() {
     'payload без ПДн: p, u, k',
   );
 
-  // Каталог пейволла: тариф не должен всплыть ни в одном режиме.
-  const plans = await client(API_ON).call('/billing/plans').catch(() => ({ status: 404 }));
+  // Витрина (1.5.9): тестовый тариф виден на стенде с флагом — и это
+  // единственное место, где он должен быть виден. Разбор ответа — в scenario
+  // `plans`, здесь достаточно того, что он пришёл с `test: true`.
+  const plans = await client(API_ON).call('/billing/plans');
+  const offered = Array.isArray(plans.body?.plans) ? plans.body.plans : [];
   check(
-    plans.status === 404 || !JSON.stringify(plans.body).includes('test_1'),
-    'в выдаче планов test_1 нет',
-    plans.status === 404 ? 'маршрута нет (каталог в коде)' : 'ok',
+    offered.some((plan) => plan.plan_code === 'test_1' && plan.test === true),
+    'в витрине стенда test_1 есть и помечен test: true',
+    String(plans.status),
   );
   return true;
 }
@@ -570,6 +574,76 @@ async function reportRefund() {
   return true;
 }
 
+async function plans() {
+  console.log('\n=== plans: витрина — данные сервера, тестовые тарифы только по флагу ===');
+
+  const off = await client(API_OFF).call('/billing/plans');
+  const offPlans = Array.isArray(off.body?.plans) ? off.body.plans : [];
+  const offRaw = JSON.stringify(off.body);
+
+  check(off.status === 200, 'флаг выключен: 200', String(off.status));
+  check(offPlans.length === 6, 'шесть тарифов каталога', String(offPlans.length));
+  check(
+    offPlans.every((plan) => plan.test === false),
+    'ни одного тарифа с test: true',
+  );
+  check(!offRaw.includes('test_1'), 'в ответе нет test_1 — даже подстрокой');
+  check(!offRaw.includes('test_report_1'), 'в ответе нет test_report_1');
+  check(
+    off.headers?.['cache-control'] === 'no-store',
+    'Cache-Control: no-store',
+    off.headers?.['cache-control'] ?? 'нет заголовка',
+  );
+  check(
+    offPlans.map((plan) => plan.plan_code).join(',') === 'one_149,week_149,month_399,year_2990,compat_249,solar_590',
+    'порядок пейволла и цены из общей таблицы',
+    offPlans.map((plan) => `${plan.plan_code}:${plan.stars}`).join(' '),
+  );
+  const report = offPlans.find((plan) => plan.plan_code === 'one_149');
+  check(
+    report?.kind === 'one_off' && report?.period_sec === null && report?.stars === 149,
+    'разбор: one_off, 149 ⭐, без периода',
+  );
+  check(
+    offPlans.find((plan) => plan.plan_code === 'month_399')?.period_sec === 2592000,
+    'месяц: период 2592000',
+  );
+
+  const on = await client(API_ON).call('/billing/plans');
+  const onPlans = Array.isArray(on.body?.plans) ? on.body.plans : [];
+  const catalogue = onPlans.filter((plan) => plan.test !== true);
+  const tests = onPlans.filter((plan) => plan.test === true);
+
+  check(on.status === 200, 'флаг включён: 200', String(on.status));
+  check(onPlans.length === 8, 'каталог + два тестовых', String(onPlans.length));
+  check(catalogue.length === 6, 'каталог не сдвинулся', String(catalogue.length));
+  check(
+    tests.map((plan) => plan.plan_code).join(',') === 'test_1,test_report_1',
+    'тестовые идут после каталога парой',
+    tests.map((plan) => plan.plan_code).join(','),
+  );
+  check(
+    tests.every((plan) => plan.stars === 1),
+    'оба по 1 ⭐',
+  );
+  const testReport = tests.find((plan) => plan.plan_code === 'test_report_1');
+  const testSubscription = tests.find((plan) => plan.plan_code === 'test_1');
+  check(testReport?.kind === 'one_off' && testReport?.period_sec === null, 'тест-разбор: one_off без периода');
+  check(testSubscription?.period_sec === 604800, 'тест-подписка: период 604800');
+  check(
+    typeof testReport?.title === 'string' && testReport.title.length > 0 &&
+      Array.isArray(testReport?.includes) && testReport.includes.length > 0,
+    'тексты и состав приходят с сервера',
+  );
+
+  // Метрика «включил и забыл»: на стенде с флагом она true, без флага — false.
+  const metricsOn = await client(API_ON).call('/admin/metrics');
+  const metricsOff = await client(API_OFF).call('/admin/metrics');
+  check(metricsOn.body?.test_plans_active === true, 'metrics: test_plans_active = true при флаге');
+  check(metricsOff.body?.test_plans_active === false, 'metrics: test_plans_active = false без флага');
+  return true;
+}
+
 async function prodGuard() {
   console.log('\n=== prod-guard: check.sh --prod не пускает с флагом ===');
 
@@ -604,6 +678,7 @@ const scenarios = {
   'report-on': reportOn,
   'report-pay': reportPay,
   'report-refund': reportRefund,
+  plans,
   'prod-guard': prodGuard,
 };
 const which = (process.argv[2] ?? 'all').toLowerCase();

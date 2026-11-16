@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { PLANS, type Invoice, type PlanCodeName, type SubscriptionState } from '@astro-soul/shared';
+import { PLANS, type Invoice, type SubscriptionState } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { invalidFields, rateLimited } from '../../common/api-error';
@@ -13,6 +13,7 @@ import { EventsRepository } from '../events/events.repository';
 import { TelegramClient } from '../telegram/telegram.client';
 import { BillingRepository } from './billing.repository';
 import { buildInvoicePayload, parseInvoiceRequest } from './billing.dto';
+import { planOffers, type PlanOffer } from './plan-offers';
 
 /** Антифрод-лимиты из payments.md §5. */
 export const INVOICES_PER_HOUR = 3;
@@ -32,6 +33,19 @@ export class BillingService {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
     @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
+
+  /**
+   * `GET /billing/plans`: витрина для клиента.
+   *
+   * Авторизация здесь не потому, что список личный, а потому, что весь API
+   * закрыт initData: витрина — часть приложения, а не публичная страница.
+   * Флаг читается на каждый запрос, поэтому прокси обязан не кэшировать ответ
+   * (`Cache-Control: no-store` ставит контроллер): иначе включённый на стенде
+   * флаг не появится у клиента до истечения кэша.
+   */
+  listPlans(): readonly PlanOffer[] {
+    return planOffers(this.env.PAYMENTS_TEST_PLANS === '1');
+  }
 
   /**
    * `POST /billing/invoice`: цена берётся из `PLANS`, а не из запроса.
@@ -126,10 +140,10 @@ export class BillingService {
 
     return {
       invoice_link: invoiceLink,
-      // Тестовый код в контракт не входит намеренно (`PlanCode` — каталог для
-      // клиента): приведение узкое и только для ответа владельцу, который сам
-      // включил флаг. Молча расширять enum контракта ради теста — хуже.
-      plan_code: planCode as PlanCodeName,
+      // `plan_code` в контракте — `OrderablePlanCode` (строка): каталог
+      // `PlanCode` остался закрытым перечислением, а тестовый код приезжает
+      // сюда без приведений, честно.
+      plan_code: planCode,
       stars: plan.stars,
       is_subscription: plan.kind === 'subscription',
       subscription_period_sec: plan.kind === 'subscription' ? plan.periodSeconds : null,
