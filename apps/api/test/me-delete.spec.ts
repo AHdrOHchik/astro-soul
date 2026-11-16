@@ -5,6 +5,8 @@ import { userIdFromTelegramId } from '../src/modules/users/pseudonym';
 import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
 import { FICTIONAL_USER, TEST_BOT_TOKEN, TEST_PEPPER } from './test-env';
+import { PROMPT_VERSION } from '../src/modules/reports/prompts';
+import { STRUCTURE_VERSION } from '../src/modules/reports/validators';
 import { makeFakeAstro } from './fake-astro';
 import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
 import { PaymentsService } from '../src/modules/billing/payments.service';
@@ -50,7 +52,12 @@ async function seedPersonalData(): Promise<{ userId: string; chartId: string }> 
 
   const chartId = chart.body.chart.chart_id as string;
 
-  await ctx.db.query(`INSERT INTO reports (chart_id, user_id) VALUES ($1, $2)`, [chartId, userId]);
+  // Версии разбора пишет только код (миграция 0022 сняла DEFAULT).
+  await ctx.db.query(
+    `INSERT INTO reports (chart_id, user_id, prompt_version, report_structure_version)
+     VALUES ($1, $2, $3, $4)`,
+    [chartId, userId, PROMPT_VERSION, STRUCTURE_VERSION],
+  );
   await ctx.db.query(`INSERT INTO forecasts (chart_id, date) VALUES ($1, CURRENT_DATE)`, [chartId]);
   // Текста вопроса в БД больше нет (итерация 10): только длина и тема.
   await ctx.db.query(

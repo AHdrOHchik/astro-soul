@@ -26,7 +26,7 @@ export interface SectionRange {
  * `structure_v1.1`: границы объёма из `docs/qa/reports/structure.md` §1
  * (сумма минимумов 6 950, максимумов 8 800 знаков) плюс правки приёмки QA-002:
  * оговорка режима `unknown` проходит проверку домов, добавлен формальный
- * контроль абзацев и повторов (QA-22). Промпты — `prompts_v1.1`.
+ * контроль абзацев и повторов (QA-22). Промпты — `prompts_v1.3`.
  */
 export const STRUCTURE_VERSION = 'structure_v1.1';
 

@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Chart } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
+import { validationStreak, type ReportHistoryRow } from './breaker';
 
 /** Одна глава в `reports.chapters` — ровно то, что ждёт контракт в `sections`. */
 export interface ReportChapter {
@@ -249,6 +250,26 @@ export class ReportsRepository {
       `SELECT ${COLUMNS} FROM reports WHERE id = $1 AND user_id = $2`,
       [id, userId],
     );
+  }
+
+  /**
+   * Серия провалов валидации подряд по истории разборов — вход circuit
+   * breaker'а (`breaker.ts`).
+   *
+   * Считается по последним строкам, а не SQL-окном: серия короткая (обычно
+   * 0–3), и «ведущие строки с кодом провала» проще прочитать кодом, чем
+   * выражать рекурсией в запросе. `validation`, записанный до итерации 17,
+   * тоже считается — иначе брейкер не увидел бы прогон 16.11.2026.
+   */
+  async validationStreak(limit = 20): Promise<{ streak: number; lastFailedAt: Date | null }> {
+    const rows = await this.db.query<ReportHistoryRow>(
+      `SELECT error_code, updated_at
+         FROM reports
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [limit],
+    );
+    return validationStreak(rows);
   }
 
   /** Расход на LLM за текущий календарный месяц, рубли. */

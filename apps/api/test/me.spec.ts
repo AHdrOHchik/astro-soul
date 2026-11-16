@@ -4,6 +4,10 @@ import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import { userIdFromTelegramId } from '../src/modules/users/pseudonym';
 import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
+// Версии разбора пишет только код (миграция 0022 сняла DEFAULT): фикстура,
+// которая вставляет строку в `reports`, обязана назвать версии явно.
+import { PROMPT_VERSION } from '../src/modules/reports/prompts';
+import { STRUCTURE_VERSION } from '../src/modules/reports/validators';
 import { FICTIONAL_USER, TEST_BOT_TOKEN, TEST_PEPPER } from './test-env';
 import type { Me } from '@astro-soul/shared';
 
@@ -318,14 +322,14 @@ describe('GET /api/v1/me — данные', () => {
       [userId],
     );
     const older = await ctx.db.queryOne<{ id: string }>(
-      `INSERT INTO reports (chart_id, user_id, created_at)
-       VALUES ($1, $2, now() - interval '2 hours') RETURNING id`,
-      [chart?.id, userId],
+      `INSERT INTO reports (chart_id, user_id, created_at, prompt_version, report_structure_version)
+       VALUES ($1, $2, now() - interval '2 hours', $3, $4) RETURNING id`,
+      [chart?.id, userId, PROMPT_VERSION, STRUCTURE_VERSION],
     );
     const newer = await ctx.db.queryOne<{ id: string }>(
-      `INSERT INTO reports (chart_id, user_id, created_at)
-       VALUES ($1, $2, now() - interval '1 hour') RETURNING id`,
-      [chart?.id, userId],
+      `INSERT INTO reports (chart_id, user_id, created_at, prompt_version, report_structure_version)
+       VALUES ($1, $2, now() - interval '1 hour', $3, $4) RETURNING id`,
+      [chart?.id, userId, PROMPT_VERSION, STRUCTURE_VERSION],
     );
 
     const second = await request(ctx.app.getHttpServer())

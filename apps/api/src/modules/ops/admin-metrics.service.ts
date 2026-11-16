@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DbService } from '../../db/db.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
+import { breakerState, validationStreak, type ReportHistoryRow } from '../reports/breaker';
 
 /**
  * Метрики продукта (`GET /admin/metrics`, контракт 1.4.0).
@@ -23,6 +24,15 @@ export interface ProductMetrics {
   /** Стоимость LLM в рублях за 30 дней — по `reports.llm_cost_rub`. */
   readonly llm_cost_rub_30d: number;
   readonly reports_failed_30d: number;
+  /**
+   * Circuit breaker разборов (итерация 17): сколько провалов валидации подряд
+   * и закрыт ли приём новых разборов. Без этого массовый провал был виден
+   * только как «failed» в логах — и молча жёг бюджет.
+   */
+  readonly reports_validation_streak: number;
+  readonly reports_breaker_open: boolean;
+  /** Когда истекла последняя серия (`null` — провалов не было). */
+  readonly reports_breaker_last_failed_at: string | null;
   /** QA-11: платежи, по которым доступ не выдан. */
   readonly payments_rejected_30d: number;
   readonly amount_mismatch_30d: number;
@@ -75,7 +85,7 @@ export class AdminMetricsService {
   ) {}
 
   async getMetrics(): Promise<ProductMetrics> {
-    const [activity, events, funnel, subscriptions, payments, reports, cost, telegramCancel] =
+    const [activity, events, funnel, subscriptions, payments, reports, cost, history, telegramCancel] =
       await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -169,6 +179,13 @@ export class AdminMetricsService {
              FROM reports
             WHERE created_at >= now() - ${WINDOW}`,
         ),
+        // Серия провалов валидации — та же логика, что у брейкера в заказе.
+        this.db.query<ReportHistoryRow>(
+          `SELECT error_code, updated_at
+             FROM reports
+            ORDER BY created_at DESC
+            LIMIT 20`,
+        ),
         // Задача A: «повторяется в фоне» без числа — это «неизвестно, работает
         // ли». Первое — сколько отмен автопродления не прошло, второе —
         // сколько подписок всё ещё ждут повтора.
@@ -197,6 +214,9 @@ export class AdminMetricsService {
     const paying = subscriptions?.paying ?? 0;
     const mau = activity?.mau ?? 0;
 
+    const series = validationStreak(history);
+    const breaker = breakerState(series.streak, series.lastFailedAt);
+
     return {
       mau,
       paying,
@@ -208,6 +228,9 @@ export class AdminMetricsService {
       // Одна формула: рубли по цене модели (QA-002, задача 2).
       llm_cost_rub_30d: Math.round(Number(cost?.cost ?? 0) * 10_000) / 10_000,
       reports_failed_30d: reports?.failed ?? 0,
+      reports_validation_streak: breaker.streak,
+      reports_breaker_open: breaker.open,
+      reports_breaker_last_failed_at: breaker.last_failed_at,
       payments_rejected_30d: payments?.rejected ?? 0,
       amount_mismatch_30d: payments?.mismatch ?? 0,
       refunded_30d: payments?.refunded ?? 0,
