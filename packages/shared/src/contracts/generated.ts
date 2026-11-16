@@ -964,6 +964,11 @@ export interface paths {
          *     подставляет карту явно, даже если она у пользователя одна — скрытой
          *     привязки к «первой карте» нет (1.5.2). Для остальных планов `chart_id`
          *     необязателен; если передан — проверяется, что карта своя.
+         *
+         *     Счёт на разбор по карте, за которую разбор уже куплен, не выставляется
+         *     (`422`, `details.reason = report_already_owned`): второй раз платить
+         *     не за что, а списание за уже имеющийся товар — возврат и переписка.
+         *     Проверка смотрит на доступ к карте, а не на цену плана.
          */
         post: {
             parameters: {
@@ -988,8 +993,11 @@ export interface paths {
                     };
                 };
                 /**
-                 * @description Неизвестный план, чужая карта или отсутствует `chart_id` у
-                 *     `one_149` — `VALIDATION_FAILED` + `details.field_errors[{field, message}]`.
+                 * @description Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`
+                 *     или разбор для этой карты уже куплен — `VALIDATION_FAILED` +
+                 *     `details.field_errors[{field, message}]`; `details.reason` уточняет
+                 *     причину (`chart_not_found`, `chart_required_for_report`,
+                 *     `report_already_owned`, `invoice_request_invalid`).
                  */
                 422: {
                     headers: {

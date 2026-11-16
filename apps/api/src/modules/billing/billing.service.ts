@@ -61,6 +61,17 @@ export class BillingService {
           { reason: 'chart_not_found' },
         );
       }
+
+      // Двойная покупка разбора. Проверка смотрит на доступ, а не на цену и не
+      // на «тестовый» признак: на тарифе за 1 ⭐ она обязана срабатывать так же,
+      // как на 149 ⭐, иначе тест не проверяет то, ради чего он.
+      if (plan.kind === 'one_off' && plan.grant === 'report' && (await this.repo.hasActiveReportGrant(userId, chartId))) {
+        this.logger.info('invoice_refused_already_owned', { user_id: userId, plan: planCode, chart_id: chartId });
+        throw invalidFields(
+          [{ field: 'chart_id', message: 'Разбор для этой карты уже куплен — открой его' }],
+          { reason: 'report_already_owned' },
+        );
+      }
     }
 
     // Б-3: сначала переиспользуем уже выставленный счёт — иначе лимит

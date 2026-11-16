@@ -40,8 +40,10 @@ describe('check.sh --prod', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('PAYMENTS_TEST_PLANS');
-    // Текст объясняет, чем это плохо, а не только «нельзя».
+    // Текст объясняет, чем это плохо, а не только «нельзя», и называет оба
+    // тестовых тарифа: флаг один, а денежных путей под ним два.
     expect(result.stderr).toContain('test_1');
+    expect(result.stderr).toContain('test_report_1');
   });
 
   it('без --prod то же окружение только предупреждает', () => {

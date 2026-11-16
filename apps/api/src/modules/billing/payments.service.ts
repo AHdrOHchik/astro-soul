@@ -572,7 +572,7 @@ export class PaymentsService {
       return { expiresAt: subscription.expiresAt, renewed };
     }
 
-    await this.repo.grantEntitlement(client, {
+    const granted = await this.repo.grantEntitlement(client, {
       userId: input.userId,
       kind: input.plan.grant,
       chartId: input.chartId,
@@ -580,6 +580,19 @@ export class PaymentsService {
       partnerChartId: null,
       paymentId: input.paymentId,
     });
+
+    if (!granted) {
+      // Второй оплаты за тот же разбор быть не должно: `POST /billing/invoice`
+      // такой счёт не выставляет. Но если два счёта всё же были выставлены до
+      // оплаты, доступ остаётся один — второй платёж виден в `payments`
+      // и разбирается возвратом, а не второй строкой `entitlements`.
+      this.logger.warn('entitlement_already_granted', {
+        user_id: input.userId,
+        kind: input.plan.grant,
+        plan: input.plan.code,
+        chart_id: input.chartId,
+      });
+    }
 
     return { expiresAt: null, renewed: false };
   }

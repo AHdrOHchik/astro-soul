@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   PLANS,
@@ -28,6 +29,14 @@ import { makeFakeAstro } from './fake-astro';
  * от несуществующего плана, из каталога он не вылезает ни в одном режиме, а
  * права и проверка суммы — те же, что у обычного тарифа.
  */
+
+const BIRTH = {
+  birth_date: '1993-07-21',
+  birth_time: '09:40',
+  time_precision: 'exact',
+  birth_place: { name: 'Казань', country: 'RU', lat: 55.7963, lon: 49.1088, tz: 'Europe/Moscow' },
+  consent: { accepted: true, version: '2026-11-10' },
+};
 
 const WEBHOOK_PATH = `/api/v1/internal/telegram/webhook/${TEST_WEBHOOK_SECRET}`;
 const SECRET_HEADER = 'X-Telegram-Bot-Api-Secret-Token';
@@ -63,13 +72,36 @@ interface InvoiceResponse {
 async function invoice(
   ctx: TestContext,
   planCode: string,
+  chartId?: string,
 ): Promise<{ status: number; body: InvoiceResponse }> {
   const response = await client(ctx)
     .post('/api/v1/billing/invoice')
     .set(INIT_DATA_HEADER, initDataFor())
-    .send({ plan_code: planCode });
+    .send({ plan_code: planCode, ...(chartId === undefined ? {} : { chart_id: chartId }) });
 
   return { status: response.status, body: response.body as InvoiceResponse };
+}
+
+/** Карта через подставной движок: `test_report_1` привязан к конкретной карте. */
+async function createChart(ctx: TestContext, birth: typeof BIRTH = BIRTH): Promise<string> {
+  const response = await client(ctx)
+    .post('/api/v1/charts')
+    .set(INIT_DATA_HEADER, initDataFor())
+    .send(birth)
+    .expect(201);
+
+  return response.body.chart.chart_id as string;
+}
+
+/** `POST /reports`: 202 — заказ принят, 402 — разбор не оплачен. */
+async function orderReport(ctx: TestContext, chartId: string): Promise<number> {
+  const response = await client(ctx)
+    .post('/api/v1/reports')
+    .set(INIT_DATA_HEADER, initDataFor())
+    .set('Idempotency-Key', randomUUID())
+    .send({ chart_id: chartId, type: 'full' });
+
+  return response.status;
 }
 
 async function payloadOf(ctx: TestContext): Promise<string> {
@@ -294,6 +326,145 @@ describe('PAYMENTS_TEST_PLANS=1 (стенд владельца)', () => {
     // Повторный возврат того же платежа ничего не делает и не зовёт Bot API.
     expect(await payments.refund('charge-test-refund', 'qa_support_request')).toBe(false);
     expect(onTelegram.refunds).toHaveLength(1);
+  });
+});
+
+describe('test_report_1 — разовый разбор за 1 ⭐', () => {
+  it('без флага — 422, как на несуществующий план', async () => {
+    const created = await createChart(off);
+    const test = await invoice(off, 'test_report_1', created);
+    const unknown = await invoice(off, 'no_such_plan', created);
+
+    expect(test.status).toBe(422);
+    expect(test.body.details).toEqual(unknown.body.details);
+    expect(test.body.message).toBe(unknown.body.message);
+    expect(offTelegram.invoiceCalls).toHaveLength(0);
+  });
+
+  it('с флагом — обычный разовый счёт: 1 ⭐, без subscription_period', async () => {
+    const chartId = await createChart(on);
+    const created = await invoice(on, 'test_report_1', chartId);
+
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({
+      plan_code: 'test_report_1',
+      stars: 1,
+      is_subscription: false,
+      subscription_period_sec: null,
+    });
+
+    const call = onTelegram.invoiceCalls[0];
+    expect(call?.prices).toEqual([{ label: 'Тест-разбор', amount: 1 }]);
+    // Ключевое: без периода Telegram не сделает из разового товара подписку.
+    expect(call?.subscriptionPeriod).toBeUndefined();
+  });
+
+  it('оплата 1 ⭐: доступ к разбору только на эту карту, вторая — цена', async () => {
+    const paidChart = await createChart(on);
+    const otherChart = await createChart(on, {
+      ...BIRTH,
+      birth_date: '1990-02-11',
+      birth_place: { name: 'Сочи', country: 'RU', lat: 43.5855, lon: 39.7231, tz: 'Europe/Moscow' },
+    });
+
+    const created = await invoice(on, 'test_report_1', paidChart);
+    const payload = await payloadOf(on);
+    expect(created.status).toBe(201);
+
+    await sendPayment(on, { payload, chargeId: 'charge-report-ok', amount: 1 });
+
+    const state = await me(on);
+    expect(state.entitlements).toMatchObject({
+      full_report: true,
+      full_report_chart_id: paidChart,
+    });
+
+    // «К разбору» — только на оплаченной карте; на второй цена (402).
+    expect(await orderReport(on, paidChart)).toBe(202);
+    expect(await orderReport(on, otherChart)).toBe(402);
+
+    const payment = await on.db.queryOne<{ status: string; is_test: boolean; plan_code: string }>(
+      `SELECT status, is_test, plan_code FROM payments WHERE telegram_payment_charge_id = 'charge-report-ok'`,
+    );
+    expect(payment).toMatchObject({ status: 'processed', is_test: true, plan_code: 'test_report_1' });
+  });
+
+  it('вторая покупка того же разбора: 422 и ни одного второго entitlement', async () => {
+    const chartId = await createChart(on);
+    await invoice(on, 'test_report_1', chartId);
+    await sendPayment(on, { payload: await payloadOf(on), chargeId: 'charge-report-first', amount: 1 });
+
+    const again = await invoice(on, 'test_report_1', chartId);
+    expect(again.status).toBe(422);
+    expect(again.body.details).toMatchObject({ field_errors: [{ field: 'chart_id' }] });
+
+    const grants = await on.db.queryOne<{ total: number }>(
+      `SELECT count(*)::int AS total FROM entitlements WHERE kind = 'report' AND status = 'active'`,
+    );
+    expect(grants?.total).toBe(1);
+  });
+
+  it('защита от двойной покупки не привязана к цене: one_149 ведёт себя так же', async () => {
+    const chartId = await createChart(on);
+    await invoice(on, 'one_149', chartId);
+    await sendPayment(on, { payload: await payloadOf(on), chargeId: 'charge-one-paid', amount: 149 });
+
+    const again = await invoice(on, 'one_149', chartId);
+    expect(again.status).toBe(422);
+    expect(again.body.details).toMatchObject({ field_errors: [{ field: 'chart_id' }] });
+
+    const grants = await on.db.queryOne<{ total: number }>(
+      `SELECT count(*)::int AS total FROM entitlements WHERE kind = 'report' AND status = 'active'`,
+    );
+    expect(grants?.total).toBe(1);
+  });
+
+  it('проверка суммы не ослаблена: 2 ⭐ за test_report_1 → отказ', async () => {
+    const chartId = await createChart(on);
+    await invoice(on, 'test_report_1', chartId);
+
+    await sendPayment(on, { payload: await payloadOf(on), chargeId: 'charge-report-wrong', amount: 2 });
+
+    const payment = await on.db.queryOne<{ status: string; reject_reason: string; is_test: boolean }>(
+      `SELECT status, reject_reason, is_test FROM payments
+        WHERE telegram_payment_charge_id = 'charge-report-wrong'`,
+    );
+    expect(payment).toMatchObject({ status: 'rejected', reject_reason: 'amount_mismatch', is_test: true });
+
+    const state = await me(on);
+    expect(state.entitlements?.full_report).toBe(false);
+  });
+
+  it('возврат 1 ⭐ отзывает доступ и разрешает покупку снова', async () => {
+    const chartId = await createChart(on);
+    await invoice(on, 'test_report_1', chartId);
+    await sendPayment(on, { payload: await payloadOf(on), chargeId: 'charge-report-refund', amount: 1 });
+
+    const payments = on.app.get(PaymentsService);
+    expect(await payments.refund('charge-report-refund', 'qa_support_request')).toBe(true);
+
+    const state = await me(on);
+    expect(state.entitlements?.full_report).toBe(false);
+    expect(state.entitlements?.full_report_chart_id).toBeNull();
+    expect(await orderReport(on, chartId)).toBe(402);
+
+    // После возврата доступ отозван — тот же разбор можно купить заново.
+    const again = await invoice(on, 'test_report_1', chartId);
+    expect(again.status).toBe(201);
+  });
+
+  it('метрики: тестовый разбор отдельно и вне выручки', async () => {
+    const chartId = await createChart(on);
+    await invoice(on, 'test_report_1', chartId);
+    await sendPayment(on, { payload: await payloadOf(on), chargeId: 'charge-report-metrics', amount: 1 });
+
+    const response = await client(on)
+      .get('/api/v1/admin/metrics')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(response.body.test_payments_30d).toBe(1);
+    expect(response.body.stars_received_30d).toBe(0);
   });
 });
 

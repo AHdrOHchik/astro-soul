@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.5.7
+  version: 1.5.8
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -211,6 +211,19 @@ info:
         отвечает `422 VALIDATION_FAILED`, как на несуществующий план;
       • `SubscriptionState.plan` не менялся: тестовая подписка отдаёт `month`
         (права как у `month_399`), «тестовость» живёт в `payments.is_test`.
+
+    1.5.8 — второй тестовый тариф и защита от двойной покупки разбора:
+      • `POST /billing/invoice` для плана-разбора (`one_149`) на карту, за
+        которую разбор уже куплен, отвечает `422 VALIDATION_FAILED`
+        (`details.reason = report_already_owned`, `field_errors[0].field =
+        chart_id`). Раньше второй счёт выставлялся и вторые 149 ⭐ списывались
+        за товар, который уже был у человека. Проверка не зависит от цены и от
+        «тестового» признака тарифа — на 1 ⭐ она работает так же;
+      • `successful_payment` по разовому товару больше не создаёт второй
+        `entitlement` на ту же карту (вторая линия обороны для случая «два
+        счёта выставлены до оплаты»); платёж при этом виден в `payments`;
+      • тариф-разбор за 1 ⭐ (`test_report_1`) существует только при
+        `PAYMENTS_TEST_PLANS=1` и в `PlanCode` не входит — как и `test_1`.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1359,6 +1372,11 @@ paths:
         подставляет карту явно, даже если она у пользователя одна — скрытой
         привязки к «первой карте» нет (1.5.2). Для остальных планов `chart_id`
         необязателен; если передан — проверяется, что карта своя.
+
+        Счёт на разбор по карте, за которую разбор уже куплен, не выставляется
+        (`422`, `details.reason = report_already_owned`): второй раз платить
+        не за что, а списание за уже имеющийся товар — возврат и переписка.
+        Проверка смотрит на доступ к карте, а не на цену плана.
       security: [{ TelegramInitData: [] }]
       requestBody:
         required: true
@@ -1373,8 +1391,11 @@ paths:
               schema: { $ref: '#/components/schemas/Invoice' }
         '422':
           description: |
-            Неизвестный план, чужая карта или отсутствует `chart_id` у
-            `one_149` — `VALIDATION_FAILED` + `details.field_errors[{field, message}]`.
+            Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`
+            или разбор для этой карты уже куплен — `VALIDATION_FAILED` +
+            `details.field_errors[{field, message}]`; `details.reason` уточняет
+            причину (`chart_not_found`, `chart_required_for_report`,
+            `report_already_owned`, `invoice_request_invalid`).
         '429':
           description: 'Слишком много инвойсов (антифрод): 3 в час, 10 в сутки — Problem.code = RATE_LIMITED'
 

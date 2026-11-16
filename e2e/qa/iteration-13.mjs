@@ -88,6 +88,33 @@ function client(base, telegramId = TG_ID) {
   return { call, me: () => call('/me') };
 }
 
+/** Карта через настоящий движок: разбор привязан к конкретной карте. */
+async function createChart(base, birth) {
+  const api = client(base);
+  const created = await api.call('/charts', {
+    method: 'POST',
+    body: JSON.stringify({
+      ...birth,
+      time_precision: 'exact',
+      consent: { version: '2026-11-10', accepted: true },
+    }),
+  });
+  if (created.status !== 201 && created.status !== 200) {
+    throw new Error(`POST /charts: ${created.status} ${JSON.stringify(created.body)}`);
+  }
+  return created.body.chart.chart_id;
+}
+
+/** `POST /reports`: 202 — заказ принят, 402 — разбор по этой карте не оплачен. */
+async function orderReport(base, chartId) {
+  const response = await client(base).call('/reports', {
+    method: 'POST',
+    body: JSON.stringify({ chart_id: chartId, type: 'full' }),
+    headers: { 'idempotency-key': randomUUID() },
+  });
+  return response.status;
+}
+
 async function stubReset() {
   await fetch(`${STUB}/__calls/reset`, { method: 'POST' });
   await fetch(`${STUB}/__config`, { method: 'POST', body: JSON.stringify({ fail: {} }) });
@@ -362,6 +389,187 @@ async function refund() {
   return true;
 }
 
+const CHART_A = {
+  birth_date: '1992-03-08',
+  birth_time: '11:15',
+  birth_place: { name: 'Москва', country: 'RU', lat: 55.7558, lon: 37.6173, tz: 'Europe/Moscow' },
+};
+const CHART_B = {
+  birth_date: '1988-09-30',
+  birth_time: '22:05',
+  birth_place: { name: 'Тбилиси', country: 'GE', lat: 41.7151, lon: 44.8271, tz: 'Asia/Tbilisi' },
+};
+
+async function reportOff() {
+  console.log('\n=== report-off: без флага разового тарифа нет ===');
+
+  await stubReset();
+  const api = client(API_OFF);
+  await api.me();
+  cleanup();
+  await api.me();
+  const chartId = await createChart(API_OFF, CHART_A);
+
+  const test = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'test_report_1', chart_id: chartId }),
+  });
+  const unknown = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'no_such_plan', chart_id: chartId }),
+  });
+
+  check(test.status === 422, 'POST /billing/invoice {test_report_1} → 422', String(test.status));
+  check(
+    JSON.stringify(test.body?.details) === JSON.stringify(unknown.body?.details) &&
+      test.body?.message === unknown.body?.message,
+    'ответ неотличим от несуществующего плана',
+  );
+  check((await stubCalls('createInvoiceLink')).length === 0, 'Bot API не звали');
+  check(
+    sql(`select count(*) from invoices where plan_code = 'test_report_1'`) === '0',
+    'инвойсов test_report_1 в БД нет',
+  );
+  return true;
+}
+
+async function reportOn() {
+  console.log('\n=== report-on: разовый счёт на 1 ⭐ без периода ===');
+
+  await stubReset();
+  const api = client(API_ON);
+  await api.me();
+  cleanup();
+  await api.me();
+  const chartId = await createChart(API_ON, CHART_A);
+
+  const created = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'test_report_1', chart_id: chartId }),
+  });
+
+  check(created.status === 201, 'POST /billing/invoice → 201', String(created.status));
+  check(created.body?.plan_code === 'test_report_1', 'plan_code = test_report_1');
+  check(created.body?.stars === 1, 'stars = 1', String(created.body?.stars));
+  check(created.body?.is_subscription === false, 'is_subscription = false');
+  check(created.body?.subscription_period_sec === null, 'subscription_period_sec = null');
+
+  const call = (await stubCalls('createInvoiceLink'))[0];
+  check(call?.body?.prices?.[0]?.amount === 1, 'в Bot API ушла сумма 1');
+  check(call?.body?.subscription_period === undefined, 'subscription_period не передан (не подписка)');
+  return true;
+}
+
+async function reportPay() {
+  console.log('\n=== report-pay: доступ только на оплаченную карту ===');
+
+  await stubReset();
+  const api = client(API_ON);
+  await api.me();
+  cleanup();
+  await api.me();
+
+  const paidChart = await createChart(API_ON, CHART_A);
+  const otherChart = await createChart(API_ON, CHART_B);
+
+  const created = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'test_report_1', chart_id: paidChart }),
+  });
+  check(created.status === 201, 'счёт выставлен', String(created.status));
+
+  const payload = sql(
+    `select payload from invoices where plan_code = 'test_report_1' order by created_at desc limit 1`,
+  );
+  const chargeId = `qa13-${randomUUID()}`;
+  await pay(API_ON, chargeId, 1, payload);
+
+  const me = await client(API_ON).me();
+  check(me.body?.entitlements?.full_report === true, 'entitlements.full_report = true');
+  check(
+    me.body?.entitlements?.full_report_chart_id === paidChart,
+    'full_report_chart_id = оплаченная карта',
+  );
+  check(me.body?.entitlements?.full_report_chart_id !== otherChart, 'на второй карте доступа нет');
+
+  // «К разбору» на оплаченной карте, цена — на второй.
+  check((await orderReport(API_ON, paidChart)) === 202, 'POST /reports по оплаченной карте → 202');
+  check((await orderReport(API_ON, otherChart)) === 402, 'POST /reports по второй карте → 402 (цена)');
+
+  const row = sql(
+    `select status || '|' || is_test || '|' || total_amount from payments
+      where telegram_payment_charge_id = '${chargeId}'`,
+  );
+  check(row === 'processed|true|1', 'платёж: processed, is_test, 1 ⭐', row);
+
+  // Повторная покупка того же разбора — отказ, второго доступа нет.
+  const again = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'test_report_1', chart_id: paidChart }),
+  });
+  check(again.status === 422, 'повторный счёт на ту же карту → 422', String(again.status));
+  check(
+    again.body?.details?.field_errors?.[0]?.field === 'chart_id',
+    'отказ указывает на chart_id',
+  );
+  check(
+    sql(`select count(*) from entitlements where kind = 'report' and status = 'active'`) === '1',
+    'активный report-доступ ровно один',
+  );
+
+  // Та же защита для настоящего тарифа: она не про цену.
+  const one = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'one_149', chart_id: paidChart }),
+  });
+  check(one.status === 422, 'one_149 на уже купленную карту → 422 (защита не про цену)', String(one.status));
+
+  const metrics = await client(API_ON).call('/admin/metrics');
+  check(metrics.body?.test_payments_30d === 1, 'test_payments_30d = 1', String(metrics.body?.test_payments_30d));
+  check(metrics.body?.stars_received_30d === 0, 'stars_received_30d = 0', String(metrics.body?.stars_received_30d));
+  return true;
+}
+
+async function reportRefund() {
+  console.log('\n=== report-refund: возврат 1 ⭐ отзывает доступ и разрешает покупку снова ===');
+
+  await stubReset();
+  const api = client(API_ON);
+  await api.me();
+  cleanup();
+  await api.me();
+  const chartId = await createChart(API_ON, CHART_A);
+
+  await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'test_report_1', chart_id: chartId }),
+  });
+  const payload = sql(
+    `select payload from invoices where plan_code = 'test_report_1' order by created_at desc limit 1`,
+  );
+  const chargeId = `qa13-${randomUUID()}`;
+  await pay(API_ON, chargeId, 1, payload);
+
+  const run = spawnSync('pnpm', ['exec', 'tsx', '../../e2e/qa/support-refund.ts', chargeId], {
+    cwd: `${ROOT}apps/api`,
+    env: { ...process.env, DATABASE_URL: `postgres://postgres@127.0.0.1:5432/${DB}` },
+    encoding: 'utf8',
+  });
+  check(run.status === 0, 'support-refund.ts выполнился', String(run.status));
+
+  const me = await client(API_ON).me();
+  check(me.body?.entitlements?.full_report === false, 'full_report = false после возврата');
+  check(me.body?.entitlements?.full_report_chart_id === null, 'full_report_chart_id = null');
+  check((await orderReport(API_ON, chartId)) === 402, 'POST /reports → 402 после возврата');
+
+  const again = await api.call('/billing/invoice', {
+    method: 'POST',
+    body: JSON.stringify({ plan_code: 'test_report_1', chart_id: chartId }),
+  });
+  check(again.status === 201, 'после возврата разбор можно купить снова', String(again.status));
+  return true;
+}
+
 async function prodGuard() {
   console.log('\n=== prod-guard: check.sh --prod не пускает с флагом ===');
 
@@ -392,6 +600,10 @@ const scenarios = {
   pay: payScenario,
   'wrong-amount': wrongAmount,
   refund,
+  'report-off': reportOff,
+  'report-on': reportOn,
+  'report-pay': reportPay,
+  'report-refund': reportRefund,
   'prod-guard': prodGuard,
 };
 const which = (process.argv[2] ?? 'all').toLowerCase();

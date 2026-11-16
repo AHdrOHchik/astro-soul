@@ -162,6 +162,30 @@ export class BillingRepository {
     );
   }
 
+  /**
+   * Куплен ли уже полный разбор **этой** карты.
+   *
+   * Проверка не смотрит ни на `plan_code`, ни на цену: иначе на тарифе за
+   * 1 ⭐ защита от двойной покупки «не сработала бы, потому что дёшево».
+   * Считается только активный `entitlements (kind = 'report')` для карты:
+   * после возврата запись `revoked`, и купить снова можно.
+   */
+  async hasActiveReportGrant(userId: string, chartId: string): Promise<boolean> {
+    const row = await this.db.queryOne<{ one: number }>(
+      `SELECT 1 AS one
+         FROM entitlements
+        WHERE user_id = $1
+          AND kind = 'report'
+          AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > now())
+          AND chart_id = $2
+        LIMIT 1`,
+      [userId, chartId],
+    );
+
+    return row !== null;
+  }
+
   // --- платежи (в транзакции) ---------------------------------------------
 
   /** `SELECT ... FOR UPDATE`: вторая доставка того же charge_id ждёт первую. */
@@ -360,12 +384,37 @@ export class BillingRepository {
 
   // --- выдача доступа ------------------------------------------------------
 
-  async grantEntitlement(client: PoolClient, grant: GrantInput): Promise<void> {
-    await client.query(
+  /**
+   * Выдать доступ разовым товаром. Идемпотентно по смыслу «одна покупка —
+   * один доступ»: если активный доступ на эту же карту уже есть, вторая
+   * запись не создаётся.
+   *
+   * Это вторая линия обороны, а не единственная: `POST /billing/invoice`
+   * отказывает в счёте на уже купленный разбор, поэтому до оплаты дело
+   * обычно не доходит. Здесь закрывается гонка «два счёта выставлены до
+   * оплаты» — деньги за второй платёж всё равно вернутся, но второй
+   * `entitlement` не появится.
+   *
+   * Возвращает `false`, если доступ уже был и запись не создана.
+   */
+  async grantEntitlement(client: PoolClient, grant: GrantInput): Promise<boolean> {
+    const result = await client.query<{ id: string }>(
       `INSERT INTO entitlements (user_id, kind, chart_id, partner_chart_id, payment_id)
-       VALUES ($1, $2, $3, $4, $5)`,
+       SELECT $1, $2, $3, $4, $5
+        WHERE NOT EXISTS (
+                SELECT 1 FROM entitlements
+                 WHERE user_id = $1
+                   AND kind = $2
+                   AND status = 'active'
+                   AND (expires_at IS NULL OR expires_at > now())
+                   AND chart_id IS NOT DISTINCT FROM $3
+                   AND partner_chart_id IS NOT DISTINCT FROM $4
+              )
+       RETURNING id`,
       [grant.userId, grant.kind, grant.chartId, grant.partnerChartId, grant.paymentId],
     );
+
+    return result.rowCount !== null && result.rowCount > 0;
   }
 
   /**
