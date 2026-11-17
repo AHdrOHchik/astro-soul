@@ -113,7 +113,7 @@ type Problem =
   | { kind: 'unsupported' | 'outdated' | 'failed' }
   | { kind: 'rate_limited'; until: Date | undefined }
   | { kind: 'rejected'; text: string | undefined; requestId: string | undefined }
-  | { kind: 'price_changed'; stars: number }
+  | { kind: 'price_changed' }
   | { kind: 'error'; text: string; requestId: string | undefined };
 
 function problemOf(error: unknown): Problem {
@@ -185,6 +185,13 @@ export function PaywallScreen({
   const offered = visiblePlans.filter((offer) => !offer.test);
   const testOffered = visiblePlans.filter((offer) => offer.test);
   const plan = chosen === null ? null : visiblePlans.find((offer) => offer.plan_code === chosen) ?? null;
+  const expectedPlanMissing = plansRequest.status === 'ready' && (
+    compatibilityPurchase
+      ? !plansRequest.plans.some((offer) => offer.plan_code === 'compat_249' && !offer.test)
+      : offersReport
+        ? !plansRequest.plans.some((offer) => offer.plan_code === REPORT_PLAN && !offer.test)
+        : initialKind === 'subscription' && subscriptions && !subscribed && !plansRequest.plans.some((offer) => offer.kind === 'subscription' && !offer.test)
+  );
   // Opened while a payment is still on its way to the server: the screen starts where that payment left off.
   const [phase, setPhase] = useState<Phase>(awaiting === null ? 'choosing' : 'processing');
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -284,6 +291,13 @@ export function PaywallScreen({
     setPhase('processing');
   };
 
+  const refreshCatalogue = () => {
+    setProblem(null);
+    setInvoices({});
+    setPlansRequest({ status: 'loading' });
+    setReloadPlans((count) => count + 1);
+  };
+
   const pay = async () => {
     const signal = life.current?.signal;
     if (plan === null || phase !== 'choosing' || signal === undefined) return;
@@ -319,9 +333,12 @@ export function PaywallScreen({
       const made = invoice;
       setInvoices((current) => ({ ...current, [plan.plan_code]: made }));
       if (made.stars !== plan.stars) {
-        // The catalogue and invoice differ: show the invoice's server price before opening it.
+        // A changed server price invalidates this checkout. Do not cache or open the mismatched invoice.
         setPhase('choosing');
-        setProblem({ kind: 'price_changed', stars: made.stars });
+        setInvoices((current) => ({ ...current, [plan.plan_code]: undefined }));
+        setProblem({ kind: 'price_changed' });
+        // The API 1.6.0 closed event enum has no `price_mismatch_shown`; use its safe generic event/code.
+        track('error_shown', { screen: 'paywall', code: 'price_mismatch' });
         return;
       }
     }
@@ -442,8 +459,10 @@ export function PaywallScreen({
   if (visiblePlans.length === 0) {
     return (
       <Screen back={back}>
-        <StateView icon={<StarsIcon />} title={subscribed ? activeLine : copy.nothingOnSale}>
-          {onOpenReport ? (
+        <StateView icon={<StarsIcon />} title={expectedPlanMissing ? copy.priceUnavailable : subscribed ? activeLine : copy.nothingOnSale}>
+          {expectedPlanMissing ? (
+            <Button onClick={refreshCatalogue}>{copy.retryPlans}</Button>
+          ) : onOpenReport ? (
             <Button onClick={onOpenReport}>{ru.chart.openReport}</Button>
           ) : (
             <Button onClick={onClose}>{copy.leave}</Button>
@@ -483,15 +502,17 @@ export function PaywallScreen({
       busy={busy}
       footer={
         <>
-          {problem && <ProblemNote problem={problem} />}
-          <Button
-            disabled={plan === null || busy}
-            onClick={() => {
-              void pay();
-            }}
-          >
-            <PayLabel phase={phase} price={plan === null ? null : priceOf(plan)} />
-          </Button>
+          {problem && <ProblemNote problem={problem} onRefresh={refreshCatalogue} />}
+          {problem?.kind !== 'price_changed' && (
+            <Button
+              disabled={plan === null || busy}
+              onClick={() => {
+                void pay();
+              }}
+            >
+              <PayLabel phase={phase} price={plan === null ? null : priceOf(plan)} />
+            </Button>
+          )}
           {plan?.test && <p className={styles.note}>{copy.testPlansNote}</p>}
         </>
       }
@@ -549,13 +570,14 @@ function PayLabel({ phase, price }: { phase: Phase; price: number | null }) {
   );
 }
 
-function ProblemNote({ problem }: { problem: Problem }) {
+function ProblemNote({ problem, onRefresh }: { problem: Problem; onRefresh: () => void }) {
   const requestId = 'requestId' in problem ? problem.requestId : undefined;
   return (
     <div className={styles.problem} role="alert">
       <Notice tone="warning">
         <ProblemText problem={problem} />
       </Notice>
+      {problem.kind === 'price_changed' && <Button onClick={onRefresh}>{copy.priceChangedAction}</Button>}
       {requestId && <Reference value={requestId} label={ru.common.requestId(requestId)} />}
     </div>
   );
@@ -574,11 +596,7 @@ function ProblemText({ problem }: { problem: Problem }) {
     case 'rejected':
       return <>{problem.text ? `${copy.invoiceRejected} ${problem.text}` : copy.invoiceRejected}</>;
     case 'price_changed':
-      return (
-        <>
-          {copy.priceChanged} <Stars count={problem.stars} />. {copy.priceChangedAction}
-        </>
-      );
+      return <>{copy.priceChanged}</>;
     default:
       return <>{problem.text}</>;
   }

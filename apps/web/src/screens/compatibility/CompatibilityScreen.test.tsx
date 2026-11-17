@@ -13,7 +13,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function mount(api = fakeApi(), initialId: string | null = null) {
+function mount(api = fakeApi(), initialId: string | null = null, telegram = fakeTelegram()) {
   const analytics = fakeAnalytics();
   const onBuy = vi.fn();
   function Harness() {
@@ -25,7 +25,7 @@ function mount(api = fakeApi(), initialId: string | null = null) {
         compatibilityId={compatibilityId}
         onCompatibilityId={setCompatibilityId}
         keys={fakeKeys()}
-        telegram={fakeTelegram()}
+        telegram={telegram}
         limits={{ geo_min_query_length: 2, geo_max_query_length: 40 }}
         supportLink="https://t.me/support"
         track={analytics.track}
@@ -34,7 +34,7 @@ function mount(api = fakeApi(), initialId: string | null = null) {
     );
   }
   const view = render(<Harness />);
-  return { api, analytics, onBuy, ...view };
+  return { api, analytics, onBuy, telegram, ...view };
 }
 
 async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
@@ -51,6 +51,10 @@ describe('CompatibilityScreen', () => {
   it('sends only the specified partner fields and null birth_time when time is unknown', async () => {
     const user = userEvent.setup();
     const { api } = mount();
+    expect(screen.getByText(copy.formPrivacy)).toBeInTheDocument();
+    expect(copy.formPrivacy).toBe('Данные партнёра нужны только для расчёта. Мы не спрашиваем имя и не показываем его. Совместимость хранится вместе с остальными твоими данными и удаляется вместе с ними.');
+    expect(screen.getByRole('textbox', { name: copy.place })).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /имя|заметк/i })).not.toBeInTheDocument();
     const day = screen.getByLabelText(copy.dateSegments.day);
     await user.click(day);
     await user.keyboard('17051994');
@@ -61,6 +65,8 @@ describe('CompatibilityScreen', () => {
     expect(await screen.findByRole('button', { name: /Казань/ })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /Казань/ }));
     expect(screen.getByText(copy.unknownTime)).toBeInTheDocument();
+    expect(copy.unknownTime).toContain('часть текста будет короче');
+    expect(copy.unknownTime).not.toContain('примерно');
     await user.click(screen.getByRole('button', { name: copy.submit }));
 
     await waitFor(() => { expect(api.orderCompatibility).toHaveBeenCalledOnce(); });
@@ -72,6 +78,23 @@ describe('CompatibilityScreen', () => {
     });
     expect(Object.keys(request?.partner ?? {}).sort()).toEqual(['birth_date', 'birth_time', 'place']);
     expect(key).toMatch(/^key-/);
+  });
+
+  it('does not submit without a selected city and places the required-field error by the city field', async () => {
+    const user = userEvent.setup();
+    const api = fakeApi();
+    mount(api);
+    await user.click(screen.getByLabelText(copy.dateSegments.day));
+    await user.keyboard('17051994');
+    await user.click(screen.getByLabelText(copy.timeSegments.hours));
+    await user.keyboard('1230');
+    await user.click(screen.getByRole('button', { name: copy.submit }));
+
+    const city = screen.getByRole('textbox', { name: copy.place });
+    expect(await screen.findByText(copy.missingPlace)).toBeInTheDocument();
+    expect(city).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.queryByText(copy.formError)).not.toBeInTheDocument();
+    expect(api.orderCompatibility).not.toHaveBeenCalled();
   });
 
   it('shows the server result in its order with server titles and does not add a PDF or a second disclaimer', async () => {
@@ -88,6 +111,42 @@ describe('CompatibilityScreen', () => {
     expect(screen.getByText(/инструмент саморефлексии, а не предсказание и не замена специалисту/)).toBeInTheDocument();
     expect(document.body.textContent.match(/инструмент саморефлексии/g)).toHaveLength(1);
     expect(screen.getByRole('button', { name: copy.createAnother })).toBeEnabled();
+  });
+
+  it('shares a fixed text without any partner data', async () => {
+    const api = fakeApi();
+    api.getCompatibility.mockResolvedValue(compatibilityReady);
+    const telegram = fakeTelegram();
+    const { analytics } = mount(api, compatibilityReady.id, telegram);
+    await screen.findByRole('heading', { name: 'Что совпадает' });
+    await userEvent.setup().click(screen.getByRole('button', { name: copy.share }));
+
+    expect(copy.shareMessage).toBe('Мой разбор совместимости в Astro Soul');
+    expect(copy.shareMessage).not.toMatch(/\d|Казань|романтическ|друг|родственник|коллег/i);
+    expect(telegram.share).toHaveBeenCalledWith(window.location.origin, copy.shareMessage);
+    expect(analytics.events).toContainEqual({ name: 'share_clicked' });
+  });
+
+  it('disables Create another at left zero and displays the server reset date', async () => {
+    const api = fakeApi();
+    api.getCompatibility.mockResolvedValue(compatibilityReady);
+    api.getCompatibilities.mockResolvedValue({ items: [], quota: { kind: 'subscription', left: 0, resets_at: '2026-12-18T00:00:00Z' } });
+    mount(api, compatibilityReady.id);
+    await screen.findByRole('heading', { name: 'Что совпадает' });
+
+    expect(await screen.findByText(copy.quotaNext('18 декабря'))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.createAnother })).toBeDisabled();
+  });
+
+  it('enables Create another when the server says left one', async () => {
+    const api = fakeApi();
+    api.getCompatibility.mockResolvedValue(compatibilityReady);
+    api.getCompatibilities.mockResolvedValue({ items: [], quota: { kind: 'subscription', left: 1, resets_at: '2026-12-18T00:00:00Z' } });
+    mount(api, compatibilityReady.id);
+    await screen.findByRole('heading', { name: 'Что совпадает' });
+
+    await waitFor(() => { expect(screen.getByRole('button', { name: copy.createAnother })).toBeEnabled(); });
+    expect(screen.queryByText(copy.quotaNext('18 декабря'))).not.toBeInTheDocument();
   });
 
   it('offers a non-blocking pending state and polls the request id', async () => {
@@ -112,11 +171,13 @@ describe('CompatibilityScreen', () => {
     const view = mount(api, 'compatibility-1');
 
     expect(api.getCompatibility).toHaveBeenCalledTimes(1);
+    const initialSignal = api.getCompatibility.mock.calls[0]?.[1];
     for (const [index, delay] of COMPATIBILITY_POLL_DELAYS_MS.entries()) {
       await act(async () => { await vi.advanceTimersByTimeAsync(delay); });
       expect(api.getCompatibility).toHaveBeenCalledTimes(index + 2);
     }
     view.unmount();
+    expect(initialSignal?.aborted).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
     expect(api.getCompatibility).toHaveBeenCalledTimes(COMPATIBILITY_POLL_DELAYS_MS.length + 1);
   });
@@ -150,6 +211,9 @@ describe('CompatibilityScreen', () => {
     const offer = cataloguePlans.find((plan) => plan.plan_code === 'compat_249');
     expect(offer).toBeDefined();
     if (offer) expect(screen.getByRole('button', { name: copy.buy(offer.stars) })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: copy.backToForm }));
+    expect(screen.getByLabelText(copy.dateSegments.day)).toHaveValue('17');
+    expect(screen.getByRole('textbox', { name: copy.place })).toHaveValue('Казань');
   });
 
   it('directs compat_already_owned to the existing server item', async () => {
@@ -164,10 +228,25 @@ describe('CompatibilityScreen', () => {
     mount(api);
     await fillRequiredFields(user);
     await user.click(screen.getByRole('button', { name: copy.submit }));
+    expect(await screen.findByText(copy.alreadyOwned)).toBeInTheDocument();
     await user.click(await screen.findByRole('button', { name: copy.goTo }));
 
     expect(await screen.findByRole('heading', { name: copy.pendingTitle })).toBeInTheDocument();
     expect(api.getCompatibility).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', expect.any(AbortSignal));
+  });
+
+  it('returns from already-owned to the form without losing the entered partner data', async () => {
+    const api = fakeApi();
+    api.orderCompatibility.mockRejectedValue(apiError('VALIDATION_FAILED', { status: 422, details: { reason: 'compat_already_owned' } }));
+    const user = userEvent.setup();
+    mount(api);
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole('button', { name: copy.submit }));
+    expect(await screen.findByText(copy.alreadyOwned)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: copy.backToForm }));
+    expect(screen.getByLabelText(copy.dateSegments.day)).toHaveValue('17');
+    expect(screen.getByRole('textbox', { name: copy.place })).toHaveValue('Казань');
   });
 
   it('keeps an unknown future server reason on the generic retry screen', async () => {
@@ -180,6 +259,37 @@ describe('CompatibilityScreen', () => {
 
     expect(await screen.findByText(copy.genericError)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: copy.retryAgain })).toBeEnabled();
+  });
+
+  it('treats a 503 with an empty reason as generic, not as an open breaker', async () => {
+    const api = fakeApi();
+    api.orderCompatibility.mockRejectedValue(apiError('INTERNAL', { status: 503, details: {} }));
+    const user = userEvent.setup();
+    mount(api);
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole('button', { name: copy.submit }));
+
+    expect(await screen.findByText(copy.genericError)).toBeInTheDocument();
+    expect(screen.queryByText(copy.breakerOpen)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Написать в поддержку' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.retryAgain })).toBeEnabled();
+  });
+
+  it.each(['500', 'network'] as const)('retries a %s failure from the button using the same form data', async (failure) => {
+    const api = fakeApi();
+    api.orderCompatibility
+      .mockRejectedValueOnce(failure === '500' ? apiError('INTERNAL', { status: 500 }) : new TypeError('Network unavailable'))
+      .mockResolvedValueOnce({ compatibility_id: 'compatibility-retried', status: 'pending' });
+    const user = userEvent.setup();
+    mount(api);
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole('button', { name: copy.submit }));
+
+    expect(await screen.findByText(copy.genericError)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: copy.retryAgain }));
+    expect(await screen.findByRole('heading', { name: copy.pendingTitle })).toBeInTheDocument();
+    expect(api.orderCompatibility).toHaveBeenCalledTimes(2);
+    expect(api.orderCompatibility.mock.calls[1]?.[0]).toEqual(api.orderCompatibility.mock.calls[0]?.[0]);
   });
 
   it('shows free retry for a breaker-open response and support', async () => {

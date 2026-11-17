@@ -215,6 +215,7 @@ export function CompatibilityScreen({
         <Screen back={back}>
           <StateViewCompat title={copy.errorTitle} text={date ? copy.quotaExhausted(date) : copy.quotaExhaustedUnknown}>
             {chartId && <CompatibilityEntry api={api} chartId={chartId} onOpenForm={() => { createAnother(); }} onBuy={onBuy} forcePurchase />}
+            <Button variant="secondary" onClick={() => { setError(null); }}>{copy.backToForm}</Button>
           </StateViewCompat>
         </Screen>
       );
@@ -224,6 +225,7 @@ export function CompatibilityScreen({
         <Screen back={back}>
           <StateViewCompat title={copy.errorTitle} text={copy.alreadyOwned}>
             <Button onClick={() => void openOwned()}>{copy.goTo}</Button>
+            <Button variant="secondary" onClick={() => { setError(null); }}>{copy.backToForm}</Button>
           </StateViewCompat>
         </Screen>
       );
@@ -234,6 +236,7 @@ export function CompatibilityScreen({
           <StateViewCompat title={copy.errorTitle} text={copy.breakerOpen}>
             <Button disabled={busy} onClick={retry}>{copy.retryAgain}</Button>
             <SupportButton link={supportLink} telegram={telegram} />
+            <Button variant="secondary" onClick={() => { setError(null); }}>{copy.backToForm}</Button>
           </StateViewCompat>
         </Screen>
       );
@@ -242,6 +245,7 @@ export function CompatibilityScreen({
       <Screen back={back}>
         <StateViewCompat title={copy.errorTitle} text={copy.genericError}>
           <Button disabled={busy} onClick={retry}>{copy.retryAgain}</Button>
+          <Button variant="secondary" onClick={() => { setError(null); }}>{copy.backToForm}</Button>
         </StateViewCompat>
       </Screen>
     );
@@ -273,6 +277,7 @@ export function CompatibilityScreen({
   if (compatibilityId !== null && result?.status === 'ready') {
     const sections = [...result.sections].sort((a, b) => a.order - b.order);
     const depleted = quota?.left === 0;
+    const canCreateAnother = quota !== null && quota.left > 0;
     const nextDate = quota?.resets_at ? formatDayMonth(quota.resets_at.slice(0, 10)) : null;
     return (
       <Screen labelledBy={titleId} back={back}>
@@ -284,7 +289,7 @@ export function CompatibilityScreen({
             track('share_clicked');
             try { telegram.share(window.location.origin, copy.shareMessage); } catch { /* sharing never blocks the result */ }
           }}>{copy.share}</Button>
-          <Button disabled={depleted} onClick={createAnother}>{copy.createAnother}</Button>
+          <Button disabled={!canCreateAnother} onClick={createAnother}>{copy.createAnother}</Button>
           {depleted && <p className={styles.note}>{nextDate ? copy.quotaNext(nextDate) : copy.quotaNextUnknown}</p>}
         </div>
       </Screen>
