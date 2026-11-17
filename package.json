@@ -26,6 +26,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:astro && pnpm lint:astro",
     "start:api": "pnpm --filter @astro-soul/api run start",
     "plans:set-price": "pnpm --filter @astro-soul/api run plans:set-price",
+    "plans:set-titles": "pnpm --filter @astro-soul/api run plans:set-titles",
     "payments:diagnose": "pnpm --filter @astro-soul/api run payments:diagnose"
   },
   "devDependencies": {

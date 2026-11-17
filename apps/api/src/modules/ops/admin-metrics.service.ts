@@ -3,6 +3,7 @@ import { DbService } from '../../db/db.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { breakerState, validationStreak, type ReportHistoryRow } from '../reports/breaker';
+import { TelegramWebhookService } from '../telegram/telegram-webhook.service';
 
 /**
  * Метрики продукта (`GET /admin/metrics`, контракт 1.4.0).
@@ -77,6 +78,18 @@ export interface ProductMetrics {
    * витрина отдаёт тарифы за звезду любой минуты, пока его не снимут.
    */
   readonly test_plans_active: boolean;
+  /**
+   * Доставка `pre_checkout_query` — по последней проверке вебхука
+   * (итерация 26).
+   *
+   * Раньше единственным следом «вебхук не зарегистрирован» были нули в
+   * `pre_checkout_total_24h`, то есть вопрос «а вебхук-то на месте?» требовал
+   * ssh. Здесь ответ читается прямо: `false` — адрес не подтверждён, оплата
+   * в Telegram не пройдёт; `checked_at` показывает, насколько ответ свежий.
+   * Не из БД: это состояние процесса, поэтому меняется в ту же секунду.
+   */
+  readonly telegram_webhook_ok: boolean;
+  readonly telegram_webhook_checked_at: string | null;
   readonly events_30d: Readonly<Record<string, number>>;
   readonly funnel_30d: Readonly<Record<string, number>>;
   /**
@@ -114,6 +127,7 @@ export class AdminMetricsService {
   constructor(
     @Inject(DbService) private readonly db: DbService,
     @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(TelegramWebhookService) private readonly webhook: TelegramWebhookService,
   ) {}
 
   async getMetrics(): Promise<ProductMetrics> {
@@ -325,6 +339,10 @@ export class AdminMetricsService {
     // закрыт не бывает, что бы ни показывала серия.
     const closed = this.env.REPORT_BREAKER_ENABLED === '1' && breaker.open;
 
+    // Вебхук — не из БД, а из последней проверки при старте API: в промис-пул
+    // не кладём, чтобы не смешивать запросы и состояние процесса.
+    const webhook = this.webhook.health();
+
     const compatSeries = validationStreak(compatHistory);
     const compatBreaker = breakerState(compatSeries.streak, compatSeries.lastFailedAt);
     const compatClosed = this.env.COMPAT_BREAKER_ENABLED === '1' && compatBreaker.open;
@@ -358,6 +376,8 @@ export class AdminMetricsService {
       // Не из БД: это окружение процесса, поэтому метрика честна в ту же
       // секунду, когда флаг включили или сняли, — без ожидания платежа.
       test_plans_active: this.env.PAYMENTS_TEST_PLANS === '1',
+      telegram_webhook_ok: webhook.ok,
+      telegram_webhook_checked_at: webhook.checkedAt,
       events_30d: eventsByName,
       funnel_30d: funnelByStep,
       compat_ready_30d: compat?.ready ?? 0,

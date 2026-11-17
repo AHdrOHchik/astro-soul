@@ -27,7 +27,17 @@ export interface PlanRowBase {
   readonly subscriptionPlan: SubscriptionPlan;
   /** Цена в звёздах на момент чтения. Для инвойса — снимок в `invoices.stars`. */
   readonly stars: number;
+  /** Название тарифа для логов и админки. В счёт **не** уходит. */
   readonly title: string;
+  /**
+   * Название товара в окне оплаты Telegram (`createInvoiceLink.title`).
+   *
+   * Отдельная колонка с `CHECK (1..32)`, а не `title`/`paywallTitle`: первое
+   * можно удлинить правкой текста, второе длинное по замыслу. Длинное
+   * название счёта — это `400` от Bot API и `502` для человека, то есть
+   * «оплата не проходит» (итерация 26).
+   */
+  readonly invoiceTitle: string;
   readonly description: string;
   readonly priceLabel: string;
   readonly paywallTitle: string;
@@ -60,6 +70,7 @@ interface PlanDbRow {
   readonly stars: number;
   readonly period_seconds: number | null;
   readonly title: string;
+  readonly invoice_title: string;
   readonly description: string;
   readonly price_label: string;
   readonly paywall_title: string;
@@ -70,8 +81,8 @@ interface PlanDbRow {
   readonly test_only: boolean;
 }
 
-const SELECT_COLUMNS = `code, kind, subscription_plan, stars, period_seconds, title, description,
-                        price_label, paywall_title, paywall_subtitle, grants, sort,
+const SELECT_COLUMNS = `code, kind, subscription_plan, stars, period_seconds, title, invoice_title,
+                        description, price_label, paywall_title, paywall_subtitle, grants, sort,
                         is_active, test_only`;
 
 function subscriptionPlanOf(value: string): SubscriptionPlan {
@@ -96,6 +107,7 @@ export function planFromRow(row: PlanDbRow): PlanRow {
     subscriptionPlan: subscriptionPlanOf(row.subscription_plan),
     stars: row.stars,
     title: row.title,
+    invoiceTitle: row.invoice_title,
     description: row.description,
     priceLabel: row.price_label,
     paywallTitle: row.paywall_title,

@@ -3,6 +3,7 @@ import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { JsonLogger } from '../../common/logger';
 import { TelegramClient, type WebhookInfo } from './telegram.client';
+import { hostFromUrl, resolveHost, webhookUnreachableHint } from './webhook-address';
 
 /**
  * Вебхук Telegram как состояние, а не как «мы один раз выполнили curl из
@@ -21,7 +22,38 @@ import { TelegramClient, type WebhookInfo } from './telegram.client';
  *
  * Отключается `TELEGRAM_WEBHOOK_AUTO=0` (например, если адрес регистрирует
  * внешний оркестратор): тогда сервис только проверяет и пишет в лог.
+ *
+ * Итерация 26 добавляет к этому две вещи, без которых «настроили один раз»
+ * снова означало «однажды перестало работать молча»:
+ *   • **резолв хоста `MINI_APP_URL` до вызова Bot API**. `setWebhook` на
+ *     нерезолвящийся адрес возвращает `ok: true` — Telegram не проверяет наш
+ *     DNS, — и дальше `pre_checkout_query` просто не приходит. Теперь такой
+ *     случай называется вслух: WARN с хостом, следствием и лечением;
+ *   • **состояние вебхука хранится**, а не только пишется в лог: `/health`
+ *     отдаёт `telegram_webhook: ok|stale|unreachable`, `/admin/metrics` —
+ *     `telegram_webhook_ok` и `telegram_webhook_checked_at`. Так «оплата не
+ *     проходит» видно снаружи, не читая логи контейнера.
  */
+
+/**
+ * Сколько результат проверки считается свежим (итерация 26).
+ *
+ * Проверка идёт при старте API и по запросу (диагностика). Если старт был
+ * сутки назад, а туннель с тех пор перезапустили с новым адресом, `ok` в
+ * `/health` — это `stale`: мы не знаем, что там сейчас, и делать вид, что
+ * знаем, хуже, чем признать.
+ */
+export const TELEGRAM_WEBHOOK_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/** Значение `GET /health` → `telegram_webhook`. */
+export type WebhookHealthState = 'ok' | 'stale' | 'unreachable';
+
+export interface WebhookHealth {
+  readonly state: WebhookHealthState;
+  /** Проверено ли состояние `ok` (для `/admin/metrics`). */
+  readonly ok: boolean;
+  readonly checkedAt: string | null;
+}
 
 /** Почему вебхук в таком состоянии — наружу для логов и `payments:diagnose`. */
 export type WebhookState =
@@ -44,6 +76,13 @@ export interface WebhookStatus {
   readonly lastErrorDate: number | null;
   /** Текст ответа Bot API, если `setWebhook` не сработал. */
   readonly description: string | null;
+  /** Человеческий текст для WARN: что не так и что делать (итерация 26). */
+  readonly hint?: string | null;
+  /**
+   * Почему `unreachable`: не резолвится наш адрес или не отвечает Bot API.
+   * Разные причины — разные действия, поэтому и в выводе они разные.
+   */
+  readonly cause?: 'dns' | 'bot_api' | null;
 }
 
 @Injectable()
@@ -53,6 +92,59 @@ export class TelegramWebhookService {
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
+
+  /** Результат последней проверки: его читают `/health` и `/admin/metrics`. */
+  private lastStatus: WebhookStatus | null = null;
+  private lastCheckedAt: Date | null = null;
+
+  /**
+   * Резолвится ли хост ожидаемого адреса — без похода в Bot API.
+   *
+   * Публично, потому что `payments:diagnose` проверяет то же самое, и подсказка
+   * про туннель должна быть одной и той же строкой в логе и в выводе скрипта.
+   */
+  async checkHost(): Promise<ReturnType<typeof resolveHost>> {
+    const expectedUrl = this.expectedUrl();
+    return resolveHost(hostFromUrl(expectedUrl));
+  }
+
+  /**
+   * Состояние вебхука для `/health`.
+   *
+   * Три значения, а не два, потому что «не проверяли» — не то же самое, что
+   * «не работает»: `stale` значит «результат старше суток или проверки не
+   * было», и это повод перезапустить API/диагностику, а не чинить Telegram.
+   */
+  health(): WebhookHealth {
+    const status = this.lastStatus;
+    const checkedAt = this.lastCheckedAt?.toISOString() ?? null;
+
+    if (status === null || this.lastCheckedAt === null) {
+      return { state: 'stale', ok: false, checkedAt };
+    }
+
+    const ageMs = Date.now() - this.lastCheckedAt.getTime();
+    const fresh = ageMs < TELEGRAM_WEBHOOK_STALE_AFTER_MS;
+
+    if (status.state === 'unreachable' || status.state === 'failed' || status.state === 'not_configured') {
+      return { state: 'unreachable', ok: false, checkedAt };
+    }
+
+    if (status.state === 'ok' || status.state === 'registered') {
+      return { state: fresh ? 'ok' : 'stale', ok: fresh, checkedAt };
+    }
+
+    // `mismatch` (адрес не тот, автопочинка выключена) и `disabled` —
+    // «не знаем, что сейчас»: оплата может не доходить, но и утверждать, что
+    // вебхук мёртв, нельзя.
+    return { state: 'stale', ok: false, checkedAt };
+  }
+
+  private remember(status: WebhookStatus): WebhookStatus {
+    this.lastStatus = status;
+    this.lastCheckedAt = new Date();
+    return status;
+  }
 
   /**
    * Адрес вебхука из окружения.
@@ -102,17 +194,58 @@ export class TelegramWebhookService {
         note: 'pre_checkout_query не доставляется — оплата не подтвердится',
       });
 
-      return status;
+      return this.remember(status);
     }
+
+    // Сначала — резолвится ли хост, и только потом Bot API. `setWebhook` на
+    // нерезолвящийся адрес Telegram принимает (`ok: true`), после чего
+    // pre_checkout_query не доставляется: «настроили и тихо умерло». Дешевле
+    // узнать это здесь, чем из жалобы «оплата не проходит».
+    const resolution = await resolveHost(hostFromUrl(expectedUrl));
+
+    if (!resolution.resolvable) {
+      const hint = webhookUnreachableHint(resolution);
+
+      this.logger.warn('telegram_webhook_unreachable', {
+        expected_url: expectedUrl,
+        host: resolution.host,
+        dns_error: resolution.error,
+        hint,
+        note: 'setWebhook не вызывался: адрес не резолвится, доставка апдейтов невозможна',
+      });
+
+      return this.remember({
+        state: 'unreachable',
+        expectedUrl,
+        actualUrl: null,
+        pendingUpdateCount: 0,
+        lastErrorMessage: resolution.error,
+        lastErrorDate: null,
+        description: hint,
+        hint,
+        cause: 'dns',
+      });
+    }
+
+    this.logger.info('telegram_webhook_host_resolved', {
+      host: resolution.host,
+      addresses: resolution.addresses,
+    });
 
     const info = await this.telegram.getWebhookInfo();
 
     if (!info.reachable || info.result === null) {
+      const hint =
+        'Bot API не отвечает: проверь сеть контейнера API и TELEGRAM_BOT_TOKEN — ' +
+        'без этого вебхук не зарегистрировать и оплата не пройдёт';
+
       this.logger.error('telegram_webhook_unreachable', {
         status: info.status,
         description: info.description,
+        hint,
+        cause: 'bot_api',
       });
-      return {
+      return this.remember({
         state: 'unreachable',
         expectedUrl,
         actualUrl: null,
@@ -120,7 +253,9 @@ export class TelegramWebhookService {
         lastErrorMessage: info.description,
         lastErrorDate: null,
         description: info.description,
-      };
+        hint,
+        cause: 'bot_api',
+      });
     }
 
     const actual = info.result;
@@ -132,7 +267,7 @@ export class TelegramWebhookService {
         last_error_date: actual.lastErrorDate,
       });
 
-      return this.status('ok', expectedUrl, actual, null);
+      return this.remember(this.status('ok', expectedUrl, actual, null));
     }
 
     // Адрес другой (или его нет). Это и есть причина «оплата не проходит» в
@@ -148,7 +283,7 @@ export class TelegramWebhookService {
       this.logger.warn('telegram_webhook_auto_disabled', {
         note: 'TELEGRAM_WEBHOOK_AUTO=0: адрес не меняем, чинить нужно вручную',
       });
-      return this.status('mismatch', expectedUrl, actual, null);
+      return this.remember(this.status('mismatch', expectedUrl, actual, null));
     }
 
     const registered = await this.telegram.setWebhook(expectedUrl, this.env.TELEGRAM_WEBHOOK_SECRET ?? '');
@@ -157,8 +292,11 @@ export class TelegramWebhookService {
       this.logger.error('telegram_webhook_registration_failed', {
         status: registered.status,
         description: registered.description,
+        hint:
+          'setWebhook отвергнут Bot API: чаще всего это неверный TELEGRAM_BOT_TOKEN ' +
+          'или адрес с недопустимой схемой. Оплата в Telegram работать не будет',
       });
-      return this.status('failed', expectedUrl, actual, registered.description);
+      return this.remember(this.status('failed', expectedUrl, actual, registered.description));
     }
 
     const after = await this.telegram.getWebhookInfo();
@@ -169,11 +307,13 @@ export class TelegramWebhookService {
       verified: after.result?.url === expectedUrl,
     });
 
-    return this.status(
-      after.result?.url === expectedUrl ? 'registered' : 'failed',
-      expectedUrl,
-      after.result ?? actual,
-      after.result?.url === expectedUrl ? null : 'setWebhook не подтвердился getWebhookInfo',
+    return this.remember(
+      this.status(
+        after.result?.url === expectedUrl ? 'registered' : 'failed',
+        expectedUrl,
+        after.result ?? actual,
+        after.result?.url === expectedUrl ? null : 'setWebhook не подтвердился getWebhookInfo',
+      ),
     );
   }
 
@@ -208,7 +348,9 @@ export class TelegramWebhookService {
       case 'disabled':
         return 'проверка отключена (TELEGRAM_WEBHOOK_AUTO=0)';
       case 'unreachable':
-        return 'Bot API недоступен — проверить сеть и токен';
+        return status.cause === 'dns'
+          ? 'адрес MINI_APP_URL не резолвится — Telegram не доставит pre_checkout_query'
+          : 'Bot API недоступен — проверить сеть и токен';
       case 'failed':
         return 'setWebhook не удался — текст ошибки Bot API в описании';
     }

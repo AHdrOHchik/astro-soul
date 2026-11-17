@@ -149,16 +149,41 @@ export class BillingService {
     const prices = [{ label: plan.priceLabel, amount: plan.stars }];
     const subscriptionPeriod = plan.kind === 'subscription' ? plan.periodSeconds : undefined;
 
+    // В счёт уходит **только** `invoice_title`: короткое название из своей
+    // колонки, отдельно от `title` и `paywall_title` (итерация 26).
+    const invoiceTitle = plan.invoiceTitle;
+
     // Лимиты Bot API проверяются до вызова: иначе Telegram отвечает `400`, наш
     // клиент превращает это в `502`, и в логе остаётся «telegram_method_failed»
     // без единого намёка на то, что дело в длине названия (итерация 25).
     const violation = invoiceParamsViolation({
-      title: plan.title,
+      title: invoiceTitle,
       description: plan.description,
       payload,
       prices,
       ...(subscriptionPeriod === undefined ? {} : { subscriptionPeriod }),
     });
+
+    if (violation !== null && violation.field === 'title') {
+      // Наша ошибка данных, а не отказ платёжной системы: человеку нельзя
+      // показывать «внутренняя ошибка», а владельцу — искать причину в
+      // Telegram. `409` говорит ровно то, что случилось: тариф так не
+      // выставить, пока не поправят название счёта.
+      this.logger.error('invoice_title_invalid', {
+        plan: planCode,
+        actual: violation.actual,
+        limit: violation.limit,
+      });
+      throw conflict({
+        reason: 'plan_invoice_title_invalid',
+        // То же поле в теле, что обещает контракт 1.6.2: фронт может отличить
+        // «тариф так не продаётся» от «внутренняя ошибка» без разбора текста.
+        details: { reason: 'plan_invoice_title_invalid' },
+        message:
+          'Этот тариф временно нельзя оплатить: неверно задано название счёта. Выберите другой тариф.',
+        logFields: { plan: planCode, actual: violation.actual, limit: violation.limit },
+      });
+    }
 
     if (violation !== null) {
       this.logger.error('invoice_params_invalid', {
@@ -189,7 +214,7 @@ export class BillingService {
     let invoiceLink: string;
     try {
       invoiceLink = await this.telegram.createInvoiceLink({
-        title: plan.title,
+        title: invoiceTitle,
         description: plan.description,
         payload,
         prices,

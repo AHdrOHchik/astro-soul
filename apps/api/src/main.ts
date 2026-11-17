@@ -77,6 +77,9 @@ async function bootstrap(): Promise<void> {
       actual_url: status.actualUrl === null ? null : maskSecret(status.actualUrl),
       pending_update_count: status.pendingUpdateCount,
       last_error_message: status.lastErrorMessage,
+      // Человеческий текст для тех состояний, где нужно действие (итерация 26).
+      hint: status.hint ?? null,
+      health: webhook.health(),
     });
   } catch (error) {
     logger.error('telegram_webhook_check_failed', {

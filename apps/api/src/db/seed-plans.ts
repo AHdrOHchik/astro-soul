@@ -15,13 +15,21 @@ import { PLAN_SEED, testPlansAllowed, type PlanSeedRow } from './plans-seed';
  *   1. вставляет отсутствующие строки каталога (полные значения);
  *   2. дозаполняет тексты и права там, где они пустые (миграция 0025 добавила
  *      колонки с `''` и `'{}'`) — но не трогает `stars`;
- *   3. тестовые тарифы вставляет только при `PAYMENTS_TEST_PLANS=1` и не в
+ *   3. **синхронизирует тестовые тарифы** с сидом: у `test_1` период,
+ *      `invoice_title` и тексты — фикстура для проверки оплаты, а не данные
+ *      владельца. Без этого стенд, где `test_1` когда-то создался недельным,
+ *      оставался недельным навсегда: `ON CONFLICT DO NOTHING` не обновляет
+ *      существующую строку, и тестовая оплата не выставлялась вовсе
+ *      (итерация 26, задача 2). Цена и `is_active` не трогаются и здесь;
+ *   4. тестовые тарифы вставляет только при `PAYMENTS_TEST_PLANS=1` и не в
  *      проде: строка `is_active = false` не продаётся, а в прод-базе её не
  *      должно быть вовсе.
  */
 export interface SeedPlansResult {
   readonly inserted: number;
   readonly backfilled: number;
+  /** Тестовые строки, приведённые к сиду (период, название счёта, тексты). */
+  readonly syncedTestPlans: number;
 }
 
 function grantsJson(row: PlanSeedRow): string {
@@ -39,6 +47,7 @@ export async function seedPlans(
     await client.query('BEGIN');
     let inserted = 0;
     let backfilled = 0;
+    let syncedTestPlans = 0;
 
     for (const plan of PLAN_SEED) {
       if (plan.testOnly && !includeTestPlans) {
@@ -47,9 +56,9 @@ export async function seedPlans(
 
       const insertedRow = await client.query(
         `INSERT INTO plans (code, kind, subscription_plan, stars, period_seconds,
-                            title, description, price_label, paywall_title,
+                            title, invoice_title, description, price_label, paywall_title,
                             paywall_subtitle, grants, sort, is_active, test_only)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)
          ON CONFLICT (code) DO NOTHING
          RETURNING code`,
         [
@@ -59,6 +68,7 @@ export async function seedPlans(
           plan.stars,
           plan.periodSeconds,
           plan.title,
+          plan.invoiceTitle,
           plan.description,
           plan.priceLabel,
           plan.paywallTitle,
@@ -94,10 +104,36 @@ export async function seedPlans(
       if (updated.rowCount === 1) {
         backfilled += 1;
       }
+
+      // Тестовый тариф — фикстура, а не данные владельца: период, название
+      // счёта и тексты приводим к сиду при каждом прогоне. Иначе стенд, где
+      // `test_1` создался недельным, никогда не станет тридцатидневным, и
+      // «тестовая оплата» не выставляется (Bot API принимает только 2 592 000).
+      if (plan.testOnly) {
+        const synced = await client.query(
+          `UPDATE plans
+              SET period_seconds   = $2,
+                  invoice_title    = $3,
+                  description      = $4,
+                  paywall_subtitle = $5,
+                  updated_at       = now()
+            WHERE code = $1
+              AND (period_seconds IS DISTINCT FROM $2
+                OR invoice_title IS DISTINCT FROM $3
+                OR description IS DISTINCT FROM $4
+                OR paywall_subtitle IS DISTINCT FROM $5)
+            RETURNING code`,
+          [plan.code, plan.periodSeconds, plan.invoiceTitle, plan.description, plan.paywallSubtitle],
+        );
+
+        if (synced.rowCount === 1) {
+          syncedTestPlans += 1;
+        }
+      }
     }
 
     await client.query('COMMIT');
-    return { inserted, backfilled };
+    return { inserted, backfilled, syncedTestPlans };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -124,6 +160,7 @@ async function main(): Promise<void> {
     const result = await seedPlans(pool, { includeTestPlans });
     process.stdout.write(
       `plans: добавлено ${String(result.inserted)}, дозаполнено текстов ${String(result.backfilled)}` +
+        `, тестовых строк приведено к сиду ${String(result.syncedTestPlans)}` +
         `${includeTestPlans ? ' (тестовые тарифы включены)' : ' (тестовые тарифы не создаются)'}\n`,
     );
   } finally {

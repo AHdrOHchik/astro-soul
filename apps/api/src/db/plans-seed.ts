@@ -23,7 +23,16 @@ export interface PlanSeedRow {
   /** Цена в звёздах. Меняется только `pnpm plans:set-price`. */
   readonly stars: number;
   readonly periodSeconds: number | null;
+  /** Название тарифа для логов и админки; в счёт не уходит. */
   readonly title: string;
+  /**
+   * Название в окне оплаты Telegram: 1–32 символа (лимит Bot API, в БД `CHECK`).
+   *
+   * Отдельно от `title` и `paywallTitle` намеренно (итерация 26): правка
+   * названия тарифа или витрины не должна ломать оплату, а лимит счёта —
+   * ровно та ошибка, из-за которой три тарифа не продавались.
+   */
+  readonly invoiceTitle: string;
   readonly description: string;
   readonly priceLabel: string;
   readonly paywallTitle: string;
@@ -46,6 +55,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 149,
     periodSeconds: null,
     title: 'Разбор личности — полный разбор',
+    invoiceTitle: 'Полный разбор',
     description: 'Шесть глав по вашей натальной карте и PDF',
     priceLabel: 'Разбор',
     paywallTitle: 'Полный разбор',
@@ -60,9 +70,10 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     subscriptionPlan: 'week',
     stars: 149,
     periodSeconds: 604_800,
-    // `title` уходит в окно оплаты Telegram: лимит Bot API — 32 символа.
-    // Длинное название для витрины живёт в `paywallTitle` (его лимит не наш).
+    // В окно оплаты уходит `invoiceTitle` (лимит Bot API — 32 символа, есть
+    // `CHECK` в БД). `title` — для логов, `paywallTitle` — для витрины.
     title: 'Разбор личности: неделя',
+    invoiceTitle: 'Подписка на неделю',
     description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
     priceLabel: 'Неделя',
     paywallTitle: 'Подписка на неделю',
@@ -78,6 +89,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 399,
     periodSeconds: 2_592_000,
     title: 'Разбор личности: месяц',
+    invoiceTitle: 'Подписка на месяц',
     description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
     priceLabel: 'Месяц',
     paywallTitle: 'Подписка на месяц',
@@ -93,6 +105,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 2_990,
     periodSeconds: 31_536_000,
     title: 'Разбор личности: год',
+    invoiceTitle: 'Подписка на год',
     description: 'Всё, что в месячной подписке, плюс карта года',
     priceLabel: 'Год',
     paywallTitle: 'Подписка на год',
@@ -108,6 +121,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 249,
     periodSeconds: null,
     title: 'Совместимость с партнёром',
+    invoiceTitle: 'Совместимость с партнёром',
     description: 'Разбор пары по двум натальным картам',
     priceLabel: 'Совместимость',
     paywallTitle: 'Совместимость с партнёром',
@@ -123,6 +137,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 590,
     periodSeconds: null,
     title: 'Карта года',
+    invoiceTitle: 'Карта года',
     description: 'Прогноз на год вперёд по солярной карте',
     priceLabel: 'Карта года',
     paywallTitle: 'Карта года',
@@ -147,6 +162,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 1,
     periodSeconds: 2_592_000,
     title: 'Тестовая подписка — 1 ⭐',
+    invoiceTitle: 'Тестовая подписка — 1 ⭐',
     description: '30 дней доступа за 1 ⭐. Только для проверки оплаты владельцем',
     priceLabel: 'Тест',
     paywallTitle: 'Тестовая подписка',
@@ -163,6 +179,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     stars: 1,
     periodSeconds: null,
     title: 'Тестовый разбор — 1 ⭐',
+    invoiceTitle: 'Тестовый разбор — 1 ⭐',
     description: 'Разбор личности за 1 ⭐ для одной карты. Только для проверки оплаты',
     priceLabel: 'Тест-разбор',
     paywallTitle: 'Тестовый разбор',
