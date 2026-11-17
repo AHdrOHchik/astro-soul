@@ -142,6 +142,39 @@ describe('PaywallScreen', () => {
     expect(await option(offer('one_149').title)).toBeInTheDocument();
   });
 
+  it('shows a one-star server price and sends only that plan code, never a client price, to the invoice endpoint', async () => {
+    const api = fakeApi();
+    const oneStarReport = { ...offer('one_149'), stars: 1 };
+    api.getPlans.mockResolvedValue([oneStarReport]);
+    api.createInvoice.mockResolvedValue({ ...reportInvoice, plan_code: oneStarReport.plan_code, stars: 1 });
+    const { user, telegram } = setup({ api, props: { subscriptions: false } });
+
+    expect(await payButton()).toHaveTextContent(`${copy.pay} 1`);
+    await user.click(await payButton());
+
+    expect(api.createInvoice).toHaveBeenCalledWith(
+      { plan_code: oneStarReport.plan_code, chart_id: chart.chart_id },
+      expect.any(AbortSignal),
+    );
+    expect(JSON.stringify(api.createInvoice.mock.calls[0]?.[0])).not.toContain('stars');
+    expect(telegram.openInvoice).toHaveBeenCalledWith(reportInvoice.invoice_link);
+  });
+
+  it('loads the catalogue again on a later screen opening and shows the updated server price', async () => {
+    const api = fakeApi();
+    const current = offer('one_149');
+    const changed = { ...current, stars: current.stars + 1 };
+    api.getPlans.mockResolvedValueOnce([current]).mockResolvedValueOnce([changed]);
+
+    const first = setup({ api, props: { subscriptions: false } });
+    expect(await payButton()).toHaveTextContent(`${copy.pay} ${String(current.stars)}`);
+    first.unmount();
+    setup({ api, props: { subscriptions: false } });
+
+    expect(await payButton()).toHaveTextContent(`${copy.pay} ${String(changed.stars)}`);
+    expect(api.getPlans).toHaveBeenCalledTimes(2);
+  });
+
   it('offers the report and subscriptions with server-supplied details and prices', async () => {
     const { analytics, api } = setup();
 
@@ -180,12 +213,14 @@ describe('PaywallScreen', () => {
     expect(telegram.openInvoice).toHaveBeenCalledWith(reportInvoice.invoice_link);
   });
 
-  it('loads no offers as an empty state and never treats a missing list as a successful empty response', async () => {
+  it('has no payment button and says payment is temporarily unavailable when the expected plan is missing', async () => {
     const api = fakeApi();
     api.getPlans.mockResolvedValue([]);
     setup({ api });
-    expect(await screen.findByRole('heading', { name: copy.nothingOnSale })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: copy.priceUnavailable })).toBeInTheDocument();
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Оплатить/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.retryPlans })).toBeEnabled();
   });
 
   it('shows a retryable error after a server failure', async () => {
@@ -397,22 +432,33 @@ describe('PaywallScreen', () => {
     expect(screen.getByRole('alert').textContent).toContain(copy.invoiceRejected);
   });
 
-  it('shows the price the invoice names when it is not the expected one, and opens nothing until the user has seen it', async () => {
+  it('blocks checkout on invoice/catalogue mismatch, reports it safely, and requires a fresh catalogue', async () => {
     const api = fakeApi();
+    const current = offer('one_149');
+    const updated = { ...current, stars: 199 };
+    api.getPlans.mockResolvedValueOnce([current]).mockResolvedValueOnce([updated]);
     api.createInvoice.mockResolvedValue({ ...reportInvoice, stars: 199 });
-    const { telegram, user } = setup({ api });
+    const { telegram, analytics, user } = setup({ api, props: { subscriptions: false } });
 
     await user.click(await payButton());
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(`${copy.priceChanged} 199`);
+    expect(await screen.findByRole('alert')).toHaveTextContent(copy.priceChanged);
+    expect(screen.getByRole('alert')).not.toHaveTextContent('199');
     expect(telegram.openInvoice).not.toHaveBeenCalled();
-    expect(await payButton()).toHaveTextContent(`${copy.pay} 199`);
-    expect(await option(offer('one_149').title)).toHaveAccessibleName(`${offer('one_149').title} 199 ${ru.common.stars.many}`);
+    expect(screen.queryByRole('button', { name: /^Оплатить/ })).not.toBeInTheDocument();
+    expect(api.createInvoice).toHaveBeenCalledWith(
+      { plan_code: current.plan_code, chart_id: chart.chart_id },
+      expect.any(AbortSignal),
+    );
+    expect(analytics.events).toContainEqual({ name: 'error_shown', props: { screen: 'paywall', code: 'price_mismatch' } });
+    expect(analytics.events.find((event) => event.name === 'error_shown')).toEqual({ name: 'error_shown', props: { screen: 'paywall', code: 'price_mismatch' } });
+    expect(JSON.stringify(analytics.events)).not.toContain('stars');
 
-    // The second tap opens that very invoice: the server is not asked for another.
-    await user.click(await payButton());
-    expect(telegram.openInvoice).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: copy.priceChangedAction }));
+    expect(await payButton()).toHaveTextContent(`${copy.pay} 199`);
+    expect(api.getPlans).toHaveBeenCalledTimes(2);
     expect(api.createInvoice).toHaveBeenCalledTimes(1);
+    expect(telegram.openInvoice).not.toHaveBeenCalled();
   });
 
   it('outside Telegram: says that payment is in Telegram, warns in the console, asks the server for nothing', async () => {

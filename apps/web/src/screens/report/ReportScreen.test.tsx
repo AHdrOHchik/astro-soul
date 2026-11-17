@@ -220,9 +220,9 @@ describe('ReportScreen: a report that is over', () => {
     const { container } = setup({ answer: { ...report, status: 'refunded', is_paid: false, progress: 35 } });
 
     expect(await screen.findByRole('heading', { name: copy.refundedTitle })).toBeInTheDocument();
-    expect(copy.refundedText).toContain('Повторный запуск доступен без новой оплаты');
-    expect(copy.refundedText).toContain('по обращению в поддержку в течение 24 часов');
-    expect(copy.refundedText).not.toContain('автоматически');
+    expect(copy.refundedText).toBe('Автовозврат за неудавшийся разбор не делается. Вместо него: повторный запуск без новой оплаты; звёзды за неудачную попытку возвращаются по обращению в поддержку.');
+    expect(ru.chart.reportStates.refunded).toBe(`Разбор не получился. ${copy.refundedText}`);
+    expect(copy.refundedText).not.toContain('звёзды возвращаются автоматически');
     expect(container.textContent).not.toMatch(/ошибк/i);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: copy.retry })).toBeEnabled();

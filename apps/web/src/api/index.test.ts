@@ -322,10 +322,14 @@ describe('getPlans', () => {
     await expect(api.getPlans()).rejects.toMatchObject({ status: 401, code: 'UNAUTHORIZED' });
   });
 
-  it('rejects malformed plan data as an invalid API response', async () => {
+  it('omits malformed or unpriced offers instead of inventing a price or hiding valid offers', async () => {
     const { api, fetchMock } = setup();
-    fetchMock.mockResolvedValue(json(200, { plans: [{ ...offer, includes: ['ok', 7] }] }));
-    await expect(api.getPlans()).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    fetchMock.mockResolvedValue(json(200, { plans: [
+      { ...offer, stars: undefined },
+      { ...offer, plan_code: 'valid_plan', stars: 1 },
+      { ...offer, plan_code: 'malformed_plan', includes: ['ok', 7] },
+    ] }));
+    await expect(api.getPlans()).resolves.toEqual([{ ...offer, plan_code: 'valid_plan', stars: 1 }]);
   });
 });
 

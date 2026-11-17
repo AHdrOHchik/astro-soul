@@ -507,8 +507,9 @@ function isPlanOffer(value: unknown): value is PlanOffer {
 }
 
 function toPlans(value: unknown): PlanOffer[] {
-  if (!isRecord(value) || !Array.isArray(value.plans) || !value.plans.every(isPlanOffer)) throw invalid();
-  return value.plans;
+  if (!isRecord(value) || !Array.isArray(value.plans)) throw invalid();
+  // A malformed offer is unavailable, not a reason to invent a price or hide other valid offers.
+  return value.plans.filter(isPlanOffer);
 }
 
 export function createApi(options: HttpClientOptions): Api {
