@@ -6,7 +6,7 @@ import { request as httpsRequest } from 'node:https';
 import { URL } from 'node:url';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
-import { llmModelSpec } from '../../config/llm-models';
+import { costRubOf, llmModelSpec } from '../../config/llm-models';
 import { JsonLogger } from '../../common/logger';
 
 export type LlmRole = 'system' | 'user' | 'assistant';
@@ -215,8 +215,9 @@ export class GigaChatClient implements LlmProvider {
         promptTokens,
         completionTokens,
         totalTokens,
-        // Цена за 1000 токенов одна на вход и выход (блок владельца).
-        costRub: Math.round(((totalTokens / 1000) * this.pricePer1kRub + Number.EPSILON) * 10_000) / 10_000,
+        // Цена за 1000 токенов одна на вход и выход (блок владельца); деньги
+        // считаются по токенам провайдера, а не по длине строки.
+        costRub: costRubOf({ promptTokens, completionTokens }, this.pricePer1kRub),
       },
     };
   }

@@ -2,10 +2,18 @@
  * Права и квоты совместимости — правило в одном месте, без похода в БД.
  *
  * Решение владельца: разовая покупка `compat_249` — одна совместимость;
- * подписка — одна в 30 дней, окно **скользящее**. Скользящее окно выбрано
- * потому, что календарное «месяц с 1-го» давало бы человеку две совместимости
- * за три дня на стыке месяцев, а «от даты оплаты» — 28 февраля против 31
- * января. Скользящее окно не льстит никому и не зависит от дня оплаты.
+ * подписка — одна в 30 дней. Окно отсчитывается **от последней готовой
+ * совместимости**, а не от даты оплаты и не «30 дней назад от сейчас».
+ *
+ * Почему так (итерация 23, замок в `compat.spec.ts`): при якоре «30 дней
+ * назад от сейчас» человек, забравший совместимость 10 дней назад, видел
+ * `resets_at` = «сейчас» и получал новую через 20 дней, а не через 30, —
+ * то есть окно было не 30 дней, а «от последней готовой до 30 дней после
+ * последней готовой». Якорь на последней готовой даёт ровно обещанное:
+ * следующая — через 30 дней после предыдущей.
+ *
+ * Раньше начала подписки окно не начинается: совместимость, собранная
+ * по прошлой подписке, не тратит текущую.
  *
  * Сброс — ленивый: отдельного джоба нет. Окно пересчитывается при чтении,
  * потому что `resets_at` — это тоже чтение, а джоб, который «должен был
@@ -31,26 +39,29 @@ export interface CompatQuotaInput {
   readonly purchaseCredit: boolean;
   /** Активная подписка: начало (`created_at`) и конец (`expires_at`). */
   readonly subscription: { readonly startedAt: Date; readonly expiresAt: Date } | null;
-  /** Момент последней **готовой** совместимости — вход скользящего окна. */
+  /** Момент последней **готовой** совместимости — якорь окна подписки. */
   readonly lastReadyAt: Date | null;
   /** «Сейчас» передаётся аргументом, чтобы тест мог сдвинуть время. */
   readonly now?: Date;
 }
 
 /**
- * Начало текущего окна подписки.
+ * Начало текущего окна подписки — дата последней **готовой** совместимости.
  *
- * Это `max(startedAt, now − 30 дней)`: окно не может начаться раньше, чем
- * человек купил подписку (иначе первый месяц короче тридцати дней), и не
- * может тянуться дальше тридцати дней (иначе «1 в месяц» превращается
- * в «1 за подписку»).
+ * `null` — окно открыто: либо готовой совместимости ещё не было, либо она
+ * собрана раньше начала текущей подписки (её окно не тратит).
+ * `resets_at` считается от возвращённой даты, а не от `now`: иначе окно
+ * «плывёт» вместе с часами и сбрасывается не через 30 дней, а когда
+ * последняя готовая выйдет за горизонт в 30 дней.
  */
 export function windowStart(
   subscription: { readonly startedAt: Date },
-  now: Date,
-): Date {
-  const rolling = new Date(now.getTime() - COMPAT_WINDOW_MS);
-  return subscription.startedAt > rolling ? subscription.startedAt : rolling;
+  lastReadyAt: Date | null,
+): Date | null {
+  if (lastReadyAt === null || lastReadyAt.getTime() < subscription.startedAt.getTime()) {
+    return null;
+  }
+  return lastReadyAt;
 }
 
 export function quotaOf(input: CompatQuotaInput): CompatQuota {
@@ -67,15 +78,16 @@ export function quotaOf(input: CompatQuotaInput): CompatQuota {
     return { kind: 'none', left: 0, resets_at: null };
   }
 
-  const start = windowStart(subscription, now);
-  const used =
-    input.lastReadyAt !== null && input.lastReadyAt.getTime() >= start.getTime();
-
-  if (!used) {
+  const start = windowStart(subscription, input.lastReadyAt);
+  if (start === null) {
     return { kind: 'subscription', left: 1, resets_at: null };
   }
 
   const resets = new Date(start.getTime() + COMPAT_WINDOW_MS);
+  if (now.getTime() >= resets.getTime()) {
+    return { kind: 'subscription', left: 1, resets_at: null };
+  }
+
   return { kind: 'subscription', left: 0, resets_at: resets.toISOString() };
 }
 

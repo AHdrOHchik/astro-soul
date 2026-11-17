@@ -13,6 +13,8 @@ import { factorsOf } from '../src/modules/compat/compat-facts';
 import {
   COMPAT_COVERAGE,
   MAX_SECTIONS_PER_FACTOR,
+  compatMatrix,
+  coverageOf,
   distributeSections,
 } from '../src/modules/compat/compat-focus-map';
 import { COMPAT_RANGES, firstTermOffset } from '../src/modules/compat/compat-validators';
@@ -20,6 +22,8 @@ import { COMPAT_WINDOW_MS, quotaOf, windowStart } from '../src/modules/compat/co
 import { COMPAT_PROMPT_VERSION } from '../src/modules/compat/compat-prompts';
 import { COMPAT_FACTS_VERSION } from '../src/modules/compat/compat-facts';
 import { compatFactsPayload } from './fixtures/compat-facts';
+import { compatFactsPairPayload } from './fixtures/compat-facts-pair';
+import { costRubOf } from '../src/config/llm-models';
 import { COMPAT_STUB_SECTIONS, COMPAT_STUB_FORBIDDEN } from './fixtures/compat-sections';
 
 const JOBS_SECRET = 'test-jobs-secret-0123456789';
@@ -61,6 +65,10 @@ let logLines: string[];
  */
 let llmDelayMs = 0;
 let llmAnswer: ((prompt: string) => string) | null = null;
+/** `usage` подставной модели: тест стоимости подменяет числами из задания. */
+let llmUsage = { promptTokens: 900, completionTokens: 300 };
+/** Цена за 1000 токенов — та же, что у GigaChat 3 Ultra в `config/llm-models.ts`. */
+const LLM_PRICE_PER_1K = 0.5;
 
 class CompatLlm implements LlmProvider {
   readonly name = 'compat-stub';
@@ -77,7 +85,12 @@ class CompatLlm implements LlmProvider {
     return {
       content,
       model: this.name,
-      usage: { promptTokens: 900, completionTokens: 300, totalTokens: 1_200, costRub: 0.5 },
+      // Стоимость считается той же функцией, что и в проде, — по токенам.
+      usage: {
+        ...llmUsage,
+        totalTokens: llmUsage.promptTokens + llmUsage.completionTokens,
+        costRub: costRubOf(llmUsage, LLM_PRICE_PER_1K),
+      },
     };
   }
 }
@@ -140,6 +153,7 @@ beforeEach(async () => {
   logLines.length = 0;
   llmDelayMs = 0;
   llmAnswer = null;
+  llmUsage = { promptTokens: 900, completionTokens: 300 };
   spyOnLogs();
 });
 
@@ -230,6 +244,7 @@ describe('раскладка фактов: не больше двух разде
     const factor = {
       id: 'aspect:venus-mars',
       category: 'aspect_venus_mars',
+      family: 'aspect' as const,
       label: 'Венера — квадрат — Марс, орб 1,2°',
       significance: 1,
     };
@@ -285,40 +300,48 @@ describe('квота совместимости: покупка и подпис�
     ).toEqual({ kind: 'none', left: 0, resets_at: null });
   });
 
-  it('подписка: одна в 30 дней, дальше — `resets_at` через 30 дней от начала окна', () => {
-    const startedAt = new Date('2026-11-01T09:00:00.000Z');
-    const subscription = { startedAt, expiresAt: new Date('2027-01-01T00:00:00.000Z') };
+  it('подписка без готовых: одна совместимость доступна сразу', () => {
+    const subscription = {
+      startedAt: new Date('2026-11-01T09:00:00.000Z'),
+      expiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    };
 
     expect(
       quotaOf({ purchaseCredit: false, subscription, lastReadyAt: null, now: NOW }),
     ).toEqual({ kind: 'subscription', left: 1, resets_at: null });
-
-    const used = quotaOf({
-      purchaseCredit: false,
-      subscription,
-      lastReadyAt: new Date('2026-11-10T09:00:00.000Z'),
-      now: NOW,
-    });
-    expect(used.kind).toBe('subscription');
-    expect(used.left).toBe(0);
-    expect(used.resets_at).toBe(new Date(startedAt.getTime() + COMPAT_WINDOW_MS).toISOString());
   });
 
-  it('окно скользящее: сдвиг времени открывает следующую', () => {
+  it('окно считается от последней готовой: `resets_at` = она + 30 дней', () => {
     const subscription = {
-      startedAt: new Date('2025-01-01T00:00:00.000Z'),
+      startedAt: new Date('2026-10-01T09:00:00.000Z'),
       expiresAt: new Date('2027-01-01T00:00:00.000Z'),
     };
-    const lastReadyAt = new Date('2026-11-10T09:00:00.000Z');
+    const lastReadyAt = new Date('2026-11-06T09:00:00.000Z');
 
-    // Через 30 дней после последней готовой — окно открылось.
+    // Готовая 10 дней назад: при якоре «30 дней назад от сейчас» окно
+    // открылось бы через 20 дней, а не через 30.
+    const used = quotaOf({ purchaseCredit: false, subscription, lastReadyAt, now: NOW });
+    expect(used.kind).toBe('subscription');
+    expect(used.left).toBe(0);
+    expect(used.resets_at).toBe(new Date(lastReadyAt.getTime() + COMPAT_WINDOW_MS).toISOString());
+    expect(windowStart(subscription, lastReadyAt)).toEqual(lastReadyAt);
+
+    // Через 30 дней и минуту после готовой окно открыто.
     const later = new Date(lastReadyAt.getTime() + COMPAT_WINDOW_MS + 60_000);
-    const quota = quotaOf({ purchaseCredit: false, subscription, lastReadyAt, now: later });
+    expect(quotaOf({ purchaseCredit: false, subscription, lastReadyAt, now: later })).toEqual({
+      kind: 'subscription',
+      left: 1,
+      resets_at: null,
+    });
+  });
 
-    expect(windowStart(subscription, later).getTime()).toBe(
-      later.getTime() - COMPAT_WINDOW_MS,
-    );
-    expect(quota).toEqual({ kind: 'subscription', left: 1, resets_at: null });
+  it('готовая по прошлой подписке не тратит новую', () => {
+    const subscription = {
+      startedAt: new Date('2026-11-01T00:00:00.000Z'),
+      expiresAt: new Date('2027-01-01T00:00:00.000Z'),
+    };
+    // Готовая собрана до начала текущей подписки — окно не начинается.
+    expect(windowStart(subscription, new Date('2026-10-20T00:00:00.000Z'))).toBeNull();
   });
 });
 
@@ -416,8 +439,9 @@ describe('POST /api/v1/compatibility', () => {
     expect(row?.prompt_version).toBe('prompts_v1.5');
     expect(row?.chart_facts_version).toBe(COMPAT_FACTS_VERSION);
     expect(row?.model).toBe('compat-stub');
-    // Четыре раздела по 0,5 ₽ — ровно 2 ₽, без перегенераций.
-    expect(Number(row?.llm_cost_rub)).toBe(2);
+    // Четыре раздела по 1 200 токенов (900 вход + 300 выход) по 0,5 ₽/1000
+    // токенов — 0,6 ₽ за вызов, 2,4 ₽ за разбор, без перегенераций.
+    expect(Number(row?.llm_cost_rub)).toBe(2.4);
 
     // Кредит израсходован вместе со статусом `ready`.
     const credit = await ctx.db.queryOne<{ used_at: Date | null }>(
@@ -510,6 +534,58 @@ describe('покупка `compat_249`: второй раз не продаём',
 });
 
 describe('подписка: одна совместимость в 30 дней', () => {
+  /**
+   * Замок окна подписки — дословно по заданию: подписка активна и не
+   * израсходована → 202; заказ доходит до `ready`; сразу второй заказ → 422
+   * с `resets_at` = **дата первой готовой + 30 дней** (не «+20» и не «месяц
+   * от начала подписки»); часы на `resets_at` + 1 минуту → снова 202.
+   *
+   * Часы сдвигаются не подменой `Date.now`, а сдвигом якоря окна в БД:
+   * окно считается от `finished_at` готовой совместимости, поэтому «сдвинуть
+   * время вперёд» и «сдвинуть якорь назад» — одно и то же действие (см.
+   * `compat-quota.ts#windowStart`).
+   */
+  it('замок: 202 → ready → 422 с `resets_at` = первая готовая + 30 дней → 202', async () => {
+    const fixture = await userWithChart();
+    await grantSubscription(fixture, `now() - interval '2 days'`);
+
+    const accepted = await orderCompat(fixture, 'lock-one').expect(202);
+    const id = accepted.body.compatibility_id as string;
+    await waitFor(id, ['ready']);
+
+    const report = await ctx.db.queryOne<{ finished_at: Date }>(
+      `SELECT finished_at FROM reports WHERE id = $1`,
+      [id],
+    );
+    const readyAt = report?.finished_at as Date;
+    const resetsAt = new Date(readyAt.getTime() + COMPAT_WINDOW_MS);
+
+    const second = await orderCompat(fixture, 'lock-two').expect(422);
+    expect(second.body.details.reason).toBe('compat_quota_exhausted');
+    expect(second.body.details.resets_at).toBe(resetsAt.toISOString());
+    // Не «20 дней от сейчас» и не «месяц от начала подписки»: разница ровно 30 дней.
+    expect(resetsAt.getTime() - readyAt.getTime()).toBe(30 * 24 * 60 * 60 * 1000);
+
+    // Подписка началась 40 дней назад: якорем остаётся готовая, а не дата оплаты.
+    await ctx.db.query(`UPDATE subscriptions SET created_at = now() - interval '40 days'`);
+
+    // Через 20 дней окно ещё закрыто (а не «уже открыто», как было бы при
+    // якоре «30 дней назад от сейчас»).
+    await ctx.db.query(
+      `UPDATE reports SET finished_at = now() - interval '20 days' WHERE id = $1`,
+      [id],
+    );
+    const stillClosed = await orderCompat(fixture, 'lock-three').expect(422);
+    expect(stillClosed.body.details.reason).toBe('compat_quota_exhausted');
+
+    // Часы на `resets_at` + 1 минуту — то есть якорь на 30 дней и минуту назад.
+    await ctx.db.query(
+      `UPDATE reports SET finished_at = now() - interval '30 days' - interval '1 minute' WHERE id = $1`,
+      [id],
+    );
+    await orderCompat(fixture, 'lock-four').expect(202);
+  });
+
   it('первый заказ проходит, второй → 422 с `resets_at`, список показывает остаток', async () => {
     const fixture = await userWithChart();
     await grantSubscription(fixture, `now() - interval '2 days'`);
@@ -773,5 +849,104 @@ describe('брейкер совместимости отдельный от бр
     expect(metrics.body.compat_failed_30d).toBe(0);
     // Кредит израсходован — свободных совместимостей не осталось.
     expect(metrics.body.compat_credits_left).toBe(0);
+  });
+});
+
+describe('стоимость: токены, а не знаки', () => {
+  it('1 000 вход + 500 выход токенов по 0,5 ₽/1000 — ровно 0,75 ₽', () => {
+    // Точное значение без плавающей пыли: 1 500 токенов — полтора «пакета».
+    expect(costRubOf({ promptTokens: 1_000, completionTokens: 500 }, 0.5)).toBe(0.75);
+    expect(costRubOf({ promptTokens: 18_264, completionTokens: 0 }, 0.5)).toBe(9.132);
+  });
+
+  it('в базе `llm_cost_rub` = сумма по `usage` провайдера, а не по длине строки', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Подставная модель «тратит» 1 000 + 500 токенов за вызов. Длина промпта
+    // в знаках при этом втрое больше — если бы стоимость считалась по знакам,
+    // число в базе было бы другим.
+    llmUsage = { promptTokens: 1_000, completionTokens: 500 };
+
+    const accepted = await orderCompat(fixture, 'cost-one').expect(202);
+    await waitFor(accepted.body.compatibility_id as string, ['ready']);
+
+    const row = await ctx.db.queryOne<{ llm_cost_rub: string }>(
+      `SELECT llm_cost_rub::text FROM reports WHERE id = $1`,
+      [accepted.body.compatibility_id],
+    );
+
+    // Четыре раздела по одному вызову без перегенераций: 4 × 0,75 = 3,00 ₽.
+    expect(Number(row?.llm_cost_rub)).toBe(3);
+    expect(prompts).toHaveLength(4);
+    // Промпты действительно длиннее 1 500 знаков: счёт по знакам дал бы другое число.
+    expect(prompts.every((prompt) => prompt.length > 1_500)).toBe(true);
+  });
+});
+
+describe('факты пары: четыре семейства доходят до текста', () => {
+  const facts = compatFactsPairPayload;
+
+  it('в фактах пары есть все четыре семейства', () => {
+    const families = new Set(factorsOf(facts).map((factor) => factor.family));
+    expect([...families].sort()).toEqual(['aspect', 'balance', 'luminary', 'overlay']);
+  });
+
+  it('в матрице есть минимум по одному факту каждого семейства', () => {
+    const list = factorsOf(facts);
+    const distribution = distributeSections(list);
+    const matrix = compatMatrix(distribution);
+
+    for (const family of ['aspect', 'luminary', 'balance', 'overlay'] as const) {
+      expect(
+        matrix.filter((row) => row.family === family).length,
+        `семейство ${family} в тексте`,
+      ).toBeGreaterThan(0);
+    }
+
+    // Лимит не ослаблен: ни один факт не звучит больше двух раз.
+    expect(matrix.every((row) => row.count <= MAX_SECTIONS_PER_FACTOR)).toBe(true);
+
+    // Светила — отдельными фактами, а не только подписью к аспекту.
+    expect(matrix.some((row) => row.factor.startsWith('luminary:'))).toBe(true);
+    // Оверлеи дошли до текста, и это не единственный их раздел.
+    expect(matrix.filter((row) => row.family === 'overlay').length).toBeGreaterThan(0);
+
+    const coverage = coverageOf(list, distribution);
+    expect(coverage.familiesMissing).toEqual([]);
+    expect(coverage.reached).toBeGreaterThan(6);
+  });
+
+  it('без времени рождения оверлеев нет ни в фактах, ни в матрице', () => {
+    const withoutOverlays = { ...facts } as Record<string, unknown>;
+    delete withoutOverlays['house_overlays'];
+
+    const list = factorsOf(withoutOverlays as never);
+    const distribution = distributeSections(list);
+    const matrix = compatMatrix(distribution);
+
+    expect(list.some((factor) => factor.family === 'overlay')).toBe(false);
+    expect(matrix.some((row) => row.family === 'overlay')).toBe(false);
+    expect(coverageOf(list, distribution).familiesMissing).toEqual(['overlay']);
+    // Остальные три семейства на месте: отсутствие домов не обнуляет текст.
+    expect(coverageOf(list, distribution).familiesReached).toEqual([
+      'aspect',
+      'luminary',
+      'balance',
+    ]);
+  });
+
+  it('разница меньше 8 п.п. фактом не считается: у одинаковых карт балансов нет', () => {
+    const list = factorsOf(compatFactsPayload);
+    expect(list.some((factor) => factor.family === 'balance')).toBe(false);
+    expect(list.some((factor) => factor.family === 'luminary')).toBe(true);
+  });
+
+  it('не дошедшие до текста факты объяснены, а не просто пропущены', () => {
+    const distribution = distributeSections(factorsOf(facts));
+    expect(distribution.skipped.length).toBeGreaterThan(0);
+    for (const skipped of distribution.skipped) {
+      expect(skipped.reason.length).toBeGreaterThan(0);
+    }
   });
 });

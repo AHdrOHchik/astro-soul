@@ -21,7 +21,7 @@ import {
   parseCompatibilityFacts,
   type CompatibilityFacts,
 } from './compat-facts';
-import { distributeSections, MAX_SECTIONS_PER_FACTOR } from './compat-focus-map';
+import { coverageOf, distributeSections, MAX_SECTIONS_PER_FACTOR } from './compat-focus-map';
 import { COMPAT_PROMPT_VERSION, COMPAT_SYSTEM_PROMPT, compatSectionPrompt } from './compat-prompts';
 import { parseCompatRequest, compatRefused, type Relationship } from './compat.dto';
 import { CompatRepository, type CompatReportRow, type CompatSection } from './compat.repository';
@@ -361,9 +361,17 @@ export class CompatService {
       const factors = factorsOf(facts);
       const distribution = distributeSections(factors);
 
+      // Сколько фактов реально дошло до текста и какие семейства остались за
+      // бортом: без этого «матрица полная» проверялась бы на глаз.
+      const coverage = coverageOf(factors, distribution);
+
       this.logger.info('compat_focus_distribution', {
         compatibility_id: compatibilityId,
-        factors: factors.length,
+        factors: coverage.factors,
+        reached: coverage.reached,
+        families: coverage.familiesReached,
+        families_missing: coverage.familiesMissing,
+        skipped: distribution.skipped.length,
         per_section: distribution.counts,
         max_sections_per_factor: MAX_SECTIONS_PER_FACTOR,
         starved: distribution.starved,
