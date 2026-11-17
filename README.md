@@ -16,8 +16,8 @@ Telegram Mini App: дата, время и место рождения → на�
 
 1. Definition of Done (`AGENTS.md` §2) — это `pnpm install && pnpm build`, `pnpm lint`,
    `pnpm typecheck`. Один инструментальный контур на весь монорепо дешевле, чем два.
-2. Цены и состав планов живут в `packages/shared/src/plans.ts` (`payments.md` §1),
-   а доступы — в одном `getEntitlements`. Это TypeScript, и его же используют бот и
+2. Цены и состав планов живут в таблице `plans` (`payments.md` §1), типы и коды —
+   в `packages/shared/src/plans.ts`, а доступы — в одном `getEntitlements`. Это TypeScript, и его же используют бот и
    фронт. Платежи на Python означали бы дублирование денежной логики на двух языках —
    ровно тот риск, от которого предостерегает `payments.md`.
 3. Бот (`apps/bot/src/texts/ru.ts`) и мини-апп (`apps/web`) тоже TypeScript: одна
@@ -48,7 +48,7 @@ pnpm install
 pnpm setup:astro              # python-пакет движка (pyswisseph, pytest, ruff)
 docker compose up -d          # Postgres 16 + Redis 7
 pnpm db:migrate               # миграции
-pnpm db:seed                  # plans из packages/shared/src/plans.ts
+pnpm db:seed                  # каталог планов в таблицу plans (insert-if-missing)
 pnpm dev:api                  # http://localhost:8080/api/v1
 ```
 
@@ -182,8 +182,10 @@ pnpm dev:api
 
 ## Платежи
 
-Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в
-`packages/shared/src/plans.ts`, сумма инвойса никогда не берётся из запроса.
+Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в таблице
+`plans` (резолвер `apps/api/src/modules/billing/plans.repository.ts`), сумма
+инвойса никогда не берётся из запроса — она считается по строке плана и
+фиксируется снимком в `invoices.stars`.
 
 * `POST /api/v1/billing/invoice` — ссылка для `Telegram.WebApp.openInvoice`;
   антифрод 3 инвойса в час / 10 в сутки, повтор того же плана в пределах 5 минут

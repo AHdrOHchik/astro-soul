@@ -1,27 +1,27 @@
-import { PLANS, PLANS_ORDERED, TEST_PLAN_CODES, type Plan } from '@astro-soul/shared';
+import type { PlanKind } from '@astro-soul/shared';
+import type { PlanRow } from './plans.repository';
 
 /**
  * Витрина `GET /billing/plans`: что продаётся, за сколько и что это даёт.
  *
- * До 1.5.9 этот список знал клиент (`apps/web/src/lib/plans.ts`): цены там
- * были ссылкой на общую таблицу, но сам набор — хардкодом. Из-за этого ни
- * тестовый тариф нельзя было показать, не правя фронт, ни цену изменить без
- * релиза клиента. Теперь набор, цены, периоды и тексты отдаёт сервер, а
- * клиент рисует то, что получил.
+ * Итерация 23 (дополнение): **сумм здесь нет**. Цена, тексты и права приходят
+ * строкой из `plans` (`plans.repository.ts`), этот файл только раскладывает их
+ * в форму контракта и собирает `includes[]` из прав плана. Раньше `stars` и
+ * `testOnly` брались из `packages/shared/src/plans.ts` — то есть из второго
+ * каталога, и правка цены в БД на витрину не влияла.
  *
- * Границы, которые здесь держатся:
- *   • каталог — `PLANS_ORDERED`, то есть шесть обычных тарифов в порядке
- *     пейволла; тестовые в него не входят никогда;
+ * Границы, которые держатся:
+ *   • каталог — строки `is_active AND NOT test_only`;
  *   • тестовые добавляются **только** при `PAYMENTS_TEST_PLANS=1` и только
- *     с `test: true` — ни серыми, ни скрытыми полями при выключенном флаге
- *     их нет в ответе вообще;
+ *     с `test: true` — ни серыми, ни скрытыми полями при выключенном флаге их
+ *     нет в ответе вообще;
  *   • `plan_code` — строка, а не контрактный `PlanCode`: перечисление
  *     контракта остаётся закрытым каталогом, а не зависит от окружения.
  */
 
 export interface PlanOffer {
   readonly plan_code: string;
-  readonly kind: Plan['kind'];
+  readonly kind: PlanKind;
   readonly stars: number;
   readonly period_sec: number | null;
   readonly title: string;
@@ -41,14 +41,13 @@ function questionsPerDay(count: number): string {
 }
 
 /**
- * Что даёт план — из его же прав, а не из текста рядом.
+ * Что даёт план — из его прав в `plans.grants`, а не из текста рядом.
  *
- * Обещание берётся из `grants`/`grant`, поэтому выпущенное и «обещанное»
- * не смешиваются: здесь только то, что сервер действительно выдаёт по этому
- * тарифу. Формулировки, обещающие больше, живут в `paywallSubtitle` и явно
- * говорят «появится в ближайшие дни».
+ * Обещание берётся из тех же прав, по которым сервер выдаёт доступ, поэтому
+ * выпущенное и «обещанное» не смешиваются: обещания живут в
+ * `paywall_subtitle` и явно говорят «появится в ближайшие дни».
  */
-function includesOf(plan: Plan): readonly string[] {
+function includesOf(plan: PlanRow): readonly string[] {
   if (plan.kind === 'subscription') {
     const items: string[] = [];
     if (plan.grants.fullForecast) items.push('Полные прогнозы каждый день');
@@ -69,10 +68,12 @@ function includesOf(plan: Plan): readonly string[] {
   }
 }
 
-export function offerOf(plan: Plan): PlanOffer {
+export function offerOf(plan: PlanRow): PlanOffer {
   return {
     plan_code: plan.code,
     kind: plan.kind,
+    // Цена — из строки `plans`, прочитанной на этот запрос: правка в БД
+    // действует сразу, без перезапуска API.
     stars: plan.stars,
     // Для разового товара период — `null`, а не «нет поля»: клиенту нужно
     // отличать «без периода» от «сервер не сказал».
@@ -85,15 +86,10 @@ export function offerOf(plan: Plan): PlanOffer {
 }
 
 /**
- * Витрина для клиента. `testPlansEnabled` — единственный вход флага:
- * при `false` в массиве нет ни одного тестового кода, и вызывающий код не
- * может «забыть отфильтровать» — фильтрация здесь.
+ * Витрина для клиента. Фильтрация тестовых — в SQL резолвера и здесь:
+ * при `includeTestPlans = false` в массиве нет ни одного тестового кода, и
+ * вызывающий код не может «забыть отфильтровать».
  */
-export function planOffers(testPlansEnabled: boolean): readonly PlanOffer[] {
-  const catalogue = PLANS_ORDERED.map(offerOf);
-  if (!testPlansEnabled) return catalogue;
-
-  // Тестовые — после каталога и в своём порядке: клиент рисует их отдельным
-  // блоком «Тестовые» ниже обычных, а не подмешивает к продаже.
-  return [...catalogue, ...TEST_PLAN_CODES.map((code) => offerOf(PLANS[code]))];
+export function planOffers(rows: readonly PlanRow[]): readonly PlanOffer[] {
+  return rows.map(offerOf);
 }

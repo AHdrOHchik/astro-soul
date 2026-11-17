@@ -1,12 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
-import { PLANS, type Plan, type PlanCode } from '@astro-soul/shared';
+import type { PlanCode } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
 import { JsonLogger } from '../../common/logger';
 import { TelegramClient } from '../telegram/telegram.client';
 import { EventsRepository } from '../events/events.repository';
 import { BillingRepository, type RejectReason } from './billing.repository';
 import { parseInvoicePayload } from './billing.dto';
+import { PlansRepository, type PlanRow } from './plans.repository';
 
 export interface TelegramSuccessfulPayment {
   readonly currency: string;
@@ -44,7 +45,7 @@ export type RejectCode = RejectReason | 'refund_failed';
 
 /** Что стало с платежом: доступ выдан, отказ по деньгам или повтор доставки. */
 type PaymentOutcome =
-  | { readonly kind: 'processed'; readonly plan: Plan; readonly expiresAt: Date | null; readonly renewed: boolean }
+  | { readonly kind: 'processed'; readonly plan: PlanRow; readonly expiresAt: Date | null; readonly renewed: boolean }
   | { readonly kind: 'rejected'; readonly code: RejectCode }
   | { readonly kind: 'duplicate' };
 
@@ -52,7 +53,7 @@ type ProcessOutcome =
   | { readonly kind: 'duplicate' }
   | {
       readonly kind: 'processed';
-      readonly plan: Plan;
+      readonly plan: PlanRow;
       readonly expiresAt: Date | null;
       readonly renewed: boolean;
     };
@@ -74,6 +75,7 @@ function formatDate(date: Date): string {
 export class PaymentsService {
   constructor(
     @Inject(BillingRepository) private readonly repo: BillingRepository,
+    @Inject(PlansRepository) private readonly plans: PlansRepository,
     @Inject(DbService) private readonly db: DbService,
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
@@ -110,9 +112,10 @@ export class PaymentsService {
    */
   private async handlePreCheckout(query: TelegramPreCheckoutQuery): Promise<void> {
     const payload = parseInvoicePayload(query.invoice_payload);
-    const plan = payload === null ? undefined : PLANS[payload.p];
+    // План — строкой из `plans`: единственный источник цены и прав.
+    const plan = payload === null ? null : await this.plans.getPlan(payload.p);
 
-    if (payload === null || plan === undefined || query.currency !== 'XTR') {
+    if (payload === null || plan === null || query.currency !== 'XTR') {
       this.logger.warn('pre_checkout_rejected', { reason: payload === null ? 'payload' : 'plan' });
       await this.telegram.answerPreCheckoutQuery(
         query.id,
@@ -138,6 +141,25 @@ export class PaymentsService {
         query.id,
         false,
         'Оплата больше недоступна — начни заново',
+      );
+      return;
+    }
+
+    // Сумма сверяется со **снимком в счёте** (`invoices.stars`), а не с текущей
+    // ценой плана: цену могли поменять, пока окно оплаты открыто, и отклонять
+    // из-за этого уже показанный счёт — значит наказывать человека за нашу
+    // правку. Здесь ловим только подмену суммы в самом запросе.
+    if (query.total_amount !== invoice.stars) {
+      this.logger.warn('pre_checkout_rejected', {
+        reason: 'amount_mismatch',
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: invoice.stars,
+      });
+      await this.telegram.answerPreCheckoutQuery(
+        query.id,
+        false,
+        'Сумма не совпадает со счётом — начни заново',
       );
       return;
     }
@@ -186,7 +208,7 @@ export class PaymentsService {
   }): Promise<PaymentOutcome> {
     const { payment, telegramUserId } = input;
     const payload = parseInvoicePayload(payment.invoice_payload);
-    const plan = payload === null ? undefined : PLANS[payload.p];
+    const plan = payload === null ? null : await this.plans.getPlan(payload.p);
     const chargeId = payment.telegram_payment_charge_id;
 
     if (payment.currency !== 'XTR') {
@@ -194,6 +216,7 @@ export class PaymentsService {
         code: 'amount_mismatch',
         detail: 'currency_not_xtr',
         telegramUserId,
+        testPlan: plan?.testOnly === true,
         payment,
         userId: payload?.u ?? null,
         planCode: payload?.p ?? null,
@@ -202,11 +225,12 @@ export class PaymentsService {
       return { kind: 'rejected', code: 'amount_mismatch' };
     }
 
-    if (payload === null || plan === undefined) {
+    if (payload === null || plan === null) {
       await this.rejectPayment({
         code: 'unknown_plan',
         detail: payload === null ? 'payload_invalid' : 'plan_not_in_catalogue',
         telegramUserId,
+        testPlan: plan?.testOnly === true,
         payment,
         userId: payload?.u ?? null,
         planCode: null,
@@ -221,23 +245,28 @@ export class PaymentsService {
         code: 'no_invoice',
         detail: invoice === null ? 'invoice_missing' : 'invoice_plan_mismatch',
         telegramUserId,
+        testPlan: plan?.testOnly === true,
         payment,
         userId: payload.u,
         planCode: payload.p,
-        expected: plan.stars,
+        expected: invoice?.stars ?? plan.stars,
       });
       return { kind: 'rejected', code: 'no_invoice' };
     }
 
-    if (payment.total_amount !== plan.stars) {
+    // Сверка со снимком суммы в счёте, а не с текущей ценой плана: инвойс —
+    // источник для уже выставленных счетов, план — только для новых. Иначе
+    // правка цены отклоняла бы честный платёж по старому счёту.
+    if (payment.total_amount !== invoice.stars) {
       await this.rejectPayment({
         code: 'amount_mismatch',
-        detail: 'amount_differs_from_plan_price',
+        detail: 'amount_differs_from_invoice',
         telegramUserId,
+        testPlan: plan?.testOnly === true,
         payment,
         userId: payload.u,
         planCode: payload.p,
-        expected: plan.stars,
+        expected: invoice.stars,
       });
       return { kind: 'rejected', code: 'amount_mismatch' };
     }
@@ -250,10 +279,11 @@ export class PaymentsService {
         code: 'invoice_invalidated',
         detail: 'invoice_invalidated_after_delete',
         telegramUserId,
+        testPlan: plan?.testOnly === true,
         payment,
         userId: payload.u,
         planCode: payload.p,
-        expected: plan.stars,
+        expected: invoice.stars,
         refund: true,
       });
       return { kind: 'rejected', code: 'invoice_invalidated' };
@@ -264,10 +294,11 @@ export class PaymentsService {
         code: 'user_deleted',
         detail: 'user_missing_at_payment',
         telegramUserId,
+        testPlan: plan?.testOnly === true,
         payment,
         userId: payload.u,
         planCode: payload.p,
-        expected: plan.stars,
+        expected: invoice.stars,
         refund: true,
       });
       return { kind: 'rejected', code: 'user_deleted' };
@@ -378,13 +409,12 @@ export class PaymentsService {
     readonly userId: string | null;
     readonly planCode: PlanCode | null;
     readonly expected: number | null;
+    /** План помечен `test_only` в БД: отказ по нему тоже тестовый. */
+    readonly testPlan?: boolean;
     /** QA-15: отказ из-за удаления данных возвращает звёзды автоматически. */
     readonly refund?: boolean;
   }): Promise<void> {
     const chargeId = input.payment.telegram_payment_charge_id;
-    // Отказ по тестовому тарифу — тоже тестовый: иначе «amount_mismatch» от
-    // собственной проверки владельца попадёт в счётчик проблем с деньгами.
-    const testPlan = input.planCode === null ? undefined : PLANS[input.planCode];
 
     this.logger.warn('payment_rejected', {
       code: input.code,
@@ -414,7 +444,7 @@ export class PaymentsService {
         invoicePayload: input.payment.invoice_payload,
         subscriptionExpiresAt: null,
         rejectReason: input.code,
-        isTest: testPlan?.testOnly === true,
+        isTest: input.testPlan === true
       });
 
       // Повторная доставка того же charge_id уже записана — второй раз не считаем.
@@ -541,7 +571,7 @@ export class PaymentsService {
     input: {
       readonly paymentId: string;
       readonly chargeId: string;
-      readonly plan: Plan;
+      readonly plan: PlanRow;
       readonly userId: string;
       readonly chartId: string | null;
       readonly subscriptionExpiresAt: Date | null;
@@ -597,7 +627,7 @@ export class PaymentsService {
     return { expiresAt: null, renewed: false };
   }
 
-  private purchaseMessage(plan: Plan, expiresAt: Date | null): string {
+  private purchaseMessage(plan: PlanRow, expiresAt: Date | null): string {
     const title = plan.kind === 'subscription' ? plan.priceLabel : plan.title;
 
     return expiresAt === null

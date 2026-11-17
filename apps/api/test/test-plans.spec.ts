@@ -4,10 +4,9 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
-  PLANS,
   PLAN_CODES,
   type Me,
-  PLANS_ORDERED,
+  type SubscriptionGrant,
   entitlementsForPlan,
   isPlanCode,
   isTestPlanCode,
@@ -260,7 +259,16 @@ describe('PAYMENTS_TEST_PLANS=1 (стенд владельца)', () => {
     });
 
     // Права — ровно права месяца: «тестовость» живёт в учёте, не в доступе.
-    expect(entitlementsForPlan(PLANS.test_1)).toEqual(entitlementsForPlan(PLANS.month_399));
+    // Обе строки читаются из БД: в коде прав и цен больше нет.
+    const grants = await on.db.query<{ code: string; grants: SubscriptionGrant }>(
+      `SELECT code, grants FROM plans WHERE code IN ('month_399', 'test_1')`,
+    );
+    const byCode = new Map(grants.map((row) => [row.code, row.grants]));
+    const rightsOf = (grantsValue: SubscriptionGrant | undefined) =>
+      entitlementsForPlan({ kind: 'subscription', subscriptionPlan: 'month', grants: grantsValue });
+
+    expect(rightsOf(byCode.get('test_1'))).toEqual(rightsOf(byCode.get('month_399')));
+    expect(rightsOf(byCode.get('test_1'))).toMatchObject({ fullForecast: true, askPerDay: 5 });
 
     const payment = await on.db.queryOne<{ is_test: boolean; total_amount: number }>(
       `SELECT is_test, total_amount FROM payments WHERE telegram_payment_charge_id = 'charge-test-ok'`,
@@ -471,7 +479,6 @@ describe('test_report_1 — разовый разбор за 1 ⭐', () => {
 describe('каталог', () => {
   it('test_1 нет ни в каталоге, ни в порядке пейволла, ни в контракте', () => {
     expect(PLAN_CODES).not.toContain('test_1');
-    expect(PLANS_ORDERED.map((plan) => plan.code)).not.toContain('test_1');
     expect(isPlanCode('test_1')).toBe(false);
     expect(isTestPlanCode('test_1')).toBe(true);
 

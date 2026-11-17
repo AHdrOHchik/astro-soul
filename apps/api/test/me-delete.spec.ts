@@ -198,9 +198,9 @@ describe('DELETE /api/v1/me', () => {
     const { userId } = await seedPersonalData();
 
     await ctx.db.query(
-      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link)
+      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link, stars)
        VALUES ($1, 'one_149', '11111111-1111-4111-8111-111111111111',
-               '{"p":"one_149","u":"...","k":"11111111-1111-4111-8111-111111111111"}', 'https://t.me/$x')`,
+               '{"p":"one_149","u":"...","k":"11111111-1111-4111-8111-111111111111"}', 'https://t.me/$x', 149)`,
       [userId],
     );
     await ctx.db.query(

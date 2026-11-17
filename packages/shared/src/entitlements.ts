@@ -1,4 +1,4 @@
-import type { Plan } from './plans.js';
+import type { PlanRightsSource } from './plans.js';
 
 /**
  * Результат `getEntitlements(userId)` — единственного места, где решается,
@@ -39,7 +39,12 @@ export const FREE_ENTITLEMENTS: Entitlements = {
   solarIncluded: false,
 };
 
-export function entitlementsForPlan(plan: Plan): Entitlements {
+/**
+ * Права из плана. Вход — структурный `PlanRightsSource`, а не каталог из
+ * `plans.ts`: с итерации 23 права читаются из таблицы `plans` (колонка
+ * `grants`), поэтому функция не знает, откуда именно пришла строка.
+ */
+export function entitlementsForPlan(plan: PlanRightsSource): Entitlements {
   if (plan.kind === 'one_off') {
     return {
       ...FREE_ENTITLEMENTS,
@@ -50,14 +55,16 @@ export function entitlementsForPlan(plan: Plan): Entitlements {
     };
   }
 
+  const grants = plan.grants ?? { fullForecast: false, askPerDay: 0, compatPerMonth: 0, solarIncluded: false };
+
   return {
     isActive: true,
     plan: plan.subscriptionPlan,
-    fullForecast: plan.grants.fullForecast,
-    askPerDay: plan.grants.askPerDay,
+    fullForecast: grants.fullForecast,
+    askPerDay: grants.askPerDay,
     fullReport: false,
     fullReportChartId: null,
-    compatPerMonth: plan.grants.compatPerMonth,
-    solarIncluded: plan.grants.solarIncluded,
+    compatPerMonth: grants.compatPerMonth,
+    solarIncluded: grants.solarIncluded,
   };
 }

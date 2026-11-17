@@ -114,6 +114,39 @@ if [[ "$SYNTAX_ONLY" -eq 0 ]]; then
       if [[ "${LLM_FAKE:-0}" == "1" ]]; then
         err "LLM_FAKE=1 запрещён в prod"
       fi
+
+      # Критическая проверка: строки тестовых тарифов в таблице `plans`.
+      # С итерации 23 (дополнение) тарифы и цены живут только в БД, поэтому
+      # одной проверки переменной мало: строку `test_1` могли оставить с
+      # прошлого стенда, и тогда `POST /billing/invoice` продаст разбор за
+      # 1 ⭐ любому, кто знает код.
+      #
+      # `check.sh` выполняется до `up`, поэтому база может быть ещё не поднята:
+      # если до неё не достучаться — предупреждение, а не ошибка. Если
+      # достучались и строки есть — ошибка, деплой не пройдёт.
+      test_rows=""
+      db_name="${POSTGRES_DB:-$(read_dotenv_var POSTGRES_DB "$ENV_FILE" || true)}"
+      db_user="${POSTGRES_USER:-$(read_dotenv_var POSTGRES_USER "$ENV_FILE" || true)}"
+      db_name="${db_name:-astro_soul}"
+      db_user="${db_user:-astro}"
+      if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        if run_compose ps --services --filter status=running 2>/dev/null | grep -qx 'postgres'; then
+          test_rows="$(run_compose exec -T postgres \
+            psql -U "$db_user" -d "$db_name" -tAc 'SELECT count(*) FROM plans WHERE test_only' 2>/dev/null || true)"
+        fi
+      fi
+      if [[ -z "$test_rows" ]] && command -v psql >/dev/null 2>&1; then
+        db_url="${DATABASE_URL:-$(read_dotenv_var DATABASE_URL "$ENV_FILE" || true)}"
+        if [[ -n "$db_url" ]]; then
+          test_rows="$(psql "$db_url" -tAc 'SELECT count(*) FROM plans WHERE test_only' 2>/dev/null || true)"
+        fi
+      fi
+      test_rows="$(echo "$test_rows" | tr -d '[:space:]')"
+      if [[ -z "$test_rows" ]]; then
+        echo "ПРЕДУПРЕЖДЕНИЕ: не удалось проверить строки тестовых тарифов в plans (база недоступна до up): проверь вручную SELECT count(*) FROM plans WHERE test_only" >&2
+      elif [[ "$test_rows" != "0" ]]; then
+        err "в таблице plans есть тестовые тарифы (строк: $test_rows, test_only = true) — запрещено в prod: удали их (DELETE FROM plans WHERE test_only)"
+      fi
     fi
   fi
 fi

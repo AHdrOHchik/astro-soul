@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { PLANS, type Invoice, type SubscriptionState } from '@astro-soul/shared';
+import type { Invoice, SubscriptionState } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { ApiError, invalidFields, rateLimited } from '../../common/api-error';
@@ -12,8 +12,9 @@ import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
 import { TelegramClient } from '../telegram/telegram.client';
 import { BillingRepository } from './billing.repository';
-import { buildInvoicePayload, parseInvoiceRequest } from './billing.dto';
+import { buildInvoicePayload, parseInvoiceRequest, planNotAvailable } from './billing.dto';
 import { planOffers, type PlanOffer } from './plan-offers';
+import { PlansRepository, type PlanRow } from './plans.repository';
 
 /** Антифрод-лимиты из payments.md §5. */
 export const INVOICES_PER_HOUR = 3;
@@ -25,6 +26,7 @@ export const REUSE_INVOICE_WINDOW = '1 day';
 export class BillingService {
   constructor(
     @Inject(BillingRepository) private readonly repo: BillingRepository,
+    @Inject(PlansRepository) private readonly plans: PlansRepository,
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(ChartsRepository) private readonly charts: ChartsRepository,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
@@ -43,22 +45,32 @@ export class BillingService {
    * (`Cache-Control: no-store` ставит контроллер): иначе включённый на стенде
    * флаг не появится у клиента до истечения кэша.
    */
-  listPlans(): readonly PlanOffer[] {
-    return planOffers(this.env.PAYMENTS_TEST_PLANS === '1');
+  async listPlans(): Promise<readonly PlanOffer[]> {
+    // Цена и тексты — строкой из `plans` (единственный источник). Кэша нет:
+    // правка цены в БД действует на следующий же запрос, без перезапуска API.
+    const rows = await this.plans.listPlans(this.env.PAYMENTS_TEST_PLANS === '1');
+    return planOffers(rows);
   }
 
   /**
-   * `POST /billing/invoice`: цена берётся из `PLANS`, а не из запроса.
+   * `POST /billing/invoice`: цена берётся из таблицы `plans`, а не из запроса.
    * Один и тот же план в пределах 5 минут отдаёт уже созданную ссылку —
    * защита от двойного тапа, а не блокировка (payments.md §5).
    */
   async createInvoice(auth: VerifiedInitData, body: unknown): Promise<Invoice> {
-    // Тестовые тарифы (`test_1` за 1 ⭐) существуют только при явном флаге —
-    // иначе `parseInvoiceRequest` отвечает `422`, как будто плана нет.
-    const { planCode, chartId } = parseInvoiceRequest(body, {
-      testPlansEnabled: this.env.PAYMENTS_TEST_PLANS === '1',
-    });
-    const plan = PLANS[planCode];
+    const { planCode, chartId } = parseInvoiceRequest(body);
+    // План — строка из `plans`: цена, тексты и права только оттуда.
+    const plan = await this.resolveSellablePlan(planCode);
+
+    // Полный разбор покупается для конкретной карты: без `chart_id` платёж
+    // пришлось бы «прикреплять» к первой карте задним числом — это сюрприз,
+    // из-за которого пишут в поддержку (решение владельца, контракт 1.5.2).
+    if (plan.kind === 'one_off' && plan.grant === 'report' && chartId === null) {
+      throw invalidFields(
+        [{ field: 'chart_id', message: 'Выбери карту, для которой покупаешь разбор' }],
+        { reason: 'chart_required_for_report' },
+      );
+    }
 
     const { userId } = await this.users.ensureUser({
       telegramUserId: auth.telegramUserId,
@@ -119,7 +131,9 @@ export class BillingService {
     const recent = await this.repo.findReusableInvoice(userId, planCode, chartId, REUSE_INVOICE_WINDOW);
     if (recent !== null) {
       this.logger.info('invoice_reused', { user_id: userId, plan: planCode });
-      return this.toInvoice(planCode, recent.invoice_link);
+      // Сумма — снимок из счёта, а не текущая цена: именно её человек увидит
+      // в окне Telegram, и именно с ней сверяется платёж.
+      return this.toInvoice(plan, recent.invoice_link, recent.stars);
     }
 
     await this.assertAntifraudLimits(userId);
@@ -135,7 +149,17 @@ export class BillingService {
       ...(plan.kind === 'subscription' ? { subscriptionPeriod: plan.periodSeconds } : {}),
     });
 
-    await this.repo.createInvoice({ userId, planCode, idemKey, payload, invoiceLink, chartId });
+    await this.repo.createInvoice({
+      userId,
+      planCode,
+      idemKey,
+      payload,
+      invoiceLink,
+      chartId,
+      // Снимок суммы: правка цены, пока окно оплаты открыто, не должна
+      // отклонять уже выставленный счёт.
+      stars: plan.stars,
+    });
     await this.events.log({
       name: 'invoice_created',
       userId,
@@ -147,7 +171,32 @@ export class BillingService {
       this.logger.warn('invoice_created_test_plan', { user_id: userId, plan: planCode });
     }
 
-    return this.toInvoice(planCode, invoiceLink);
+    return this.toInvoice(plan, invoiceLink, plan.stars);
+  }
+
+  /**
+   * План, который можно продать сейчас.
+   *
+   * Один ответ `422` на три случая — кода нет в БД, план выключен
+   * (`is_active = false`) и тестовый тариф при выключенном флаге: клиент не
+   * должен различать «нет такого» и «есть, но не для тебя».
+   */
+  private async resolveSellablePlan(planCode: string): Promise<PlanRow> {
+    const plan = await this.plans.getPlan(planCode);
+
+    if (plan === null) {
+      planNotAvailable();
+    }
+
+    if (plan.testOnly) {
+      if (this.env.PAYMENTS_TEST_PLANS !== '1') {
+        planNotAvailable();
+      }
+    } else if (!plan.active) {
+      planNotAvailable();
+    }
+
+    return plan;
   }
 
   /** `GET /billing/subscription` — та же правда, что в `/me`. */
@@ -160,16 +209,14 @@ export class BillingService {
     return this.entitlements.getSubscriptionState(userId);
   }
 
-  private toInvoice(planCode: keyof typeof PLANS, invoiceLink: string): Invoice {
-    const plan = PLANS[planCode];
-
+  private toInvoice(plan: PlanRow, invoiceLink: string, stars: number): Invoice {
     return {
       invoice_link: invoiceLink,
       // `plan_code` в контракте — `OrderablePlanCode` (строка): каталог
       // `PlanCode` остался закрытым перечислением, а тестовый код приезжает
       // сюда без приведений, честно.
-      plan_code: planCode,
-      stars: plan.stars,
+      plan_code: plan.code,
+      stars,
       is_subscription: plan.kind === 'subscription',
       subscription_period_sec: plan.kind === 'subscription' ? plan.periodSeconds : null,
     };

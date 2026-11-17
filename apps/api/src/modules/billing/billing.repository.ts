@@ -11,6 +11,8 @@ export interface InvoiceRow {
   readonly invoice_link: string;
   readonly status: 'created' | 'paid' | 'expired' | 'invalidated';
   readonly chart_id: string | null;
+  /** Снимок суммы на момент выставления: с ним сверяются pre_checkout и платёж. */
+  readonly stars: number;
   readonly created_at: Date;
 }
 
@@ -121,7 +123,7 @@ export class BillingRepository {
     interval = '1 day',
   ): Promise<InvoiceRow | null> {
     return this.db.queryOne<InvoiceRow>(
-      `SELECT id, plan_code, idem_key, payload, invoice_link, status, chart_id, created_at
+      `SELECT id, plan_code, idem_key, payload, invoice_link, status, chart_id, stars, created_at
          FROM invoices
         WHERE user_id = $1 AND plan_code = $2 AND status = 'created'
           AND chart_id IS NOT DISTINCT FROM $3::uuid
@@ -139,12 +141,22 @@ export class BillingRepository {
     payload: string;
     invoiceLink: string;
     chartId: string | null;
+    /** Снимок цены плана на момент выставления счёта. */
+    stars: number;
   }): Promise<InvoiceRow> {
     const row = await this.db.queryOne<InvoiceRow>(
-      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link, chart_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, plan_code, idem_key, payload, invoice_link, status, chart_id, created_at`,
-      [input.userId, input.planCode, input.idemKey, input.payload, input.invoiceLink, input.chartId],
+      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link, chart_id, stars)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, plan_code, idem_key, payload, invoice_link, status, chart_id, stars, created_at`,
+      [
+        input.userId,
+        input.planCode,
+        input.idemKey,
+        input.payload,
+        input.invoiceLink,
+        input.chartId,
+        input.stars,
+      ],
     );
 
     if (row === null) {
@@ -156,7 +168,7 @@ export class BillingRepository {
 
   async findInvoiceByIdeaKey(userId: string, idemKey: string): Promise<InvoiceRow | null> {
     return this.db.queryOne<InvoiceRow>(
-      `SELECT id, plan_code, idem_key, payload, invoice_link, status, chart_id, created_at
+      `SELECT id, plan_code, idem_key, payload, invoice_link, status, chart_id, stars, created_at
          FROM invoices WHERE user_id = $1 AND idem_key = $2`,
       [userId, idemKey],
     );
