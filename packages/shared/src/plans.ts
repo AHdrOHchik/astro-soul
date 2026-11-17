@@ -1,7 +1,16 @@
 /**
- * Единственное место, где хранятся цены и состав планов (payments.md §1).
- * Таблица `plans` в БД — зеркало этого файла, синхронизируется `pnpm db:seed`.
- * Хардкод цены в обработчике платежа — ошибка ревью.
+ * Планы: коды, типы и форма прав. **Цен здесь нет.**
+ *
+ * Итерация 23 (дополнение): единственный источник цен — таблица `plans` в БД
+ * (`payments.md` §1). Этот файл остался тем, чем должен быть: закрытым
+ * перечнем кодов контракта и типами. Значения (цена, тексты, права) читает
+ * `apps/api/src/modules/billing/plans.repository.ts`; сид для пустой базы —
+ * `apps/api/src/db/plans-seed.ts`.
+ *
+ * Почему цены убраны отсюда насовсем: пока число лежало в двух местах, правка
+ * одного из них давала три разных ответа — витрину из одного каталога, счёт из
+ * другого и сумму в окне Telegram из третьего. Тест-страж
+ * (`apps/api/test/plans-single-source.spec.ts`) падает на цене в коде.
  */
 
 /** Коды планов из payments.md §1 — каталог, который видит клиент. */
@@ -15,28 +24,13 @@ export const PLAN_CODES = [
 ] as const;
 
 /**
- * Тестовые тарифы: существуют в коде, но не в каталоге.
+ * Тестовые тарифы: существуют только при `PAYMENTS_TEST_PLANS=1`.
  *
- * Нужны владельцу, чтобы пройти настоящие денежные пути в клиенте Telegram за
- * 1 ⭐, а не за 149–399: `test_1` — подписка (как `month_399`),
- * `test_report_1` — разовый разбор (как `one_149`). Два пути устроены
- * по-разному (автопродление против `entitlements.report` на карту), поэтому
- * и тарифов два, а флаг — один.
- *
- * Такой тариф нельзя «просто добавить в таблицу цен»: любая забытая строка в
- * каталоге — это прод, где подписка или разбор стоит звезду. Поэтому у плана
- * есть признак `testOnly`, а у сервера — флаг `PAYMENTS_TEST_PLANS`: при
- * выключенном флаге `POST /billing/invoice` с этим кодом отвечает `422`, как
- * будто плана нет.
- *
- * В каталог (`PLAN_CODES`), в порядок пейволла (`PLANS_ORDERED`) и в
- * контрактный `PlanCode` эти коды не попадают никогда. До 1.5.9 клиент о них
- * не знал вообще; теперь витрина (`GET /billing/plans`) отдаёт их **только**
- * при включённом флаге и с `test: true`, чтобы клиент рисовал их отдельным
- * блоком, а не подмешивал к продаже (payments.md §1.1, §6.1).
- *
- * Флаг один на оба тарифа намеренно: два выключателя означают, что один из
- * них забудут выключить.
+ * Строки в `plans` есть (сид, `test_only = true`), но в каталог они не входят
+ * никогда: `GET /billing/plans` отдаёт их только при включённом флаге и с
+ * `test: true`, а `POST /billing/invoice` без флага отвечает `422`, как будто
+ * плана нет. Флаг один на оба тарифа намеренно: два выключателя — это один
+ * забытый.
  */
 export const TEST_PLAN_CODES = ['test_1', 'test_report_1'] as const;
 
@@ -63,213 +57,28 @@ export interface SubscriptionGrant {
   readonly solarIncluded: boolean;
 }
 
-export interface PlanBase {
-  readonly code: PlanCode;
-  /**
-   * План существует только при `PAYMENTS_TEST_PLANS=1` и никогда не попадает
-   * в каталог для клиента. Учёт тестовых платежей — `payments.is_test`.
-   */
-  readonly testOnly: boolean;
-  /** Значение `plan` в `SubscriptionState` для подписок, `none` для разовых товаров. */
-  readonly subscriptionPlan: SubscriptionPlan;
-  /** Цена в звёздах (XTR). Только целое число. */
-  readonly stars: number;
-  /** Заголовок инвойса (ru). */
-  readonly title: string;
-  /** Описание инвойса (ru). */
-  readonly description: string;
-  /**
-   * Название тарифа на витрине (`GET /billing/plans`), без цены: цену клиент
-   * берёт из `stars`, чтобы «149 ⭐» в вёрстке не расходилось с счётом.
-   */
-  readonly paywallTitle: string;
-  /**
-   * Что человек получает — одной фразой, на «ты». Формулировки подписок
-   * совпадают с согласованными владельцем: обещанное, но не выпущенное
-   * названо «появится в ближайшие дни», а не как готовое.
-   *
-   * Итерация 23: совместимость выпущена, поэтому из подписок фраза про
-   * «появится» убрана — обещать выпущенное как будущее значит занижать товар,
-   * за который человек уже платит.
-   */
-  readonly paywallSubtitle: string;
-  /** Подпись суммы в `prices[]` инвойса (ru). */
-  readonly priceLabel: string;
-  /** Порядок на пейволле. */
-  readonly sort: number;
-}
-
-export interface OneOffPlan extends PlanBase {
-  readonly kind: 'one_off';
-  /** `subscription_period` для разового товара не передаётся. */
-  readonly periodSeconds: null;
+/** Права разового товара: одна строка `kind = 'one_off'` в `plans.grants`. */
+export interface OneOffPlanGrants {
   readonly grant: OneOffGrant;
 }
 
-export interface SubscriptionPlanDefinition extends PlanBase {
-  readonly kind: 'subscription';
-  /** `subscription_period` в секундах — обязателен для подписки. */
-  readonly periodSeconds: number;
-  readonly grants: SubscriptionGrant;
+/** `plans.grants` в БД: либо права разового товара, либо права подписки. */
+export type PlanGrants = OneOffPlanGrants | SubscriptionGrant;
+
+export function isOneOffGrants(value: PlanGrants): value is OneOffPlanGrants {
+  return typeof (value as OneOffPlanGrants).grant === 'string';
 }
 
-export type Plan = OneOffPlan | SubscriptionPlanDefinition;
-
-export const PLANS: Readonly<Record<PlanCode, Plan>> = {
-  one_149: {
-    code: 'one_149',
-    testOnly: false,
-    kind: 'one_off',
-    subscriptionPlan: 'none',
-    stars: 149,
-    periodSeconds: null,
-    grant: 'report',
-    title: 'Разбор личности — полный разбор',
-    description: 'Шесть глав по вашей натальной карте и PDF',
-    priceLabel: 'Разбор',
-    paywallTitle: 'Полный разбор',
-    paywallSubtitle:
-      'Все главы разбора по этой карте. Разовая покупка, без подписки.',
-    sort: 10,
-  },
-  week_149: {
-    code: 'week_149',
-    testOnly: false,
-    kind: 'subscription',
-    subscriptionPlan: 'week',
-    stars: 149,
-    periodSeconds: 604800,
-    grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: false },
-    title: 'Разбор личности — подписка на неделю',
-    description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
-    priceLabel: 'Неделя',
-    paywallTitle: 'Подписка на неделю',
-    paywallSubtitle:
-      'Полные прогнозы, 5 вопросов карте в день и разбор пары — раз в месяц.',
-    sort: 20,
-  },
-  month_399: {
-    code: 'month_399',
-    testOnly: false,
-    kind: 'subscription',
-    subscriptionPlan: 'month',
-    stars: 399,
-    periodSeconds: 2592000,
-    grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: false },
-    title: 'Разбор личности — подписка на месяц',
-    description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
-    priceLabel: 'Месяц',
-    paywallTitle: 'Подписка на месяц',
-    paywallSubtitle:
-      'Полные прогнозы, 5 вопросов карте в день и разбор пары — раз в месяц.',
-    sort: 30,
-  },
-  year_2990: {
-    code: 'year_2990',
-    testOnly: false,
-    kind: 'subscription',
-    subscriptionPlan: 'year',
-    stars: 2990,
-    periodSeconds: 31536000,
-    grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: true },
-    title: 'Разбор личности — подписка на год',
-    description: 'Всё, что в месячной подписке, плюс карта года',
-    priceLabel: 'Год',
-    paywallTitle: 'Подписка на год',
-    paywallSubtitle:
-      'Всё, что в подписке на месяц. Карта года появится в ближайшие дни.',
-    sort: 40,
-  },
-  compat_249: {
-    code: 'compat_249',
-    testOnly: false,
-    kind: 'one_off',
-    subscriptionPlan: 'none',
-    stars: 249,
-    periodSeconds: null,
-    grant: 'compat',
-    title: 'Совместимость с партнёром',
-    description: 'Разбор пары по двум натальным картам',
-    priceLabel: 'Совместимость',
-    paywallTitle: 'Совместимость с партнёром',
-    paywallSubtitle:
-      'Разбор пары по двум картам. Разовая покупка, без подписки.',
-    sort: 50,
-  },
-  solar_590: {
-    code: 'solar_590',
-    testOnly: false,
-    kind: 'one_off',
-    subscriptionPlan: 'none',
-    stars: 590,
-    periodSeconds: null,
-    grant: 'solar',
-    title: 'Карта года',
-    description: 'Прогноз на год вперёд по солярной карте',
-    priceLabel: 'Карта года',
-    paywallTitle: 'Карта года',
-    paywallSubtitle:
-      'Прогноз на год вперёд по солярной карте. Разовая покупка, без подписки.',
-    sort: 60,
-  },
-  /**
-   * Тестовый тариф владельца: 1 ⭐ за неделю, права как у `month_399`.
-   *
-   * Неделя, а не месяц, — намеренно: если тестовую подписку забудут отменить,
-   * следующее списание случится через неделю, и это ошибка за 1 ⭐, а не
-   * повторный платёж, о котором узнают из жалобы. `subscriptionPlan` — `month`:
-   * контракт `SubscriptionState.plan` не расширяется, «тестовость» живёт в
-   * `plan_code` и в `payments.is_test`, а не в правах.
-   */
-  test_1: {
-    code: 'test_1',
-    testOnly: true,
-    kind: 'subscription',
-    subscriptionPlan: 'month',
-    stars: 1,
-    periodSeconds: 604800,
-    grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: false },
-    title: 'Тестовая подписка — 1 звезда',
-    description: 'Неделя доступа за 1 ⭐. Только для проверки оплаты владельцем',
-    priceLabel: 'Тест',
-    paywallTitle: 'Тестовая подписка',
-    paywallSubtitle:
-      '1 ⭐ за неделю доступа, права как у месячной. Только для проверки оплаты.',
-    sort: 90,
-  },
-  /**
-   * Тестовый разовый разбор: 1 ⭐, права как у `one_149`.
-   *
-   * `subscriptionPeriod: null` — принципиально: с `subscription_period`
-   * Telegram превратил бы разовый товар в подписку, и это был бы третий вид
-   * тестового платежа вместо второго. Доступ — `entitlements (kind = 'report')`
-   * для конкретной карты из `payload.chartId`, а не подписка.
-   */
-  test_report_1: {
-    code: 'test_report_1',
-    testOnly: true,
-    kind: 'one_off',
-    subscriptionPlan: 'none',
-    stars: 1,
-    periodSeconds: null,
-    grant: 'report',
-    title: 'Тестовый полный разбор — 1 звезда',
-    description: 'Разбор личности за 1 ⭐ для одной карты. Только для проверки оплаты',
-    priceLabel: 'Тест-разбор',
-    paywallTitle: 'Тестовый разбор',
-    paywallSubtitle:
-      '1 ⭐ за полный разбор одной карты. Только для проверки оплаты.',
-    sort: 91,
-  },
-} as const;
-
 /**
- * Планы в порядке пейволла. Тестовые исключены всегда: это список для
- * клиента, а не каталог сервера (`ALL_PLAN_CODES` — для второго).
+ * Минимум, который нужен `entitlementsForPlan`: вид плана и его права.
+ * Намеренно структурный тип, а не ссылка на каталог: права приходят из БД.
  */
-export const PLANS_ORDERED: readonly Plan[] = Object.values(PLANS)
-  .filter((plan) => !plan.testOnly)
-  .sort((a, b) => a.sort - b.sort);
+export interface PlanRightsSource {
+  readonly kind: PlanKind;
+  readonly subscriptionPlan: SubscriptionPlan;
+  readonly grant?: OneOffGrant;
+  readonly grants?: SubscriptionGrant;
+}
 
 /**
  * Код из каталога. Тестовые коды сюда не входят намеренно: этой проверкой
@@ -283,18 +92,4 @@ export function isPlanCode(value: unknown): value is CataloguePlanCode {
 /** Тестовый тариф: существует только при явно включённом флаге. */
 export function isTestPlanCode(value: unknown): value is TestPlanCode {
   return typeof value === 'string' && (TEST_PLAN_CODES as readonly string[]).includes(value);
-}
-
-/**
- * Цена в звёздах по коду плана. Клиент не может прислать `amount` —
- * он всегда берётся отсюда (payments.md §2).
- */
-export function priceOf(code: PlanCode): number {
-  return PLANS[code].stars;
-}
-
-/** Период подписки для `createInvoiceLink`; `undefined` для разового товара. */
-export function subscriptionPeriodOf(code: PlanCode): number | undefined {
-  const plan = PLANS[code];
-  return plan.kind === 'subscription' ? plan.periodSeconds : undefined;
 }

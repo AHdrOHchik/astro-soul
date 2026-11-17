@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BillingModule } from '../billing/billing.module';
+import { PlansModule } from '../billing/plans.module';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsModule } from '../events/events.module';
 import { QuotasService } from '../quotas/quotas.service';
@@ -8,7 +9,7 @@ import { MeController } from './me.controller';
 import { MeService } from './me.service';
 
 @Module({
-  imports: [BillingModule, EventsModule],
+  imports: [BillingModule, EventsModule, PlansModule],
   controllers: [MeController],
   providers: [MeService, UsersRepository, EntitlementsService, QuotasService],
 })

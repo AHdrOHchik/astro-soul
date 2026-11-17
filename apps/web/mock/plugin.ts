@@ -5,7 +5,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { PLANS } from '@astro-soul/shared';
+// Цены и состав — из сида таблицы `plans`, а не из копии: с итерации 23
+// (дополнение) чисел в рантайм-коде нет, единственный файл с ними —
+// `apps/api/src/db/plans-seed.ts`. Мок читает его как данные (dev-only, в
+// прод-бандл не попадает), поэтому второго каталога цен в репозитории нет.
+import { PLAN_SEED, type PlanSeedRow } from '../../api/src/db/plans-seed.ts';
 import type { Connect, Plugin } from 'vite';
 import { EVENT_NAMES } from '../src/analytics/events.ts';
 import { askOutcome, buildForecast, FORECAST_SCENARIOS, localDay, type ForecastScenario } from './engagement.ts';
@@ -312,6 +316,13 @@ function basisOf({ chart }: ChartResponse): string[] {
   });
 }
 
+const PLANS: Record<string, PlanSeedRow> = Object.fromEntries(PLAN_SEED.map((plan) => [plan.code, plan]));
+
+/** Право разового товара (`report` | `compat` | `solar`); у подписки его нет. */
+function grantOf(plan: PlanSeedRow): string | null {
+  return 'grant' in plan.grants ? plan.grants.grant : null;
+}
+
 function isPlanCode(value: unknown): value is PlanCode {
   return typeof value === 'string' && Object.hasOwn(PLANS, value);
 }
@@ -387,8 +398,9 @@ function createHandler({
     const invoice = invoices.get(link);
     if (!invoice) return;
     const plan = PLANS[invoice.plan];
-    if (plan.kind === 'subscription') subscription = { plan: plan.subscriptionPlan as 'week' | 'month' | 'year', expiresAt: Date.now() + plan.periodSeconds * 1000 };
-    else if (plan.grant === 'report' && invoice.chartId !== null) paidCharts.add(invoice.chartId);
+    if (plan === undefined) return;
+    if (plan.kind === 'subscription') subscription = { plan: plan.subscriptionPlan as 'week' | 'month' | 'year', expiresAt: Date.now() + (plan.periodSeconds ?? 0) * 1000 };
+    else if (grantOf(plan) === 'report' && invoice.chartId !== null) paidCharts.add(invoice.chartId);
   };
 
   return async function handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -572,7 +584,8 @@ function createHandler({
         // The limit is checked before anything else, as in apps/api: also for a plan that already has an invoice.
         sendProblem(res, 429, 'RATE_LIMITED', MESSAGE.RATE_LIMITED, { reason: 'invoice_limits', hour_limit: INVOICES_PER_HOUR });
       } else {
-        const { stars, kind, periodSeconds } = PLANS[plan];
+        // Неизвестного кода здесь быть не может: выше `isPlanCode`.
+        const { stars, kind, periodSeconds } = PLANS[plan] ?? { stars: 0, kind: 'one_off', periodSeconds: null };
         // The same plan again gets the invoice it already has: a double tap is not a second invoice.
         let link = [...invoices].find(([, made]) => made.plan === plan && made.chartId === chartId)?.[0];
         if (link === undefined) {

@@ -1,12 +1,15 @@
 import { z } from 'zod';
-import { ALL_PLAN_CODES, PLANS, type PlanCode } from '@astro-soul/shared';
+import { ALL_PLAN_CODES, type PlanCode } from '@astro-soul/shared';
 import { invalidFields, type FieldErrorInput } from '../../common/api-error';
 
 /**
- * `plan_code` проверяется по полному списку (каталог + тестовые): тестовый
- * тариф — это не «неизвестный код», а существующий план, который выключен
- * флагом. Флаг проверяется ниже, чтобы ответ был один и тот же — `422`,
- * как будто плана нет.
+ * `plan_code` проверяется по полному списку кодов контракта (каталог +
+ * тестовые): тестовый тариф — это не «неизвестный код», а существующий план,
+ * который выключен флагом.
+ *
+ * Дальше код разрешается в **строку БД** (`plans.repository.ts`) — с итерации 23
+ * (дополнение) цена, тексты и права живут только там. Здесь проверяется форма:
+ * `422` на код вне перечня, всё остальное решает сервис, у которого есть БД.
  */
 export const invoiceRequestSchema = z.object({
   plan_code: z.enum(ALL_PLAN_CODES),
@@ -15,15 +18,7 @@ export const invoiceRequestSchema = z.object({
 
 export type InvoiceRequestBody = z.infer<typeof invoiceRequestSchema>;
 
-export interface InvoiceRequestOptions {
-  /** `PAYMENTS_TEST_PLANS=1`: без него тестовых тарифов не существует. */
-  readonly testPlansEnabled: boolean;
-}
-
-export function parseInvoiceRequest(
-  body: unknown,
-  options: InvoiceRequestOptions,
-): { planCode: PlanCode; chartId: string | null } {
+export function parseInvoiceRequest(body: unknown): { planCode: PlanCode; chartId: string | null } {
   const parsed = invoiceRequestSchema.safeParse(body);
 
   if (!parsed.success) {
@@ -40,30 +35,19 @@ export function parseInvoiceRequest(
     throw invalidFields(errors, { reason: 'invoice_request_invalid' });
   }
 
-  const chartId = parsed.data.chart_id ?? null;
-  const plan = PLANS[parsed.data.plan_code];
+  return { planCode: parsed.data.plan_code, chartId: parsed.data.chart_id ?? null };
+}
 
-  // Тестовый тариф без флага — «такого плана нет»: тот же `422`, тот же
-  // `reason`, что у несуществующего кода. Отдельный ответ (`403`, «включи
-  // флаг») подсказывал бы клиенту, что тариф существует.
-  if (plan.testOnly && !options.testPlansEnabled) {
-    throw invalidFields(
-      [{ field: 'plan_code', message: 'plan_code — один из тарифов каталога' }],
-      { reason: 'invoice_request_invalid' },
-    );
-  }
-
-  // Полный разбор покупается для конкретной карты: без `chart_id` платёж
-  // пришлось бы «прикреплять» к первой карте задним числом — это сюрприз,
-  // из-за которого пишут в поддержку (решение владельца, контракт 1.5.2).
-  if (plan.kind === 'one_off' && plan.grant === 'report' && chartId === null) {
-    throw invalidFields(
-      [{ field: 'chart_id', message: 'Выбери карту, для которой покупаешь разбор' }],
-      { reason: 'chart_required_for_report' },
-    );
-  }
-
-  return { planCode: parsed.data.plan_code, chartId };
+/**
+ * Отказ «такого плана нет» — один и тот же ответ на несуществующий код,
+ * выключенный тариф и тестовый тариф без флага. Отдельный ответ (`403`,
+ * «включи флаг») подсказывал бы клиенту, что тариф существует.
+ */
+export function planNotAvailable(): never {
+  throw invalidFields(
+    [{ field: 'plan_code', message: 'plan_code — один из тарифов каталога' }],
+    { reason: 'invoice_request_invalid' },
+  );
 }
 
 /** `payload` инвойса: plan + внутренний userId + idemK. Без ПДн (payments.md §2). */

@@ -252,8 +252,9 @@ describe('POST /api/v1/internal/jobs/run', () => {
     const payload = JSON.stringify({ p: 'one_149', u: userId, k: idemKey });
 
     await ctx.db.query(
-      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link)
-       VALUES ($1, 'one_149', $2, $3, 'https://t.me/$invoice-1')`,
+      // `stars` — снимок суммы: джоб сверяет платёж с ним, а не с ценой плана.
+      `INSERT INTO invoices (user_id, plan_code, idem_key, payload, invoice_link, stars)
+       VALUES ($1, 'one_149', $2, $3, 'https://t.me/$invoice-1', 149)`,
       [userId, idemKey, payload],
     );
     await ctx.db.query(

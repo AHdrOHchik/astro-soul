@@ -25,8 +25,8 @@ export class BillingController {
    */
   @Get('plans')
   @Header('Cache-Control', 'no-store')
-  listPlans(): { plans: readonly PlanOffer[] } {
-    return { plans: this.billing.listPlans() };
+  async listPlans(): Promise<{ plans: readonly PlanOffer[] }> {
+    return { plans: await this.billing.listPlans() };
   }
 
   @Get('subscription')

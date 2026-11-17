@@ -13,7 +13,8 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed-plans.ts",
     "test": "tsx scripts/check-test-db.ts && vitest run",
-    "compat:dry-run": "tsx scripts/compat-dry-run.ts"
+    "compat:dry-run": "tsx scripts/compat-dry-run.ts",
+    "plans:set-price": "tsx scripts/set-plan-price.ts"
   },
   "dependencies": {
     "@astro-soul/shared": "workspace:*",

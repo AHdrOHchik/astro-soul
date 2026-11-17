@@ -2,12 +2,11 @@ import { Inject, Injectable } from '@nestjs/common';
 import {
   entitlementsForPlan,
   FREE_ENTITLEMENTS,
-  PLANS,
   type Entitlements,
-  type PlanCode,
   type SubscriptionState,
 } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
+import { PlansRepository } from '../billing/plans.repository';
 
 /**
  * `getEntitlements(userId)` — единственное место, где решается,
@@ -18,17 +17,24 @@ import { DbService } from '../../db/db.service';
  */
 @Injectable()
 export class EntitlementsService {
-  constructor(@Inject(DbService) private readonly db: DbService) {}
+  constructor(
+    @Inject(DbService) private readonly db: DbService,
+    @Inject(PlansRepository) private readonly plans: PlansRepository,
+  ) {}
 
-  /** Соответствие `subscriptions.plan` → план из packages/shared. */
+  /**
+   * Соответствие `subscriptions.plan` → слаг плана в таблице `plans`.
+   *
+   * Итерация 23 (дополнение): права подписки читаются из `plans.grants`, а не
+   * из каталога в коде. Триал отдельного плана не имеет — доступ как у недели.
+   */
   private static readonly PLAN_BY_SUBSCRIPTION: Readonly<
-    Record<Exclude<SubscriptionState['plan'], 'none'>, PlanCode>
+    Record<Exclude<SubscriptionState['plan'], 'none'>, 'week' | 'month' | 'year'>
   > = {
-    // Триал отдельного плана в payments.md не имеет: доступ как у недели.
-    trial: 'week_149',
-    week: 'week_149',
-    month: 'month_399',
-    year: 'year_2990',
+    trial: 'week',
+    week: 'week',
+    month: 'month',
+    year: 'year',
   };
 
   async getEntitlements(userId: string): Promise<Entitlements> {
@@ -69,7 +75,7 @@ export class EntitlementsService {
     const base =
       subscription === null
         ? FREE_ENTITLEMENTS
-        : entitlementsForPlan(PLANS[EntitlementsService.PLAN_BY_SUBSCRIPTION[subscription.plan]]);
+        : await this.baseEntitlements(subscription.plan);
 
     const kinds = new Set(oneOff.map((row) => row.kind));
 
@@ -80,6 +86,23 @@ export class EntitlementsService {
       compatPerMonth: Math.max(base.compatPerMonth, kinds.has('compat') ? 1 : 0),
       solarIncluded: base.solarIncluded || kinds.has('solar'),
     };
+  }
+
+  /**
+   * Права действующей подписки — из её строки в `plans`.
+   *
+   * Строки нет (пустая база без сида или план удалён) — отдаём бесплатные
+   * права: выдавать доступ «на глаз» хуже, чем не выдать, а `/me` не должен
+   * падать из-за конфигурации.
+   */
+  private async baseEntitlements(
+    plan: Exclude<SubscriptionState['plan'], 'none'>,
+  ): Promise<Entitlements> {
+    const row = await this.plans.getSubscriptionPlan(
+      EntitlementsService.PLAN_BY_SUBSCRIPTION[plan],
+    );
+
+    return row === null ? FREE_ENTITLEMENTS : entitlementsForPlan(row);
   }
 
   /**
