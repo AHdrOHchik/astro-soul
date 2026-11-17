@@ -12,7 +12,7 @@
     "dev": "tsx watch src/main.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed": "tsx src/db/seed-plans.ts",
-    "test": "vitest run",
+    "test": "tsx scripts/check-test-db.ts && vitest run",
     "compat:dry-run": "tsx scripts/compat-dry-run.ts"
   },
   "dependencies": {

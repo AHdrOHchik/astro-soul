@@ -1,5 +1,5 @@
 import { COMPAT_SECTIONS, type CompatSectionKey } from './compat-validators';
-import type { CompatFactor } from './compat-facts';
+import type { CompatFactor, CompatFamily } from './compat-facts';
 
 /**
  * Карта «факт × раздел» для совместимости — детерминированное распределение,
@@ -36,14 +36,49 @@ export const COMPAT_COVERAGE: Readonly<Record<string, Readonly<Partial<Record<Co
   aspect_personal: { clicks: 'angle', friction: 'main', scenario: 'main', steps: 'main' },
   aspect_social: { clicks: 'angle', friction: 'main', scenario: 'main', steps: 'main' },
   aspect_outer: { clicks: 'angle', friction: 'angle', scenario: 'main', steps: 'angle' },
+  luminary: { clicks: 'main', friction: 'angle', scenario: 'angle', steps: 'angle' },
   balance_element: { clicks: 'main', friction: 'angle', steps: 'angle' },
   balance_cross: { clicks: 'angle', friction: 'angle', scenario: 'main' },
   overlay: { clicks: 'angle', friction: 'angle', scenario: 'angle', steps: 'angle' },
 };
 
+/** Сколько разных фактов и семейств дошло до текста — числом, для отчёта. */
+export interface CompatCoverage {
+  readonly factors: number;
+  readonly reached: number;
+  readonly familiesReached: readonly CompatFamily[];
+  readonly familiesMissing: readonly CompatFamily[];
+}
+
+const ALL_FAMILIES: readonly CompatFamily[] = ['aspect', 'luminary', 'balance', 'overlay'];
+
+export function coverageOf(factors: readonly CompatFactor[], distribution: CompatDistribution): CompatCoverage {
+  const reached = new Set(Object.values(distribution.bySection).flat().map((factor) => factor.id));
+  const reachedFamilies = new Set<CompatFamily>();
+  for (const factor of factors) {
+    if (reached.has(factor.id)) {
+      reachedFamilies.add(factor.family);
+    }
+  }
+
+  return {
+    factors: factors.length,
+    reached: reached.size,
+    familiesReached: ALL_FAMILIES.filter((family) => reachedFamilies.has(family)),
+    familiesMissing: ALL_FAMILIES.filter((family) => !reachedFamilies.has(family)),
+  };
+}
+
 export interface AssignedFactor extends CompatFactor {
   /** Номер факта в исходном списке: по нему видно, какой факт куда ушёл. */
   readonly index: number;
+}
+
+export interface CompatSkippedFactor {
+  readonly id: string;
+  readonly family: CompatFamily;
+  /** Почему факт не попал ни в один раздел — по-русски и по разделам. */
+  readonly reason: string;
 }
 
 export interface CompatDistribution {
@@ -53,6 +88,8 @@ export interface CompatDistribution {
   readonly unmapped: readonly string[];
   /** Разделы, которым не хватило фактов под лимит (0–1 факт). */
   readonly starved: readonly CompatSectionKey[];
+  /** Факты, не попавшие ни в один раздел, с причиной: для отчёта и dry-run. */
+  readonly skipped: readonly CompatSkippedFactor[];
 }
 
 function roleOf(category: string, section: CompatSectionKey): FactorRole | undefined {
@@ -79,6 +116,12 @@ function scoreOf(factor: AssignedFactor, section: CompatSectionKey): number {
  *      но **никогда** копия исчерпанного.
  *   4. Одна категория внутри раздела не повторяется: два разных аспекта
  *      одной и той же пары — это один факт, пересказанный дважды.
+ *   5. Семейства не вытесняют друг друга: сначала раздел берёт по одному
+ *      факту из разных семейств (аспект, светила, баланс, оверлей), и только
+ *      потом добирает вторым фактом того же семейства. Без этого правила
+ *      кросс-аспектов в фактах втрое больше, и они занимали все три места —
+ *      «узнавание» собиралось из аспектов, а светила и дома не доходили до
+ *      текста (итерация 23).
  */
 export function distributeSections(
   factors: readonly CompatFactor[],
@@ -123,14 +166,23 @@ export function distributeSections(
 
     const chosen: AssignedFactor[] = [];
 
-    for (const factor of candidates) {
-      if (chosen.length >= SECTION_FACTOR_MAX) {
-        break;
+    // Первый проход — только «новые» семейства для этого раздела, второй —
+    // добор фактами тех семейств, что уже звучат. Порядок внутри прохода
+    // прежний: связь с разделом, значимость, номер в списке.
+    for (const pass of ['families', 'rest'] as const) {
+      for (const factor of candidates) {
+        if (chosen.length >= SECTION_FACTOR_MAX) {
+          break;
+        }
+        const familyTaken = chosen.some((item) => item.family === factor.family);
+        if (pass === 'families' && familyTaken) {
+          continue;
+        }
+        if (!canTake(factor, section, chosen)) {
+          continue;
+        }
+        chosen.push(factor);
       }
-      if (!canTake(factor, section, chosen)) {
-        continue;
-      }
-      chosen.push(factor);
     }
 
     // Добираем до минимума только теми фактами, что ещё не исчерпали лимит.
@@ -168,12 +220,43 @@ export function distributeSections(
 
   const starved = COMPAT_SECTIONS.filter((section) => counts[section] < SECTION_FACTOR_MIN);
 
-  return { bySection, counts, unmapped, starved };
+  // Причина «не дошёл до текста» — не догадка: она читается из того же
+  // состояния, в котором раскладка закончилась.
+  const skipped: CompatSkippedFactor[] = [];
+  for (const factor of prepared) {
+    if (usedIn(factor.id).size > 0) {
+      continue;
+    }
+    const sections = COMPAT_SECTIONS.filter((section) => roleOf(factor.category, section) !== undefined);
+    let reason: string;
+    if (sections.length === 0) {
+      reason = 'категории нет в таблице покрытия';
+    } else {
+      const details = sections.map((section) => {
+        const list = bySection[section];
+        if (list.length >= SECTION_FACTOR_MAX) {
+          return `«${section}» заполнен`;
+        }
+        if (list.some((item) => item.category === factor.category)) {
+          return `«${section}»: это же семейство уже звучит`;
+        }
+        if (list.some((item) => item.family === factor.family)) {
+          return `«${section}»: семейство уже звучит, а мест больше нет`;
+        }
+        return `«${section}»: уступил более значимому факту`;
+      });
+      reason = details.join('; ');
+    }
+    skipped.push({ id: factor.id, family: factor.family, reason });
+  }
+
+  return { bySection, counts, unmapped, starved, skipped };
 }
 
 /** Строка матрицы: факт и разделы, где он звучит. */
 export interface CompatMatrixRow {
   readonly factor: string;
+  readonly family: CompatFamily;
   readonly label: string;
   readonly sections: readonly CompatSectionKey[];
   readonly count: number;
@@ -184,11 +267,18 @@ export interface CompatMatrixRow {
  * `count > MAX_SECTIONS_PER_FACTOR` — нарушение инварианта.
  */
 export function compatMatrix(distribution: CompatDistribution): readonly CompatMatrixRow[] {
-  const rows = new Map<string, { label: string; sections: Set<CompatSectionKey> }>();
+  const rows = new Map<
+    string,
+    { family: CompatFamily; label: string; sections: Set<CompatSectionKey> }
+  >();
 
   for (const section of COMPAT_SECTIONS) {
     for (const factor of distribution.bySection[section]) {
-      const entry = rows.get(factor.id) ?? { label: factor.label, sections: new Set<CompatSectionKey>() };
+      const entry = rows.get(factor.id) ?? {
+        family: factor.family,
+        label: factor.label,
+        sections: new Set<CompatSectionKey>(),
+      };
       entry.sections.add(section);
       rows.set(factor.id, entry);
     }
@@ -197,6 +287,7 @@ export function compatMatrix(distribution: CompatDistribution): readonly CompatM
   return [...rows.entries()]
     .map(([factor, entry]) => ({
       factor,
+      family: entry.family,
       label: entry.label,
       sections: COMPAT_SECTIONS.filter((section) => entry.sections.has(section)),
       count: entry.sections.size,

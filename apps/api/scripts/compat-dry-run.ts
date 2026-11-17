@@ -8,8 +8,14 @@
  *
  * Здесь нет ни одного настоящего платежа и ни одного вызова GigaChat: модель —
  * подставная, факты пары — настоящие (из движка, `test/fixtures/compat-facts.ts`),
- * карта — эталонная. Поэтому «стоимость» считается по цене владельца
- * 0,5 ₽/1000 знаков, а не по usage провайдера.
+ * карта — эталонная.
+ *
+ * Стоимость считается так же, как в проде: по `usage` провайдера и цене из
+ * `config/llm-models.ts` (0,5 ₽ за 1000 **токенов**, вход и выход по одной
+ * цене). Подставная модель не знает токенизатора GigaChat, поэтому токены
+ * оцениваются как 2,8 знака на токен — это оценка, и она подписана как
+ * оценка. Раньше здесь считались знаки по 0,5 ₽/1000 знаков: 18 264 знака
+ * давали 9,13 ₽ вместо ~3,3 ₽, то есть завышение почти втрое.
  */
 import type { Server } from 'node:http';
 import request from 'supertest';
@@ -19,16 +25,33 @@ import { FICTIONAL_USER, TEST_BOT_TOKEN } from '../test/test-env';
 import { makeFakeAstro } from '../test/fake-astro';
 import { makeFakeTelegram } from '../test/fake-telegram';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../src/modules/llm/llm.client';
+import { costRubOf, DEFAULT_LLM_MODEL, llmModelSpec } from '../src/config/llm-models';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import { COMPAT_STUB_SECTIONS } from '../test/fixtures/compat-sections';
-import { compatFactsPayload } from '../test/fixtures/compat-facts';
-import { factorsOf } from '../src/modules/compat/compat-facts';
-import { distributeSections, MAX_SECTIONS_PER_FACTOR } from '../src/modules/compat/compat-focus-map';
+import { compatFactsPairPayload } from '../test/fixtures/compat-facts-pair';
+import { factorsOf, parseCompatibilityFacts } from '../src/modules/compat/compat-facts';
+import {
+  compatMatrix,
+  coverageOf,
+  distributeSections,
+  MAX_SECTIONS_PER_FACTOR,
+} from '../src/modules/compat/compat-focus-map';
 
-/** Цена владельца: 0,5 ₽ за 1000 знаков (GigaChat 3 Ultra). */
-const RUB_PER_1000_CHARS = 0.5;
+/**
+ * Оценка токенов для подставной модели: у GigaChat кириллица — примерно
+ * 2,5–3 знака на токен, берём середину. В проде токены приходят от провайдера
+ * (`usage.prompt_tokens` / `usage.completion_tokens`) и не оцениваются.
+ */
+const CHARS_PER_TOKEN = 2.8;
 
-let totalChars = 0;
+const MODEL = llmModelSpec(DEFAULT_LLM_MODEL);
+if (MODEL === null) {
+  throw new Error(`в config/llm-models.ts нет модели ${DEFAULT_LLM_MODEL}`);
+}
+const PRICE_PER_1K_TOKENS = MODEL.pricePer1kRub;
+
+let promptChars = 0;
+let answerChars = 0;
 
 function answerFor(prompt: string): string {
   if (prompt.includes('что у вас совпадает так')) return COMPAT_STUB_SECTIONS.clicks;
@@ -42,15 +65,23 @@ const provider: LlmProvider = {
   complete(input: LlmRequest): Promise<LlmResponse> {
     const prompt = input.messages.map((message) => message.content).join('\n');
     const content = answerFor(prompt);
-    totalChars += prompt.length + content.length;
+    promptChars += prompt.length;
+    answerChars += content.length;
+
+    // Токены — не знаки: подставная модель «списывает» токены, а цену
+    // считает та же функция, что и в проде.
+    const usage = {
+      promptTokens: Math.ceil(prompt.length / CHARS_PER_TOKEN),
+      completionTokens: Math.ceil(content.length / CHARS_PER_TOKEN),
+    };
+
     return Promise.resolve({
       content,
       model: 'stub-llm',
       usage: {
-        promptTokens: prompt.length,
-        completionTokens: content.length,
-        totalTokens: prompt.length + content.length,
-        costRub: Math.round(((prompt.length + content.length) / 1000) * RUB_PER_1000_CHARS * 10_000) / 10_000,
+        ...usage,
+        totalTokens: usage.promptTokens + usage.completionTokens,
+        costRub: costRubOf(usage, PRICE_PER_1K_TOKENS),
       },
     });
   },
@@ -67,7 +98,9 @@ function bodyOf<T>(response: { readonly body: unknown }): T {
 
 async function main(): Promise<void> {
   const ctx = await createTestContext({
-    astro: makeFakeAstro(),
+    // Факты — настоящий ответ движка на ту самую пару, что в запросе: иначе
+    // диагностика «какие семейства дошли до текста» проверяла бы заглушку.
+    astro: makeFakeAstro({ facts: compatFactsPairPayload }),
     telegram: makeFakeTelegram(),
     llm: provider,
   });
@@ -149,23 +182,59 @@ async function main(): Promise<void> {
     }
     const total = sections.reduce((sum, section) => sum + section.text.length, 0);
     process.stdout.write(`  всего     ${String(total).padStart(4)} знаков\n`);
-    process.stdout.write(`\ncost_rub (по 0,5 ₽/1000 знаков): ${row?.llm_cost_rub}\n`);
-    process.stdout.write(`знаков в промптах и ответах: ${totalChars}\n`);
 
-    const factors = factorsOf(compatFactsPayload);
+    // Деньги — по токенам, как в проде: `llm_cost_rub` собран из `usage`,
+    // которое вернула (подставная) модель.
+    const promptTokens = Math.ceil(promptChars / CHARS_PER_TOKEN);
+    const completionTokens = Math.ceil(answerChars / CHARS_PER_TOKEN);
+    process.stdout.write(
+      `\ncost_rub (0,5 ₽/1000 токенов, оценка ${String(CHARS_PER_TOKEN)} знака = 1 токен): ${row?.llm_cost_rub}\n`,
+    );
+    process.stdout.write(
+      `токенов (оценка): вход ${String(promptTokens)}, выход ${String(completionTokens)}, ` +
+        `всего ${String(promptTokens + completionTokens)}; знаков ${String(promptChars + answerChars)}\n`,
+    );
+
+    const facts = parseCompatibilityFacts(compatFactsPairPayload);
+    const factors = factorsOf(facts);
     const distribution = distributeSections(factors);
-    const ids = [...new Set(Object.values(distribution.bySection).flat().map((factor) => factor.id))];
+    const coverage = coverageOf(factors, distribution);
+    const matrix = compatMatrix(distribution);
+
+    const families = new Map<string, string[]>();
+    for (const factor of factors) {
+      families.set(factor.family, [...(families.get(factor.family) ?? []), factor.id]);
+    }
+
+    process.stdout.write(`\n=== Список 1: все факты пары (${String(factors.length)}) ===\n`);
+    for (const [family, ids] of families) {
+      process.stdout.write(`  ${family.padEnd(9)} (${String(ids.length)}): ${ids.join(', ')}\n`);
+    }
+
+    process.stdout.write(`\n=== Список 2: факт → разделы ===\n`);
+    for (const item of matrix) {
+      process.stdout.write(
+        `  ${item.factor.padEnd(38)} ${item.family.padEnd(9)} → ${item.sections.join(', ')} (${String(item.count)})\n`,
+      );
+    }
+
+    process.stdout.write(`\n=== Список 3: факты, не дошедшие до текста (${String(distribution.skipped.length)}) ===\n`);
+    for (const item of distribution.skipped) {
+      process.stdout.write(`  ${item.id.padEnd(38)} ${item.family.padEnd(9)} — ${item.reason}\n`);
+    }
 
     process.stdout.write(`\nМатрица «факт × раздел» (лимит ${String(MAX_SECTIONS_PER_FACTOR)}):\n`);
     process.stdout.write(`  ${''.padEnd(34)}clicks friction scenario steps\n`);
-    for (const id of ids) {
-      const row = ['clicks', 'friction', 'scenario', 'steps'].map((section) =>
-        distribution.bySection[section as 'clicks'].some((factor) => factor.id === id) ? '  ✓   ' : '  ·   ',
+    for (const item of matrix) {
+      const cells = ['clicks', 'friction', 'scenario', 'steps'].map((section) =>
+        item.sections.includes(section as 'clicks') ? '  ✓   ' : '  ·   ',
       );
-      process.stdout.write(`  ${id.slice(0, 34).padEnd(34)}${row.join('').trimEnd()}\n`);
+      process.stdout.write(`  ${item.factor.slice(0, 34).padEnd(34)}${cells.join('').trimEnd()}\n`);
     }
     process.stdout.write(
-      `\nфактов: ${String(factors.length)}, использовано: ${String(ids.length)}, ` +
+      `\nфактов: ${String(coverage.factors)}, дошло до текста: ${String(coverage.reached)}, ` +
+        `семейства в тексте: ${coverage.familiesReached.join(', ')}` +
+        `${coverage.familiesMissing.length > 0 ? `, за бортом: ${coverage.familiesMissing.join(', ')}` : ''}, ` +
         `в разделах: ${JSON.stringify(distribution.counts)}\n`,
     );
   } finally {

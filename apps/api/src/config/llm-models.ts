@@ -33,3 +33,22 @@ export function pricePer1kRubFor(id: string): number | null {
 }
 
 export const LLM_MODEL_IDS: readonly string[] = LLM_MODELS.map((model) => model.id);
+
+/** Сколько токенов списал провайдер. Обе половины нужны по отдельности, чтобы `usage` в логе было честным. */
+export interface LlmUsageTokens {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+}
+
+/**
+ * Стоимость вызова: **(prompt_tokens + completion_tokens) / 1000 × цена за 1000
+ * токенов**, округление до 0,0001 ₽.
+ *
+ * Считается только по `usage` провайдера. Длина строки в символах — не деньги:
+ * на русском знак ≈ 0,36 токена, поэтому счёт по знакам завышал стоимость почти
+ * втрое (итерация 23, `cost_rub` в `compat:dry-run`).
+ */
+export function costRubOf(usage: LlmUsageTokens, pricePer1kRub: number): number {
+  const tokens = usage.promptTokens + usage.completionTokens;
+  return Math.round(((tokens / 1000) * pricePer1kRub + Number.EPSILON) * 10_000) / 10_000;
+}

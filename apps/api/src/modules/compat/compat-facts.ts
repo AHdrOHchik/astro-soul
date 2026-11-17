@@ -27,6 +27,9 @@ export interface LuminaryFact {
   readonly present: boolean;
   readonly type: string | null;
   readonly orb: number | null;
+  /** Планеты пары: сайдкар присылает их с версии 1.0, но полагаться только на них нельзя. */
+  readonly a?: string;
+  readonly b?: string;
 }
 
 export interface BalancesFact {
@@ -121,6 +124,19 @@ const MODALITY_RU: Readonly<Record<string, string>> = {
   mutable: 'мутабельный крест',
 };
 
+const PLANET_RU: Readonly<Record<string, string>> = {
+  sun: 'Солнце',
+  moon: 'Луна',
+  mercury: 'Меркурий',
+  venus: 'Венера',
+  mars: 'Марс',
+  jupiter: 'Юпитер',
+  saturn: 'Сатурн',
+  uranus: 'Уран',
+  neptune: 'Нептун',
+  pluto: 'Плутон',
+};
+
 /** `applying`/`separating` по-русски: в промпте английских слов быть не должно. */
 const DIRECTION_RU: Readonly<Record<string, string>> = {
   applying: 'сходящийся',
@@ -188,12 +204,22 @@ export function factsBlock(facts: CompatibilityFacts): string {
   return lines.join('\n');
 }
 
+/**
+ * Семейство факта из `compatibility_facts` v1.0. Четыре семейства — четыре
+ * разных источника: кросс-аспекты, блок светил, разница балансов и оверлеи
+ * домов. Раскладка обязана дать каждому семейству место в тексте, иначе
+ * раздел «узнавание» собирается из одних аспектов (итерация 23).
+ */
+export type CompatFamily = 'aspect' | 'luminary' | 'balance' | 'overlay';
+
 /** Факт, который можно распределить по разделам. */
 export interface CompatFactor {
   /** Уникальный идентификатор факта: по нему считается лимит «≤ 2 раздела». */
   readonly id: string;
   /** Категория — строка таблицы покрытия (`COMPAT_COVERAGE`). */
   readonly category: string;
+  /** Семейство — ради того, чтобы каждое из четырёх попало в текст. */
+  readonly family: CompatFamily;
   /** Человеческая формулировка для промпта. */
   readonly label: string;
   /** Меньше — значимее (как `SIGNIFICANCE` в `focus-map.ts` разбора). */
@@ -232,8 +258,27 @@ export function factorsOf(facts: CompatibilityFacts): readonly CompatFactor[] {
     factors.push({
       id: `aspect:${aspect.a}-${aspect.b}`,
       category: aspectCategory(aspect),
+      family: 'aspect',
       label: `${aspect.a_name} — ${aspect.type_ru} — ${aspect.b_name}, орб ${aspect.orb}°`,
       significance: aspect.luminary ? 1 : 4,
+    });
+  }
+
+  // Блок светил — отдельное семейство, а не подпись под аспектами: сайдкар
+  // считает его по своей формуле, и в тексте он звучит своей фразой.
+  for (const block of facts.luminaries) {
+    if (!block.present) {
+      continue;
+    }
+    const [pairA = '', pairB = ''] = block.pair.split('-');
+    const a = PLANET_RU[block.a ?? pairA] ?? (block.a ?? pairA);
+    const b = PLANET_RU[block.b ?? pairB] ?? (block.b ?? pairB);
+    factors.push({
+      id: `luminary:${block.pair}`,
+      category: 'luminary',
+      family: 'luminary',
+      label: `${a} (ты) — ${block.type ?? 'аспект'} — ${b} (партнёр), орб ${block.orb ?? 0}°`,
+      significance: 1,
     });
   }
 
@@ -244,6 +289,7 @@ export function factorsOf(facts: CompatibilityFacts): readonly CompatFactor[] {
     factors.push({
       id: `balance:element:${key}`,
       category: 'balance_element',
+      family: 'balance',
       label: `Разница по стихии «${ELEMENT_RU[key] ?? key}»: ${signed(value)} п.п.`,
       significance: 7,
     });
@@ -256,6 +302,7 @@ export function factorsOf(facts: CompatibilityFacts): readonly CompatFactor[] {
     factors.push({
       id: `balance:cross:${key}`,
       category: 'balance_cross',
+      family: 'balance',
       label: `Разница по кресту «${MODALITY_RU[key] ?? key}»: ${signed(value)} п.п.`,
       significance: 8,
     });
@@ -272,6 +319,7 @@ export function factorsOf(facts: CompatibilityFacts): readonly CompatFactor[] {
         factors.push({
           id: `overlay:${direction}:${item.planet}:${item.house}`,
           category: 'overlay',
+          family: 'overlay',
           label: `${item.planet_name} — ${whose}, ${item.house}-й дом`,
           // Светила в домах партнёра читаются сильнее, чем Сатурн.
           significance: item.planet === 'sun' || item.planet === 'moon' ? 2 : 5,

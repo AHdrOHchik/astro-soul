@@ -17,7 +17,13 @@ export interface FakeAstro {
   health(): Promise<'ok' | 'down'>;
 }
 
-export function makeFakeAstro(options: { readonly down?: boolean } = {}): FakeAstro {
+export function makeFakeAstro(
+  options: {
+    readonly down?: boolean;
+    /** Свой ответ `POST /synastry`: по умолчанию — эталонная карта сама с собой. */
+    readonly facts?: unknown;
+  } = {},
+): FakeAstro {
   const data = engineChartPayload as unknown as AstroChartData;
 
   return {
@@ -55,7 +61,7 @@ export function makeFakeAstro(options: { readonly down?: boolean } = {}): FakeAs
       }
       // Факты посчитаны настоящим движком (`fixtures/compat-facts.ts`):
       // подмена не выдумывает углы, иначе валидаторы проверяли бы воздух.
-      return Promise.resolve(compatFactsPayload);
+      return Promise.resolve(options.facts ?? compatFactsPayload);
     },
     transits(): Promise<never> {
       return Promise.reject(new Error('транзиты в этих тестах не используются'));
