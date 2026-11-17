@@ -220,7 +220,7 @@ describe('ChartScreen', () => {
       const { api, report, user } = setup();
 
       const teaser = await teaserBlock();
-      expect(teaser.getByText(copy.teaserLocked)).toBeInTheDocument();
+      expect(await teaser.findByText(copy.teaserLocked)).toBeInTheDocument();
       const cta = await teaser.findByRole('button', { name: TEASER_CTA_NAME });
       expect(cta.textContent).toContain('149');
       expect(cta.textContent).toContain(ru.common.starSign);

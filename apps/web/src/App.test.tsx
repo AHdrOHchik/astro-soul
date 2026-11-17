@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAnalytics } from './analytics';
@@ -443,6 +443,17 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(telegram.setBackHandler).toHaveBeenLastCalledWith(null);
     await user.click(screen.getByRole('button', { name: ru.common.close }));
     expect(telegram.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the compatibility form from the cabinet without a push or deep link', async () => {
+    const { user } = returning();
+    await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+
+    const entry = await screen.findByRole('region', { name: ru.compatibility.title });
+    await user.click(within(entry).getByRole('button', { name: ru.compatibility.entryTitle }));
+
+    expect(await screen.findByRole('heading', { name: ru.compatibility.formTitle })).toBeInTheDocument();
+    expect(screen.getByText(ru.compatibility.formPrivacy)).toBeInTheDocument();
   });
 
   it('a new user reaches the settings from the welcome screen', async () => {

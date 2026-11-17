@@ -26,13 +26,14 @@ import { ru } from '../../i18n/ru';
 import type { IdempotencyKeys } from '../../lib/idempotency';
 import type { Telegram } from '../../telegram';
 import styles from './ReportScreen.module.css';
+import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
 import { useReport, type ReportFlow } from './useReport';
 
 const copy = ru.report;
 const SKELETON_LINES = [0, 1, 2, 3];
 
 export interface ReportScreenProps {
-  api: Pick<Api, 'orderReport' | 'getReport'>;
+  api: Pick<Api, 'orderReport' | 'getReport' | 'getCompatibilities' | 'getPlans'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
   keys: IdempotencyKeys;
   /** The chart the report is about. */
@@ -62,6 +63,8 @@ export interface ReportScreenProps {
   onChartGone?: () => void;
   /** Asked when the server has no such report (404): is the chart still there? `false`: the caller leads on, nothing is shown here. */
   isChartThere?: (signal?: AbortSignal) => Promise<boolean>;
+  onOpenCompatibility?: (chartId: string) => void;
+  onBuyCompatibility?: (chartId: string) => void;
 }
 
 /**
@@ -89,6 +92,8 @@ export function ReportScreen({
   onReportGone,
   onChartGone,
   isChartThere,
+  onOpenCompatibility,
+  onBuyCompatibility,
 }: ReportScreenProps) {
   const titleId = useId();
   const flow = useReport({
@@ -294,6 +299,15 @@ export function ReportScreen({
           </div>
         )}
         <Chapters sections={shown.sections} contents={done} first={firstChapter} />
+        {done && onOpenCompatibility && onBuyCompatibility && (
+          <CompatibilityEntry
+            api={api}
+            chartId={chartId}
+            onOpenForm={onOpenCompatibility}
+            onBuy={onBuyCompatibility}
+            reportEntry
+          />
+        )}
         {done && <Download report={shown} apiBaseUrl={apiBaseUrl} telegram={telegram} refresh={flow.refresh} />}
         {done && share && (
           <Button

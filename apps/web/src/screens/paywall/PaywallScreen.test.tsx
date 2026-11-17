@@ -107,6 +107,20 @@ describe('PaywallScreen', () => {
     expect(screen.getByText('Все главы разбора по этой карте. Разовая покупка, без подписки.')).toBeInTheDocument();
   });
 
+  it('offers only the server compatibility tariff and shows its required single-pair disclosure', async () => {
+    const compatibilityOffer = offer('compat_249');
+    const { api } = setup({
+      api: fakeApi(),
+      props: { compatibilityPurchase: true, offersReport: false, reportChartId: null, subscriptions: false },
+    });
+
+    expect(await screen.findAllByRole('radio')).toHaveLength(1);
+    expect(await option(compatibilityOffer.title)).toBeChecked();
+    expect(await payButton()).toHaveTextContent(`${copy.pay} ${String(compatibilityOffer.stars)}`);
+    expect(screen.getByText(ru.compatibility.purchaseDisclosure)).toBeInTheDocument();
+    expect(api.getPlans).toHaveBeenCalledOnce();
+  });
+
   it('does not turn the StrictMode cleanup AbortError into a catalogue error', async () => {
     const pending = deferred<PlanOffer[]>();
     const api = fakeApi();
@@ -230,6 +244,34 @@ describe('PaywallScreen', () => {
     expect(reportOffer?.querySelectorAll('li')).toHaveLength(2);
     const emptyOfferRadio = await option(offer('compat_249').title);
     expect(emptyOfferRadio.closest('div')?.querySelector('ul')).toBeNull();
+  });
+
+  it('confirms a compatibility purchase only from the server quota, without asking the unrelated Me endpoint', async () => {
+    const compatibilityOffer = offer('compat_249');
+    const api = fakeApi();
+    api.createInvoice.mockResolvedValue({ ...reportInvoice, plan_code: compatibilityOffer.plan_code, stars: compatibilityOffer.stars });
+    const refreshCompatibility = vi.fn<NonNullable<PaywallScreenProps['refreshCompatibility']>>().mockResolvedValue({ items: [], quota: { kind: 'purchase', left: 1, resets_at: null } });
+    const onCompatibilityPaid = vi.fn();
+    const { telegram, refreshMe, analytics, user } = setup({
+      api,
+      telegram: { invoice: 'paid' },
+      props: {
+        compatibilityPurchase: true,
+        offersReport: false,
+        reportChartId: null,
+        subscriptions: false,
+        refreshCompatibility,
+        onCompatibilityPaid,
+      },
+    });
+
+    await user.click(await payButton());
+    expect(await screen.findByText(copy.confirmingTitle)).toBeInTheDocument();
+    await waitFor(() => { expect(onCompatibilityPaid).toHaveBeenCalledOnce(); });
+    expect(refreshCompatibility).toHaveBeenCalledOnce();
+    expect(refreshMe).not.toHaveBeenCalled();
+    expect(telegram.openInvoice).toHaveBeenCalledWith(reportInvoice.invoice_link);
+    expect(analytics.events).toContainEqual({ name: 'payment_succeeded', props: { plan_code: 'compat_249' } });
   });
 
   it('paid by Telegram\'s word, not granted by the server: nothing is unlocked, the payment is «being processed»', async () => {

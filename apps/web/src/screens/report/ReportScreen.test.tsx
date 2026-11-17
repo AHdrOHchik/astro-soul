@@ -180,6 +180,16 @@ describe('ReportScreen: a report in work', () => {
 });
 
 describe('ReportScreen: a report that is over', () => {
+  it('places the compatibility entry after the completed chapters and opens it for this chart', async () => {
+    const onOpenCompatibility = vi.fn();
+    const { user } = setup({ answer: ready, props: { onOpenCompatibility, onBuyCompatibility: vi.fn() } });
+
+    const entry = await screen.findByRole('region', { name: ru.compatibility.entryTitle });
+    const button = within(entry).getByRole('button', { name: ru.compatibility.entryTitle });
+    expect(button).toBeEnabled();
+    await user.click(button);
+    expect(onOpenCompatibility).toHaveBeenCalledWith(chart.chart_id);
+  });
   it('ready: every chapter in the server\'s order, a chapter under an unknown key among them, and a contents list', async () => {
     const extra = { key: 'karma', title: 'Восьмая глава', body_md: 'Текст главы, о которой эта сборка не знает.', order: 7 };
     const [first, second] = sections;
@@ -210,7 +220,9 @@ describe('ReportScreen: a report that is over', () => {
     const { container } = setup({ answer: { ...report, status: 'refunded', is_paid: false, progress: 35 } });
 
     expect(await screen.findByRole('heading', { name: copy.refundedTitle })).toBeInTheDocument();
-    expect(copy.refundedTitle).toContain('звёзды вернулись');
+    expect(copy.refundedText).toContain('Повторный запуск доступен без новой оплаты');
+    expect(copy.refundedText).toContain('по обращению в поддержку в течение 24 часов');
+    expect(copy.refundedText).not.toContain('автоматически');
     expect(container.textContent).not.toMatch(/ошибк/i);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: copy.retry })).toBeEnabled();

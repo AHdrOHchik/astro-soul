@@ -8,6 +8,8 @@ import type {
   Chart,
   ChartCreateRequest,
   ChartResult,
+  Compatibility,
+  CompatibilityList,
   FieldError,
   Forecast,
   GeoPlace,
@@ -301,6 +303,30 @@ export function rejection(...fieldErrors: FieldError[]): ApiError {
   });
 }
 
+export const compatibilityList: CompatibilityList = {
+  items: [],
+  quota: { kind: 'purchase', left: 1, resets_at: null },
+};
+
+export const compatibilityPending: Compatibility = {
+  id: 'compatibility-1',
+  status: 'pending',
+  sections: [],
+  warnings: [],
+  created_at: '2026-11-10T12:00:00Z',
+};
+
+export const compatibilityReady: Compatibility = {
+  ...compatibilityPending,
+  status: 'ready',
+  sections: [
+    { key: 'clicks', title: 'Что совпадает', order: 1, text: 'Совпадение.' },
+    { key: 'friction', title: 'Где трёт', order: 2, text: 'Трение.' },
+    { key: 'scenario', title: 'Как вы разговариваете', order: 3, text: 'Диалог.' },
+    { key: 'steps', title: 'Что сделать на этой неделе', order: 4, text: '— Шаг один. Разбор — инструмент саморефлексии, а не предсказание и не замена специалисту.' },
+  ],
+};
+
 export function fakeApi() {
   return {
     getMe: vi.fn<Api['getMe']>().mockResolvedValue(me),
@@ -314,6 +340,9 @@ export function fakeApi() {
     createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),
     orderReport: vi.fn<Api['orderReport']>().mockResolvedValue(report),
     getReport: vi.fn<Api['getReport']>().mockResolvedValue(report),
+    getCompatibilities: vi.fn<Api['getCompatibilities']>().mockResolvedValue(compatibilityList),
+    orderCompatibility: vi.fn<Api['orderCompatibility']>().mockResolvedValue({ compatibility_id: 'compatibility-1', status: 'pending' }),
+    getCompatibility: vi.fn<Api['getCompatibility']>().mockResolvedValue(compatibilityPending),
     // The server has prepared no forecast yet: so it is for every chart on its first day.
     getForecast: vi.fn<Api['getForecast']>().mockResolvedValue(null),
     ask: vi.fn<Api['ask']>().mockResolvedValue(askAnswer),

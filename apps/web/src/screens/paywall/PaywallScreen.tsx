@@ -10,6 +10,7 @@ import {
   resetAtOf,
   serverTextOf,
   type Api,
+  type CompatibilityList,
   type Invoice,
   type Me,
   type OrderablePlanCode,
@@ -60,6 +61,9 @@ export interface PaywallScreenProps {
   subscriptions?: boolean;
   /** The server refused to order a report and sent the user here: the screen says why it opened. */
   reportRequired?: boolean;
+  compatibilityPurchase?: boolean;
+  refreshCompatibility?: (signal?: AbortSignal) => Promise<CompatibilityList>;
+  onCompatibilityPaid?: () => void;
   /**
    * A plan Telegram called paid in this visit of the app and the server has not granted yet.
    * While there is one the screen sells nothing: a second payment for the same thing is the
@@ -129,9 +133,10 @@ function problemOf(error: unknown): Problem {
  */
 function displayablePlans(
   plans: PlanOffer[],
-  options: { subscriptions: boolean; subscribed: boolean; offersReport: boolean; hasChart: boolean },
+  options: { subscriptions: boolean; subscribed: boolean; offersReport: boolean; hasChart: boolean; compatibilityPurchase?: boolean },
 ): PlanOffer[] {
   return plans.filter((offer) => {
+    if (options.compatibilityPurchase) return offer.plan_code === 'compat_249' && !offer.test;
     if (offer.kind === 'subscription' && (!options.subscriptions || options.subscribed)) return false;
     if (offer.test && offer.kind === 'one_off' && !options.hasChart) return false;
     if (!offer.test && offer.kind === 'one_off' && !options.offersReport) return false;
@@ -149,6 +154,9 @@ export function PaywallScreen({
   initialKind,
   subscriptions = false,
   reportRequired = false,
+  compatibilityPurchase = false,
+  refreshCompatibility,
+  onCompatibilityPaid,
   awaiting = null,
   awaitingChartId = null,
   onAwaiting,
@@ -172,6 +180,7 @@ export function PaywallScreen({
     subscribed,
     offersReport,
     hasChart: reportChartId !== null,
+    compatibilityPurchase,
   });
   const offered = visiblePlans.filter((offer) => !offer.test);
   const testOffered = visiblePlans.filter((offer) => offer.test);
@@ -213,6 +222,7 @@ export function PaywallScreen({
           subscribed,
           offersReport,
           hasChart: reportChartId !== null,
+          compatibilityPurchase,
         });
         setPlansRequest({ status: 'ready', plans });
         setChosen((current) => {
@@ -229,7 +239,7 @@ export function PaywallScreen({
     return () => {
       controller.abort();
     };
-  }, [api, initialKind, offersReport, reloadPlans, reportChartId, subscribed, subscriptions]);
+  }, [api, compatibilityPurchase, initialKind, offersReport, reloadPlans, reportChartId, subscribed, subscriptions]);
 
   /** Asks the server whether the purchase arrived, `attempts` times at most. */
   const confirm = async (
@@ -244,7 +254,18 @@ export function PaywallScreen({
       let fresh: Me | null = null;
       try {
         if (attempt > 0) await wait(CONFIRM_INTERVAL_MS, signal);
-        fresh = await refreshMe(signal);
+        if (compatibilityPurchase && bought.planCode === 'compat_249') {
+          if (refreshCompatibility === undefined) continue;
+          const compatibility = await refreshCompatibility(signal);
+          if (signal.aborted) return;
+          if (compatibility.quota.kind === 'purchase' && compatibility.quota.left > 0) {
+            track('payment_succeeded', { plan_code: bought.planCode });
+            onCompatibilityPaid?.();
+            return;
+          }
+        } else {
+          fresh = await refreshMe(signal);
+        }
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
         // A question that got no answer is a question that confirmed nothing.
@@ -476,7 +497,12 @@ export function PaywallScreen({
       }
     >
       <div className={styles.content}>
-        <ScreenHeading id={titleId} title={copy.title} text={copy.lead} focusOnMount />
+        <ScreenHeading
+          id={titleId}
+          title={compatibilityPurchase ? ru.compatibility.title : copy.title}
+          text={compatibilityPurchase ? ru.compatibility.purchaseDisclosure : copy.lead}
+          focusOnMount
+        />
         {reportRequired && reportOffer !== undefined && (
           <Notice>
             {copy.reportRequired} <Stars count={priceOf(reportOffer)} />
