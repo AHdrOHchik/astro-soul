@@ -32,6 +32,16 @@ export interface FakeTelegram {
    */
   pushOutcome: PushOutcome;
   /**
+   * Чем отвечает «Bot API» на `sendMessage`: `null` — успешно (по умолчанию).
+   * Итерация 25: сбой сообщения после выдачи доступа не должен отменять платёж.
+   */
+  sendMessageError: Error | null;
+  /**
+   * Чем отвечает `createInvoiceLink`: `null` — ссылкой (по умолчанию),
+   * иначе — этим исключением (например, отказ по периоду подписки).
+   */
+  invoiceError: Error | null;
+  /**
    * Чем отвечает Telegram на отмену автопродления:
    *   `cancelled` — `{ok:true, result:true}` (по умолчанию);
    *   `failed`    — `{ok:false}` = 400 CHARGE_ID_INVALID;
@@ -70,6 +80,8 @@ export function makeFakeTelegram(): FakeTelegram {
     pushes,
     starSubscriptionCancels,
     pushOutcome: 'sent',
+    sendMessageError: null,
+    invoiceError: null,
     starCancelOutcome: 'cancelled',
     sendPush(chatId, text, options) {
       const outcome = fake.pushOutcome;
@@ -78,6 +90,11 @@ export function makeFakeTelegram(): FakeTelegram {
     },
     createInvoiceLink(params) {
       invoiceCalls.push(params);
+
+      if (fake.invoiceError !== null) {
+        return Promise.reject(fake.invoiceError);
+      }
+
       return Promise.resolve(`https://t.me/$invoice-${invoiceCalls.length}`);
     },
     answerPreCheckoutQuery(queryId, ok, errorMessage) {
@@ -86,6 +103,11 @@ export function makeFakeTelegram(): FakeTelegram {
     },
     sendMessage(chatId, text) {
       messages.push({ chatId, text });
+
+      if (fake.sendMessageError !== null) {
+        return Promise.reject(fake.sendMessageError);
+      }
+
       return Promise.resolve();
     },
     refundStarPayment(userId, chargeId) {

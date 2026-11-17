@@ -1,6 +1,7 @@
 import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import { Pool, type PoolClient, type QueryResultRow } from 'pg';
 import type { AppEnv } from '../config/env';
+import { withDeadline } from '../common/deadline';
 
 export const PG_POOL = Symbol('PG_POOL');
 
@@ -11,13 +12,39 @@ export type SqlParams = readonly unknown[];
 export class DbService implements OnModuleDestroy {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  async query<T extends QueryResultRow>(sql: Sql, params: SqlParams = []): Promise<T[]> {
-    const result = await this.pool.query<T>(sql, [...params]);
+  /**
+   * `timeoutMs` — сколько вызывающий готов ждать **этот** запрос.
+   *
+   * Нужен платёжным обработчикам: у пула `statement_timeout` 10 с, а
+   * `pre_checkout_query` обязан ответить Telegram за 10 с целиком — читать
+   * счёт дольше 2 с бессмысленно, ответ всё равно опоздает.
+   *
+   * Реализация — гонка, а не отмена: node-postgres не умеет отменять запрос по
+   * таймеру. Соединение освободится, когда сработает `statement_timeout` пула;
+   * для нас важно, что вызывающий не ждёт и успевает ответить.
+   */
+  async query<T extends QueryResultRow>(
+    sql: Sql,
+    params: SqlParams = [],
+    options: { readonly timeoutMs?: number } = {},
+  ): Promise<T[]> {
+    const work = this.pool.query<T>(sql, [...params]);
+
+    if (options.timeoutMs === undefined) {
+      const result = await work;
+      return result.rows;
+    }
+
+    const result = await withDeadline(work, options.timeoutMs);
     return result.rows;
   }
 
-  async queryOne<T extends QueryResultRow>(sql: Sql, params: SqlParams = []): Promise<T | null> {
-    const rows = await this.query<T>(sql, params);
+  async queryOne<T extends QueryResultRow>(
+    sql: Sql,
+    params: SqlParams = [],
+    options: { readonly timeoutMs?: number } = {},
+  ): Promise<T | null> {
+    const rows = await this.query<T>(sql, params, options);
     return rows[0] ?? null;
   }
 

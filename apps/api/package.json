@@ -14,7 +14,8 @@
     "db:seed": "tsx src/db/seed-plans.ts",
     "test": "tsx scripts/check-test-db.ts && vitest run",
     "compat:dry-run": "tsx scripts/compat-dry-run.ts",
-    "plans:set-price": "tsx scripts/set-plan-price.ts"
+    "plans:set-price": "tsx scripts/set-plan-price.ts",
+    "payments:diagnose": "tsx scripts/payments-diagnose.ts"
   },
   "dependencies": {
     "@astro-soul/shared": "workspace:*",

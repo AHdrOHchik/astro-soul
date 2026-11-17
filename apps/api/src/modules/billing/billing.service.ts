@@ -3,14 +3,19 @@ import { randomUUID } from 'node:crypto';
 import type { Invoice, SubscriptionState } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
-import { ApiError, invalidFields, rateLimited } from '../../common/api-error';
+import { ApiError, conflict, internalError, invalidFields, rateLimited } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import type { VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
 import { ChartsRepository } from '../charts/charts.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
-import { TelegramClient } from '../telegram/telegram.client';
+import { SubscriptionPeriodUnsupportedError, TelegramClient } from '../telegram/telegram.client';
+import {
+  XTR_SUBSCRIPTION_PERIOD_SECONDS,
+  invoiceParamsViolation,
+  subscriptionPeriodSupported,
+} from '../telegram/invoice-params';
 import { BillingRepository } from './billing.repository';
 import { buildInvoicePayload, parseInvoiceRequest, planNotAvailable } from './billing.dto';
 import { planOffers, type PlanOffer } from './plan-offers';
@@ -141,13 +146,69 @@ export class BillingService {
     const idemKey = randomUUID();
     const payload = buildInvoicePayload({ p: planCode, u: userId, k: idemKey });
 
-    const invoiceLink = await this.telegram.createInvoiceLink({
+    const prices = [{ label: plan.priceLabel, amount: plan.stars }];
+    const subscriptionPeriod = plan.kind === 'subscription' ? plan.periodSeconds : undefined;
+
+    // Лимиты Bot API проверяются до вызова: иначе Telegram отвечает `400`, наш
+    // клиент превращает это в `502`, и в логе остаётся «telegram_method_failed»
+    // без единого намёка на то, что дело в длине названия (итерация 25).
+    const violation = invoiceParamsViolation({
       title: plan.title,
       description: plan.description,
       payload,
-      prices: [{ label: plan.priceLabel, amount: plan.stars }],
-      ...(plan.kind === 'subscription' ? { subscriptionPeriod: plan.periodSeconds } : {}),
+      prices,
+      ...(subscriptionPeriod === undefined ? {} : { subscriptionPeriod }),
     });
+
+    if (violation !== null) {
+      this.logger.error('invoice_params_invalid', {
+        plan: planCode,
+        field: violation.field,
+        actual: violation.actual,
+        limit: violation.limit,
+      });
+      throw internalError({
+        reason: 'invoice_params_invalid',
+        logFields: { plan: planCode, field: violation.field },
+      });
+    }
+
+    // Звёздная подписка у Telegram бывает только на 30 дней. Что делать с
+    // недельным и годовым тарифом, решает владелец (`payments.md` §3.6,
+    // варианты A/B/C), поэтому каталог здесь не переписывается: отказ
+    // приходит от Bot API и превращается в понятный `409` ниже. Лог — заранее,
+    // чтобы причина была видна и у удачного вызова (там её больше нет).
+    if (!subscriptionPeriodSupported(subscriptionPeriod)) {
+      this.logger.warn('subscription_period_unsupported', {
+        plan: planCode,
+        period_seconds: subscriptionPeriod ?? null,
+        allowed_seconds: XTR_SUBSCRIPTION_PERIOD_SECONDS,
+      });
+    }
+
+    let invoiceLink: string;
+    try {
+      invoiceLink = await this.telegram.createInvoiceLink({
+        title: plan.title,
+        description: plan.description,
+        payload,
+        prices,
+        ...(subscriptionPeriod === undefined ? {} : { subscriptionPeriod }),
+      });
+    } catch (error) {
+      // Платформа не принимает такой период — это не сбой оплаты, а тариф,
+      // который так не продаётся. Человеку нужен внятный текст и выбор
+      // месячного, а не «внутренняя ошибка» и не повтор той же кнопки.
+      if (!(error instanceof SubscriptionPeriodUnsupportedError)) {
+        throw error;
+      }
+      throw conflict({
+        reason: 'plan_period_unsupported',
+        message:
+          'Этот тариф сейчас нельзя оплатить: Telegram поддерживает звёздные подписки только на 30 дней. Выберите месячную.',
+        logFields: { plan: planCode, period_seconds: subscriptionPeriod ?? null },
+      });
+    }
 
     await this.repo.createInvoice({
       userId,

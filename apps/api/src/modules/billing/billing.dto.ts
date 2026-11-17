@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ALL_PLAN_CODES, type PlanCode } from '@astro-soul/shared';
 import { invalidFields, type FieldErrorInput } from '../../common/api-error';
+import { INVOICE_PAYLOAD_MAX_BYTES } from '../telegram/invoice-params';
 
 /**
  * `plan_code` проверяется по полному списку кодов контракта (каталог +
@@ -57,7 +58,12 @@ export interface InvoicePayload {
   readonly k: string;
 }
 
-export const PAYLOAD_MAX_BYTES = 128;
+/**
+ * Лимит payload — из общего файла лимитов Bot API (`modules/telegram/invoice-params.ts`):
+ * одно число на всю систему, чтобы проверка перед отправкой и проверка при
+ * сборке payload не разъехались.
+ */
+export const PAYLOAD_MAX_BYTES = INVOICE_PAYLOAD_MAX_BYTES;
 
 export function buildInvoicePayload(payload: InvoicePayload): string {
   const raw = JSON.stringify(payload);

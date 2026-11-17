@@ -5,7 +5,18 @@ import { AppModule } from './app.module';
 import { APP_ENV } from './config/env.module';
 import type { AppEnv } from './config/env';
 import { JsonLogger } from './common/logger';
+import { TelegramWebhookService } from './modules/telegram/telegram-webhook.service';
 import { applyRequestContext } from './common/request-id.middleware';
+
+/**
+ * Адрес вебхука содержит секрет в пути — в лог он целиком попасть не должен,
+ * но по последним символам видно, тот это секрет или нет.
+ */
+function maskSecret(url: string): string {
+  return url.replace(/webhook\/(.+)$/, (_match, secret: string) =>
+    `webhook/***${secret.slice(-4)}`,
+  );
+}
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -49,6 +60,27 @@ async function bootstrap(): Promise<void> {
     logger.warn('test_plans_enabled', {
       plans: ['test_1', 'test_report_1'],
       note: 'тарифы за 1 ⭐ доступны через POST /billing/invoice',
+    });
+  }
+
+  // Вебхук: проверить и при расхождении перерегистрировать. Ошибка не мешает
+  // API работать (приём платежей важнее, но сервис поднимается всегда), зато
+  // «pre_checkout_query не доставляется» перестаёт быть невидимым.
+  try {
+    const webhook = app.get(TelegramWebhookService);
+    const status = await webhook.ensureRegistered();
+
+    logger.info('telegram_webhook_state', {
+      state: status.state,
+      description: webhook.describe(status),
+      expected_url: status.expectedUrl === null ? null : maskSecret(status.expectedUrl),
+      actual_url: status.actualUrl === null ? null : maskSecret(status.actualUrl),
+      pending_update_count: status.pendingUpdateCount,
+      last_error_message: status.lastErrorMessage,
+    });
+  } catch (error) {
+    logger.error('telegram_webhook_check_failed', {
+      error: error instanceof Error ? error.name : 'unknown',
     });
   }
 

@@ -168,7 +168,8 @@ describe('GET /api/v1/billing/plans при включённом флаге', () 
     expect(report?.title).toBe('Тестовый разбор');
 
     const subscription = body.plans.find((plan) => plan.plan_code === 'test_1');
-    expect(subscription).toMatchObject({ kind: 'subscription', stars: 1, period_sec: 604_800, test: true });
+    // 30 дней, а не неделя: иначе счёт за 1 ⭐ не выставить (итерация 25).
+    expect(subscription).toMatchObject({ kind: 'subscription', stars: 1, period_sec: 2_592_000, test: true });
 
     // Каталог не сдвинулся: тестовые — добавка, а не замена.
     expect(body.plans.filter((plan) => !plan.test).map((plan) => plan.plan_code)).toEqual([...PLAN_CODES]);

@@ -108,6 +108,8 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       TELEGRAM_API_BASE_URL: ${TELEGRAM_API_BASE_URL:-}
+      # Вебхук регистрируется при старте API (итерация 25); 0 — снаружи.
+      TELEGRAM_WEBHOOK_AUTO: ${TELEGRAM_WEBHOOK_AUTO:-1}
       BOT_USERNAME: ${BOT_USERNAME:-}
       MINI_APP_URL: ${MINI_APP_URL:-}
       ADMIN_TG_ID: ${ADMIN_TG_ID:-}

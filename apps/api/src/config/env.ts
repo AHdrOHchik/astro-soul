@@ -19,6 +19,15 @@ const envSchema = z.object({
   /** База Bot API: подменяется в тестах, в проде — https://api.telegram.org. */
   TELEGRAM_API_BASE_URL: z.string().url().optional(),
 
+  /**
+   * Регистрировать вебхук при старте API (`telegram-webhook.service.ts`).
+   *
+   * По умолчанию включено: адрес собирается из `MINI_APP_URL` и секрета, а
+   * расхождение с `getWebhookInfo` чинится автоматически. `0` — адрес
+   * регистрирует кто-то снаружи, сервис только проверяет и пишет в лог.
+   */
+  TELEGRAM_WEBHOOK_AUTO: z.enum(['0', '1']).default('1'),
+
   /** Перец для детерминированного UUID пользователя (не ПДн, но секрет). */
   PSEUDONYM_PEPPER: z.string().min(32, 'PSEUDONYM_PEPPER: минимум 32 байта'),
 

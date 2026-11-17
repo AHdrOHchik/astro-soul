@@ -26,6 +26,15 @@
  * `GET /__config` показывает счётчик вызовов и последние параметры: по ним
  * проверяется, что сервер передал правильную пару (user_id, charge_id).
  *
+ * Вебхук (`setWebhook`, `getWebhookInfo`, `deleteWebhook`) — итерация 25:
+ * API при старте сверяет `getWebhookInfo` с ожидаемым адресом и при
+ * расхождении регистрирует вебхук заново. Стаб хранит это состояние и умеет
+ * изображать «старый домен» и «очередь не доставляется»:
+ *   POST /__config {webhook: {url: 'https://old.example/...', pending_update_count: 42,
+ *                             last_error_message: 'Wrong response from the webhook: 403 Forbidden'}}
+ * `GET /__config` показывает `webhook` — по нему проверяется, что API
+ * действительно перерегистрировал адрес.
+ *
  * Совместимость: без `/__config` стаб отвечает 200 `{ok:true}` на всё, как
  * раньше; старые прогоны (`acceptance-002.mjs`) не знают про статусы и
  * продолжают работать.
@@ -44,6 +53,19 @@ const LOG = '/tmp/bot-stub.log';
 const calls = [];
 /** @type {Record<string, unknown>} */
 let failures = {};
+
+/**
+ * Состояние вебхука: `getWebhookInfo` отдаёт его как есть. Пустой `url` —
+ * «вебхук не зарегистрирован», ровно тот случай, из-за которого Telegram
+ * не присылает `pre_checkout_query`.
+ */
+let webhook = {
+  url: '',
+  secret_token: null,
+  pending_update_count: 0,
+  last_error_message: null,
+  last_error_date: null,
+};
 let invoiceSeq = 0;
 
 function json(res, status, body) {
@@ -93,6 +115,7 @@ const server = createServer((req, res) => {
       return json(res, 200, {
         failures,
         calls: calls.length,
+        webhook,
         editUserStarSubscription: {
           count: cancels.length,
           last: cancels.at(-1)?.body ?? null,
@@ -100,12 +123,18 @@ const server = createServer((req, res) => {
       });
     }
     if (url.pathname === '/__config' && req.method === 'POST') {
+      let parsed = {};
       try {
-        failures = JSON.parse(raw || '{}').fail ?? {};
+        parsed = JSON.parse(raw || '{}');
       } catch {
-        failures = {};
+        parsed = {};
       }
-      return json(res, 200, { ok: true, failures });
+      failures = parsed.fail ?? {};
+      // `webhook` — «изобразить старый домен / недоставленную очередь».
+      if (parsed.webhook !== undefined && parsed.webhook !== null) {
+        webhook = { ...webhook, ...parsed.webhook };
+      }
+      return json(res, 200, { ok: true, failures, webhook });
     }
 
     // /bot<token>/<method>
@@ -164,6 +193,40 @@ const server = createServer((req, res) => {
         return json(res, 200, { ok: true, result: true });
       case 'getMe':
         return json(res, 200, { ok: true, result: { id: 1, is_bot: true, username: 'qa_bot' } });
+      case 'getWebhookInfo':
+        return json(res, 200, {
+          ok: true,
+          result: {
+            url: webhook.url,
+            has_custom_certificate: false,
+            pending_update_count: webhook.pending_update_count,
+            last_error_date: webhook.last_error_date,
+            last_error_message: webhook.last_error_message,
+            max_connections: 40,
+            allowed_updates: ['message', 'pre_checkout_query'],
+          },
+        });
+      case 'setWebhook': {
+        // Bot API принимает и form-urlencoded, и JSON: API шлёт JSON, curl из
+        // инструкции — форму. Стаб понимает оба, иначе «проверка на стабе»
+        // расходится с живым поведением.
+        let params = body;
+        if (typeof body === 'object' && body !== null && typeof body.raw === 'string') {
+          params = Object.fromEntries(new URLSearchParams(body.raw));
+        }
+        webhook = {
+          url: typeof params.url === 'string' ? params.url : '',
+          secret_token: typeof params.secret_token === 'string' ? params.secret_token : null,
+          // Регистрация вебхука на живом Bot API сбрасывает ошибки доставки.
+          pending_update_count: 0,
+          last_error_message: null,
+          last_error_date: null,
+        };
+        return json(res, 200, { ok: true, result: true });
+      }
+      case 'deleteWebhook':
+        webhook = { ...webhook, url: '', secret_token: null, pending_update_count: 0 };
+        return json(res, 200, { ok: true, result: true });
       default:
         return json(res, 200, { ok: false, description: `method ${method} not stubbed` });
     }

@@ -192,11 +192,9 @@ make migrate
 # 4. Health API через nginx
 curl -fsS http://localhost/api/v1/health
 
-# 5. Бот (getMe и тестовый setWebhook)
+# 5. Бот и вебхук: getMe + состояние вебхука (регистрирует сам API, см. §10)
 curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe"
-curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -d "url=${MINI_APP_URL}/api/v1/internal/telegram/webhook/${TELEGRAM_WEBHOOK_SECRET}" \
-  -d "secret_token=${TELEGRAM_WEBHOOK_SECRET}"
+pnpm payments:diagnose
 
 # 6. Сохранность данных при перезапуске
 make down && make up
@@ -217,7 +215,7 @@ make audit-secrets
 
 ## 9. Тестовые тарифы за 1 ⭐ (только стенд)
 
-Два тарифа за одну звезду: `test_1` (подписка на неделю) и `test_report_1`
+Два тарифа за одну звезду: `test_1` (подписка на 30 дней) и `test_report_1`
 (разовый разбор одной карты). Оба существуют **только** при
 `PAYMENTS_TEST_PLANS=1`; без флага `POST /billing/invoice` отвечает `422` так
 же, как на несуществующий тариф.
@@ -369,3 +367,67 @@ docker compose up -d --force-recreate api
    - не редактируй применённые файлы в `migrations/` и не переноси миграции в entrypoint `api`.
 4. **Тома и бэкапы:** данные БД лежат в именованном томе Docker `astro-soul_postgres-data` (`/var/lib/postgresql/data`). Настрой регулярный cron на `make backup-prod` и выгрузку `./backups/*.sql.gz` во внешнее хранилище.
 5. **Откат релиза:** перед обновлением сними `make backup-prod`; при откате верни предыдущий коммит/тег (`IMAGE_TAG=<prev>`), выполни `make build-prod && make up-prod` (с теми же `VITE_*` build-args), а при необходимости отката схемы БД — `make restore-prod FILE=backups/<пре-релизный>.sql.gz`.
+
+---
+
+## 10. Вебхук Telegram и диагностика оплаты
+
+### Вебхук регистрируется сам
+
+Раньше адрес вебхука регистрировал человек — строкой `curl` из чеклиста выше.
+Это была самая тихая поломка в продукте: если адрес забыли, указывает на
+старый домен или секрет в `.env` сменился, Telegram просто **не присылает**
+`pre_checkout_query` — окно оплаты открывается, лоадер крутится, человек видит
+«ошибка оплаты», а в логах API нет ни одной строки о запросе (итерация 25).
+
+Теперь при старте API (`TelegramWebhookService`):
+
+```text
+getWebhookInfo → адрес ≠ ожидаемому → setWebhook → getWebhookInfo (проверка)
+```
+
+Ожидаемый адрес собирается из окружения:
+
+| Переменная | Что делает |
+|---|---|
+| `MINI_APP_URL` | публичный адрес мини-аппа; вебхук — `<MINI_APP_URL>/api/v1/internal/telegram/webhook/<secret>` (nginx проксирует `/api/` в API) |
+| `TELEGRAM_WEBHOOK_SECRET` | секрет в пути **и** в заголовке `X-Telegram-Bot-Api-Secret-Token` (одинаковое значение, как требует Bot API) |
+| `TELEGRAM_WEBHOOK_AUTO` | `1` (по умолчанию) — сверять и перерегистрировать; `0` — только проверять, адрес ведёт кто-то снаружи |
+
+`drop_pending_updates` не выставляется никогда: в очереди могут лежать
+платежи. Секрет в логах маскируется (`***6789`). Состояние пишется в лог
+`telegram_webhook_state`: `ok`, `registered`, `mismatch`, `not_configured`,
+`unreachable`, `failed` — ненулевой признак проблемы виден сразу после
+рестарта, а не через жалобу «оплата не проходит».
+
+### `pnpm payments:diagnose`
+
+```bash
+pnpm payments:diagnose                # бот, вебхук, каталог, деньги за 24 часа
+pnpm payments:diagnose --periods      # + живой createInvoiceLink по периодам
+pnpm payments:diagnose --set-webhook  # перерегистрировать вебхук
+pnpm payments:diagnose --json         # машиночитаемый отчёт
+```
+
+Что показывает: `getMe` (какой бот отвечает за токен), `getWebhookInfo` +
+ожидаемый адрес + вердикт, все тарифы с длиной названия (лимит Telegram —
+32 символа) и периодом подписки (лимит — 2 592 000 секунд), живую таблицу
+«период → ответ → текст ошибки» и деньги за сутки: счета и платежи по
+статусам, зависшие платежи, события `pre_checkout_*` и причины отказов.
+Работает и на продовых переменных — это только чтение (кроме `--set-webhook`).
+
+`/admin/metrics` (контракт 1.6.1) отдаёт ту же картину числами:
+`pre_checkout_total_24h`, `pre_checkout_rejected_24h`,
+`pre_checkout_timeout_24h`, `successful_payment_total_24h`,
+`payment_failed_24h`.
+
+### Если оплата всё равно не проходит
+
+| Что видно | Где смотреть | Что значит |
+|---|---|---|
+| `pre_checkout_total_24h = 0`, попытки были | `pnpm payments:diagnose` | вебхук не доставляет: адрес, домен, секрет или блокировка Telegram |
+| `pre_checkout_rejected_24h` растёт | лог `pre_checkout_rejected` (`reason`) | доставка работает, отказ у нас: сумма, счёт, план |
+| `pre_checkout_timeout_24h` > 0 | лог `pre_checkout_timeout`, `pre_checkout_slow` | не уложились в 10 секунд: база или таймауты |
+| `payment_failed_24h` растёт | `payments.reject_reason`, `payment_grant_failed` | деньги пришли, доступ не выдан |
+| счёт не создаётся, в логе `invoice_params_invalid` | `plans.title`/`description` | данные каталога вне лимитов Bot API |
+| `409 plan_period_unsupported` | `payments.md` §3.6 | тариф-подписка с периодом, которого Telegram не принимает |

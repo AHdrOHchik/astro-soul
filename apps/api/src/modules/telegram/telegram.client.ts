@@ -44,6 +44,27 @@ export interface TelegramUserRef {
   readonly id: number;
 }
 
+/** Что Telegram знает о нашем вебхуке (`getWebhookInfo`). */
+export interface WebhookInfo {
+  readonly url: string;
+  readonly hasCustomCertificate: boolean;
+  readonly pendingUpdateCount: number;
+  readonly lastErrorDate: number | null;
+  readonly lastErrorMessage: string | null;
+  readonly lastSynchronizationErrorDate: number | null;
+  readonly maxConnections: number | null;
+  readonly allowedUpdates: readonly string[] | null;
+}
+
+/** Ответ Bot API без исключения: для диагностики нужен сам текст ошибки. */
+export interface BotApiAnswer<T> {
+  readonly reachable: boolean;
+  readonly ok: boolean;
+  readonly status: number;
+  readonly result: T | null;
+  readonly description: string | null;
+}
+
 /**
  * Хвост `charge_id` для логов: 6 символов хватает, чтобы найти платёж, а
  * полный идентификатор в тексте лога не нужен (ПДн-гигиена, задача D).
@@ -55,6 +76,30 @@ function tail(chargeId: string): string {
 /** Ошибка вывода денег/инвойсов: наружу — INTERNAL, детали только в логах. */
 function upstreamError(reason: string): ApiError {
   return new ApiError('INTERNAL', 502, { reason, logFields: { reason } });
+}
+
+/**
+ * Telegram не принимает такой период звёздной подписки.
+ *
+ * Отдельный класс, а не общий `502 telegram_method_failed`: период — это
+ * свойство тарифа, а не сбой связи, и обрабатывать его нужно иначе (ответить
+ * человеку про тариф, а не «попробуйте позже»). Ловится в `billing.service`.
+ */
+export class SubscriptionPeriodUnsupportedError extends Error {
+  constructor(readonly description: string | null) {
+    super('Telegram не принимает такой период звёздной подписки');
+    this.name = 'SubscriptionPeriodUnsupportedError';
+  }
+}
+
+/**
+ * Ответ Bot API про период подписки: звёздные подписки бывают только на
+ * 30 дней. Текст Bot API менялся (`subscription_period_invalid`,
+ * `subscription period must be 2592000`), поэтому смотрим и на код статуса,
+ * и на слово в описании.
+ */
+function isPeriodRejection(status: number, description: string | null): boolean {
+  return status === 400 && description !== null && /subscription[ _]period/i.test(description);
 }
 
 /**
@@ -94,8 +139,79 @@ export class TelegramClient {
       body['subscription_period'] = params.subscriptionPeriod;
     }
 
-    const result = await this.call<string>('createInvoiceLink', body);
-    return result;
+    // Не `call`: отказ по периоду подписки — не наш сбой, и вызывающий должен
+    // уметь отличить его от «Telegram недоступен» (итерация 25).
+    const answer = await this.safeCall<string>('createInvoiceLink', body);
+
+    if (answer.ok && answer.result !== null) {
+      return answer.result;
+    }
+
+    if (isPeriodRejection(answer.status, answer.description)) {
+      this.logger.error('invoice_period_unsupported', {
+        status: answer.status,
+        description: answer.description,
+        subscription_period: params.subscriptionPeriod ?? null,
+      });
+      throw new SubscriptionPeriodUnsupportedError(answer.description);
+    }
+
+    this.logger.error('telegram_method_failed', {
+      method: 'createInvoiceLink',
+      status: answer.status,
+      description: answer.description,
+    });
+    throw upstreamError('telegram_method_failed');
+  }
+
+  /**
+   * `getMe` — «какой бот работает с этим токеном».
+   *
+   * Нужен диагностике: счёт и `pre_checkout_query` может подтвердить только
+   * бот, создавший счёт, а токен в `.env` мог остаться от другого бота.
+   */
+  async getMe(): Promise<BotApiAnswer<{ id: number; username?: string }>> {
+    return this.safeCall<{ id: number; username?: string }>('getMe');
+  }
+
+  /** `getWebhookInfo` — доставляются ли нам апдейты вообще. */
+  async getWebhookInfo(): Promise<BotApiAnswer<WebhookInfo>> {
+    const raw = await this.safeCall<Record<string, unknown>>('getWebhookInfo');
+
+    if (raw.result === null) {
+      return { ...raw, result: null };
+    }
+
+    const info = raw.result;
+    return {
+      ...raw,
+      result: {
+        url: typeof info['url'] === 'string' ? info['url'] : '',
+        hasCustomCertificate: info['has_custom_certificate'] === true,
+        pendingUpdateCount:
+          typeof info['pending_update_count'] === 'number' ? info['pending_update_count'] : 0,
+        lastErrorDate: typeof info['last_error_date'] === 'number' ? info['last_error_date'] : null,
+        lastErrorMessage:
+          typeof info['last_error_message'] === 'string' ? info['last_error_message'] : null,
+        lastSynchronizationErrorDate:
+          typeof info['last_synchronization_error_date'] === 'number'
+            ? info['last_synchronization_error_date']
+            : null,
+        maxConnections: typeof info['max_connections'] === 'number' ? info['max_connections'] : null,
+        allowedUpdates: Array.isArray(info['allowed_updates'])
+          ? (info['allowed_updates'] as string[])
+          : null,
+      },
+    };
+  }
+
+  /**
+   * `setWebhook` без `allowed_updates`: пусть Telegram присылает всё, что
+   * присылал раньше. `drop_pending_updates` не выставляем никогда — в очереди
+   * могут лежать платежи.
+   */
+  async setWebhook(url: string, secretToken: string): Promise<BotApiAnswer<boolean>> {
+    return this.safeCall<boolean>('setWebhook', { url, secret_token: secretToken });
   }
 
   async answerPreCheckoutQuery(queryId: string, ok: boolean, errorMessage?: string): Promise<void> {
@@ -282,6 +398,41 @@ export class TelegramClient {
       ok: response.ok && payload?.ok === true,
       ...(payload?.result === undefined ? {} : { result: payload.result }),
       ...(payload?.description === undefined ? {} : { description: payload.description }),
+    };
+  }
+
+  /**
+   * Вызов для диагностики: **никогда не бросает**, отдаёт текст ответа Bot API.
+   * `call` намеренно бросает короткой ошибкой (наружу нельзя светить детали),
+   * а диагностике нужна причина: без неё `setWebhook` «не сработал» — не факт.
+   */
+  async safeCall<T>(method: string, body: Record<string, unknown> = {}): Promise<BotApiAnswer<T>> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/bot${this.token}/${method}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TELEGRAM_TIMEOUT_MS),
+      });
+    } catch (error) {
+      this.logger.warn('telegram_unreachable', {
+        method,
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+      return { reachable: false, ok: false, status: 0, result: null, description: 'unreachable' };
+    }
+
+    const payload = (await response.json().catch(() => null)) as
+      | { ok?: boolean; result?: T; description?: string }
+      | null;
+
+    return {
+      reachable: true,
+      ok: response.ok && payload?.ok === true,
+      status: response.status,
+      result: payload?.result ?? null,
+      description: payload?.description ?? null,
     };
   }
 

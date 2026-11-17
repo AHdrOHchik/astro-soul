@@ -20,7 +20,11 @@ import { makeFakeTelegram, type FakeTelegram } from './fake-telegram';
 import { makeFakeAstro } from './fake-astro';
 
 /**
- * Тестовый тариф `test_1` (1 ⭐ за неделю).
+ * Тестовый тариф `test_1` (1 ⭐ за 30 дней).
+ *
+ * Период — 30 дней, а не неделя: звёздная подписка у Telegram бывает только на
+ * 2 592 000 секунд, и недельный тестовый тариф просто не выставлялся
+ * (итерация 25).
  *
  * Задача не «поставить цену 1», а «тариф, которого нет в проде ни при каком
  * забытом флаге». Поэтому проверяется не только то, что он работает при
@@ -215,7 +219,7 @@ describe('PAYMENTS_TEST_PLANS выключен (прод)', () => {
 });
 
 describe('PAYMENTS_TEST_PLANS=1 (стенд владельца)', () => {
-  it('создаёт счёт на 1 ⭐ с недельным периодом', async () => {
+  it('создаёт счёт на 1 ⭐ с периодом 30 дней — единственным, что принимает Telegram', async () => {
     const created = await invoice(on, 'test_1');
 
     expect(created.status).toBe(201);
@@ -223,18 +227,20 @@ describe('PAYMENTS_TEST_PLANS=1 (стенд владельца)', () => {
       plan_code: 'test_1',
       stars: 1,
       is_subscription: true,
-      subscription_period_sec: 604_800,
+      // Неделя (604 800) у звёздной подписки невалидна: Bot API принимает
+      // только 2 592 000 секунд, иначе счёт не выставляется вовсе.
+      subscription_period_sec: 2_592_000,
     });
 
     const call = onTelegram.invoiceCalls[0];
     expect(call?.prices).toEqual([{ label: 'Тест', amount: 1 }]);
-    expect(call?.subscriptionPeriod).toBe(604_800);
+    expect(call?.subscriptionPeriod).toBe(2_592_000);
     // payload тот же, что у обычного тарифа: план + псевдоним + ключ.
     expect(Object.keys(JSON.parse(call?.payload ?? '{}'))).toEqual(['p', 'u', 'k']);
     expect(JSON.parse(call?.payload ?? '{}').p).toBe('test_1');
   });
 
-  it('1 ⭐ даёт права month_399: plan=month, +7 дней, 5 вопросов в день', async () => {
+  it('1 ⭐ даёт права month_399: plan=month, +30 дней, 5 вопросов в день', async () => {
     await invoice(on, 'test_1');
     const payload = await payloadOf(on);
     const before = Date.now();
@@ -243,12 +249,13 @@ describe('PAYMENTS_TEST_PLANS=1 (стенд владельца)', () => {
 
     const state = await me(on);
     expect(state.subscription).toMatchObject({ is_active: true, plan: 'month', auto_renew: true });
-    // Одна звезда — не одна неделя в базе: срок считается от периода плана.
+    // Одна звезда — не один день в базе: срок считается от периода плана,
+    // а период у звёздной подписки только 30 дней.
     const expiresAtIso = state.subscription?.expires_at ?? null;
     expect(expiresAtIso).not.toBeNull();
     const expiresAt = new Date(expiresAtIso ?? 0).getTime();
-    expect(expiresAt).toBeGreaterThanOrEqual(before + 7 * 24 * 3600 * 1000 - 5_000);
-    expect(expiresAt).toBeLessThanOrEqual(before + 7 * 24 * 3600 * 1000 + 60_000);
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 30 * 24 * 3600 * 1000 - 5_000);
+    expect(expiresAt).toBeLessThanOrEqual(before + 30 * 24 * 3600 * 1000 + 60_000);
 
     expect(state.entitlements).toMatchObject({
       is_active: true,
