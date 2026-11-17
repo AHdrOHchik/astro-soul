@@ -60,7 +60,9 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     subscriptionPlan: 'week',
     stars: 149,
     periodSeconds: 604_800,
-    title: 'Разбор личности — подписка на неделю',
+    // `title` уходит в окно оплаты Telegram: лимит Bot API — 32 символа.
+    // Длинное название для витрины живёт в `paywallTitle` (его лимит не наш).
+    title: 'Разбор личности: неделя',
     description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
     priceLabel: 'Неделя',
     paywallTitle: 'Подписка на неделю',
@@ -75,7 +77,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     subscriptionPlan: 'month',
     stars: 399,
     periodSeconds: 2_592_000,
-    title: 'Разбор личности — подписка на месяц',
+    title: 'Разбор личности: месяц',
     description: 'Ежедневный прогноз, 5 вопросов в день, совместимость 1 в месяц',
     priceLabel: 'Месяц',
     paywallTitle: 'Подписка на месяц',
@@ -90,7 +92,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     subscriptionPlan: 'year',
     stars: 2_990,
     periodSeconds: 31_536_000,
-    title: 'Разбор личности — подписка на год',
+    title: 'Разбор личности: год',
     description: 'Всё, что в месячной подписке, плюс карта года',
     priceLabel: 'Год',
     paywallTitle: 'Подписка на год',
@@ -130,21 +132,25 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     testOnly: false,
   },
   /**
-   * Тестовая подписка: неделя, права как у `month_399`. Неделя, а не месяц, —
-   * если тестовую подписку забудут отменить, следующее списание случится через
-   * неделю, и это ошибка за 1 ⭐, а не повторный платёж за 399.
+   * Тестовая подписка за 1 ⭐, права как у `month_399`.
+   *
+   * Период — 30 дней, а не 7, как задумывалось сначала: Bot API принимает у
+   * звёздных подписок только `subscription_period = 2 592 000`, и недельный
+   * тестовый тариф вообще не выставлялся (итерация 25, `payments.md` §3.6).
+   * Забытая тестовая подписка спишется через 30 дней за 1 ⭐ — это дешевле,
+   * чем невозможность проверить путь оплаты.
    */
   {
     code: 'test_1',
     kind: 'subscription',
     subscriptionPlan: 'month',
     stars: 1,
-    periodSeconds: 604_800,
-    title: 'Тестовая подписка — 1 звезда',
-    description: 'Неделя доступа за 1 ⭐. Только для проверки оплаты владельцем',
+    periodSeconds: 2_592_000,
+    title: 'Тестовая подписка — 1 ⭐',
+    description: '30 дней доступа за 1 ⭐. Только для проверки оплаты владельцем',
     priceLabel: 'Тест',
     paywallTitle: 'Тестовая подписка',
-    paywallSubtitle: '1 ⭐ за неделю доступа, права как у месячной. Только для проверки оплаты.',
+    paywallSubtitle: '1 ⭐ за 30 дней доступа, права как у месячной. Только для проверки оплаты.',
     grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: false },
     sort: 90,
     testOnly: true,
@@ -156,7 +162,7 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     subscriptionPlan: 'none',
     stars: 1,
     periodSeconds: null,
-    title: 'Тестовый полный разбор — 1 звезда',
+    title: 'Тестовый разбор — 1 ⭐',
     description: 'Разбор личности за 1 ⭐ для одной карты. Только для проверки оплаты',
     priceLabel: 'Тест-разбор',
     paywallTitle: 'Тестовый разбор',

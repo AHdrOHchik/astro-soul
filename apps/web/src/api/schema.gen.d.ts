@@ -1277,6 +1277,21 @@ export interface paths {
                     };
                 };
                 /**
+                 * @description Тариф нельзя оплатить у платформы, а не у нас:
+                 *     `details.reason = plan_period_unsupported` (1.6.1). Telegram
+                 *     принимает звёздные подписки только на 30 дней, поэтому недельный
+                 *     и годовой тарифы подписками не выставляются. Ответ приходит
+                 *     **без** обращения к Bot API, с готовым текстом для человека —
+                 *     вместо прежнего `502` «не удалось создать счёт». Что делать с
+                 *     этими тарифами, решает владелец (`payments.md` §3.6).
+                 */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /**
                  * @description Неизвестный план, чужая карта, отсутствует `chart_id` у `one_149`,
                  *     разбор для этой карты уже куплен или неизрасходованная
                  *     совместимость уже есть — `VALIDATION_FAILED` +
@@ -1511,6 +1526,37 @@ export interface paths {
                             refunded_30d?: number;
                             /** @description Платежи `processed = false` прямо сейчас */
                             pending_payments_now?: number;
+                            /**
+                             * @description Сколько `pre_checkout_query` дошло до нас за 24 часа
+                             *     (события `pre_checkout_received`). Ноль при живых
+                             *     попытках оплаты — вебхук не доставляет апдейты.
+                             */
+                            pre_checkout_total_24h?: number;
+                            /**
+                             * @description Сколько запросов мы отклонили за 24 часа
+                             *     (`pre_checkout_rejected`): не сошлась сумма, счёт
+                             *     отменён, план исчез. Причина — в `reject_reason` платежа
+                             *     и в логе `pre_checkout_rejected`.
+                             */
+                            pre_checkout_rejected_24h?: number;
+                            /**
+                             * @description Сколько раз мы не успели ответить Telegram за 10 секунд
+                             *     (`pre_checkout_timeout`). Каждый такой случай — неудачная
+                             *     попытка оплаты, которую человек видел как «ошибка».
+                             */
+                            pre_checkout_timeout_24h?: number;
+                            /**
+                             * @description Сколько `successful_payment` дошло за 24 часа, любой
+                             *     исход (включая возвраты и отказы): это факты списания
+                             *     звёзд, а не продажи.
+                             */
+                            successful_payment_total_24h?: number;
+                            /**
+                             * @description Из них — те, по которым доступ не выдан (`status =
+                             *     'rejected'`). Растёт вместе с `pre_checkout_rejected_24h`
+                             *     — значит проблема в данных счёта, а не в доставке.
+                             */
+                            payment_failed_24h?: number;
                             /**
                              * @description Включены ли тестовые тарифы прямо сейчас
                              *     (`PAYMENTS_TEST_PLANS=1`). В `test_payments_30d` видно,

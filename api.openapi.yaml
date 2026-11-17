@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.0
+  version: 1.6.1
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -338,6 +338,26 @@ info:
         `compatibility_id` и `relationship`. `DELETE /me` удаляет заказы и
         данные партнёра в той же транзакции; срок хранения брошенных
         заказов — 24 месяца, тем же джобом, что и у разборов.
+
+    1.6.1 — оплата доходит до конца (итерация 25). Схемы расширены, ни одно
+      поле не удалено и не переименовано:
+      • `GET /admin/metrics`: `pre_checkout_total_24h`,
+        `pre_checkout_rejected_24h`, `pre_checkout_timeout_24h`,
+        `successful_payment_total_24h`, `payment_failed_24h` — здоровье оплаты
+        за сутки. Тридцать дней не отвечали на вопрос «сломалось сейчас или
+        так было всегда»; пара `total`/`rejected` разделяет «Telegram не
+        доставляет запросы» и «доставляет, но мы отказываем»;
+      • `POST /billing/invoice`: новый `409 CONFLICT` с `details.reason =
+        plan_period_unsupported` для тарифа-подписки с периодом, которого Bot
+        API не принимает (звёздная подписка — только 30 дней). Раньше такой
+        тариф доходил до Telegram и возвращался `502`, то есть «наша ошибка»
+        вместо «этот тариф так не продаётся»;
+      • поведение без изменения схем: API при старте сам сверяет адрес вебхука
+        через `getWebhookInfo` и при расхождении регистрирует его заново
+        (`TELEGRAM_WEBHOOK_AUTO=0` отключает), а `pre_checkout_query` теперь
+        отвечается всегда и в пределах 10 секунд — включая исключения и
+        таймауты обработчика. Для клиента это видно как исчезновение
+        `502` на оплате и как «оплата не проходит» → «оплата проходит».
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1986,6 +2006,15 @@ paths:
             `invoice_request_invalid`). `compat_already_owned` (1.6.0)
             приходит с `field_errors[0].field = chart_id`: подсвечивать надо
             выбор пары, а не тариф.
+        '409':
+          description: |
+            Тариф нельзя оплатить у платформы, а не у нас:
+            `details.reason = plan_period_unsupported` (1.6.1). Telegram
+            принимает звёздные подписки только на 30 дней, поэтому недельный
+            и годовой тарифы подписками не выставляются. Ответ приходит
+            **без** обращения к Bot API, с готовым текстом для человека —
+            вместо прежнего `502` «не удалось создать счёт». Что делать с
+            этими тарифами, решает владелец (`payments.md` §3.6).
         '429':
           description: 'Слишком много инвойсов (антифрод): 3 в час, 10 в сутки — Problem.code = RATE_LIMITED'
 
@@ -2130,6 +2159,37 @@ paths:
                   pending_payments_now:
                     type: integer
                     description: Платежи `processed = false` прямо сейчас
+                  pre_checkout_total_24h:
+                    type: integer
+                    description: |
+                      Сколько `pre_checkout_query` дошло до нас за 24 часа
+                      (события `pre_checkout_received`). Ноль при живых
+                      попытках оплаты — вебхук не доставляет апдейты.
+                  pre_checkout_rejected_24h:
+                    type: integer
+                    description: |
+                      Сколько запросов мы отклонили за 24 часа
+                      (`pre_checkout_rejected`): не сошлась сумма, счёт
+                      отменён, план исчез. Причина — в `reject_reason` платежа
+                      и в логе `pre_checkout_rejected`.
+                  pre_checkout_timeout_24h:
+                    type: integer
+                    description: |
+                      Сколько раз мы не успели ответить Telegram за 10 секунд
+                      (`pre_checkout_timeout`). Каждый такой случай — неудачная
+                      попытка оплаты, которую человек видел как «ошибка».
+                  successful_payment_total_24h:
+                    type: integer
+                    description: |
+                      Сколько `successful_payment` дошло за 24 часа, любой
+                      исход (включая возвраты и отказы): это факты списания
+                      звёзд, а не продажи.
+                  payment_failed_24h:
+                    type: integer
+                    description: |
+                      Из них — те, по которым доступ не выдан (`status =
+                      'rejected'`). Растёт вместе с `pre_checkout_rejected_24h`
+                      — значит проблема в данных счёта, а не в доставке.
                   test_plans_active:
                     type: boolean
                     description: |

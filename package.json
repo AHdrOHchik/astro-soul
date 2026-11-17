@@ -25,7 +25,8 @@
     "dev:astro": "cd packages/astro && python3 -m astro.service",
     "check": "pnpm lint && pnpm typecheck && pnpm build && pnpm test && pnpm test:astro && pnpm lint:astro",
     "start:api": "pnpm --filter @astro-soul/api run start",
-    "plans:set-price": "pnpm --filter @astro-soul/api run plans:set-price"
+    "plans:set-price": "pnpm --filter @astro-soul/api run plans:set-price",
+    "payments:diagnose": "pnpm --filter @astro-soul/api run payments:diagnose"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",

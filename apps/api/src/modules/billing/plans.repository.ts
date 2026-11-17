@@ -144,10 +144,15 @@ export class PlansRepository {
    * План по коду. Возвращает и неактивные, и тестовые строки: решение «можно
    * ли это продавать» принимает вызывающий, зная флаг и `active`/`testOnly`.
    */
-  async getPlan(code: string): Promise<PlanRow | null> {
+  /**
+   * Строка плана по коду. `timeoutMs` — для `pre_checkout_query`: ответ
+   * Telegram ограничен 10 секундами, и чтение каталога не должно съедать их.
+   */
+  async getPlan(code: string, timeoutMs?: number): Promise<PlanRow | null> {
     const row = await this.db.queryOne<PlanDbRow>(
       `SELECT ${SELECT_COLUMNS} FROM plans WHERE code = $1`,
       [code],
+      timeoutMs === undefined ? {} : { timeoutMs },
     );
 
     return row === null ? null : planFromRow(row);

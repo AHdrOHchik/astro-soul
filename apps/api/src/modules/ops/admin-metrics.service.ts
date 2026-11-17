@@ -38,6 +38,27 @@ export interface ProductMetrics {
   readonly amount_mismatch_30d: number;
   readonly refunded_30d: number;
   readonly pending_payments_now: number;
+  /**
+   * Здоровье оплаты **за 24 часа** (итерация 25).
+   *
+   * 30-дневные цифры не отвечают на вопрос «оплата сломалась сейчас или
+   * всегда так работала»: один отказ в сутки и тридцать отказов за месяц
+   * выглядят одинаково. Пара `pre_checkout_total_24h` / `_rejected_24h`
+   * разделяет «Telegram не доставляет запросы» (`total = 0`, а `payments`
+   * при этом пусто) и «доставляет, но мы отказываем» (`rejected` растёт):
+   * в первом случае чинят вебхук, во втором — данные счёта.
+   *
+   * `successful_payment_total_24h` — сколько платежей дошло (любой статус:
+   * `paid`, `rejected`, `refunded` — это всё факты списания звёзд).
+   * `payment_failed_24h` — из них те, по которым доступ **не** выдан.
+   * Расхождение `successful_payment_total_24h > payment_failed_24h` —
+   * норма, обратное (много отказов) — повод читать `reject_reason`.
+   */
+  readonly pre_checkout_total_24h: number;
+  readonly pre_checkout_rejected_24h: number;
+  readonly pre_checkout_timeout_24h: number;
+  readonly successful_payment_total_24h: number;
+  readonly payment_failed_24h: number;
   /** Задача A: сколько отмен автопродления в Telegram не прошло за 30 дней. */
   readonly subscription_cancel_failed_30d: number;
   /** Сколько отменённых подписок всё ещё ждут повтора в Telegram. */
@@ -108,6 +129,7 @@ export class AdminMetricsService {
       compat,
       compatHistory,
       telegramCancel,
+      paymentHealth,
     ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -253,6 +275,32 @@ export class AdminMetricsService {
                WHERE status = 'cancelled'
                  AND telegram_cancel_state = 'failed') AS pending`,
         ),
+        this.db.queryOne<{
+          pre_checkout_total: number;
+          pre_checkout_rejected: number;
+          pre_checkout_timeout: number;
+          successful_payment_total: number;
+          payment_failed: number;
+        }>(
+          // Запрос платежа и его исход живут в разных таблицах: `pre_checkout_*`
+          // приходит вебхуком и остаётся только событием, `successful_payment`
+          // всегда оставляет строку в `payments`. Поэтому два подзапроса в
+          // одном ответе — так обе половины считаются по одному «сейчас».
+          `SELECT
+             (SELECT count(*)::int FROM events
+               WHERE name = 'pre_checkout_received'
+                 AND ${HAPPENED_AT} >= now() - interval '24 hours') AS pre_checkout_total,
+             (SELECT count(*)::int FROM events
+               WHERE name = 'pre_checkout_rejected'
+                 AND ${HAPPENED_AT} >= now() - interval '24 hours') AS pre_checkout_rejected,
+             (SELECT count(*)::int FROM events
+               WHERE name = 'pre_checkout_timeout'
+                 AND ${HAPPENED_AT} >= now() - interval '24 hours') AS pre_checkout_timeout,
+             (SELECT count(*)::int FROM payments
+               WHERE paid_at >= now() - interval '24 hours') AS successful_payment_total,
+             (SELECT count(*)::int FROM payments
+               WHERE status = 'rejected' AND paid_at >= now() - interval '24 hours') AS payment_failed`,
+        ),
       ]);
 
     const eventsByName: Record<string, number> = {};
@@ -299,6 +347,11 @@ export class AdminMetricsService {
       amount_mismatch_30d: payments?.mismatch ?? 0,
       refunded_30d: payments?.refunded ?? 0,
       pending_payments_now: payments?.pending ?? 0,
+      pre_checkout_total_24h: paymentHealth?.pre_checkout_total ?? 0,
+      pre_checkout_rejected_24h: paymentHealth?.pre_checkout_rejected ?? 0,
+      pre_checkout_timeout_24h: paymentHealth?.pre_checkout_timeout ?? 0,
+      successful_payment_total_24h: paymentHealth?.successful_payment_total ?? 0,
+      payment_failed_24h: paymentHealth?.payment_failed ?? 0,
       subscription_cancel_failed_30d: telegramCancel?.failed ?? 0,
       subscriptions_cancelled_pending_telegram: telegramCancel?.pending ?? 0,
       test_payments_30d: payments?.test ?? 0,

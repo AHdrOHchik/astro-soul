@@ -166,11 +166,22 @@ export class BillingRepository {
     return row;
   }
 
-  async findInvoiceByIdeaKey(userId: string, idemKey: string): Promise<InvoiceRow | null> {
+  /**
+   * Счёт по паре (пользователь, ключ идемпотентности).
+   *
+   * `timeoutMs` — для `pre_checkout_query`: ответ Telegram ограничен 10 с, и
+   * зависшее чтение одной строки не должно съедать весь бюджет.
+   */
+  async findInvoiceByIdeaKey(
+    userId: string,
+    idemKey: string,
+    timeoutMs?: number,
+  ): Promise<InvoiceRow | null> {
     return this.db.queryOne<InvoiceRow>(
       `SELECT id, plan_code, idem_key, payload, invoice_link, status, chart_id, stars, created_at
          FROM invoices WHERE user_id = $1 AND idem_key = $2`,
       [userId, idemKey],
+      timeoutMs === undefined ? {} : { timeoutMs },
     );
   }
 
@@ -318,10 +329,11 @@ export class BillingRepository {
   }
 
   /** Есть ли ещё пользователь: платёж после `DELETE /me` выдавать доступ не должен. */
-  async userExists(userId: string): Promise<boolean> {
+  async userExists(userId: string, timeoutMs?: number): Promise<boolean> {
     const row = await this.db.queryOne<{ one: number }>(
       `SELECT 1 AS one FROM users WHERE id = $1`,
       [userId],
+      timeoutMs === undefined ? {} : { timeoutMs },
     );
     return row !== null;
   }

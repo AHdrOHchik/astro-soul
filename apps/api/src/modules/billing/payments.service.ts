@@ -2,11 +2,12 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import type { PlanCode } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
+import { DeadlineError, withDeadline } from '../../common/deadline';
 import { JsonLogger } from '../../common/logger';
 import { TelegramClient } from '../telegram/telegram.client';
 import { EventsRepository } from '../events/events.repository';
 import { BillingRepository, type RejectReason } from './billing.repository';
-import { parseInvoicePayload } from './billing.dto';
+import { parseInvoicePayload, type InvoicePayload } from './billing.dto';
 import { PlansRepository, type PlanRow } from './plans.repository';
 
 export interface TelegramSuccessfulPayment {
@@ -43,11 +44,16 @@ export interface TelegramUpdate {
  */
 export type RejectCode = RejectReason | 'refund_failed';
 
-/** Что стало с платежом: доступ выдан, отказ по деньгам или повтор доставки. */
+/**
+ * Что стало с платежом: доступ выдан, отказ по деньгам, повтор доставки или
+ * «деньги записаны, доступ пока нет» — такой платёж доводит джоб
+ * `pending_payments_resolve` (`paid`, `processed = false`).
+ */
 type PaymentOutcome =
   | { readonly kind: 'processed'; readonly plan: PlanRow; readonly expiresAt: Date | null; readonly renewed: boolean }
   | { readonly kind: 'rejected'; readonly code: RejectCode }
-  | { readonly kind: 'duplicate' };
+  | { readonly kind: 'duplicate' }
+  | { readonly kind: 'deferred' };
 
 type ProcessOutcome =
   | { readonly kind: 'duplicate' }
@@ -57,6 +63,44 @@ type ProcessOutcome =
       readonly expiresAt: Date | null;
       readonly renewed: boolean;
     };
+
+/**
+ * Бюджет `pre_checkout_query`. Telegram ждёт ответ 10 секунд и после этого
+ * показывает «ошибка оплаты»; человек в этот момент смотрит на лоадер.
+ *
+ *   • цель — 1 с: больше не нужно, все проверки — три чтения по индексам;
+ *   • жёсткий срок — 8 с: остаётся 2 с на сам ответ `answerPreCheckoutQuery`;
+ *   • таймаут чтения из БД — 2 с: зависшая строка не съедает весь бюджет.
+ *
+ * Замер `duration_ms` пишется в лог каждого ответа (`pre_checkout_answered`),
+ * поэтому «стало медленно» видно до того, как превратится в отказы.
+ */
+export const PRECHECKOUT_TARGET_MS = 1_000;
+export const PRECHECKOUT_DEADLINE_MS = 8_000;
+export const PRECHECKOUT_DB_TIMEOUT_MS = 2_000;
+
+/** Тексты отказов: человек читает их в окне оплаты. */
+const PRECHECKOUT_TEXT = {
+  unavailable: 'Товар недоступен, попробуй ещё раз',
+  restart: 'Оплата больше недоступна — начни заново',
+  amount: 'Сумма не совпадает со счётом — начни заново',
+  retry: 'Оплата не подтвердилась — попробуй ещё раз',
+} as const;
+
+/**
+ * Решение по `pre_checkout_query`: что ответить и что об этом записать.
+ *
+ * `reason` — машинный код для логов, событий и метрик (`payments.md` §3.1):
+ * по нему видно, почему человек увидел «ошибка оплаты», без чтения его данных.
+ */
+interface PreCheckoutDecision {
+  readonly ok: boolean;
+  readonly reason: string;
+  readonly text?: string;
+  readonly plan: PlanCode | null;
+  readonly amount: number | null;
+  readonly expected: number | null;
+}
 
 function formatDate(date: Date): string {
   // Дата в UTC: часовой пояс пользователя в платеже не передаётся,
@@ -82,7 +126,15 @@ export class PaymentsService {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
-  /** Единая точка входа вебхука. Неизвестные апдейты молча игнорируются. */
+  /**
+   * Единая точка входа вебхука. Неизвестные апдейты молча игнорируются.
+   *
+   * `pre_checkout_query` не бросает никогда: ответ уходит всегда, даже если
+   * обработка упала (`payments.md` §3.1). `successful_payment` бросать может —
+   * тогда вебхук отвечает `500`, а Telegram повторяет доставку, потому что
+   * потерять платёж хуже, чем обработать его дважды (идемпотентность по
+   * `telegram_payment_charge_id`).
+   */
   async handleUpdate(update: unknown): Promise<void> {
     if (typeof update !== 'object' || update === null) {
       return;
@@ -106,43 +158,176 @@ export class PaymentsService {
   }
 
   /**
-   * `pre_checkout_query`: ответить за 10 с. Если товар уже выдан — всё равно
-   * `ok=true` (деньги списаны, спор решается возвратом), поэтому проверяем
-   * только то, что платёж вообще сможем принять.
+   * `pre_checkout_query`: ответ обязателен **всегда**.
+   *
+   * Дефект, который здесь закрывается (итерация 25): обработчик бежал без
+   * try/catch и без срока, поэтому любое исключение (или медленная база) —
+   * это молчание в ответ на запрос Telegram, человек видит «ошибка оплаты»
+   * после лоадера, а в логах нет ни строки о том, что запрос вообще был.
+   *
+   * Теперь: срок, отказ с человеческим текстом при любой ошибке, событие с
+   * `reason` и `duration_ms` на каждый запрос.
    */
   private async handlePreCheckout(query: TelegramPreCheckoutQuery): Promise<void> {
+    const startedAt = Date.now();
     const payload = parseInvoicePayload(query.invoice_payload);
-    // План — строкой из `plans`: единственный источник цены и прав.
-    const plan = payload === null ? null : await this.plans.getPlan(payload.p);
+    const plan = payload === null ? null : payload.p;
 
-    if (payload === null || plan === null || query.currency !== 'XTR') {
-      this.logger.warn('pre_checkout_rejected', { reason: payload === null ? 'payload' : 'plan' });
-      await this.telegram.answerPreCheckoutQuery(
-        query.id,
-        false,
-        'Товар недоступен, попробуй ещё раз',
+    let decision: PreCheckoutDecision;
+
+    try {
+      decision = await withDeadline(
+        this.verifyPreCheckout(query, payload),
+        PRECHECKOUT_DEADLINE_MS,
       );
-      return;
+    } catch (error) {
+      const timedOut = error instanceof DeadlineError;
+
+      // Срок или падение — это не «неверный счёт», и путать их в логе нельзя:
+      // по `pre_checkout_timeout` чинят базу, по `handler_error` — код.
+      this.logger.error(timedOut ? 'pre_checkout_timeout' : 'pre_checkout_handler_failed', {
+        plan,
+        amount: query.total_amount,
+        deadline_ms: timedOut ? PRECHECKOUT_DEADLINE_MS : null,
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+
+      decision = {
+        ok: false,
+        reason: timedOut ? 'timeout' : 'handler_error',
+        text: PRECHECKOUT_TEXT.retry,
+        plan,
+        amount: query.total_amount,
+        expected: null,
+      };
     }
 
-    // QA-15: инвойс удалённого пользователя больше не принимает оплату.
-    const invoice = await this.repo.findInvoiceByIdeaKey(payload.u, payload.k);
-    const expired =
-      invoice === null ||
-      invoice.status !== 'created' ||
-      !(await this.repo.userExists(payload.u));
+    const answered = await this.answerSafely(query.id, decision);
+    const durationMs = Date.now() - startedAt;
 
-    if (expired) {
+    this.logger.info('pre_checkout_answered', {
+      ok: decision.ok,
+      reason: decision.reason,
+      plan: decision.plan,
+      amount: decision.amount,
+      expected: decision.expected,
+      duration_ms: durationMs,
+      answered,
+    });
+
+    if (!decision.ok) {
       this.logger.warn('pre_checkout_rejected', {
-        reason: invoice === null ? 'invoice_missing' : 'invoice_not_payable',
-        plan: payload.p,
+        reason: decision.reason,
+        plan: decision.plan,
+        amount: decision.amount,
+        expected: decision.expected,
+        duration_ms: durationMs,
       });
-      await this.telegram.answerPreCheckoutQuery(
-        query.id,
-        false,
-        'Оплата больше недоступна — начни заново',
-      );
-      return;
+    }
+
+    if (durationMs > PRECHECKOUT_TARGET_MS) {
+      this.logger.warn('pre_checkout_slow', { duration_ms: durationMs, reason: decision.reason });
+    }
+
+    // Метрики «сколько оплат упало за сутки» считаются по `events`
+    // (`/admin/metrics`, задача 4). Пишем после ответа Telegram: если запись
+    // события не удалась, ответ всё равно уже ушёл.
+    await this.logPreCheckoutEvents(decision, payload, query);
+  }
+
+  /**
+   * Проверки `pre_checkout_query` — только чтения по индексам, с таймаутом на
+   * каждое (2 с). Никаких обращений к LLM, Telegram и тяжёлых агрегатов.
+   */
+  private async verifyPreCheckout(
+    query: TelegramPreCheckoutQuery,
+    payload: InvoicePayload | null,
+  ): Promise<PreCheckoutDecision> {
+    if (payload === null) {
+      return {
+        ok: false,
+        reason: 'payload_invalid',
+        text: PRECHECKOUT_TEXT.unavailable,
+        plan: null,
+        amount: query.total_amount,
+        expected: null,
+      };
+    }
+
+    if (query.currency !== 'XTR') {
+      return {
+        ok: false,
+        reason: 'currency',
+        text: PRECHECKOUT_TEXT.unavailable,
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: null,
+      };
+    }
+
+    const plan = await this.plans.getPlan(payload.p, PRECHECKOUT_DB_TIMEOUT_MS);
+    if (plan === null) {
+      return {
+        ok: false,
+        reason: 'plan_unknown',
+        text: PRECHECKOUT_TEXT.unavailable,
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: null,
+      };
+    }
+
+    const invoice = await this.repo.findInvoiceByIdeaKey(
+      payload.u,
+      payload.k,
+      PRECHECKOUT_DB_TIMEOUT_MS,
+    );
+
+    if (invoice === null) {
+      return {
+        ok: false,
+        reason: 'invoice_missing',
+        text: PRECHECKOUT_TEXT.restart,
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: null,
+      };
+    }
+
+    // QA-15: счёт аннулирован вместе с удалением данных. Отдельный `reason`:
+    // в метриках это «человек платит по счёту, которого больше нет», а не
+    // «сумма не сошлась».
+    if (invoice.status === 'invalidated') {
+      return {
+        ok: false,
+        reason: 'invoice_invalidated_price_changed',
+        text: PRECHECKOUT_TEXT.restart,
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: invoice.stars,
+      };
+    }
+
+    if (invoice.status !== 'created') {
+      return {
+        ok: false,
+        reason: 'invoice_not_payable',
+        text: PRECHECKOUT_TEXT.restart,
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: invoice.stars,
+      };
+    }
+
+    if (!(await this.repo.userExists(payload.u, PRECHECKOUT_DB_TIMEOUT_MS))) {
+      return {
+        ok: false,
+        reason: 'user_deleted',
+        text: PRECHECKOUT_TEXT.restart,
+        plan: payload.p,
+        amount: query.total_amount,
+        expected: invoice.stars,
+      };
     }
 
     // Сумма сверяется со **снимком в счёте** (`invoices.stars`), а не с текущей
@@ -150,26 +335,91 @@ export class PaymentsService {
     // из-за этого уже показанный счёт — значит наказывать человека за нашу
     // правку. Здесь ловим только подмену суммы в самом запросе.
     if (query.total_amount !== invoice.stars) {
-      this.logger.warn('pre_checkout_rejected', {
+      return {
+        ok: false,
         reason: 'amount_mismatch',
+        text: PRECHECKOUT_TEXT.amount,
         plan: payload.p,
         amount: query.total_amount,
         expected: invoice.stars,
-      });
-      await this.telegram.answerPreCheckoutQuery(
-        query.id,
-        false,
-        'Сумма не совпадает со счётом — начни заново',
-      );
-      return;
+      };
     }
 
-    await this.telegram.answerPreCheckoutQuery(query.id, true);
+    return {
+      ok: true,
+      reason: 'ok',
+      plan: payload.p,
+      amount: query.total_amount,
+      expected: invoice.stars,
+    };
+  }
+
+  /** Ответ Telegram. Падение самого ответа не должно ронять вебхук. */
+  private async answerSafely(queryId: string, decision: PreCheckoutDecision): Promise<boolean> {
+    try {
+      await this.telegram.answerPreCheckoutQuery(queryId, decision.ok, decision.text);
+      return true;
+    } catch (error) {
+      this.logger.error('pre_checkout_answer_failed', {
+        plan: decision.plan,
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+      return false;
+    }
   }
 
   /**
-   * Апдейт `successful_payment`: сверка и выдача доступа, затем сообщение в чат.
-   * Ответ вебхука от исхода не зависит — он всегда `200` (см. `processPayment`).
+   * События `pre_checkout_*` для метрик. Ошибка записи не влияет на ответ:
+   * человек уже получил свой `ok`, а событие — наша телеметрия.
+   */
+  private async logPreCheckoutEvents(
+    decision: PreCheckoutDecision,
+    payload: InvoicePayload | null,
+    query: TelegramPreCheckoutQuery,
+  ): Promise<void> {
+    try {
+      await this.events.log({
+        name: 'pre_checkout_received',
+        userId: payload?.u ?? null,
+        props: { plan: decision.plan, amount: query.total_amount },
+      });
+
+      if (decision.ok) {
+        return;
+      }
+
+      const name = decision.reason === 'timeout' ? 'pre_checkout_timeout' : 'pre_checkout_rejected';
+
+      await this.events.log({
+        name,
+        userId: payload?.u ?? null,
+        props: {
+          reason: decision.reason,
+          plan: decision.plan,
+          amount: decision.amount,
+          expected: decision.expected,
+        },
+      });
+    } catch (error) {
+      this.logger.warn('pre_checkout_event_failed', {
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+    }
+  }
+
+  /**
+   * Апдейт `successful_payment`: сверка, запись платежа и выдача доступа.
+   *
+   * Что отвечает вебхук:
+   *   • `200` — платёж записан и доступ выдан (`processed`);
+   *   • `200` — повтор доставки (`duplicate`);
+   *   • `200` — платёж записан, но выдача упала (`deferred`): строку доведёт джоб
+   *     `pending_payments_resolve`, повторять доставку бессмысленно — она упрётся
+   *     в ту же ошибку;
+   *   • `500` — не удалось даже записать платёж (БД недоступна). Telegram
+   *     повторит, и это правильно: иначе платёж исчезнет.
+   *
+   * Сообщение в чат — последним и не критично (`payments.md` §3.2, п. 5).
    */
   private async handleSuccessfulPayment(
     chatId: number | null,
@@ -178,13 +428,35 @@ export class PaymentsService {
   ): Promise<void> {
     const outcome = await this.processPayment({ telegramUserId, payment });
 
+    if (outcome.kind === 'deferred') {
+      this.logger.warn('payment_deferred_to_job', {
+        charge_tail: payment.telegram_payment_charge_id.slice(-6),
+      });
+      return;
+    }
+
     if (outcome.kind !== 'processed') {
       return;
     }
 
     // П.5 из payments.md §3.2: сообщение не критично, ошибка не отменяет платёж.
+    //
+    // Раньше `sendMessage` звался без try/catch: недоступный Telegram на этом
+    // шаге давал `500`, Telegram повторял доставку, повтор упирался в
+    // «уже обработано», и человек оставался с доступом, но без сообщения —
+    // зато с записью об ошибке в логе вебхука, по которой не понять, дошёл
+    // ли платёж. Теперь платёж и доступ фиксируются, а сбой сообщения — одна
+    // строка лога (итерация 25).
     if (chatId !== null) {
-      await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
+      try {
+        await this.telegram.sendMessage(chatId, this.purchaseMessage(outcome.plan, outcome.expiresAt));
+      } catch (error) {
+        this.logger.error('payment_message_failed', {
+          charge_tail: payment.telegram_payment_charge_id.slice(-6),
+          plan: outcome.plan.code,
+          reason: error instanceof Error ? error.name : 'unknown',
+        });
+      }
     }
   }
 
@@ -313,17 +585,29 @@ export class PaymentsService {
         : null;
     const chartId = invoice.chart_id;
 
-    const outcome = await this.db.withTransaction<ProcessOutcome>(async (client) => {
+    // ── Фаза 1: записать платёж ────────────────────────────────────────────
+    //
+    // Отдельная транзакция, а не одна на всё (как было до итерации 25). Смысл:
+    // деньги уже списаны Telegram, и запись о них не должна зависеть от того,
+    // удастся ли выдать доступ. Если выдача упадёт, платёж останется
+    // `status='paid', processed=false` — его доведёт `pending_payments_resolve`
+    // (тот же путь, что у зависших доставок), а не потеряет никто.
+    //
+    // Упасть сама запись (БД недоступна) может — тогда исключение уходит наверх,
+    // вебхук отвечает `500`, и Telegram повторяет доставку. Это осознанно:
+    // недоставленный `successful_payment` хуже повторного (идемпотентность по
+    // `telegram_payment_charge_id`).
+    const recorded = await this.db.withTransaction(async (client) => {
       const locked = await this.repo.lockPayment(client, chargeId);
+
       // Повтор доставки уже обработанного платежа и повтор доставки отказа
       // (`rejected`) — оба ничего не выдают: доступ даёт только первая запись.
-      if (locked !== null && (locked.processed || locked.status === 'rejected')) {
-        return { kind: 'duplicate' };
+      if (locked !== null) {
+        return { id: locked.id, processed: locked.processed, status: locked.status };
       }
 
       const insertedId =
-        locked?.id ??
-        (await this.repo.insertPayment(client, {
+        await this.repo.insertPayment(client, {
           userId: payload.u,
           // telegram_id нужен только для refundStarPayment и обнуляется при DELETE /me.
           telegramId: telegramUserId,
@@ -337,38 +621,91 @@ export class PaymentsService {
           // Тестовый тариф отмечается на платеже: проверка суммы для него
           // та же (1 ⭐ = 1 ⭐), а вот в выручку и конверсию он не идёт.
           isTest: plan.testOnly,
-        }));
+        });
 
       // Гонка двух доставок: строку успел вставить параллельный обработчик.
-      const paymentId = insertedId ?? (await this.repo.lockPayment(client, chargeId))?.id ?? null;
+      const raced = insertedId === null ? await this.repo.lockPayment(client, chargeId) : null;
+      const paymentId = insertedId ?? raced?.id ?? null;
+
       if (paymentId === null) {
-        throw new Error('платёж не найден после вставки');
+        // Записать не удалось и прочитать не удалось — это не «повтор», а
+        // потеря платежа. Пусть вебхук ответит 500 и Telegram повторит.
+        throw new Error('платёж не записан и не найден');
       }
 
-      const grant = await this.grantOne(client, {
-        paymentId,
-        chargeId,
-        plan,
-        userId: payload.u,
-        chartId,
-        // Срок берём из Telegram (`subscription_expiration_date`), когда он есть:
-        // это официальная дата окончания, а не наша арифметика.
-        subscriptionExpiresAt: requestedExpiresAt,
-      });
-
-      await this.repo.markPaymentProcessed(client, paymentId);
-      await this.repo.markInvoicePaid(client, payload.u, payload.k);
-
       return {
-        kind: 'processed',
-        plan,
-        expiresAt: grant.expiresAt,
-        renewed: grant.renewed,
+        id: paymentId,
+        processed: raced?.processed ?? false,
+        status: raced?.status ?? 'paid',
       };
     });
 
+    // Уже обработан или отклонён раньше — второй раз ничего не выдаём.
+    if (recorded.processed || recorded.status === 'rejected') {
+      this.logger.info('payment_duplicate_ignored', { charge: chargeId, status: recorded.status });
+      return { kind: 'duplicate' };
+    }
+
+    // ── Фаза 2: выдать доступ ──────────────────────────────────────────────
+    //
+    // Выдача и отметка `processed` — по-прежнему одна транзакция: либо доступ
+    // выдан и платёж закрыт, либо не произошло ничего и повтор начнёт заново.
+    // Двойного продления подписки при повторе нет именно из-за этого.
+    let outcome: ProcessOutcome;
+
+    try {
+      outcome = await this.db.withTransaction<ProcessOutcome>(async (client) => {
+        const locked = await this.repo.lockPayment(client, chargeId);
+        if (locked === null) {
+          throw new Error('платёж исчез между транзакциями');
+        }
+        if (locked.processed || locked.status === 'rejected') {
+          return { kind: 'duplicate' };
+        }
+
+        const grant = await this.grantOne(client, {
+          paymentId: locked.id,
+          chargeId,
+          plan,
+          userId: payload.u,
+          chartId,
+          // Срок берём из Telegram (`subscription_expiration_date`), когда он есть:
+          // это официальная дата окончания, а не наша арифметика.
+          subscriptionExpiresAt: requestedExpiresAt,
+        });
+
+        await this.repo.markPaymentProcessed(client, locked.id);
+        await this.repo.markInvoicePaid(client, payload.u, payload.k);
+
+        return {
+          kind: 'processed',
+          plan,
+          expiresAt: grant.expiresAt,
+          renewed: grant.renewed,
+        };
+      });
+    } catch (error) {
+      // Деньги списаны, доступ не выдан — самый тяжёлый класс. Платёж уже
+      // записан (`paid`), поэтому ничего не теряется: джоб доведёт выдачу,
+      // а вебхук отвечает `200`, чтобы Telegram не долбил нас повторами,
+      // которые упрутся в ту же ошибку.
+      this.logger.error('payment_grant_failed', {
+        charge_tail: chargeId.slice(-6),
+        plan: payload.p,
+        amount: payment.total_amount,
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+
+      await this.logEvent('payment_grant_failed', payload.u, {
+        plan: payload.p,
+        amount: payment.total_amount,
+      });
+
+      return { kind: 'deferred' };
+    }
+
     if (outcome.kind === 'duplicate') {
-      this.logger.info('payment_duplicate_ignored', { charge: chargeId });
+      this.logger.info('payment_duplicate_ignored', { charge: chargeId, phase: 2 });
       return outcome;
     }
 
@@ -381,19 +718,36 @@ export class PaymentsService {
       });
     }
 
-    await this.events.log({
-      name: outcome.renewed ? 'subscription_renewed' : 'payment_processed',
-      userId: payload.u,
-      props: {
-        plan: payload.p,
-        stars: payment.total_amount,
-        // Сюда доходят только платежи, сверенные с инвойсом и ценой плана.
-        amount_matches: true,
-        renewed: outcome.renewed,
-      },
+    await this.logEvent(outcome.renewed ? 'subscription_renewed' : 'payment_processed', payload.u, {
+      plan: payload.p,
+      stars: payment.total_amount,
+      // Сюда доходят только платежи, сверенные с инвойсом и ценой плана.
+      amount_matches: true,
+      renewed: outcome.renewed,
     });
 
     return outcome;
+  }
+
+  /**
+   * Событие в `events` — не критичная часть платежа.
+   *
+   * Падение записи события не должно превращать выданный доступ в `500` и
+   * повторную доставку: деньги и права уже зафиксированы, телеметрия — вторична.
+   */
+  private async logEvent(
+    name: string,
+    userId: string | null,
+    props: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    try {
+      await this.events.log({ name, userId, props });
+    } catch (error) {
+      this.logger.warn('payment_event_failed', {
+        event: name,
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+    }
   }
   /**
    * Отказ по деньгам: платёж пишется со статусом `rejected`, доступ не выдаётся.
