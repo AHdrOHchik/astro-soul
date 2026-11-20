@@ -699,6 +699,7 @@ function Screens({
     case 'welcome':
       return withTabs(
         <WelcomeScreen
+          api={api}
           onStart={() => {
             open('consent');
           }}

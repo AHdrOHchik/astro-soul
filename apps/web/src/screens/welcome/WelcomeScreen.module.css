@@ -59,3 +59,9 @@
   color: var(--color-accent);
   text-decoration: underline;
 }
+
+.offer {
+  color: var(--color-text);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+}
