@@ -15,6 +15,7 @@ import type { Telegram } from '../telegram';
 export interface DailyForecastScreenProps {
   api: Pick<Api, 'getForecastToday' | 'getMe' | 'createShareCard'>;
   chartId: string | null;
+  share?: Me['share'];
   telegram: Pick<Telegram, 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   now?: () => Date;
   known: ForecastDay | null;
@@ -29,7 +30,7 @@ export interface DailyForecastScreenProps {
 const currentTime = () => new Date();
 const noopTrack: Track = () => undefined;
 
-export function DailyForecastScreen({ api, chartId, telegram, known, now = currentTime, onKnown, onBuildChart, onChartGone, onSubscribe, scroll, track }: DailyForecastScreenProps) {
+export function DailyForecastScreen({ api, chartId, share, telegram, known, now = currentTime, onKnown, onBuildChart, onChartGone, onSubscribe, scroll, track }: DailyForecastScreenProps) {
   const titleId = useId();
   const [localDay, setLocalDay] = useState<ForecastDay | null>(null);
   // A cached reply is reusable only for its birth-place calendar day. A newly
@@ -128,7 +129,7 @@ export function DailyForecastScreen({ api, chartId, telegram, known, now = curre
       {factRows.length > 0 && <section className={styles.facts}>{factRows.map((fact) => <p key={fact}>{fact}</p>)}</section>}
       {onSubscribe && <Button variant="secondary" onClick={onSubscribe}>{copy30.forecast.subscribe}</Button>}
     </>}
-    <ShareCardButton api={api} kind="day" telegram={telegram} track={track ?? noopTrack} label={copy30.forecast.share}/>
+    <ShareCardButton api={api} kind="day" telegram={telegram} track={track ?? noopTrack} label={copy30.forecast.share} share={share}/>
     <p className={styles.muted}>{copy30.forecast.update}</p>
     <Disclaimer text={day.disclaimer}/>
   </div></Screen>;

@@ -1295,6 +1295,24 @@ describe('App: round30 main tabs', () => {
     expect(api.getForecast).not.toHaveBeenCalled();
   });
 
+  it('applies the latest GET /me share mode to the mounted app after Settings refreshes Me', async () => {
+    const start = { ...meWithChart, share: { link: true, inline: 'off' as const } };
+    const refreshed = { ...start, share: { link: true, inline: 'on' as const } };
+    const { api, telegram, user } = returning(start, true, refreshed);
+    await screen.findByRole('heading', { name: ru.chart.title });
+
+    await user.click(screen.getByRole('button', { name: 'Кабинет' }));
+    await screen.findByRole('heading', { name: ru.settings.title });
+    await waitFor(() => { expect(api.getMe).toHaveBeenCalledTimes(2); });
+    await user.click(screen.getByRole('button', { name: 'Карта' }));
+    await screen.findByRole('heading', { name: ru.chart.title });
+    await user.click(screen.getByRole('button', { name: ru.chart.share }));
+
+    expect(api.createShareCard).toHaveBeenCalledWith('wheel');
+    expect(telegram.openTelegramLink).not.toHaveBeenCalled();
+    expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
+  });
+
   it('revalidates same-day cached facts after the server confirms subscription payment', async () => {
     const { api, telegram, user } = returning(meWithChart);
     const plan = cataloguePlans.find((offer) => offer.kind === 'subscription' && !offer.test);

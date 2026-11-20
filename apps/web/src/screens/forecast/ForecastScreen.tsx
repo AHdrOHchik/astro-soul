@@ -1,7 +1,7 @@
 import { Button, InfoIcon, Screen, ScreenHeading, Skeleton, SkeletonGroup, StateView, type ScreenProps } from '@astro-soul/ui';
 import { useEffect, useId, useRef } from 'react';
 import type { Track } from '../../analytics';
-import { failureCodeOf, type Api, type Forecast } from '../../api';
+import { failureCodeOf, type Api, type Forecast, type Me } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
 import { ShareCardButton } from '../../components/ShareCardButton';
 import { SubscriptionHint } from '../../components/SubscriptionHint';
@@ -15,6 +15,7 @@ const SKELETON_LINES = [0, 1, 2];
 
 export interface ForecastScreenProps {
   api: Pick<Api, 'getForecast' | 'createShareCard'>;
+  share?: Me['share'];
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
   /** The chart the forecast is for. */
   chartId: string;
@@ -56,6 +57,7 @@ export interface ForecastScreenProps {
 export function ForecastScreen({
   api,
   telegram,
+  share,
   chartId,
   timeZone,
   known,
@@ -151,7 +153,7 @@ export function ForecastScreen({
         <p className={styles.text}>{forecast.text}</p>
         {/* Under the short text, never over it and never instead of it. */}
         {!forecast.is_paid && onSubscribe && <SubscriptionHint text={copy.subscriptionOnly} onOpen={onSubscribe} />}
-        <ShareCardButton api={api} kind="day" telegram={telegram} track={track} label={copy.share}/>
+        <ShareCardButton api={api} kind="day" telegram={telegram} track={track} label={copy.share} share={share}/>
       </div>
     </Screen>
   );

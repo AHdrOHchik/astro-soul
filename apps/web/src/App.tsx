@@ -645,6 +645,7 @@ function Screens({
         key={`${route}:${String(chartEpoch)}`}
         api={api}
         telegram={telegram}
+        share={me.share}
         request={route === 'current' ? null : request}
         apiBaseUrl={apiBaseUrl}
         track={track}
@@ -778,6 +779,7 @@ function Screens({
         <ForecastScreen
           api={api}
           telegram={telegram}
+          share={me.share}
           chartId={reportChart.chartId}
           timeZone={null}
           known={knownForecast}
@@ -799,7 +801,7 @@ function Screens({
     case 'ask': {
       const chartId = tabChartId;
       if (route === 'today') return withTabs(
-        <DailyForecastScreen key={dailyContext} api={api} chartId={chartId} telegram={telegram}
+        <DailyForecastScreen key={dailyContext} api={api} chartId={chartId} share={me.share} telegram={telegram}
           known={knownDailyForecast?.context === dailyContext ? knownDailyForecast.day : null}
           now={clock} onKnown={rememberDailyForecast} onBuildChart={handleMissing} onChartGone={handleChartGone}
           onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll} track={track} />
@@ -813,6 +815,7 @@ function Screens({
         <ReportScreen
           api={api}
           telegram={telegram}
+          share={me.share}
           keys={keys}
           chartId={reportChart.chartId}
           reportId={reportEntry.reportId}

@@ -27,6 +27,7 @@ import {
   type ChartResult,
   type FieldError,
   type Forecast,
+  type Me,
   type Report,
 } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
@@ -95,6 +96,7 @@ export interface ChartReportProps {
 
 export interface ChartScreenProps {
   api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
+  share?: Me['share'];
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
@@ -145,6 +147,7 @@ export interface ChartScreenProps {
 export function ChartScreen({
   api,
   telegram,
+  share,
   request,
   apiBaseUrl,
   track,
@@ -251,6 +254,7 @@ export function ChartScreen({
           <ChartView
             api={api}
             result={result}
+            share={share}
             apiBaseUrl={apiBaseUrl}
             telegram={telegram}
             track={track}
@@ -308,6 +312,7 @@ function ChartSkeleton() {
 interface ChartViewProps {
   api: Pick<Api, 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
   result: ChartResult;
+  share?: Me['share'];
   apiBaseUrl: string;
   telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   track: Track;
@@ -324,6 +329,7 @@ interface ChartViewProps {
 function ChartView({
   api,
   result,
+  share,
   apiBaseUrl,
   telegram,
   track,
@@ -467,7 +473,7 @@ function ChartView({
         )}
       </section>
 
-      <ShareCardButton api={api} kind="wheel" telegram={telegram} track={track} label={copy.share}/>
+      <ShareCardButton api={api} kind="wheel" telegram={telegram} track={track} label={copy.share} share={share}/>
       {subscriptionPromotion && <SubscriptionPromotion api={api} onOpen={subscriptionPromotion.onOpen}/>}
 
       {offersEdit && (
