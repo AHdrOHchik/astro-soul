@@ -17,6 +17,7 @@ import {
   shareURL,
   supports,
   swipeBehavior,
+  themeParams,
   toRGB,
   viewport,
 } from '@telegram-apps/sdk';
@@ -66,7 +67,7 @@ export interface DevInvoice {
 
 export interface TelegramOptions {
   /** `#rrggbb` for the client's header, background and bottom bar, so they match the page. */
-  chromeColor: string;
+  chromeColor?: string;
   /** initData to use outside Telegram; local development only. */
   devInitData?: string;
   /** Local development only, see `DevInvoice`. */
@@ -244,6 +245,106 @@ function readInitData(): string {
   }
 }
 
+// All palette literals stay in theme.css. Work in sRGB so a pale custom
+// Telegram hint/button can be corrected for the surfaces it actually sits on.
+function channels(hex: string): number[] {
+  const full = toRGB(hex);
+  return [1, 3, 5].map((offset) => parseInt(full.slice(offset, offset + 2), 16));
+}
+
+function luminance(hex: string): number {
+  const [r = 0, g = 0, b = 0] = channels(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrast(a: string, b: string): number {
+  const x = luminance(a) + 0.05;
+  const y = luminance(b) + 0.05;
+  return Math.max(x / y, y / x);
+}
+
+function mix(from: string, toward: string, fraction: number): string {
+  const target = channels(toward);
+  return `#${channels(from).map((c, i) => Math.round(c + ((target[i] ?? c) - c) * fraction).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function legible(candidate: string, ink: string, surfaces: string[], minimum = 4.5): string {
+  for (let step = 0; step < 20; step++) {
+    const color = step === 0 ? candidate : mix(candidate, ink, step / 20);
+    if (surfaces.every((surface) => contrast(color, surface) >= minimum)) return color;
+  }
+  return ink;
+}
+
+/** One subscription for the document lifetime, outside React and its navigation stack. */
+function bindTheme(useSdk: boolean, fallbackChrome?: string): void {
+  const root = document.documentElement;
+  const preference = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  const overrides = new Set<string>();
+  const apply = () => {
+    const params = useSdk ? themeParams.state() : {};
+    for (const name of overrides) root.style.removeProperty(name);
+    overrides.clear();
+    const bg = params.bg_color;
+    const dark = bg ? luminance(bg) < 0.179 : preference?.matches ?? true;
+    root.dataset.scheme = dark ? 'dark' : 'light';
+    const css = getComputedStyle(root);
+    const token = (role: string) => css.getPropertyValue(`--color-${role}`).trim();
+    if (bg) {
+      const set = (name: string, color: string) => {
+        root.style.setProperty(name, color);
+        overrides.add(name);
+      };
+      const put = (role: string, color: string) => { set(`--color-${role}`, color); };
+      const neutral = (channel: number) => `#${channel.toString(16).padStart(2, '0').repeat(3)}`;
+      const black = neutral(0);
+      const white = neutral(255);
+      const ink = contrast(white, bg) > contrast(black, bg) ? white : black;
+      // Even a custom theme with opposite-coloured panels needs one usable text role.
+      const surface = (color: string) => legible(color, bg, [ink]);
+      const panel = surface(params.section_bg_color ?? params.secondary_bg_color ?? (token('surface') || bg));
+      const raised = surface(params.secondary_bg_color ?? (token('surface-raised') || panel));
+      const tint = (color: string) => surface(mix(panel, color, 0.08));
+      const brand = token('accent') || ink;
+      const soft = tint(brand);
+      const goldSoft = tint(token('gold') || ink);
+      const dangerSoft = tint(params.destructive_text_color ?? (token('danger') || ink));
+      const surfaces = [bg, panel, raised, soft, goldSoft, dangerSoft];
+      const text = (color: string) => legible(color, ink, surfaces);
+      const accent = text(params.button_color ?? params.link_color ?? brand);
+      put('bg', bg);
+      put('surface', panel);
+      put('surface-raised', raised);
+      put('text', text(params.text_color ?? (token('text') || ink)));
+      put('text-muted', text(params.hint_color ?? (token('text-muted') || ink)));
+      put('accent', accent);
+      const pressed = mix(accent, ink, 0.12);
+      put('accent-pressed', pressed);
+      put('on-accent', legible(params.button_text_color ?? (token('on-accent') || bg), ink === white ? black : white, [accent, pressed]));
+      put('accent-soft', soft);
+      put('gold-soft', goldSoft);
+      put('danger-soft', dangerSoft);
+      put('gold', text(token('gold') || ink));
+      put('danger', text(params.destructive_text_color ?? (token('danger') || ink)));
+      for (const role of ['border', 'border-strong', 'focus']) {
+        put(role, legible((role !== 'focus' && params.section_separator_color) || token(role) || ink, ink, surfaces, 3));
+      }
+      // Tint and fade into the actual host background (including on older Safari).
+      const clear = `rgba(${channels(bg).join(',')},0)`;
+      set('--gradient-page', `radial-gradient(120% 55% at 50% -12%, ${soft}, ${clear} 62%)`);
+      set('--gradient-scroll-fade', `linear-gradient(to bottom, ${clear}, var(--color-bg))`);
+    }
+    if (useSdk) paintChrome(bg ?? fallbackChrome?.trim() ?? token('bg'));
+  };
+  if (useSdk) themeParams.mountSync.ifAvailable();
+  apply();
+  if (useSdk) themeParams.state.sub(apply);
+  preference?.addEventListener('change', () => { if (!useSdk || !themeParams.backgroundColor()) apply(); });
+}
+
 function paintChrome(cssColor: string): void {
   let color: ReturnType<typeof toRGB>;
   try {
@@ -253,7 +354,6 @@ function paintChrome(cssColor: string): void {
     report(error);
     return;
   }
-  attempt(() => miniApp.mountSync.ifAvailable());
   attempt(() => {
     // Old clients accept only palette keys for the header; they keep the user's own colour.
     if (miniApp.setHeaderColor.isAvailable() && miniApp.setHeaderColor.supports.rgb()) miniApp.setHeaderColor(color);
@@ -281,17 +381,22 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
   installPolyfills();
   const launch = launchFromUrl();
   // Only a development build may pretend to pay, whatever it is told.
-  if (!isTMA()) return launch ? basicHost(launch.initData, launch.version) : browserHost(devInitData, import.meta.env.DEV ? devInvoice : undefined);
+  if (!isTMA()) {
+    bindTheme(false);
+    return launch ? basicHost(launch.initData, launch.version) : browserHost(devInitData, import.meta.env.DEV ? devInvoice : undefined);
+  }
 
   const initData = readInitData();
   try {
     init();
   } catch (error) {
     report(error);
+    bindTheme(false);
     return basicHost(initData, launch?.version ?? '');
   }
 
-  paintChrome(chromeColor.trim());
+  attempt(() => miniApp.mountSync.ifAvailable());
+  attempt(() => { bindTheme(true, chromeColor); });
   fitViewport();
   attempt(() => backButton.mount.ifAvailable());
   const hasNativeBackButton = backButton.isMounted();

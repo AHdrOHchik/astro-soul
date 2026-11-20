@@ -14,12 +14,12 @@ const payloadOf = (event: string): unknown => {
   return call?.[1] ? JSON.parse(call[1]) : undefined;
 };
 
-function launchInTelegram(version: string, initData = INIT_DATA) {
+function launchInTelegram(version: string, initData = INIT_DATA, palette = {}) {
   const params = new URLSearchParams({
     tgWebAppData: initData,
     tgWebAppVersion: version,
     tgWebAppPlatform: 'android',
-    tgWebAppThemeParams: '{}',
+    tgWebAppThemeParams: JSON.stringify(palette),
   });
   window.location.hash = params.toString();
   Object.assign(window, { TelegramWebviewProxy: { postEvent: posted } });
@@ -36,6 +36,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  document.documentElement.removeAttribute('style');
+  delete document.documentElement.dataset.scheme;
+  vi.unstubAllGlobals();
   window.location.hash = '';
   window.sessionStorage.clear();
   Reflect.deleteProperty(window, 'TelegramWebviewProxy');
@@ -49,6 +52,19 @@ describe('outside Telegram', () => {
     telegram.setBackHandler(() => undefined);
     telegram.ready();
     telegram.close();
+  });
+
+  it.each(['browser', 'basic'])('follows OS preference without SDK colours on the %s host', async (host) => {
+    if (host === 'basic') launchInTelegram('7.10', 'query_id=test&hash=abc');
+    let changed: (() => void) | undefined;
+    const media = { matches: false, addEventListener: (_event: string, cb: () => void) => { changed = cb; } };
+    vi.stubGlobal('matchMedia', () => media);
+    await start();
+    expect(document.documentElement.dataset.scheme).toBe('light');
+    media.matches = true;
+    changed?.();
+    expect(document.documentElement.dataset.scheme).toBe('dark');
+    expect(document.documentElement.style.getPropertyValue('--color-bg')).toBe('');
   });
 
   it('uses the development init data when given', async () => {
@@ -82,6 +98,24 @@ describe('inside Telegram', () => {
     expect(payloadOf('web_app_set_background_color')).toEqual({ color: '#0f0d1a' });
     expect(payloadOf('web_app_set_bottom_bar_color')).toEqual({ color: '#0f0d1a' });
     expect(payloadOf('web_app_setup_swipe_behavior')).toEqual({ allow_vertical_swipe: false });
+  });
+
+  it('repaints tokens and all three native zones on theme_changed without a reload', async () => {
+    launchInTelegram('8.0', INIT_DATA, { bg_color: '#ffffff', text_color: '#111122', hint_color: '#eeeeee' });
+    await start();
+    const root = document.documentElement;
+    expect(root.dataset.scheme).toBe('light');
+    expect(root.style.getPropertyValue('--color-text')).toBe('#111122');
+    expect(root.style.getPropertyValue('--color-text-muted')).not.toBe('#eeeeee');
+    const { emitEvent } = await import('@telegram-apps/sdk');
+    emitEvent('theme_changed', { theme_params: { bg_color: '#000000', text_color: '#eeeeee' } });
+    expect(root.dataset.scheme).toBe('dark');
+    expect(root.style.getPropertyValue('--color-bg')).toBe('#000000');
+    expect(root.style.getPropertyValue('--color-text')).toBe('#eeeeee');
+    for (const event of ['web_app_set_header_color', 'web_app_set_background_color', 'web_app_set_bottom_bar_color']) {
+      expect(posted.mock.calls.filter(([name]) => name === event).map(([, data]) => data))
+        .toEqual(expect.arrayContaining([JSON.stringify({ color: '#ffffff' }), JSON.stringify({ color: '#000000' })]));
+    }
   });
 
   it('shows the native Back button only while a handler is set and routes clicks to it', async () => {
