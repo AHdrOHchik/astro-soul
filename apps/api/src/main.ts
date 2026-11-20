@@ -5,6 +5,11 @@ import { AppModule } from './app.module';
 import { APP_ENV } from './config/env.module';
 import type { AppEnv } from './config/env';
 import { JsonLogger } from './common/logger';
+import {
+  PROD_GUARD_EXIT_CODE,
+  ProdGuardError,
+  ProdGuardService,
+} from './modules/ops/prod-guard.service';
 import { TelegramInlineService } from './modules/telegram/telegram-inline.service';
 import { TelegramWebhookService } from './modules/telegram/telegram-webhook.service';
 import { applyRequestContext } from './common/request-id.middleware';
@@ -42,6 +47,28 @@ async function bootstrap(): Promise<void> {
   process.on('uncaughtException', (error: Error) => {
     logger.error('uncaught_exception', { error });
   });
+
+  // Прод-гард (итерация 36, блокер Б-5) — **до** `listen`: сервис с тестовым
+  // тарифом за 1 ⭐ или с выключенным брейкером не должен принять ни одного
+  // запроса. `check.sh --prod` проверяет окружение, но не строки в `plans`, а
+  // именно там и живёт тестовый тариф; здесь доступны обе половины.
+  try {
+    await app.get(ProdGuardService).assertSafe();
+  } catch (error) {
+    if (error instanceof ProdGuardError) {
+      // Текст — «что не так и как исправить», по пунктам: дежурный читает лог,
+      // а не исходники. Код выхода отдельный, чтобы это не путали с падением
+      // самого приложения.
+      logger.error('prod_guard_failed', {
+        violations: error.violations,
+        exit_code: PROD_GUARD_EXIT_CODE,
+        report: error.report(),
+      });
+      await app.close();
+      process.exit(PROD_GUARD_EXIT_CODE);
+    }
+    throw error;
+  }
 
   const port = env.PORT;
   // 0.0.0.0: контейнер должен принимать трафик снаружи, не только из localhost.

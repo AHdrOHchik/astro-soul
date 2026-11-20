@@ -1,5 +1,5 @@
-import { Controller, Delete, Get, HttpCode, Inject } from '@nestjs/common';
-import type { Me } from '@astro-soul/shared';
+import { Body, Controller, Delete, Get, HttpCode, Inject, Post } from '@nestjs/common';
+import type { Me, Notifications } from '@astro-soul/shared';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { VerifiedInitData } from '../auth/init-data';
 import { MeService } from './me.service';
@@ -11,6 +11,19 @@ export class MeController {
   @Get()
   async getMe(@CurrentUser() auth: VerifiedInitData): Promise<Me> {
     return this.meService.getMe(auth);
+  }
+
+  /**
+   * `POST /me/notifications` (контракт 1.6.11) — согласия на уведомления.
+   * Тело заменяет состояние целиком; ответ — та же форма, что `Me.notifications`.
+   */
+  @Post('notifications')
+  @HttpCode(200)
+  async setNotifications(
+    @CurrentUser() auth: VerifiedInitData,
+    @Body() body: unknown,
+  ): Promise<Notifications> {
+    return this.meService.setNotifications(auth, body);
   }
 
   /** Полное удаление ПДн. 409 — если есть незавершённая оплата. */

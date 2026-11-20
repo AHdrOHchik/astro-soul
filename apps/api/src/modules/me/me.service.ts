@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Entitlements, Me, OnboardingStep } from '@astro-soul/shared';
+import type { Entitlements, Me, Notifications, OnboardingStep } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
-import { conflict } from '../../common/api-error';
+import { conflict, invalidFields } from '../../common/api-error';
 import { displayNameOf, type VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
@@ -136,7 +136,47 @@ export class MeService {
         // уже после старта API.
         inline: this.inline.mode(),
       },
+      // Согласия на уведомления (контракт 1.6.11). Отдаются всегда, поэтому
+      // переключатель в интерфейсе показывает серверное значение, а не догадку.
+      notifications: await this.notificationsState(userId),
     };
+  }
+
+  /** Текущие согласия на уведомления (`Me.notifications`). */
+  private async notificationsState(userId: string): Promise<Notifications> {
+    const row = await this.db.queryOne<{ push_enabled: boolean }>(
+      `SELECT push_enabled FROM users WHERE id = $1`,
+      [userId],
+    );
+
+    // Строка `users` здесь всегда есть: её только что создал `ensureUser`.
+    // `?? true` — на случай, если строку удалили между двумя запросами:
+    // умолчание схемы («пуш включён») честнее, чем `500`.
+    return { daily_forecast: row?.push_enabled ?? true };
+  }
+
+  /**
+   * `POST /me/notifications` (контракт 1.6.11) — согласия на уведомления.
+   *
+   * Тело заменяет состояние целиком, а не дополняет: клиент присылает
+   * `{daily_forecast: boolean}`, и пропущенное поле — `422`, а не «оставить как
+   * было». Иначе опечатка в имени поля молча означала бы «ничего не менять», и
+   * переключатель в интерфейсе врал бы.
+   *
+   * Сам пуш появится в итерации 37: здесь сохраняется только согласие, и
+   * отказ не влияет на генерацию прогноза — только на доставку.
+   */
+  async setNotifications(auth: VerifiedInitData, body: unknown): Promise<Notifications> {
+    const { userId } = await this.users.ensureUser({
+      telegramUserId: auth.telegramUserId,
+      languageCode: auth.user.language_code,
+    });
+
+    const value = readDailyForecast(body);
+
+    await this.db.query(`UPDATE users SET push_enabled = $2 WHERE id = $1`, [userId, value]);
+
+    return { daily_forecast: value };
   }
 
   /**
@@ -350,4 +390,35 @@ export class MeService {
       });
     }
   }
+}
+
+/**
+ * Разбор тела `POST /me/notifications`.
+ *
+ * Ручная проверка, а не `class-validator`: глобального `ValidationPipe` в
+ * проекте нет (см. `POST /geo/resolve`), и городить его ради одного boolean
+ * значило бы поменять поведение всех маршрутов сразу.
+ */
+function readDailyForecast(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    throw invalidFields([{ field: 'daily_forecast', message: 'Нужен объект с полем daily_forecast.' }]);
+  }
+
+  const record = body as Record<string, unknown>;
+
+  // Лишний ключ — `422` с его же именем: молча игнорировать опечатку нельзя,
+  // иначе клиент будет уверен, что сохранил настройку.
+  const extra = Object.keys(record).find((key) => key !== 'daily_forecast');
+  if (extra !== undefined) {
+    throw invalidFields([{ field: extra, message: `Неизвестное поле ${extra}.` }]);
+  }
+
+  const value = record['daily_forecast'];
+  if (typeof value !== 'boolean') {
+    throw invalidFields([
+      { field: 'daily_forecast', message: 'Поле daily_forecast должно быть true или false.' },
+    ]);
+  }
+
+  return value;
 }

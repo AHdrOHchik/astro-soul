@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.10
+  version: 1.6.11
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -555,6 +555,23 @@ info:
         `telegram_inline_mode`). Событий продукта на inline нет: это показ
         карточки, а не отправка.
 
+    1.6.11 — наблюдаемость и эксплуатационная готовность (итерация 36).
+    Аддитивно, `required` нигде не тронут; версия поднята потому, что появились
+    новые маршруты, а не только поля:
+      • `GET /health` — `flags: {test_plans, report_breaker}` и `checked_at`;
+        `status: degraded` теперь включает `telegram_webhook != ok`, код
+        `200` при `degraded` и `503` только при `db: down`;
+      • `GET /admin/alerts` (`AlertsResponse`, `Alert`) — шесть правил с
+        `{id, level, value, threshold, since, fired}` для внешнего мониторинга;
+        ничего нового не хранится, значения считаются из тех же данных, что
+        `/admin/metrics`;
+      • `Me.notifications` (`Notifications`) — `{daily_forecast: boolean}`,
+        не в `required`; `POST /me/notifications` сохраняет согласие целиком
+        (пропущенное поле — `422`, а не «оставить как было»). Сам пуш появится
+        в итерации 37;
+      • `/admin/metrics.compat_cost_rub_24h` — стоимость совместимостей за
+        сутки, третий источник трат LLM для алерта `llm_spend`.
+
     1.6.10 — возможность шаринга в `GET /me` (итерация 35). Аддитивно и без
     изменений в существующих полях:
       • `Me.share` (`ShareCapability`) — `{link: boolean, inline: "on" | "off" |
@@ -781,6 +798,92 @@ components:
               description: Максимальная длина `query` в `POST /geo/resolve`
         share:
           $ref: '#/components/schemas/ShareCapability'
+        notifications:
+          $ref: '#/components/schemas/Notifications'
+
+    Notifications:
+      type: object
+      description: |-
+        Согласия на уведомления (контракт 1.6.11).
+        Возвращается и в `Me.notifications`, и в ответе
+        `POST /me/notifications` — одной формы, чтобы клиент не разбирал два
+        разных объекта.
+
+        Сейчас флаг один: `daily_forecast` — ежедневный пуш в 08:00 по местному
+        времени. Сам пуш появится в итерации 37; поле и маршрут уже есть, чтобы
+        клиент успел нарисовать переключатель и не мигал «сохранено», когда
+        сервер ещё ничего не хранит. Отказ **не** отключает генерацию прогноза:
+        прогноз как обычно открывается в приложении.
+      properties:
+        daily_forecast:
+          type: boolean
+          description: |
+            `true` — присылать пуш в 08:00 по местному времени. Значение по
+            умолчанию для нового пользователя — `true`.
+      required: [daily_forecast]
+
+    AlertsResponse:
+      type: object
+      description: |-
+        Ответ `GET /admin/alerts` (контракт 1.6.11). Правила описаны в
+        одноимённом маршруте: здесь только форма.
+      properties:
+        alerts:
+          type: array
+          items: { $ref: '#/components/schemas/Alert' }
+        checked_at:
+          type: string
+          format: date-time
+
+    Alert:
+      type: object
+      required: [id, level, value, threshold, since, fired]
+      properties:
+        id:
+          type: string
+          enum:
+            [payment_not_arriving, telegram_webhook, subscription_cancel_blocked,
+             llm_spend, generations_failing, backup_stale]
+          description: |
+            Идентификатор правила — по нему настраивается мониторинг. Новый
+            алерт добавляется здесь и в `AlertsService` одним PR.
+        level:
+          type: string
+          enum: [critical, warning]
+          description: |
+            `critical` — человек уже пострадал или пострадает без
+            вмешательства (оплата, вебхук, отмена подписки). `warning` — деньги
+            или качество ухудшаются, но ответ пользователю ещё нормальный.
+        value:
+          type: [number, 'null']
+          description: |
+            Текущее значение в единицах правила (штуки, минуты, рубли, часы).
+            `null` — значение неизвестно: не было проверки вебхука или нет
+            маркера последнего бэкапа.
+        threshold:
+          type: number
+          description: Порог, выше которого алерт срабатывает.
+          example: 10
+        since:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            Когда условие начало выполняться. Для счётчиков (`payment_not_arriving`,
+            `subscription_cancel_blocked`, `llm_spend`, `generations_failing`) —
+            момент, когда накопленная сумма в окне превысила порог: это и есть
+            «когда стало плохо», а не первая строка в окне. Для
+            `telegram_webhook` — момент последней неуспешной проверки (даже если
+            10 минут ещё не прошли: видно, сколько осталось). Для
+            `backup_stale` — «последний успех + 36 часов». `null` — условие не
+            выполняется. Истории превышений нет: всё пересчитывается по тем же
+            данным, что и метрики.
+        fired:
+          type: boolean
+          description: |
+            Сработал ли алерт сейчас. Для `telegram_webhook` — «не в порядке
+            дольше порога»; для `backup_stale` — «старше порога **или** маркера
+            нет» (отсутствие маркера тоже срабатывание: молчание не равно
+            «всё хорошо»).
 
     ShareCapability:
       type: object
@@ -1872,12 +1975,44 @@ paths:
             application/json:
               schema:
                 type: object
+                description: |-
+                  Живость сервиса для внешнего мониторинга (1.6.11).
+
+                  **Коды ответа.** `200` при `status: degraded` — осознанно:
+                  мониторинг должен прочитать тело и показать, что именно
+                  деградировало, а не «HTTP 5xx без подробностей». `503` — только
+                  при `db: down`: без БД сервис не обслуживает ничего. Тело в
+                  обоих случаях одной формы.
                 properties:
-                  status: { type: string, enum: [ok, degraded] }
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                    description: |
+                      `degraded` — если `telegram_webhook != ok`, `db != ok` или
+                      сайдкар астро-движка `!= ok`. Вебхук добавлен в правило
+                      в 1.6.11: без него не доставляется `pre_checkout_query`.
                   version: { type: string }
                   db: { type: string, enum: [ok, down] }
                   llm: { type: string, enum: [ok, down, unknown] }
                   astro: { type: string, enum: [ok, down], description: Доступность локального сайдкара астро-движка }
+                  flags:
+                    type: object
+                    description: |-
+                      Флаги, которые на проде обязаны быть в одном положении
+                      (1.6.11). Прод-гард не пускает процесс с другими
+                      значениями, но включённый позже флаг должен быть виден
+                      снаружи, а не только в логе старта: `test_plans` — тарифы
+                      за 1 ⭐, `report_breaker` — circuit breaker разборов
+                      (должен быть `true`).
+                    properties:
+                      test_plans: { type: boolean }
+                      report_breaker: { type: boolean }
+                  checked_at:
+                    type: string
+                    format: date-time
+                    description: |
+                      Когда сервер смотрел на зависимости. Без этого поля
+                      мониторинг не отличает свежий ответ от закэшированного.
                   telegram_webhook:
                     type: string
                     enum: [ok, stale, unreachable]
@@ -1952,6 +2087,57 @@ paths:
             поддержку (`SUPPORT_CONTACT`), повтор возможен после ответа поддержки.
 
             Если возврат удался, ответ — `204`: данные удалены, звёзды вернулись.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/me/notifications:
+    post:
+      tags: [profile]
+      summary: Согласия на уведомления
+      description: |-
+        Сохраняет настройку уведомлений и возвращает её же — одну и ту же форму,
+        что и `Me.notifications`, чтобы клиенту не нужно было сливать две
+        структуры.
+
+        Поле одно и обязательное, полностью заменяет текущее состояние (не
+        частичное обновление): `{"daily_forecast": false}` выключает
+        ежедневный пуш, `true` включает. Пропущенное поле — `422` с
+        `field_errors[{field: "daily_forecast"}]`, а не «оставить как было»:
+        иначе опечатка в имени поля молча означала бы «ничего не менять», и
+        переключатель в интерфейсе врал бы.
+
+        Отказ **не** отключает генерацию прогноза — только доставку пуша.
+        Сам пуш появится в итерации 37; до этого маршрут уже хранит согласие,
+        поэтому клиент может рисовать переключатель без «пустого» действия.
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [daily_forecast]
+              additionalProperties: false
+              properties:
+                daily_forecast:
+                  type: boolean
+                  example: true
+      responses:
+        '200':
+          description: Сохранено; тело — новое состояние согласий
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Notifications' }
+        '401':
+          description: Неверная подпись initData
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            `field_errors[{field: "daily_forecast"}]` — поля нет, это не boolean
+            или в теле лишние ключи.
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -3438,6 +3624,14 @@ paths:
                       человеку в `GET /compatibility`, поэтому цифра здесь
                       важнее: без неё провал был бы виден только в логе
                       `compat_failed` (там же причина — `code`).
+                  compat_cost_rub_24h:
+                    type: number
+                    description: |
+                      Стоимость совместимостей за 24 часа (`reports.llm_cost_rub`
+                      при `kind = 'compat'`), рубли. Отдельная цифра появилась
+                      в 1.6.11 для алерта «расход LLM»: без неё сумма
+                      `forecast_cost_rub_24h + questions_cost_rub_24h` не видит
+                      третий источник трат.
                   questions_ready_24h: { type: integer }
                   questions_failed_24h:
                     type: integer
@@ -3469,6 +3663,42 @@ paths:
                       p95 времени от вставки вопроса до готового текста, мс.
                       Это время, которое человек проводит в ожидании после
                       `202`, — включая вызов модели.
+        '403': { description: FORBIDDEN }
+
+  /api/v1/admin/alerts:
+    get:
+      tags: [internal]
+      summary: Алерты для внешнего мониторинга
+      description: |-
+        Доступ только для `ADMIN_TG_ID` из переменной окружения (иначе `403`),
+        как у `/admin/metrics`.
+
+        Шесть правил, которые настраиваются в любом uptime-сервисе по `id`
+        (`fired: true` — пора будить человека). Значения считаются из тех же
+        данных, что и метрики: ничего нового не хранится, истории превышений
+        нет — `since` пересчитывается по накопленной сумме в окне.
+
+        | `id` | уровень | условие |
+        |---|---|---|
+        | `payment_not_arriving` | critical | `pre_checkout_rejected_24h + payment_failed_24h > 0` — человек нажал «купить» и не получил доступ |
+        | `telegram_webhook` | critical | `telegram_webhook != ok` дольше 10 минут — это оплата и inline-шаринг |
+        | `subscription_cancel_blocked` | critical | `subscription_cancel_no_charge_id_24h > 0` — отменить не можем, а спишется |
+        | `llm_spend` | warning | `forecast_cost_rub_24h + questions_cost_rub_24h + compat_cost_rub_24h > 500` ₽ — бюджет GigaChat неизвестен |
+        | `generations_failing` | warning | `compat_failed_24h + forecast_failed_24h + questions_failed_24h + pdf_failed_24h > 5` — модель или промпт сломались |
+        | `backup_stale` | warning | последний успешный дамп старше 36 часов (или маркера нет вовсе — «не знаем» тоже плохо) |
+
+        Единицы `value`: штуки (`payment_not_arriving`,
+        `subscription_cancel_blocked`, `generations_failing`), минуты
+        (`telegram_webhook`), рубли (`llm_spend`), часы (`backup_stale`).
+        `value: null` — значение неизвестно (не было проверки вебхука, нет
+        маркера бэкапа).
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: Текущие значения всех алертов
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertsResponse' }
         '403': { description: FORBIDDEN }
 
 # Закрытый список событий, которые отправляет КЛИЕНТ (контракт 1.5.1).

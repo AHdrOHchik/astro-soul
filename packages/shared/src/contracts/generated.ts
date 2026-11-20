@@ -28,7 +28,12 @@ export interface paths {
                     };
                     content: {
                         "application/json": {
-                            /** @enum {string} */
+                            /**
+                             * @description `degraded` — если `telegram_webhook != ok`, `db != ok` или
+                             *     сайдкар астро-движка `!= ok`. Вебхук добавлен в правило
+                             *     в 1.6.11: без него не доставляется `pre_checkout_query`.
+                             * @enum {string}
+                             */
                             status?: "ok" | "degraded";
                             version?: string;
                             /** @enum {string} */
@@ -40,6 +45,24 @@ export interface paths {
                              * @enum {string}
                              */
                             astro?: "ok" | "down";
+                            /**
+                             * @description Флаги, которые на проде обязаны быть в одном положении
+                             *     (1.6.11). Прод-гард не пускает процесс с другими
+                             *     значениями, но включённый позже флаг должен быть виден
+                             *     снаружи, а не только в логе старта: `test_plans` — тарифы
+                             *     за 1 ⭐, `report_breaker` — circuit breaker разборов
+                             *     (должен быть `true`).
+                             */
+                            flags?: {
+                                test_plans?: boolean;
+                                report_breaker?: boolean;
+                            };
+                            /**
+                             * Format: date-time
+                             * @description Когда сервер смотрел на зависимости. Без этого поля
+                             *     мониторинг не отличает свежий ответ от закэшированного.
+                             */
+                            checked_at?: string;
                             /**
                              * @description Состояние вебхука Telegram по последней проверке API
                              *     (1.6.2). `ok` — при старте (или в `payments:diagnose`)
@@ -170,6 +193,86 @@ export interface paths {
                 };
             };
         };
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Согласия на уведомления
+         * @description Сохраняет настройку уведомлений и возвращает её же — одну и ту же форму,
+         *     что и `Me.notifications`, чтобы клиенту не нужно было сливать две
+         *     структуры.
+         *
+         *     Поле одно и обязательное, полностью заменяет текущее состояние (не
+         *     частичное обновление): `{"daily_forecast": false}` выключает
+         *     ежедневный пуш, `true` включает. Пропущенное поле — `422` с
+         *     `field_errors[{field: "daily_forecast"}]`, а не «оставить как было»:
+         *     иначе опечатка в имени поля молча означала бы «ничего не менять», и
+         *     переключатель в интерфейсе врал бы.
+         *
+         *     Отказ **не** отключает генерацию прогноза — только доставку пуша.
+         *     Сам пуш появится в итерации 37; до этого маршрут уже хранит согласие,
+         *     поэтому клиент может рисовать переключатель без «пустого» действия.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @example true */
+                        daily_forecast: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Сохранено; тело — новое состояние согласий */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Notifications"];
+                    };
+                };
+                /** @description Неверная подпись initData */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description `field_errors[{field: "daily_forecast"}]` — поля нет, это не boolean
+                 *     или в теле лишние ключи.
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2472,6 +2575,14 @@ export interface paths {
                              *     `compat_failed` (там же причина — `code`).
                              */
                             compat_failed_24h?: number;
+                            /**
+                             * @description Стоимость совместимостей за 24 часа (`reports.llm_cost_rub`
+                             *     при `kind = 'compat'`), рубли. Отдельная цифра появилась
+                             *     в 1.6.11 для алерта «расход LLM»: без неё сумма
+                             *     `forecast_cost_rub_24h + questions_cost_rub_24h` не видит
+                             *     третий источник трат.
+                             */
+                            compat_cost_rub_24h?: number;
                             questions_ready_24h?: number;
                             /**
                              * @description Генераций вопроса, упавших за 24 часа. В истории
@@ -2508,6 +2619,73 @@ export interface paths {
                              */
                             question_p95_ms?: number;
                         };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Алерты для внешнего мониторинга
+         * @description Доступ только для `ADMIN_TG_ID` из переменной окружения (иначе `403`),
+         *     как у `/admin/metrics`.
+         *
+         *     Шесть правил, которые настраиваются в любом uptime-сервисе по `id`
+         *     (`fired: true` — пора будить человека). Значения считаются из тех же
+         *     данных, что и метрики: ничего нового не хранится, истории превышений
+         *     нет — `since` пересчитывается по накопленной сумме в окне.
+         *
+         *     | `id` | уровень | условие |
+         *     |---|---|---|
+         *     | `payment_not_arriving` | critical | `pre_checkout_rejected_24h + payment_failed_24h > 0` — человек нажал «купить» и не получил доступ |
+         *     | `telegram_webhook` | critical | `telegram_webhook != ok` дольше 10 минут — это оплата и inline-шаринг |
+         *     | `subscription_cancel_blocked` | critical | `subscription_cancel_no_charge_id_24h > 0` — отменить не можем, а спишется |
+         *     | `llm_spend` | warning | `forecast_cost_rub_24h + questions_cost_rub_24h + compat_cost_rub_24h > 500` ₽ — бюджет GigaChat неизвестен |
+         *     | `generations_failing` | warning | `compat_failed_24h + forecast_failed_24h + questions_failed_24h + pdf_failed_24h > 5` — модель или промпт сломались |
+         *     | `backup_stale` | warning | последний успешный дамп старше 36 часов (или маркера нет вовсе — «не знаем» тоже плохо) |
+         *
+         *     Единицы `value`: штуки (`payment_not_arriving`,
+         *     `subscription_cancel_blocked`, `generations_failing`), минуты
+         *     (`telegram_webhook`), рубли (`llm_spend`), часы (`backup_stale`).
+         *     `value: null` — значение неизвестно (не было проверки вебхука, нет
+         *     маркера бэкапа).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Текущие значения всех алертов */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AlertsResponse"];
                     };
                 };
                 /** @description FORBIDDEN */
@@ -2677,6 +2855,81 @@ export interface components {
                 geo_max_query_length: number;
             };
             share?: components["schemas"]["ShareCapability"];
+            notifications?: components["schemas"]["Notifications"];
+        };
+        /**
+         * @description Согласия на уведомления (контракт 1.6.11).
+         *     Возвращается и в `Me.notifications`, и в ответе
+         *     `POST /me/notifications` — одной формы, чтобы клиент не разбирал два
+         *     разных объекта.
+         *
+         *     Сейчас флаг один: `daily_forecast` — ежедневный пуш в 08:00 по местному
+         *     времени. Сам пуш появится в итерации 37; поле и маршрут уже есть, чтобы
+         *     клиент успел нарисовать переключатель и не мигал «сохранено», когда
+         *     сервер ещё ничего не хранит. Отказ **не** отключает генерацию прогноза:
+         *     прогноз как обычно открывается в приложении.
+         */
+        Notifications: {
+            /**
+             * @description `true` — присылать пуш в 08:00 по местному времени. Значение по
+             *     умолчанию для нового пользователя — `true`.
+             */
+            daily_forecast: boolean;
+        };
+        /**
+         * @description Ответ `GET /admin/alerts` (контракт 1.6.11). Правила описаны в
+         *     одноимённом маршруте: здесь только форма.
+         */
+        AlertsResponse: {
+            alerts?: components["schemas"]["Alert"][];
+            /** Format: date-time */
+            checked_at?: string;
+        };
+        Alert: {
+            /**
+             * @description Идентификатор правила — по нему настраивается мониторинг. Новый
+             *     алерт добавляется здесь и в `AlertsService` одним PR.
+             * @enum {string}
+             */
+            id: "payment_not_arriving" | "telegram_webhook" | "subscription_cancel_blocked" | "llm_spend" | "generations_failing" | "backup_stale";
+            /**
+             * @description `critical` — человек уже пострадал или пострадает без
+             *     вмешательства (оплата, вебхук, отмена подписки). `warning` — деньги
+             *     или качество ухудшаются, но ответ пользователю ещё нормальный.
+             * @enum {string}
+             */
+            level: "critical" | "warning";
+            /**
+             * @description Текущее значение в единицах правила (штуки, минуты, рубли, часы).
+             *     `null` — значение неизвестно: не было проверки вебхука или нет
+             *     маркера последнего бэкапа.
+             */
+            value: number | null;
+            /**
+             * @description Порог, выше которого алерт срабатывает.
+             * @example 10
+             */
+            threshold: number;
+            /**
+             * Format: date-time
+             * @description Когда условие начало выполняться. Для счётчиков (`payment_not_arriving`,
+             *     `subscription_cancel_blocked`, `llm_spend`, `generations_failing`) —
+             *     момент, когда накопленная сумма в окне превысила порог: это и есть
+             *     «когда стало плохо», а не первая строка в окне. Для
+             *     `telegram_webhook` — момент последней неуспешной проверки (даже если
+             *     10 минут ещё не прошли: видно, сколько осталось). Для
+             *     `backup_stale` — «последний успех + 36 часов». `null` — условие не
+             *     выполняется. Истории превышений нет: всё пересчитывается по тем же
+             *     данным, что и метрики.
+             */
+            since: string | null;
+            /**
+             * @description Сработал ли алерт сейчас. Для `telegram_webhook` — «не в порядке
+             *     дольше порога»; для `backup_stale` — «старше порога **или** маркера
+             *     нет» (отсутствие маркера тоже срабатывание: молчание не равно
+             *     «всё хорошо»).
+             */
+            fired: boolean;
         };
         /**
          * @description Что клиент может сделать с шарингом — **до** создания карточки

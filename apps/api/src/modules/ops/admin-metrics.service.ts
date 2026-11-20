@@ -181,6 +181,16 @@ export interface ProductMetrics {
    * провал фиксируется обновлением строки.
    */
   readonly compat_failed_24h: number;
+  /**
+   * Стоимость совместимостей за сутки (1.6.11, итерация 36).
+   *
+   * Отдельная цифра, потому что она нужна алерту «расход LLM»: без неё сумма
+   * `forecast + questions` не видит третий источник трат, и предупреждение о
+   * бюджете молчало бы ровно тогда, когда совместимости пишутся пачками.
+   * Считается по `reports.llm_cost_rub` (`kind = 'compat'`): там уже лежит
+   * стоимость каждого заказа.
+   */
+  readonly compat_cost_rub_24h: number;
   readonly questions_cost_rub_24h: number;
   /**
    * p95 времени ответа на вопрос, миллисекунды.
@@ -483,6 +493,7 @@ export class AdminMetricsService {
           questionsCost: string;
           questionP95: number;
           compatFailed: number;
+          compatCost: string;
           pdfGenerated: number;
           pdfDownloaded: number;
           pdfFailed: number;
@@ -528,6 +539,9 @@ export class AdminMetricsService {
              (SELECT count(*)::int FROM reports
                WHERE kind = 'compat' AND status = 'failed'
                  AND updated_at >= now() - interval '24 hours') AS "compatFailed",
+             (SELECT COALESCE(SUM(llm_cost_rub), 0)::text FROM reports
+               WHERE kind = 'compat'
+                 AND created_at >= now() - interval '24 hours') AS "compatCost",
              (SELECT count(*)::int FROM report_pdfs
                WHERE status = 'ready'
                  AND updated_at >= now() - interval '24 hours') AS "pdfGenerated",
@@ -629,6 +643,7 @@ export class AdminMetricsService {
       questions_refused_24h: daily?.questionsRefused ?? 0,
       questions_refused_by_reason: daily?.questionsRefusedByReason ?? {},
       compat_failed_24h: daily?.compatFailed ?? 0,
+      compat_cost_rub_24h: Math.round(Number(daily?.compatCost ?? 0) * 10_000) / 10_000,
       questions_cost_rub_24h: Math.round(Number(daily?.questionsCost ?? 0) * 10_000) / 10_000,
       question_p95_ms: daily?.questionP95 ?? 0,
       pdf_generated_24h: daily?.pdfGenerated ?? 0,
