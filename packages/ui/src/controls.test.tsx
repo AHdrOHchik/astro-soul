@@ -77,12 +77,12 @@ describe('Button', () => {
 describe('ButtonLink', () => {
   it('is a real link, so the client follows the address itself', () => {
     render(
-      <ButtonLink href="tg://settings/star_subscriptions" icon={<svg aria-hidden="true" />}>
+      <ButtonLink href="https://t.me/example" icon={<svg aria-hidden="true" />}>
         Open
       </ButtonLink>,
     );
     const link = screen.getByRole('link', { name: 'Open' });
-    expect(link).toHaveAttribute('href', 'tg://settings/star_subscriptions');
+    expect(link).toHaveAttribute('href', 'https://t.me/example');
     // Looks like a button, is not one: no `type`, no button role.
     expect(link).toHaveClass('button', 'secondary');
     expect(screen.queryByRole('button')).not.toBeInTheDocument();

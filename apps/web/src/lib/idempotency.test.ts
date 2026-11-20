@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createIdempotencyKeys, REPORT_KEY_PREFIX } from './idempotency';
+import { createIdempotencyKeys, newIdempotencyKey, REPORT_KEY_PREFIX } from './idempotency';
 
 const CHART = '00000000-0000-4000-8000-00000000c0de';
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -38,6 +38,16 @@ function memoryStorage(): Storage {
     },
   };
 }
+
+describe('UUIDs for one-shot actions', () => {
+  it('creates a fresh UUID v4 per explicit action', () => {
+    const first = newIdempotencyKey();
+    const second = newIdempotencyKey();
+    expect(first).toMatch(UUID_V4);
+    expect(second).toMatch(UUID_V4);
+    expect(second).not.toBe(first);
+  });
+});
 
 describe('idempotency keys of report orders', () => {
   it('makes a UUID v4 and gives the same one for the same chart until told otherwise, also after a reload', () => {

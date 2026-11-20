@@ -22,6 +22,7 @@ export {
 export type Me = components['schemas']['Me'];
 /** The subscription as `Me` carries it: the plan, until when, and whether Telegram renews it. */
 export type Subscription = components['schemas']['SubscriptionState'];
+export type SubscriptionCancelResult = components['schemas']['SubscriptionCancelResult'];
 /** What the user may use right now. Drawn by the app, decided by the server alone. */
 export type Entitlements = components['schemas']['Entitlements'];
 export type Quota = components['schemas']['Quota'];
@@ -198,6 +199,7 @@ const PATHS = {
   compatibilityById: '/api/v1/compatibility/{compatibility_id}',
   forecast: '/api/v1/engagement/forecast',
   ask: '/api/v1/engagement/ask',
+  subscriptionCancel: '/api/v1/subscription/cancel',
 } as const satisfies Record<string, keyof paths>;
 
 /** The header of idempotent order endpoints that makes a repeated order the same order. */
@@ -210,6 +212,8 @@ export interface Api {
    * after a failure is the user's decision, made with a tap.
    */
   deleteMe(signal?: AbortSignal): Promise<void>;
+  /** Disables auto-renewal; never changes local access before `GET /me` confirms it. */
+  cancelSubscription(idempotencyKey: string, signal?: AbortSignal): Promise<SubscriptionCancelResult>;
   /**
    * Candidates for a birth place; an empty list when nothing matches. A failure of the
    * geodata provider is an error (503 `GEO_NOT_FOUND`), not an empty list.
@@ -522,6 +526,21 @@ export function createApi(options: HttpClientOptions): Api {
 
     async deleteMe(signal) {
       await request<unknown>('DELETE', PATHS.me, { signal, retry: false });
+    },
+
+    async cancelSubscription(idempotencyKey, signal) {
+      const value: unknown = await request('POST', PATHS.subscriptionCancel, {
+        headers: { [IDEMPOTENCY_HEADER]: idempotencyKey },
+        signal,
+        retry: false,
+      });
+      if (
+        !isRecord(value) ||
+        value.status !== 'cancelled' ||
+        value.auto_renew !== false ||
+        typeof value.current_period_end !== 'string'
+      ) throw invalid();
+      return value as SubscriptionCancelResult;
     },
 
     async resolveGeo(query, signal) {

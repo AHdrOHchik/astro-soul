@@ -1,7 +1,6 @@
 import {
   AlertIcon,
   Button,
-  ButtonLink,
   Card,
   DocumentIcon,
   ListButton,
@@ -18,11 +17,13 @@ import { failureCodeOf, isApiError, serverTextOf, type Api, type Me, type Quota 
 import { ErrorState } from '../../components/ErrorState';
 import { Reference } from '../../components/Reference';
 import { SupportButton } from '../../components/SupportButton';
+import { CompatQuotaRow } from '../compatibility/CompatQuota';
+import { SubscriptionInfo } from './SubscriptionInfo';
 import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
+import { CompatibilityHistory } from '../compatibility/CompatibilityHistory';
 import { useRequest } from '../../hooks/useRequest';
-import { formatDay, formatMoment } from '../../i18n/format';
+import { formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
-import { TELEGRAM_SUBSCRIPTIONS } from '../../lib/telegramLinks';
 import type { Telegram } from '../../telegram';
 import type { LegalDocument } from '../ConsentScreen';
 import styles from './SettingsScreen.module.css';
@@ -32,7 +33,7 @@ const SKELETON_BLOCKS = [0, 1, 2];
 const DOCUMENTS: readonly LegalDocument[] = ['privacy', 'terms'];
 
 export interface SettingsScreenProps {
-  api: Pick<Api, 'deleteMe' | 'getCompatibilities' | 'getPlans'>;
+  api: Pick<Api, 'deleteMe' | 'getCompatibilities' | 'getPlans' | 'cancelSubscription'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Loads `Me` anew: the subscription and the quotas are shown as the server has them now. */
   refreshMe: (signal?: AbortSignal) => Promise<Me>;
@@ -47,6 +48,7 @@ export interface SettingsScreenProps {
    */
   onSubscribe?: () => void;
   onOpenCompatibility?: (chartId: string | null) => void;
+  onOpenSavedCompatibility?: (compatibilityId: string) => void;
   onBuyCompatibility?: (chartId: string) => void;
   /** The server has deleted everything; the argument is the non-access fact captured when deletion was opened. */
   onDeleted: (hadSubscription: boolean) => void;
@@ -69,6 +71,7 @@ export function SettingsScreen({
   onOpenDocument,
   onSubscribe,
   onOpenCompatibility,
+  onOpenSavedCompatibility,
   onBuyCompatibility,
   onDeleted,
 }: SettingsScreenProps) {
@@ -114,9 +117,14 @@ export function SettingsScreen({
         me={request.data}
         api={api}
         support={support}
+        telegram={telegram}
+        supportLink={supportLink}
+        track={track}
+        refreshMe={refreshMe}
         onOpenDocument={onOpenDocument}
         onSubscribe={onSubscribe}
         onOpenCompatibility={onOpenCompatibility}
+        onOpenSavedCompatibility={onOpenSavedCompatibility}
         onBuyCompatibility={onBuyCompatibility}
         onDelete={() => {
           openDeletion(request.data);
@@ -174,16 +182,21 @@ export function SettingsScreen({
 
 interface SectionsProps {
   me: Me;
-  api: Pick<Api, 'getCompatibilities' | 'getPlans'>;
+  api: Pick<Api, 'getCompatibilities' | 'getPlans' | 'cancelSubscription'>;
   support: ReactNode;
+  telegram: Pick<Telegram, 'openLink'>;
+  supportLink: string;
+  track: Track;
+  refreshMe: (signal?: AbortSignal) => Promise<Me>;
   onOpenDocument: (name: LegalDocument) => void;
   onSubscribe?: () => void;
   onOpenCompatibility?: (chartId: string | null) => void;
+  onOpenSavedCompatibility?: (compatibilityId: string) => void;
   onBuyCompatibility?: (chartId: string) => void;
   onDelete: () => void;
 }
 
-function Sections({ me, api, support, onOpenDocument, onSubscribe, onOpenCompatibility, onBuyCompatibility, onDelete }: SectionsProps) {
+function Sections({ me, api, support, telegram, supportLink, track, refreshMe, onOpenDocument, onSubscribe, onOpenCompatibility, onOpenSavedCompatibility, onBuyCompatibility, onDelete }: SectionsProps) {
   const ids = { subscription: useId(), quotas: useId(), documents: useId(), support: useId(), deletion: useId() };
   return (
     <div className={styles.sections}>
@@ -192,7 +205,15 @@ function Sections({ me, api, support, onOpenDocument, onSubscribe, onOpenCompati
           <h2 id={ids.subscription} className={styles.title}>
             {copy.subscription.title}
           </h2>
-          <SubscriptionInfo subscription={me.subscription} onSubscribe={onSubscribe} />
+          <SubscriptionInfo
+            subscription={me.subscription}
+            api={api}
+            telegram={telegram}
+            supportLink={supportLink}
+            track={track}
+            refreshMe={refreshMe}
+            onSubscribe={onSubscribe}
+          />
         </div>
       </Card>
 
@@ -201,9 +222,11 @@ function Sections({ me, api, support, onOpenDocument, onSubscribe, onOpenCompati
           <h2 id={ids.quotas} className={styles.title}>
             {copy.quotas.title}
           </h2>
-          <Quotas quotas={me.quotas} />
+          <Quotas quotas={me.quotas} api={api} />
         </div>
       </Card>
+
+      {onOpenSavedCompatibility && <CompatibilityHistory api={api} onOpen={onOpenSavedCompatibility} />}
 
       {onOpenCompatibility && onBuyCompatibility && (
         <CompatibilityEntry
@@ -251,35 +274,6 @@ function Sections({ me, api, support, onOpenDocument, onSubscribe, onOpenCompati
   );
 }
 
-function SubscriptionInfo({ subscription, onSubscribe }: { subscription: Me['subscription']; onSubscribe?: () => void }) {
-  const text = copy.subscription;
-  if (subscription.plan === 'none' || !subscription.is_active) {
-    return (
-      <>
-        <p>{subscription.plan === 'none' ? text.none : text.ended}</p>
-        {onSubscribe && (
-          <Button variant="secondary" onClick={onSubscribe}>
-            {text.subscribe}
-          </Button>
-        )}
-      </>
-    );
-  }
-  const until = subscription.expires_at === null ? '' : formatDay(subscription.expires_at);
-  return (
-    <>
-      <p>{text.names[subscription.plan]}</p>
-      <p className={styles.muted}>
-        {until !== '' && `${text.until(until)} `}
-        {subscription.auto_renew ? text.renews : text.noRenewal}
-      </p>
-      <h3 className={styles.subtitle}>{text.cancelTitle}</h3>
-      <p className={styles.muted}>{text.cancelText}</p>
-      <ButtonLink href={TELEGRAM_SUBSCRIPTIONS}>{text.openTelegram}</ButtonLink>
-    </>
-  );
-}
-
 function isNamed(code: string): code is Quota['code'] {
   return Object.prototype.hasOwnProperty.call(copy.quotas.names, code);
 }
@@ -291,10 +285,10 @@ function quotaValue({ used, limit }: Quota): string {
   return copy.quotas.left(Math.max(0, limit - used), limit);
 }
 
-function Quotas({ quotas }: { quotas: readonly Quota[] }) {
-  // A quota this build has no name for is not shown under its code.
-  const named = quotas.filter((quota) => isNamed(quota.code));
-  if (named.length === 0) return <p className={styles.muted}>{copy.quotas.empty}</p>;
+function Quotas({ quotas, api }: { quotas: readonly Quota[]; api: Pick<Api, 'getCompatibilities'> }) {
+  // Compatibility has a separate server-owned quota endpoint; never draw its Me.quotas copy.
+  const named = quotas.filter((quota) => quota.code !== 'compat_month' && isNamed(quota.code));
+  if (named.length === 0) return <ul className={styles.quotas}><CompatQuotaRow api={api} /></ul>;
   return (
     <ul className={styles.quotas}>
       {named.map((quota) => {
@@ -307,6 +301,7 @@ function Quotas({ quotas }: { quotas: readonly Quota[] }) {
           </li>
         );
       })}
+      <CompatQuotaRow api={api} />
     </ul>
   );
 }

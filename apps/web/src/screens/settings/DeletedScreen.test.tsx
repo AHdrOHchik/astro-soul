@@ -5,7 +5,7 @@ import { setupUser } from '../../test/fixtures';
 import { DeletedScreen } from './DeletedScreen';
 
 describe('DeletedScreen', () => {
-  it('for a user with a subscription: cancellation text and Telegram link', () => {
+  it('for a user with a subscription: cancellation text and no broken subscription link', () => {
     render(<DeletedScreen telegram={{ isTelegram: true, close: vi.fn() }} hadSubscription />);
 
     const message = screen.getByRole('status');
@@ -16,7 +16,7 @@ describe('DeletedScreen', () => {
       'Подписка отменена. Если захочешь вернуться — начнёшь с чистого листа.',
       'Обезличенная история платежей сохранится для бухгалтерского учёта и возвратов.',
     ]);
-    expect(screen.getByRole('link', { name: 'Управлять подписками в Telegram' })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('without a subscription snapshot (including when Me was not available): no subscription wording and no Telegram link', () => {
@@ -31,7 +31,7 @@ describe('DeletedScreen', () => {
     ]);
     expect(message.textContent).not.toMatch(/подписк/i);
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
-    expect(screen.queryByText(/tg:\/\//)).not.toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
   it('the payment-history line is small print in both variants', () => {
@@ -55,6 +55,6 @@ describe('DeletedScreen', () => {
 
     render(<DeletedScreen telegram={{ isTelegram: false, close }} hadSubscription />);
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Управлять подписками в Telegram' })).toBeInTheDocument();
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 });
