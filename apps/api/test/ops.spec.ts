@@ -134,6 +134,52 @@ describe('GET /api/v1/admin/metrics', () => {
     expect(response.body.conversion_to_paid).toBe(0);
   });
 
+  it('считает PDF: собранные, скачанные и проваленные за сутки, стоимость — ноль', async () => {
+    const userId = await ensureUser();
+    const chart = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known)
+       VALUES ($1, 'hash-pdf-metrics', '{}'::jsonb, 'test', true)
+       RETURNING id`,
+      [userId],
+    );
+    const report = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO reports (chart_id, user_id, status, prompt_version, report_structure_version)
+       VALUES ($1, $2, 'ready', $3, $4)
+       RETURNING id`,
+      [chart?.id, userId, PROMPT_VERSION, STRUCTURE_VERSION],
+    );
+
+    // Одна удачная сборка и одна неудачная: метрики должны видеть обе.
+    await ctx.db.query(
+      `INSERT INTO report_pdfs (report_id, user_id, engine_version, prompt_version,
+                                status, storage_key, bytes, pages, build_ms, downloads)
+       VALUES ($1, $2, 'test', $3, 'ready', 'pdf/aaaaaaaa-0000-0000-0000-000000000000.pdf',
+               48_000, 6, 900, 2)`,
+      [report?.id, userId, PROMPT_VERSION],
+    );
+    await ctx.db.query(
+      `INSERT INTO report_pdfs (report_id, user_id, engine_version, prompt_version, status, error_code)
+       VALUES ($1, $2, 'test-2', $3, 'failed', 'pdf_failed')`,
+      [report?.id, userId, PROMPT_VERSION],
+    );
+    await ctx.db.query(
+      `INSERT INTO events (user_id, name, props) VALUES ($1, 'pdf_downloaded', '{"signed": true}'::jsonb)`,
+      [userId],
+    );
+
+    const response = await request(ctx.app.getHttpServer())
+      .get('/api/v1/admin/metrics')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(response.body.pdf_generated_24h).toBe(1);
+    expect(response.body.pdf_failed_24h).toBe(1);
+    expect(response.body.pdf_downloaded_24h).toBe(1);
+    // CPU, а не модель: ноль рублей — факт, а не незаполненное поле.
+    expect(response.body.pdf_cost_rub_24h).toBe(0);
+    expect(response.body.pdf_build_p95_ms).toBe(900);
+  });
+
   it('отдаёт агрегаты подписок и платежей без ПДн', async () => {
     const userId = await ensureUser();
 

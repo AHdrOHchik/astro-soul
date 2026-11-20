@@ -1,3 +1,6 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 /**
  * Тестовое окружение. Реальных данных и токенов нет: значения вымышленные.
  * Файл импортируется и в globalSetup (миграции), и в setupFiles (воркеры).
@@ -29,6 +32,9 @@ export function applyTestEnv(): void {
   process.env['GEO_PROVIDER'] = 'bundled';
   // Кнопка пуша «Открыть» ссылается на бота; без имени ссылку не построить.
   process.env['BOT_USERNAME'] = 'astro_soul_test_bot';
+  // Приватное хранилище файлов — во временном каталоге, а не в репозитории:
+  // тесты пишут PDF и карточки, и это не должно попадать в рабочее дерево.
+  process.env['FILE_STORAGE_DIR'] = process.env['FILE_STORAGE_DIR'] ?? join(tmpdir(), 'astro-soul-test-files');
 }
 
 /** Вымышленный пользователь Telegram. */
