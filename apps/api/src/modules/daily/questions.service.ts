@@ -214,8 +214,9 @@ export class QuestionsService {
    * Генерация ответа — в фоне после `202`.
    *
    * Ошибки не пробрасываются в HTTP (ответ уже отдан): строка становится
-   * `failed`, и человек увидит это в истории. Текст вопроса в логи не
-   * попадает — только хеш, длина и тема.
+   * `failed`, квота возвращается, а в истории (`GET /questions`) записи не
+   * будет — 1.6.7 прячет провалы из списков, по `id` они доступны. Текст
+   * вопроса в логи не попадает — только хеш, длина и тема.
    */
   private async generate(
     row: QuestionRow,
@@ -263,11 +264,21 @@ export class QuestionsService {
     } catch (error) {
       const reason = this.errorCodeOf(error);
       await this.repo.markFailed(row.id, reason);
+      // Неудача не стоит человеку попытки: квота возвращается тем же движением,
+      // что списывалась. Иначе три сбоя подряд означали бы «вопросы кончились»
+      // при нуле ответов — и `failed` приходилось бы показывать в истории,
+      // чтобы это было хоть как-то объяснимо. Решение владельца (1.6.7)
+      // обратное: `failed` не показываем, значит и платить за него нельзя.
+      await this.repo.refundQuota(userId, row.local_date);
+      // Текст вопроса в лог не идёт — правило 1.6.6 действует и на сбоях.
       this.logger.warn('question_failed', {
         question_hash: row.question_hash,
         question_len: row.question_len,
         topic,
         error_code: reason,
+        // Тот же смысл, что `error_code`, под общим для логов ключом `reason`:
+        // сам код не переименовываем, старые запросы по `error_code` живы.
+        reason,
       });
     }
   }

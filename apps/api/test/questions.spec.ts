@@ -21,6 +21,9 @@ import { makeFakeTelegram } from './fake-telegram';
  *      не съедает две попытки из трёх.
  *   3. **Текст вопроса не попадает в логи** — только хеш, длина и тема.
  *   4. **Повтор с тем же `Idempotency-Key` не стоит второго вызова.**
+ *   5. **Провал не тратит попытку и не виден в истории** (1.6.7): сбой
+ *      возвращает квоту, а в `GET /questions` остаются `ready`, `refused` и
+ *      `pending`. Значения `/admin/metrics` держат провалы наблюдаемыми.
  */
 
 const BIRTH = {
@@ -130,6 +133,7 @@ interface MetricsView {
   readonly questions_refused_by_reason: Record<string, number>;
   readonly questions_cost_rub_24h: number;
   readonly question_p95_ms: number;
+  readonly compat_failed_24h: number;
 }
 
 interface Accepted {
@@ -361,6 +365,35 @@ describe('POST /questions — квоты, идемпотентность, гон
     expect(response.body.details?.resets_at).toMatch(/Z$/u);
   });
 
+  it('провал генерации не тратит попытку: квота возвращается', async () => {
+    const userId = await userWithChart();
+    await makePaid(userId);
+
+    // Три провала подряд — весь дневной лимит. Если бы сбой списывал попытку,
+    // после них человек остался бы с нулём ответов и закрытой квотой.
+    llm.fail = true;
+    for (const index of [1, 2, 3]) {
+      const accepted = await ask(`Вопрос номер ${index} про работу и планы?`).expect(202);
+      // На приёме попытка списана — иначе гонка съедала бы две сразу.
+      expect((accepted.body as Accepted).quota.used).toBe(1);
+
+      const view = await waitReady((accepted.body as Accepted).id);
+      expect(view.status).toBe('failed');
+      // Провал вернул попытку: модель отработала в минус, а не за счёт человека.
+      expect(view.quota.used).toBe(0);
+    }
+
+    const usage = await ctx.db.queryOne<{ count: number }>(`SELECT count FROM question_usage`);
+    expect(usage?.count).toBe(0);
+
+    // И четвёртая попытка не упирается в 403: лимит по-прежнему открыт.
+    llm.fail = false;
+    const accepted = await ask('Стоит ли мне менять работу этой осенью?').expect(202);
+    const ready = await waitReady((accepted.body as Accepted).id);
+    expect(ready.status, String(ready.reason)).toBe('ready');
+    expect(ready.quota.used).toBe(1);
+  });
+
   it('повтор с тем же Idempotency-Key — тот же id и один вызов модели', async () => {
     const userId = await userWithChart();
     await makePaid(userId);
@@ -475,6 +508,12 @@ describe('GET /questions — история и приватность', () => {
     const accepted = await ask(secret).expect(202);
     await waitReady((accepted.body as Accepted).id);
 
+    // `markReady` и строка лога — два разных шага: статус меняется раньше, чем
+    // пишется `question_ready`. Ждём именно лог, иначе тест зависит от гонки.
+    for (let attempt = 0; attempt < 40 && !captured.join('\n').includes('question_hash'); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
     expect(captured.length).toBeGreaterThan(0);
     for (const line of captured) {
       expect(line).not.toContain('Коломенской');
@@ -522,6 +561,84 @@ describe('GET /questions — история и приватность', () => {
   });
 });
 
+describe('GET /questions — какие статусы попадают в историю (1.6.7)', () => {
+  it('ready, refused и pending в списке, failed — нет; по id failed доступен', async () => {
+    const userId = await userWithChart();
+    await makePaid(userId);
+
+    // 1. Готовый ответ — то, за чем человек и приходил.
+    const readyAccepted = await ask('Стоит ли мне менять работу этой осенью?').expect(202);
+    const ready = await waitReady((readyAccepted.body as Accepted).id);
+    expect(ready.status, String(ready.reason)).toBe('ready');
+
+    // 2. Отказ по теме — настоящий ответ карты, а не сбой: прятать нельзя.
+    const refusedAccepted = await ask('Стоит ли подавать иск в суд на соседа?').expect(202);
+    const refused = await waitReady((refusedAccepted.body as Accepted).id);
+    expect(refused.status).toBe('refused');
+    expect(refused.reason).toBe('legal');
+
+    // 3. Сбой генерации — внутренняя история. Лог пишем в массив: скрытый из
+    // истории провал должен остаться наблюдаемым, с причиной и без текста.
+    const logs: string[] = [];
+    const originalWarn = JsonLogger.prototype.warn.bind(JsonLogger.prototype);
+    vi.spyOn(JsonLogger.prototype, 'warn').mockImplementation(function (
+      this: JsonLogger,
+      message: string,
+      fields?: Record<string, unknown>,
+    ) {
+      logs.push(`${message} ${JSON.stringify(fields ?? {})}`);
+      return originalWarn(message, fields);
+    });
+
+    llm.fail = true;
+    const failedAccepted = await ask('Стоит ли мне переезжать в Лиссабон?').expect(202);
+    const failed = await waitReady((failedAccepted.body as Accepted).id);
+    expect(failed.status).toBe('failed');
+    llm.fail = false;
+
+    // 4. Вопрос в работе: «зависший» вызов модели. Ставим последним — он
+    // держит слот `pending`, и следующий вопрос получил бы 409.
+    llm.hang = true;
+    const pendingAccepted = await ask('Что мне даст отпуск в горах в декабре?').expect(202);
+    expect((pendingAccepted.body as Accepted).status).toBe('pending');
+
+    const list = await request(ctx.app.getHttpServer())
+      .get('/api/v1/questions?limit=20')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    // Четыре записи в БД, три в списке. Длина списка и есть счётчик после
+    // фильтра: отдельного `total` в схеме нет (схемы в 1.6.7 не меняются).
+    expect(list.body.items).toHaveLength(3);
+    expect(
+      (list.body.items as QuestionView[]).map((item) => item.status).sort(),
+    ).toEqual(['pending', 'ready', 'refused']);
+    expect(
+      (list.body.items as QuestionView[]).some((item) => item.id === failed.id),
+    ).toBe(false);
+
+    // Статус меняется до записи в лог — ждём именно строку лога.
+    for (let attempt = 0; attempt < 40 && !logs.some((line) => line.includes('question_failed')); attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const failedLine = logs.find((line) => line.includes('question_failed'));
+    expect(failedLine).toBeDefined();
+    expect(failedLine).toContain('llm_error');
+    expect(failedLine).toContain('"reason"');
+    expect(failedLine).not.toContain('Лиссабон');
+
+    // Квота: ready и pending списаны, refused и failed — нет.
+    expect(list.body.quota).toMatchObject({ used: 2, limit: 3 });
+
+    // Прямая ссылка не фильтруется — иначе провал не разобрать ни воркеру,
+    // ни QA: 200 и настоящий статус.
+    const byId = await questionById(failed.id).expect(200);
+    expect((byId.body as QuestionView).status).toBe('failed');
+    expect((byId.body as QuestionView).reason).toBe('llm_error');
+    llm.hang = false;
+  });
+});
+
 describe('GET /admin/metrics — счётчики прогноза и вопросов', () => {
   it('отдаёт все новые числа, включая отказы по причинам и p95', async () => {
     const userId = await userWithChart();
@@ -551,5 +668,8 @@ describe('GET /admin/metrics — счётчики прогноза и вопро
     expect(body.questions_refused_by_reason).toEqual({ legal: 1 });
     expect(Number(body.questions_cost_rub_24h)).toBeCloseTo(0.4, 4);
     expect(Number(body.question_p95_ms)).toBeGreaterThan(0);
+    // Провалов совместимости в этом файле нет — счётчик обязан быть нулём,
+    // а не отсутствовать: без него провал не виден нигде, кроме лога.
+    expect(body.compat_failed_24h).toBe(0);
   });
 });
