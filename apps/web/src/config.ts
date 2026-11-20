@@ -1,4 +1,3 @@
-import { botUsernameOf } from './lib/share';
 import { subscriptionsModeOf } from './lib/subscriptions';
 import { supportLinkOf } from './lib/support';
 import type { InvoiceStatus } from './telegram';
@@ -18,8 +17,6 @@ function invoiceStatusOf(raw: string | undefined): InvoiceStatus | undefined {
 export const config = {
   /** API origin without a trailing slash. Empty = same origin (dev server proxy). */
   apiBaseUrl: (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, ''),
-  /** The bot's username for the link in a shared message, without `@`. Empty = the picture and the text go out without a link. */
-  botUsername: botUsernameOf(import.meta.env.VITE_BOT_USERNAME),
   /** Where the support button leads. Empty = the button is there, disabled, and says that no contact is set. */
   supportLink: supportLinkOf(import.meta.env.VITE_SUPPORT_CONTACT),
   /**

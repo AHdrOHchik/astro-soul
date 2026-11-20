@@ -71,6 +71,15 @@ describe('createAnalytics', () => {
     expect(sendEvents).toHaveBeenCalledOnce();
   });
 
+  it('sends share_sent with only kind and channel', () => {
+    const { analytics, sendEvents } = setup();
+    analytics.track('share_sent', { kind: 'wheel', channel: 'inline' });
+    analytics.flush();
+    expect(sendEvents).toHaveBeenCalledWith([
+      { name: 'share_sent', occurred_at: NOW.toISOString(), props: { kind: 'wheel', channel: 'inline' } },
+    ], { keepalive: false });
+  });
+
   it('collects nothing when there is nobody to report for', () => {
     const { analytics, sendEvents } = setup({ enabled: false });
 

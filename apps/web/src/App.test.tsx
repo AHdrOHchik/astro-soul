@@ -269,10 +269,10 @@ describe('App: the full report, the paywall and the settings', () => {
   const payButton = () => screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) });
 
   /** A user who has a chart; `fake` prepares the rest of the server. */
-  const returning = (prepare?: (fake: ReturnType<typeof fakeApi>) => void) =>
+  const returning = (prepare?: (fake: ReturnType<typeof fakeApi>) => void, profile: Me = meWithChart) =>
     setup({
       api: (fake) => {
-        fake.getMe.mockResolvedValue(meWithChart);
+        fake.getMe.mockResolvedValue(profile);
         fake.getCurrentChart.mockResolvedValue(restored);
         prepare?.(fake);
       },
@@ -423,12 +423,20 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('settings are a tap away from the chart; deleting the data ends the app on the screen that says so, and nothing more is reported', async () => {
-    const { api, analytics, keys, telegram, user } = returning();
+  it('deleting the account also removes the cached question history from view', async () => {
+    const questionPage = {
+      items: [{ id: 'old-user-question', status: 'ready' as const, question: 'Старый список пользователя', sections: [], chars: 0, warnings: [], topic: 'other' as const, created_at: TODAY.toISOString(), disclaimer: '', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }],
+      total: 1, limit: 20, offset: 0,
+      quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' },
+    };
+    const { api, analytics, keys, telegram, user } = returning((fake) => { fake.listQuestions.mockResolvedValue(questionPage); }, meSubscribed);
     // An order made earlier left its key on the device.
     const kept = keys.current(chartId, 'full');
 
-    await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+    await screen.findByRole('heading', { name: ru.chart.title });
+    await user.click(screen.getByRole('button', { name: 'Спросить' }));
+    expect(await screen.findByText('Старый список пользователя')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Кабинет' }));
     expect(heading()).toHaveTextContent(ru.settings.title);
     // The settings show the user as the server has them now, not as the app remembers.
     expect(api.getMe).toHaveBeenCalledTimes(2);
@@ -442,7 +450,8 @@ describe('App: the full report, the paywall and the settings', () => {
     await user.click(screen.getByRole('button', { name: ru.settings.deletion.confirm }));
 
     expect(await screen.findByRole('heading', { name: ru.settings.deletion.doneTitle })).toBeInTheDocument();
-    expect(screen.getByText(ru.settings.deletion.doneText)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(ru.settings.deletion.doneText);
+    expect(screen.queryByText('Старый список пользователя')).not.toBeInTheDocument();
     expect(api.deleteMe).toHaveBeenCalledTimes(1);
     expect(analytics.names()).toEqual(['data_deleted']);
     // The keys of the orders went with the data: the same chart id would get a new one.
@@ -1034,6 +1043,7 @@ describe('App: product events', () => {
       { name: 'chart_requested' },
       { name: 'chart_created' },
       { name: 'share_clicked' },
+      { name: 'share_sent', props: { kind: 'wheel', channel: 'inline' } },
     ]);
   });
 
@@ -1086,6 +1096,8 @@ describe('App: product events', () => {
       code: (value) => /^[A-Z_]+$/.test(String(value)),
       field: (value) => /^[a-z_.]+$/.test(String(value)),
       version: (value) => value === CONSENT_VERSION,
+      kind: (value) => ['day', 'wheel', 'insight'].includes(String(value)),
+      channel: (value) => ['inline', 'link'].includes(String(value)),
     };
 
     /** A pass with a server rejection, a failed search and steps back in it: every kind of event the app has. */

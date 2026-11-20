@@ -12,8 +12,9 @@ function renderScreen({ chartId = 'chart-id', known = null, answer = day() }: { 
   const onKnown = vi.fn();
   const onBuildChart = vi.fn();
   const onSubscribe = vi.fn();
-  const view = render(<DailyForecastScreen now={noon} api={api} chartId={chartId} telegram={fakeTelegram()} known={known} onKnown={onKnown} onBuildChart={onBuildChart} onSubscribe={onSubscribe}/>);
-  return { ...view, api, onKnown, onBuildChart, onSubscribe };
+  const telegram = fakeTelegram({ canSwitchInlineQuery: true });
+  const view = render(<DailyForecastScreen now={noon} api={api} chartId={chartId} telegram={telegram} known={known} onKnown={onKnown} onBuildChart={onBuildChart} onSubscribe={onSubscribe}/>);
+  return { ...view, api, telegram, onKnown, onBuildChart, onSubscribe };
 }
 afterEach(() => vi.useRealTimers());
 
@@ -37,6 +38,16 @@ describe('DailyForecastScreen', () => {
     screen.getByRole('button', { name: 'Открыть подписку' }).click();
     expect(onSubscribe).toHaveBeenCalledOnce();
   });
+  it('offers a free day-card on facts_only and sends only the server caption through inline sharing', async () => {
+    const { api, telegram } = renderScreen();
+    expect(await screen.findByText('Освещённость: 54%')).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Поделиться' });
+    button.click();
+    await vi.waitFor(() => { expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно'); });
+    expect(api.createShareCard).toHaveBeenCalledWith('day');
+    expect(JSON.stringify(telegram.switchInlineQuery.mock.calls)).not.toContain('signed.png');
+  });
+
   it('renders only returned facts: empty facts make no block, partial facts stay partial, and a real zero is shown', async () => {
     const { rerender } = renderScreen({ answer: day({ facts: {} }) });
     await screen.findByText(/Europe\/Amsterdam/);

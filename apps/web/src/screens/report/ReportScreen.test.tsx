@@ -49,7 +49,6 @@ function setup({ api = fakeApi(), answer, props, manualClock = false }: SetupOpt
       justPaid={false}
       apiBaseUrl="https://api.test"
       supportLink=""
-      share={null}
       track={analytics.track}
       onPaymentRequired={onPaymentRequired}
       {...props}
@@ -185,7 +184,7 @@ describe('ReportScreen: a report that is over', () => {
     const { user } = setup({ answer: ready, props: { onOpenCompatibility, onBuyCompatibility: vi.fn() } });
 
     const entry = await screen.findByRole('region', { name: ru.compatibility.entryTitle });
-    const button = within(entry).getByRole('button', { name: ru.compatibility.entryTitle });
+    const button = await within(entry).findByRole('button', { name: ru.compatibility.entryTitle });
     expect(button).toBeEnabled();
     await user.click(button);
     expect(onOpenCompatibility).toHaveBeenCalledWith(chart.chart_id);
@@ -203,8 +202,8 @@ describe('ReportScreen: a report that is over', () => {
       'Восьмая глава',
     ]);
     expect(within(screen.getByRole('navigation', { name: copy.contents })).getAllByRole('button')).toHaveLength(3);
-    // No link, no button: the server gave no PDF.
-    expect(screen.queryByRole('button', { name: copy.pdf })).not.toBeInTheDocument();
+    // The PDF job is available even before the server provides a cached URL.
+    expect(screen.getByRole('button', { name: copy.pdf })).toBeInTheDocument();
     // Counted in an effect, which may run a moment after the chapters are on screen.
     await pass(0);
     expect(analytics.events).toEqual([{ name: 'report_ready_view', props: { report_id: REPORT_ID } }]);
@@ -652,50 +651,83 @@ describe('ReportScreen: no such report on the server, and the question whether t
     expect(isChartThere).not.toHaveBeenCalled();
   });
 
-  describe('the PDF of a report that is on screen', () => {
-    const withPdf: Report = { ...ready, pdf_url: '/api/v1/reports/x/report.pdf?sig=1' };
+  describe('the PDF of a paid report', () => {
+    const withPdf: Report = { ...ready, pdf_url: '/api/v1/reports/x/report.pdf?sig=stale' };
 
-    afterEach(() => {
-      vi.unstubAllGlobals();
-    });
-
-    /** The link, checked before it is opened, answers as the server says. */
-    function linkAnswers(status: number) {
-      const check = vi.fn<(url: string, init?: RequestInit) => Promise<Pick<Response, 'status'>>>().mockResolvedValue({ status });
-      vi.stubGlobal('fetch', check);
-      return check;
-    }
-
-    it('the link is gone and so is the report: the chart is asked about, and the screen says only that the PDF is not available', async () => {
-      const check = linkAnswers(404);
+    it('creates a job with a mandatory idempotency key, polls and opens only the fresh ready URL without reloading the report', async () => {
       const api = fakeApi();
-      api.getReport.mockResolvedValueOnce(withPdf).mockRejectedValue(gone());
-      const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
-      const { telegram, user } = setup({ api, props: { isChartThere } });
+      api.getReportPdf.mockResolvedValueOnce({ status: 'pending' }).mockResolvedValueOnce({ status: 'pending' }).mockResolvedValueOnce({ status: 'ready', url: '/api/v1/files/new.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' });
+      api.createReportPdf.mockResolvedValue({ status: 'pending' });
+      const { telegram } = setup({ api, answer: ready, manualClock: true });
+      await pass(0);
 
-      await user.click(await screen.findByRole('button', { name: copy.pdf }));
-
-      expect(check).toHaveBeenCalledWith('https://api.test/api/v1/reports/x/report.pdf?sig=1', { method: 'HEAD' });
-      expect(isChartThere).toHaveBeenCalledTimes(1);
-      expect(await screen.findByText(copy.pdfUnavailable)).toBeInTheDocument();
-      expect(screen.queryByText(SERVER_TEXT)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: copy.pdf }));
+      await pass(0);
+      expect(api.getReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
+      expect(api.getReportPdf).toHaveBeenCalledTimes(1);
+      expect(api.createReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(String), expect.any(AbortSignal));
       expect(telegram.openLink).not.toHaveBeenCalled();
+      await pass(3000);
+      expect(api.getReportPdf).toHaveBeenCalledTimes(2);
+      expect(telegram.openLink).not.toHaveBeenCalled();
+      await pass(5000);
+      expect(api.getReportPdf).toHaveBeenCalledTimes(3);
+      expect(telegram.openLink).toHaveBeenCalledWith('https://api.test/api/v1/files/new.pdf?sig=fresh');
+      expect(api.getReport).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/%/)).not.toBeInTheDocument();
     });
 
-    it('a link that opens asks nothing; one that expired is asked for again, and the chart is not in question', async () => {
-      const check = linkAnswers(200);
+    it('uses pdf_url only as a hint and asks GET for a fresh signed URL on every tap', async () => {
       const api = fakeApi();
-      api.getReport.mockResolvedValueOnce(withPdf).mockResolvedValue({ ...withPdf, pdf_url: '/api/v1/reports/x/report.pdf?sig=2' });
-      const isChartThere = vi.fn<NonNullable<ReportScreenProps['isChartThere']>>().mockResolvedValue(false);
-      const { telegram, user } = setup({ api, props: { isChartThere } });
+      api.getReportPdf.mockResolvedValue({ status: 'ready', url: '/api/v1/files/fresh.pdf?sig=2', expires_at: '2026-11-16T10:00:00Z' });
+      const { telegram, user } = setup({ api, answer: withPdf });
+      const button = await screen.findByRole('button', { name: copy.pdf });
+      await user.click(button);
+      expect(api.createReportPdf).not.toHaveBeenCalled();
+      expect(api.getReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
+      expect(telegram.openLink).toHaveBeenCalledWith('https://api.test/api/v1/files/fresh.pdf?sig=2');
+      expect(telegram.openLink).not.toHaveBeenCalledWith(expect.stringContaining('sig=stale'));
+      expect(api.getReport).toHaveBeenCalledTimes(1);
+    });
 
+    it('retries a terminal failed status with a new idempotency-keyed job', async () => {
+      const api = fakeApi();
+      api.getReportPdf.mockResolvedValue({ status: 'failed', error: 'build_failed' });
+      api.createReportPdf.mockResolvedValue({ status: 'ready', url: '/api/v1/files/retried.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' });
+      const { telegram, user } = setup({ api, answer: withPdf });
       await user.click(await screen.findByRole('button', { name: copy.pdf }));
-      expect(telegram.openLink).toHaveBeenLastCalledWith('https://api.test/api/v1/reports/x/report.pdf?sig=1');
+      expect(api.getReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
+      expect(api.createReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(String), expect.any(AbortSignal));
+      expect(telegram.openLink).toHaveBeenCalledWith('https://api.test/api/v1/files/retried.pdf?sig=fresh');
+    });
 
-      check.mockResolvedValue({ status: 404 });
-      await user.click(screen.getByRole('button', { name: copy.pdf }));
-      expect(telegram.openLink).toHaveBeenLastCalledWith('https://api.test/api/v1/reports/x/report.pdf?sig=2');
-      expect(isChartThere).not.toHaveBeenCalled();
+    it('shows retry after a failed job, but enforces the server 10-second cooldown for pdf_failed', async () => {
+      const api = fakeApi();
+      api.getReportPdf.mockResolvedValueOnce({ status: 'pending' });
+      api.createReportPdf.mockRejectedValueOnce(apiError('INTERNAL', { status: 503, details: { reason: 'pdf_failed' } }));
+      setup({ api, answer: ready, manualClock: true });
+      await pass(0);
+      fireEvent.click(screen.getByRole('button', { name: copy.pdf }));
+      await pass(0);
+      expect(screen.getByText(copy.pdfFailed)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: copy.pdf })).toBeDisabled();
+      expect(screen.getByText(copy.pdfRetryIn(10))).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: copy.pdfRetry })).not.toBeInTheDocument();
+      for (let second = 0; second < 9; second += 1) await pass(1000);
+      expect(screen.getByRole('button', { name: copy.pdf })).toBeDisabled();
+      await pass(1000);
+      expect(screen.getByRole('button', { name: copy.pdf })).toBeEnabled();
+      expect(screen.getByRole('button', { name: copy.pdfRetry })).toBeEnabled();
+    });
+
+    it('does not offer a technical retry when the server says the report is not paid', async () => {
+      const api = fakeApi();
+      api.getReportPdf.mockRejectedValue(apiError('FORBIDDEN', { status: 403, details: { reason: 'report_not_paid' } }));
+      const { user } = setup({ api, answer: withPdf });
+      await user.click(await screen.findByRole('button', { name: copy.pdf }));
+      expect(await screen.findByText(copy.pdfNotPaid)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: copy.pdfRetry })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: copy.pdf })).not.toBeInTheDocument();
     });
   });
 });

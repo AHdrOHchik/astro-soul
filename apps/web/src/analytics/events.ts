@@ -137,6 +137,8 @@ export interface EventProps {
    * own code when it did not, or the name of a failure that is not a request at all.
    */
   error_shown: { screen: AnalyticsStep; code: string };
+  /** A generated card was actually handed to Telegram, never merely created on the server. */
+  share_sent: { kind: 'day' | 'wheel' | 'insight'; channel: 'inline' | 'link' };
 }
 
 /** Reports one event. Events outside `EventProps` take no props at all. */
@@ -149,7 +151,7 @@ export type Track = <Name extends EventName>(
  * The only keys an event of this app may carry. The check is repeated at run time, when an
  * event is queued: the types above do not stop a value that was cast on its way here.
  */
-export const PROP_KEYS = ['step', 'code', 'field', 'version', 'screen', 'plan_code', 'report_id'] as const;
+export const PROP_KEYS = ['step', 'code', 'field', 'version', 'screen', 'plan_code', 'report_id', 'kind', 'channel'] as const;
 
 /** The contract's limit for a string value; a longer one makes the server refuse the whole batch. */
 export const MAX_PROP_LENGTH = 64;

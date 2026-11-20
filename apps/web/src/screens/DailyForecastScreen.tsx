@@ -7,13 +7,15 @@ import { config } from '../config';
 import { copy30 } from '../i18n/round30';
 import { SupportButton } from '../components/SupportButton';
 import { Disclaimer } from '../components/Disclaimer';
+import { ShareCardButton } from '../components/ShareCardButton';
+import type { Track } from '../analytics';
 import styles from './DailyForecastScreen.module.css';
 import type { Telegram } from '../telegram';
 
 export interface DailyForecastScreenProps {
-  api: Pick<Api, 'getForecastToday' | 'getMe'>;
+  api: Pick<Api, 'getForecastToday' | 'getMe' | 'createShareCard'>;
   chartId: string | null;
-  telegram: Pick<Telegram, 'openLink'>;
+  telegram: Pick<Telegram, 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   now?: () => Date;
   known: ForecastDay | null;
   onKnown: (day: ForecastDay | null) => void;
@@ -21,11 +23,13 @@ export interface DailyForecastScreenProps {
   onChartGone?: () => void;
   onSubscribe?: () => void;
   scroll?: { current: number };
+  track?: Track;
 }
 
 const currentTime = () => new Date();
+const noopTrack: Track = () => undefined;
 
-export function DailyForecastScreen({ api, chartId, telegram, known, now = currentTime, onKnown, onBuildChart, onChartGone, onSubscribe, scroll }: DailyForecastScreenProps) {
+export function DailyForecastScreen({ api, chartId, telegram, known, now = currentTime, onKnown, onBuildChart, onChartGone, onSubscribe, scroll, track }: DailyForecastScreenProps) {
   const titleId = useId();
   const [localDay, setLocalDay] = useState<ForecastDay | null>(null);
   // A cached reply is reusable only for its birth-place calendar day. A newly
@@ -124,6 +128,7 @@ export function DailyForecastScreen({ api, chartId, telegram, known, now = curre
       {factRows.length > 0 && <section className={styles.facts}>{factRows.map((fact) => <p key={fact}>{fact}</p>)}</section>}
       {onSubscribe && <Button variant="secondary" onClick={onSubscribe}>{copy30.forecast.subscribe}</Button>}
     </>}
+    <ShareCardButton api={api} kind="day" telegram={telegram} track={track ?? noopTrack} label={copy30.forecast.share}/>
     <p className={styles.muted}>{copy30.forecast.update}</p>
     <Disclaimer text={day.disclaimer}/>
   </div></Screen>;

@@ -3,8 +3,6 @@
 interface ImportMetaEnv {
   /** API origin without the /api/v1 suffix; empty = same origin. */
   readonly VITE_API_BASE_URL?: string;
-  /** Username of the bot the Mini App belongs to, with or without `@`. Empty = shared messages carry no link to it. */
-  readonly VITE_BOT_USERNAME?: string;
   /** Where the support button leads: a Telegram username or an https link. Empty = the button is disabled. */
   readonly VITE_SUPPORT_CONTACT?: string;
   /** `enabled` or `off` (the same as unset): whether the app sells subscriptions. Anything else stops the build. */

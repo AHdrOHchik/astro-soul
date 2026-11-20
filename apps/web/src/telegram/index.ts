@@ -11,11 +11,12 @@ import {
   miniApp,
   mainButton,
   openLink,
-  openTelegramLink,
+  openTelegramLink as openTelegramLinkApi,
   postEvent,
   request,
   retrieveRawInitData,
   shareURL,
+  switchInlineQuery as switchInlineQueryApi,
   supports,
   swipeBehavior,
   themeParams,
@@ -43,8 +44,16 @@ export interface Telegram {
   setBackHandler(handler: (() => void) | null): void;
   /** Tells Telegram the first screen is drawn, so it removes its loading placeholder. */
   ready(): void;
-  /** Lets the user pick a chat to send `url` with `text` to. */
+  /** Legacy URL sharing for existing chart-only routes. */
   share(url: string, text: string): void;
+  /** Whether this Telegram client can insert an inline query; unsupported hosts must not show share-card actions. */
+  readonly canSwitchInlineQuery: boolean;
+  /** Inserts the exact server caption into Telegram's inline-share flow; false if the bridge is unavailable. */
+  switchInlineQuery(caption: string): boolean;
+  /** Whether this Telegram client exposes the direct t.me-link bridge. */
+  readonly canOpenTelegramLink: boolean;
+  /** Opens a server-provided t.me URL through Telegram's bridge; true only when invoked. */
+  openTelegramLink(url: string): boolean;
   /** Closes the Mini App. Does nothing in a plain browser. */
   close(): void;
   /**
@@ -166,6 +175,10 @@ function browserHost(initData: string, devInvoice?: DevInvoice): Telegram {
     setBackHandler: () => undefined,
     ready: () => undefined,
     share: openShareLink,
+    canSwitchInlineQuery: false,
+    switchInlineQuery: () => false,
+    canOpenTelegramLink: false,
+    openTelegramLink: () => false,
     close: () => undefined,
     canPay: devInvoice !== undefined,
     async openInvoice(link) {
@@ -221,6 +234,18 @@ function basicHost(initData: string, version: string): Telegram {
       });
     },
     share: openShareLink,
+    canSwitchInlineQuery: false,
+    switchInlineQuery: () => false,
+    canOpenTelegramLink: true,
+    openTelegramLink(url) {
+      try {
+        postEvent('web_app_open_link', { url });
+        return true;
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    },
     close() {
       attempt(() => {
         postEvent('web_app_close');
@@ -438,6 +463,24 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
       }
       openShareLink(url, text);
     },
+    canSwitchInlineQuery: switchInlineQueryApi.isAvailable(),
+    switchInlineQuery(caption) {
+      try {
+        return switchInlineQueryApi.ifAvailable(caption)[0];
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    },
+    canOpenTelegramLink: openTelegramLinkApi.isAvailable(),
+    openTelegramLink(url) {
+      try {
+        return openTelegramLinkApi.ifAvailable(url)[0];
+      } catch (error) {
+        report(error);
+        return false;
+      }
+    },
     close() {
       attempt(() => miniApp.close.ifAvailable());
     },
@@ -462,7 +505,7 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
     openInvoice: openInvoiceByBridge,
     openLink(url) {
       try {
-        if (isTelegramLink(url) ? openTelegramLink.ifAvailable(url)[0] : openLink.ifAvailable(url)[0]) return;
+        if (isTelegramLink(url) ? openTelegramLinkApi.ifAvailable(url)[0] : openLink.ifAvailable(url)[0]) return;
       } catch (error) {
         report(error);
       }
