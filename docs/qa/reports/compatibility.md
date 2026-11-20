@@ -175,17 +175,22 @@ cost_rub (0,5 ₽/1000 токенов, оценка 2.8 знака = 1 токе�
 ```
 status: ready
 prompt_version: prompts_v1.5 | structure: compat_structure_v1 | facts: 1.0
-  clicks     867 знаков
-  friction   867 знаков
-  scenario   642 знаков
-  steps      591 знаков
-Нормализация: clicks: правки trimmed, ...; scenario: правки trimmed, ...
+
+Разделы (chars = длина отданного текста, объём = без подписи):
+  clicks    chars  867 | объём  867
+  friction  chars  867 | объём  867
+  scenario  chars  642 | объём  642
+  steps     chars  495 | объём  416, пунктов 3
+Нормализация: steps: правки disclaimer_added/trimmed, ...; scenario: правки trimmed, ...
 Предупреждения контракта: clicks/trimmed, friction/trimmed, scenario/trimmed, steps/trimmed
-cost_rub (0,5 ₽/1000 токенов, оценка 2.8 знака = 1 токен): 3.7100
+cost_rub (0,5 ₽/1000 токенов, оценка 2.8 знака = 1 токен): 3.6120
 ```
 
 Все четыре раздела в границах, четыре вызова модели (без повторов на длину),
-`steps` — 591 знак вместе с подписью-дисклеймером (объём — 501).
+`steps` — 495 знаков вместе с подписью-дисклеймером (объём — 416, три пункта).
+
+`--long --steps=799` — второй ответ из того же живого прогона: `steps` 500
+знаков (объём 421), три пункта, `status: ready`.
 
 **Стоимость считается по токенам, а не по знакам.** В проде цену пишет
 провайдер: `costRubOf(usage, pricePer1kRub)` в `config/llm-models.ts` —
@@ -218,9 +223,47 @@ completionTokens: 500}, 0.5) === 0.75`, и сквозным тестом «в б
 - повтор модели — **только** по `too_short` и неразобранному ответу (итерация
   27). `too_long` лечится обрезкой (`trimCompatSection`), пустой ответ —
   единственная причина выбросить раздел (`compat_section_dropped`);
+- **что вообще может выбросить раздел** (итерация 28): `compat_section_dropped`
+  пишет `reason`, и причин ровно три — `empty_response` (модель вернула пусто),
+  `unparsed` (у `steps` нет ни одного пункта «—») и `unsafe` (вердикт о паре,
+  процент совместимости или запрещённая тема). Форма раздела к этому списку
+  отношения не имеет: длину, число пунктов и разметку чинит нормализация;
 - `GET /admin/metrics` добавил `compat_ready_30d`, `compat_failed_30d`,
   `compat_credits_left`, `compat_validation_streak`, `compat_breaker_open`,
   `compat_sections_trimmed_24h`, `compat_sections_dropped_24h`.
+
+
+## 7.1. Правила разделов и их вердикты (итерация 28)
+
+Проверки живут в `apps/api/src/modules/compat/compat-validators.ts`,
+`validateCompatSection` возвращает `checks` — перечень с вердиктами
+`ok | warn | fail`. В `reports.validation` пишется он же, поэтому запись
+больше не противоречит себе (`code: "format"` при `verdict: "ok"` — это был
+дефект наблюдаемости из прогона `46d8b893`).
+
+| Правило | Что проверяет | `clicks`/`friction`/`scenario` | `steps` |
+|---|---|---|---|
+| `too_short` | объём меньше `min` | fail → повтор один раз, второй короткий отдаём | warn (`length_off`) |
+| `length_off` | объём вне `min–max`, с `direction` | warn | warn |
+| `format_h1` / `format_table` / `format_link` / `format_html` / `format_list` | markdown, который ломает вёрстку | fail | warn |
+| `ui_reference` | отсылка к интерфейсу: «нажм…», «свайп…», «тап…», «экран…», «кнопк…» | fail | **warn** (`matched` в логе) |
+| `verdict` / `compat_percent` / `forbidden_*` | «вам не подходите», «78 %», медицина/деньги/право | fail | fail (показывать нельзя) |
+| `steps_unparsed` | нет ни одного пункта «—» | — | fail → `dropped: unparsed` |
+| `steps_count` | пунктов не три | — | **warn** (2 и 4 принимаются) |
+| `paragraphs` / `sentences` | 2–4 абзаца по 2–4 предложения | fail | warn |
+| `partner_pronoun`, `service_terms`, `word_share`, `terms_in_opening`, `repeated_opener`, `disclaimer_missing` | диагностика для нас | warn | warn |
+
+Обрезка: для `clicks`/`friction`/`scenario` — абзац → предложение → слово
+(`trimCompatSection`), для `steps` — **только** по пунктам (`trimSteps`:
+`trimStepsItem` ≤140 знаков на пункт, по границе слова, с точкой; подпись
+прикрепляется заново и не режется). Длина `steps` — мягкий ориентир: если
+после поштучной обрезки объём вне 400–550, текст всё равно уходит человеку с
+`length_off`, потому что три действия — жёсткий инвариант, а объём — нет.
+
+Светила: семейство `luminary` собирается из блока `luminaries` **и** из
+`cross_aspects` с `luminary: true` (`luminary:aspect:<пара>`). Живая пара
+`46d8b893` пришла с `present: false` во всех четырёх парах — без этого правила
+раздел «Что совпадает» оставался без главного семейства.
 
 ## 8. Не проверено
 
