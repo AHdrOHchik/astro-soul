@@ -26,6 +26,7 @@ import {
   meWithChart,
   rejection,
   report,
+  reportInvoice,
   REPORT_ID,
   sections,
   setupUser,
@@ -1262,6 +1263,16 @@ describe('App: round30 main tabs', () => {
     return { api, telegram, analytics, user, ...view };
   }
 
+  it.each([['new', me], ['returning', meWithChart]] as const)('matches every selected tab to the screen on a %s profile', async (_, profile) => {
+    const { user } = returning(profile);
+    for (const [tab, title] of [['Кабинет', ru.settings.title], ['Сегодня', 'Сегодня'], ['Спросить', 'Спросить карту'], ['Карта', profile.has_chart ? ru.chart.title : ru.welcome.title]] as const) {
+      const button = await screen.findByRole('button', { name: tab });
+      await user.click(button);
+      expect(await screen.findByRole('heading', { name: title, level: 1 })).toBeInTheDocument();
+      expect(within(screen.getByRole('navigation')).getByRole('button', { name: tab })).toHaveAttribute('aria-current', 'page');
+    }
+  });
+
   it('shows the four persistent tabs and requests the new forecast only on Today', async () => {
     const { api, user } = returning(meWithChart);
     expect(await screen.findByRole('heading', { name: ru.chart.title })).toBeInTheDocument();
@@ -1270,6 +1281,24 @@ describe('App: round30 main tabs', () => {
     expect(await screen.findByText(/Освещённость:/)).toBeInTheDocument();
     expect(api.getForecastToday).toHaveBeenCalledOnce();
     expect(api.getForecast).not.toHaveBeenCalled();
+  });
+
+  it('revalidates same-day cached facts after the server confirms subscription payment', async () => {
+    const { api, telegram, user } = returning(meWithChart);
+    const plan = cataloguePlans.find((offer) => offer.kind === 'subscription' && !offer.test);
+    if (!plan) throw new Error('Missing subscription fixture');
+    const facts = { date: TODAY.toISOString().slice(0, 10), timezone: 'Europe/Moscow', status: 'facts_only', access: 'facts_only', sections: [], chars: 0, warnings: [], disclaimer: '', facts: { moon_sign: 'Овен' } } as const;
+    api.getForecastToday.mockResolvedValueOnce({ ...facts, sections: [], warnings: [] }).mockResolvedValueOnce({ ...facts, status: 'ready', access: 'subscription', sections: [{ key: 'summary', title: 'Итог', body: 'Прогноз после покупки' }], warnings: [] });
+    await user.click(await screen.findByRole('button', { name: 'Сегодня' }));
+    await user.click(await screen.findByRole('button', { name: 'Открыть подписку' }));
+    await user.click(await screen.findByRole('radio', { name: new RegExp(plan.title) }));
+    api.createInvoice.mockResolvedValue({ ...reportInvoice, plan_code: plan.plan_code, stars: plan.stars, is_subscription: true });
+    api.getMe.mockResolvedValue(meSubscribed);
+    await user.click(await screen.findByRole('button', { name: /^Оплатить/ }));
+    await waitFor(() => { expect(telegram.openInvoice).toHaveBeenCalledOnce(); });
+    act(() => { backHandler(telegram)?.(); });
+    expect(await screen.findByText('Прогноз после покупки')).toBeInTheDocument();
+    expect(api.getForecastToday).toHaveBeenCalledTimes(2);
   });
 
   it('does not request a forecast when Today is opened without a chart', async () => {

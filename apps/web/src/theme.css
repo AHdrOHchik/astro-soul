@@ -2,7 +2,7 @@
  * Design tokens — the single place where raw colours, sizes and timings live.
  * Component styles (apps/web, packages/ui) may only reference these variables;
  * `tests/design-system.test.ts` fails on literal values anywhere else and on unused tokens.
- * The app is dark-only by design: it does not follow Telegram theme params.
+ * Host colours override these semantic defaults through the Telegram bridge.
  */
 :root {
   color-scheme: dark;
@@ -11,8 +11,8 @@
   --color-bg: #0f0d1a;
   --color-surface: #1a1730;
   --color-surface-raised: #252144;
-  --color-border: #3a3360;
-  --color-border-strong: #6f67a0;
+  --color-border: #817b9b;
+  --color-border-strong: #918aad;
   --color-text: #f4f1ff;
   --color-text-muted: #aca6cb;
   --color-accent: #b9a1ff;
@@ -89,11 +89,36 @@
    * (`viewport.bindCssVars()` → --tg-viewport-*); outside Telegram the
    * env()/vh fallbacks apply.
    */
-  --app-height: 100vh;
+  --app-height: 100%;
+  --screen-height: min(var(--tg-viewport-stable-height, var(--app-height)), var(--app-height));
   --safe-top: 0px;
   --safe-right: 0px;
   --safe-bottom: 0px;
   --safe-left: 0px;
+}
+
+:root[data-scheme='light'] {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-surface: #f5f3fb;
+  --color-surface-raised: #edeaf5;
+  --color-text: #201c31;
+  --color-text-muted: #575165;
+  --color-border: #80798c;
+  --color-border-strong: #70687e;
+  --color-accent: #583787;
+  --color-accent-pressed: #45276e;
+  --color-accent-soft: rgba(88, 55, 135, 0.08);
+  --color-on-accent: #ffffff;
+  --color-gold: #694708;
+  --color-gold-soft: rgba(105, 71, 8, 0.08);
+  --color-danger: #932834;
+  --color-danger-soft: rgba(147, 40, 52, 0.08);
+  --color-focus: #482472;
+  --color-skeleton: #e5e1ed;
+  --color-skeleton-shine: #f3f1f7;
+  --gradient-page: radial-gradient(120% 55% at 50% -12%, var(--color-accent-soft), rgba(255, 255, 255, 0) 62%);
+  --gradient-scroll-fade: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--color-bg));
 }
 
 @supports (height: 100dvh) {
@@ -108,12 +133,12 @@
       max(env(safe-area-inset-top, 0px), var(--tg-viewport-safe-area-inset-top, 0px)) +
         var(--tg-viewport-content-safe-area-inset-top, 0px)
     );
-    --safe-right: max(env(safe-area-inset-right, 0px), var(--tg-viewport-safe-area-inset-right, 0px));
+    --safe-right: calc(max(env(safe-area-inset-right, 0px), var(--tg-viewport-safe-area-inset-right, 0px)) + var(--tg-viewport-content-safe-area-inset-right, 0px));
     --safe-bottom: calc(
       max(env(safe-area-inset-bottom, 0px), var(--tg-viewport-safe-area-inset-bottom, 0px)) +
         var(--tg-viewport-content-safe-area-inset-bottom, 0px)
     );
-    --safe-left: max(env(safe-area-inset-left, 0px), var(--tg-viewport-safe-area-inset-left, 0px));
+    --safe-left: calc(max(env(safe-area-inset-left, 0px), var(--tg-viewport-safe-area-inset-left, 0px)) + var(--tg-viewport-content-safe-area-inset-left, 0px));
   }
 }
 

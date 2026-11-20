@@ -13,8 +13,16 @@ import { initTelegram, type DevInvoice } from './telegram';
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing #root in index.html');
 
-// The Telegram header and bottom bar are painted with the page background token, not a second copy of the colour.
-const chromeColor = getComputedStyle(document.documentElement).getPropertyValue('--color-bg');
+// Stable Telegram height can stay unchanged under the IME. Cap it at the
+// visible area, but never resize the document in response to pinch zoom.
+const fitVisibleArea = () => {
+  const view = window.visualViewport;
+  if (view && view.scale !== 1) return;
+  document.documentElement.style.setProperty('--app-height', `${view?.height ?? window.innerHeight}px`);
+};
+fitVisibleArea();
+(window.visualViewport ?? window).addEventListener('resize', fitVisibleArea);
+
 // A development build may pretend to pay, so the screens after a purchase can be walked in a browser.
 // The dev mock of the API (API_MOCK=1) takes the note below for Telegram's word that the invoice is paid.
 // Behind `import.meta.env.DEV` right here: a production build drops the whole branch, the address of the mock with it.
@@ -31,7 +39,7 @@ const devInvoice: DevInvoice | undefined =
         },
       }
     : undefined;
-const telegram = initTelegram({ chromeColor, devInitData: config.devInitData, devInvoice });
+const telegram = initTelegram({ devInitData: config.devInitData, devInvoice });
 const api = createApi({ baseUrl: config.apiBaseUrl, getInitData: () => telegram.initData });
 // Events belong to a user: without initData the endpoint takes none, so none are collected.
 const analytics = createAnalytics({ api, isEnabled: () => telegram.initData !== '' });

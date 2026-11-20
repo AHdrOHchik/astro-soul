@@ -4,6 +4,7 @@ import type { ForecastDay } from '../api';
 import { apiError, fakeApi, fakeTelegram, meWithChart } from '../test/fixtures';
 import { DailyForecastScreen } from './DailyForecastScreen';
 
+const noon = () => new Date('2026-11-20T12:00:00Z');
 const day = (overrides: Partial<ForecastDay> = {}): ForecastDay => ({ date: '2026-11-20', timezone: 'Europe/Amsterdam', status: 'facts_only', access: 'facts_only', sections: [], chars: 0, warnings: [], facts: { moon_sign: 'Лев', moon_phase: 'убывающая', illumination: 0.536 }, disclaimer: 'Серверный дисклеймер.', ...overrides });
 function renderScreen({ chartId = 'chart-id', known = null, answer = day() }: { chartId?: string | null; known?: ForecastDay | null; answer?: ForecastDay | Error | Promise<ForecastDay> } = {}) {
   const api = fakeApi();
@@ -11,7 +12,7 @@ function renderScreen({ chartId = 'chart-id', known = null, answer = day() }: { 
   const onKnown = vi.fn();
   const onBuildChart = vi.fn();
   const onSubscribe = vi.fn();
-  const view = render(<DailyForecastScreen api={api} chartId={chartId} telegram={fakeTelegram()} known={known} onKnown={onKnown} onBuildChart={onBuildChart} onSubscribe={onSubscribe}/>);
+  const view = render(<DailyForecastScreen now={noon} api={api} chartId={chartId} telegram={fakeTelegram()} known={known} onKnown={onKnown} onBuildChart={onBuildChart} onSubscribe={onSubscribe}/>);
   return { ...view, api, onKnown, onBuildChart, onSubscribe };
 }
 afterEach(() => vi.useRealTimers());
@@ -41,10 +42,10 @@ describe('DailyForecastScreen', () => {
     await screen.findByText(/Europe\/Amsterdam/);
     expect(document.querySelector('[class*="facts"]')).toBeNull();
     expect(screen.queryByText(/Освещённость:|Луна в знаке:|Фаза Луны:/)).not.toBeInTheDocument();
-    rerender(<DailyForecastScreen api={fakeApi()} chartId="chart-id" telegram={fakeTelegram()} known={day({ facts: { moon_sign: 'Овен' } })} onKnown={vi.fn()} onBuildChart={vi.fn()}/>);
+    rerender(<DailyForecastScreen now={noon} api={fakeApi()} chartId="chart-id" telegram={fakeTelegram()} known={day({ facts: { moon_sign: 'Овен' } })} onKnown={vi.fn()} onBuildChart={vi.fn()}/>);
     expect(screen.getByText('Луна в знаке: Овен')).toBeInTheDocument();
     expect(screen.queryByText(/Освещённость:|Фаза Луны:/)).not.toBeInTheDocument();
-    rerender(<DailyForecastScreen api={fakeApi()} chartId="chart-id" telegram={fakeTelegram()} known={day({ facts: { illumination: 0 } })} onKnown={vi.fn()} onBuildChart={vi.fn()}/>);
+    rerender(<DailyForecastScreen now={noon} api={fakeApi()} chartId="chart-id" telegram={fakeTelegram()} known={day({ facts: { illumination: 0 } })} onKnown={vi.fn()} onBuildChart={vi.fn()}/>);
     expect(screen.getByText('Освещённость: 0%')).toBeInTheDocument();
     expect(screen.queryByText(/Луна в знаке:|Фаза Луны:/)).not.toBeInTheDocument();
   });
@@ -97,11 +98,29 @@ describe('DailyForecastScreen', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(api.getForecastToday).not.toHaveBeenCalled();
   });
+  it('drops yesterday on resume at midnight in the birth zone, while UTC still has the previous date', async () => {
+    let instant = new Date('2026-11-20T22:59:00Z');
+    const api = fakeApi();
+    let finish!: (value: ForecastDay) => void;
+    api.getForecastToday.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<DailyForecastScreen api={api} chartId="chart-id" telegram={fakeTelegram()} known={day()}
+      now={() => instant} onKnown={vi.fn()} onBuildChart={vi.fn()}/>);
+    expect(screen.getByText('20 ноября 2026 г.')).toBeInTheDocument();
+    act(() => { window.dispatchEvent(new Event('focus')); });
+    expect(api.getForecastToday).not.toHaveBeenCalled();
+    instant = new Date('2026-11-20T23:01:00Z');
+    act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(screen.queryByText('20 ноября 2026 г.')).toBeNull();
+    expect(api.getForecastToday).toHaveBeenCalledOnce();
+    await act(async () => { finish(day({ date: '2026-11-21' })); await Promise.resolve(); });
+    expect(screen.getByText('21 ноября 2026 г.')).toBeInTheDocument();
+  });
+
   it('retries after the 503 cooldown and makes exactly one fresh request', async () => {
     vi.useFakeTimers();
     const api = fakeApi();
     api.getForecastToday.mockRejectedValueOnce(apiError('UPSTREAM_LLM', { status: 503 })).mockResolvedValueOnce(day());
-    render(<DailyForecastScreen api={api} chartId="chart-id" telegram={fakeTelegram()} known={null} onKnown={vi.fn()} onBuildChart={vi.fn()} onSubscribe={vi.fn()}/>);
+    render(<DailyForecastScreen now={noon} api={api} chartId="chart-id" telegram={fakeTelegram()} known={null} onKnown={vi.fn()} onBuildChart={vi.fn()} onSubscribe={vi.fn()}/>);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); await Promise.resolve(); await Promise.resolve(); });
     expect(screen.getByRole('button', { name: /Попробовать снова через/ })).toBeDisabled();
     for (let second = 0; second < 61; second += 1) await act(async () => { await vi.advanceTimersByTimeAsync(1000); });

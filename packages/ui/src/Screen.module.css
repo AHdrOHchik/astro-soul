@@ -3,9 +3,17 @@
   flex-direction: column;
   width: 100%;
   max-width: var(--size-content-max);
-  height: var(--tg-viewport-stable-height, var(--app-height));
+  height: var(--screen-height);
+  overflow-y: auto;
   margin: 0 auto;
   padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+
+/* In a tabbed view the nav owns the bottom inset, not the scroll body or footer. */
+:global(.tabbed) > .screen {
+  min-height: 0;
+  height: 100%;
+  padding-bottom: 0;
 }
 
 .top {
@@ -53,7 +61,8 @@
 
 .body {
   flex: 1 1 auto;
-  min-height: 0;
+  /* If large text or the keyboard leaves too little room, the frame itself scrolls. */
+  min-height: var(--size-field);
   padding: var(--space-5) var(--space-4) var(--space-6);
   /* What is scrolled into view (a field error, the focused field) stops above the footer's fade, not under it. */
   scroll-padding-bottom: var(--space-6);

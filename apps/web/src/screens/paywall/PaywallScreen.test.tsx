@@ -80,6 +80,27 @@ afterEach(() => {
 });
 
 describe('PaywallScreen', () => {
+  it('uses one host CTA, blocks a second press and releases it on a price mismatch', async () => {
+    const api = fakeApi();
+    const making = deferred<typeof reportInvoice>();
+    api.createInvoice.mockReturnValue(making.promise);
+    let press: (() => void) | undefined;
+    const bindMainButton = vi.fn((_: string, disabled: boolean, _busy: boolean, handler: () => void) => {
+      press = disabled ? undefined : handler;
+      return () => { press = undefined; };
+    });
+    setup({ api, telegram: { bindMainButton } });
+    await waitFor(() => { expect(press).toBeTypeOf('function'); });
+    expect(bindMainButton.mock.lastCall?.[0]).toContain(String(reportInvoice.stars));
+    expect(screen.queryByRole('button', { name: /^Оплатить/ })).toBeNull();
+    act(() => { press?.(); press?.(); });
+    expect(api.createInvoice).toHaveBeenCalledOnce();
+    expect(press).toBeUndefined();
+    await act(async () => { making.resolve({ ...reportInvoice, stars: reportInvoice.stars + 1 }); await making.promise; });
+    expect(await screen.findByText(copy.priceChanged)).toBeInTheDocument();
+    expect(press).toBeUndefined();
+  });
+
   it('renders the server response envelope as a tariff with its 149-star price', async () => {
     const body = {
       plans: [
