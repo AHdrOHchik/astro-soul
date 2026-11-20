@@ -2676,6 +2676,41 @@ export interface components {
                  */
                 geo_max_query_length: number;
             };
+            share?: components["schemas"]["ShareCapability"];
+        };
+        /**
+         * @description Что клиент может сделать с шарингом — **до** создания карточки
+         *     (`Me.share`, контракт 1.6.10).
+         *
+         *     Зачем это поле. `ShareCard.share_url` приходит только в ответе
+         *     `POST /share/card`, то есть клиент узнавал, что ссылки нет, лишь
+         *     создав карточку: первый тап «Поделиться» ничего не открывал, а кнопка
+         *     исчезала после ошибки. Здесь те же два факта есть на старте — из того
+         *     же `GET /me`, который клиент и так вызывает.
+         *
+         *     Поля **не** в `required`: первый шаг аддитивный, старый клиент их
+         *     игнорирует и работает как раньше (создаёт карточку и смотрит на
+         *     `share_url`).
+         */
+        ShareCapability: {
+            /**
+             * @description Имя бота на сервере настроено — `ShareCard.share_url` будет не
+             *     `null`. `false`: fallback-ссылки нет, клиент **не рисует** кнопку
+             *     шаринга и не зовёт `POST /share/card` (карточку некуда отправить).
+             */
+            link?: boolean;
+            /**
+             * @description Последнее известное `getMe().supports_inline_queries`. `on` —
+             *     клиент предпочитает `switchInlineQuery` (карточку в чат присылает
+             *     бот); `off` и `unknown` — `openTelegramLink(share_url)`.
+             *
+             *     `unknown` — не «выключено»: проверка не проходила (API только
+             *     поднялся) или Bot API не ответил. Состояние меняется в BotFather
+             *     (`/setinline`) и проверяется при старте API, поэтому кэшировать его
+             *     на клиенте дольше сессии нельзя.
+             * @enum {string}
+             */
+            inline?: "on" | "off" | "unknown";
         };
         /**
          * @description Права доступа (`Me.entitlements`). Источник правды —

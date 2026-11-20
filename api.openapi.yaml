@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.9
+  version: 1.6.10
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -555,6 +555,24 @@ info:
         `telegram_inline_mode`). Событий продукта на inline нет: это показ
         карточки, а не отправка.
 
+    1.6.10 — возможность шаринга в `GET /me` (итерация 35). Аддитивно и без
+    изменений в существующих полях:
+      • `Me.share` (`ShareCapability`) — `{link: boolean, inline: "on" | "off" |
+        "unknown"}`. Раньше клиент узнавал, что ссылки нет, **только создав
+        карточку** (`share_url` приходит в ответе `POST /share/card`), и первый
+        тап «Поделиться» ничего не открывал, а кнопка исчезала. `link` — тот же
+        признак, что делает `ShareCard.share_url` не-`null`; `inline` —
+        последнее известное `getMe().supports_inline_queries` (`unknown` —
+        проверки не было, это не «выключено»);
+      • `link: false` → клиент не рисует кнопку шаринга и не зовёт
+        `POST /share/card`; `inline: "on"` → `switchInlineQuery`, `off` /
+        `unknown` → `openTelegramLink(share_url)`;
+      • отдельного маршрута `/share/capabilities` нет: `GET /me` уже вызывается
+        на старте. `share` и его поля **не** в `required` — первый шаг
+        аддитивный, старые клиенты поле игнорируют;
+      • состояние inline не кэшируется дольше жизни процесса: `/setinline`
+        меняет ответ Bot API в любой момент, следующий старт API его подхватит.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
@@ -761,6 +779,43 @@ components:
               type: integer
               example: 120
               description: Максимальная длина `query` в `POST /geo/resolve`
+        share:
+          $ref: '#/components/schemas/ShareCapability'
+
+    ShareCapability:
+      type: object
+      description: |-
+        Что клиент может сделать с шарингом — **до** создания карточки
+        (`Me.share`, контракт 1.6.10).
+
+        Зачем это поле. `ShareCard.share_url` приходит только в ответе
+        `POST /share/card`, то есть клиент узнавал, что ссылки нет, лишь
+        создав карточку: первый тап «Поделиться» ничего не открывал, а кнопка
+        исчезала после ошибки. Здесь те же два факта есть на старте — из того
+        же `GET /me`, который клиент и так вызывает.
+
+        Поля **не** в `required`: первый шаг аддитивный, старый клиент их
+        игнорирует и работает как раньше (создаёт карточку и смотрит на
+        `share_url`).
+      properties:
+        link:
+          type: boolean
+          description: |-
+            Имя бота на сервере настроено — `ShareCard.share_url` будет не
+            `null`. `false`: fallback-ссылки нет, клиент **не рисует** кнопку
+            шаринга и не зовёт `POST /share/card` (карточку некуда отправить).
+        inline:
+          type: string
+          enum: [on, off, unknown]
+          description: |-
+            Последнее известное `getMe().supports_inline_queries`. `on` —
+            клиент предпочитает `switchInlineQuery` (карточку в чат присылает
+            бот); `off` и `unknown` — `openTelegramLink(share_url)`.
+
+            `unknown` — не «выключено»: проверка не проходила (API только
+            поднялся) или Bot API не ответил. Состояние меняется в BotFather
+            (`/setinline`) и проверяется при старте API, поэтому кэшировать его
+            на клиенте дольше сессии нельзя.
 
     Entitlements:
       type: object
