@@ -89,7 +89,8 @@
    * (`viewport.bindCssVars()` → --tg-viewport-*); outside Telegram the
    * env()/vh fallbacks apply.
    */
-  --app-height: 100vh;
+  --app-height: 100%;
+  --screen-height: min(var(--tg-viewport-stable-height, var(--app-height)), var(--app-height));
   --safe-top: 0px;
   --safe-right: 0px;
   --safe-bottom: 0px;
@@ -108,12 +109,12 @@
       max(env(safe-area-inset-top, 0px), var(--tg-viewport-safe-area-inset-top, 0px)) +
         var(--tg-viewport-content-safe-area-inset-top, 0px)
     );
-    --safe-right: max(env(safe-area-inset-right, 0px), var(--tg-viewport-safe-area-inset-right, 0px));
+    --safe-right: calc(max(env(safe-area-inset-right, 0px), var(--tg-viewport-safe-area-inset-right, 0px)) + var(--tg-viewport-content-safe-area-inset-right, 0px));
     --safe-bottom: calc(
       max(env(safe-area-inset-bottom, 0px), var(--tg-viewport-safe-area-inset-bottom, 0px)) +
         var(--tg-viewport-content-safe-area-inset-bottom, 0px)
     );
-    --safe-left: max(env(safe-area-inset-left, 0px), var(--tg-viewport-safe-area-inset-left, 0px));
+    --safe-left: calc(max(env(safe-area-inset-left, 0px), var(--tg-viewport-safe-area-inset-left, 0px)) + var(--tg-viewport-content-safe-area-inset-left, 0px));
   }
 }
 

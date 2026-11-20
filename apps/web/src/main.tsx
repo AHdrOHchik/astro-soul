@@ -13,6 +13,16 @@ import { initTelegram, type DevInvoice } from './telegram';
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing #root in index.html');
 
+// Stable Telegram height can stay unchanged under the IME. Cap it at the
+// visible area, but never resize the document in response to pinch zoom.
+const fitVisibleArea = () => {
+  const view = window.visualViewport;
+  if (view && view.scale !== 1) return;
+  document.documentElement.style.setProperty('--app-height', `${view?.height ?? window.innerHeight}px`);
+};
+fitVisibleArea();
+(window.visualViewport ?? window).addEventListener('resize', fitVisibleArea);
+
 // The Telegram header and bottom bar are painted with the page background token, not a second copy of the colour.
 const chromeColor = getComputedStyle(document.documentElement).getPropertyValue('--color-bg');
 // A development build may pretend to pay, so the screens after a purchase can be walked in a browser.
