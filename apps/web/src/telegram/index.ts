@@ -6,6 +6,7 @@
 import {
   backButton,
   closingBehavior,
+  hapticFeedback,
   init,
   isInvoiceSupported,
   isTMA,
@@ -364,6 +365,15 @@ function paintChrome(cssColor: string): void {
   });
   attempt(() => miniApp.setBackgroundColor.ifAvailable(color));
   attempt(() => miniApp.setBottomBarColor.ifAvailable(color));
+}
+
+/** Input feedback is optional: never substitute browser vibration or block the action. */
+export function haptic(kind: 'selection' | 'light' | 'success' | 'error'): void {
+  attempt(() => {
+    if (kind === 'selection') hapticFeedback.selectionChanged.ifAvailable();
+    else if (kind === 'light') hapticFeedback.impactOccurred.ifAvailable('light');
+    else hapticFeedback.notificationOccurred.ifAvailable(kind);
+  });
 }
 
 export function setClosingConfirmation(dirty: boolean): void {

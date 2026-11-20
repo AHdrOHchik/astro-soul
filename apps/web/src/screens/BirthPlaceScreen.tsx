@@ -1,3 +1,4 @@
+import { haptic } from '../telegram';
 import { useClosingConfirmation } from '../hooks/useClosingConfirmation';
 import {
   Button,
@@ -111,6 +112,7 @@ export function BirthPlaceScreen({
 
   const handleSubmit = () => {
     if (place !== null) {
+      haptic('light');
       onNext();
       return;
     }

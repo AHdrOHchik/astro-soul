@@ -1,3 +1,4 @@
+import * as bridge from '../../telegram';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
@@ -122,6 +123,16 @@ describe('ChartScreen', () => {
     const asc = within(card(copy.asc));
     expect(asc.getByText('Дева, 4°09′')).toBeInTheDocument();
     expect(asc.getByText('Текст про Асцендент.')).toBeInTheDocument();
+  });
+
+  it('notifies once for a completed build, not on opening a saved chart', async () => {
+    const feedback = vi.spyOn(bridge, 'haptic');
+    const first = setup({ strict: true });
+    await screen.findByRole('img', { name: copy.wheelAlt });
+    first.unmount();
+    setup({ current: chartResult });
+    await screen.findByRole('img', { name: copy.wheelAlt });
+    expect(feedback.mock.calls).toEqual([['success']]);
   });
 
   it('discloses even a lone non-headline planet without a wheel or known birth time', async () => {

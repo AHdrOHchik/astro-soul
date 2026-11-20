@@ -112,6 +112,18 @@ describe('inside Telegram', () => {
     ]);
   });
 
+  it.each(['6.0', '8.0'])('only sends supported haptics on client %s', async (version) => {
+    launchInTelegram(version);
+    await start();
+    const { haptic } = await import('./index');
+    for (const kind of ['selection', 'light', 'success', 'error'] as const) haptic(kind);
+    const feedback = posted.mock.calls.filter(([name]) => name === 'web_app_trigger_haptic_feedback');
+    expect(feedback.map(([, data]) => JSON.parse(data ?? 'null') as unknown)).toEqual(version === '6.0' ? [] : [
+      { type: 'selection_change' }, { type: 'impact', impact_style: 'light' },
+      { type: 'notification', notification_type: 'success' }, { type: 'notification', notification_type: 'error' },
+    ]);
+  });
+
   it('repaints tokens and all three native zones on theme_changed without a reload', async () => {
     launchInTelegram('8.0', INIT_DATA, { bg_color: '#ffffff', text_color: '#111122', hint_color: '#eeeeee' });
     await start();

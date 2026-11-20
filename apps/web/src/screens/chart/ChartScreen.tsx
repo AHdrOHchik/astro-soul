@@ -1,3 +1,4 @@
+import { haptic } from '../../telegram';
 import {
   AscendantIcon,
   Button,
@@ -192,6 +193,7 @@ export function ChartScreen({
         const result = await api.createChart(request, signal);
         // The body, not the status, tells a chart that already existed from a new one.
         if (!signal.aborted) {
+          haptic('success');
           track(result.is_restored ? 'chart_restored' : 'chart_created');
           onLoaded?.(result);
         }
@@ -199,6 +201,7 @@ export function ChartScreen({
       } catch (error) {
         // An answer nobody waits for any more (the screen was left) is neither counted nor acted on.
         if (!signal.aborted && !isAbortError(error)) {
+          haptic('error');
           track('chart_failed', { code: errorCodeOf(error) });
           trackRejection(track, 'chart', error);
           const rejected = fieldErrorsOf(error);
