@@ -327,6 +327,8 @@ describe('PaywallScreen', () => {
 
     expect(await screen.findByText(copy.processingTitle)).toBeInTheDocument();
     expect(screen.getByText(copy.processingText)).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Оплачено|доступ открыт/i)).not.toBeInTheDocument();
     expect(refreshMe).toHaveBeenCalledTimes(2);
     expect(onReportPaid).not.toHaveBeenCalled();
     expect(analytics.names()).toEqual(['checkout_started', 'checkout_opened']);
@@ -374,6 +376,35 @@ describe('PaywallScreen', () => {
 
     expect(onReportPaid).toHaveBeenCalledTimes(1);
     expect(refreshMe).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for a fresh invoice after Telegram cancels the previous invoice', async () => {
+    const api = fakeApi();
+    const first = { ...reportInvoice, invoice_link: 'https://t.me/$invoice-one' };
+    const second = { ...reportInvoice, invoice_link: 'https://t.me/$invoice-two' };
+    api.createInvoice.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const { telegram, user } = setup({ api });
+    telegram.openInvoice.mockResolvedValueOnce('cancelled').mockResolvedValueOnce('cancelled');
+
+    await user.click(await payButton());
+    expect(await payButton()).toBeEnabled();
+    await user.click(await payButton());
+
+    expect(api.createInvoice).toHaveBeenCalledTimes(2);
+    expect(telegram.openInvoice.mock.calls.map(([link]) => link)).toEqual([first.invoice_link, second.invoice_link]);
+  });
+
+  it('refreshes GET /me after an already-paid conflict and unlocks only if the fresh server answer grants access', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValueOnce(apiError('CONFLICT', { status: 409, details: { reason: 'already_paid' } }));
+    const { refreshMe, onReportPaid, telegram, user } = setup({ api, afterPayment: mePaid });
+
+    await user.click(await payButton());
+
+    await waitFor(() => { expect(refreshMe).toHaveBeenCalledOnce(); });
+    expect(onReportPaid).toHaveBeenCalledOnce();
+    expect(telegram.openInvoice).not.toHaveBeenCalled();
+    expect(api.createInvoice).toHaveBeenCalledOnce();
   });
 
   it('a cancelled invoice is not a failure: no error text, the same paywall, nothing asked of the server', async () => {

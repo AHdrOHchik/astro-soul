@@ -253,7 +253,8 @@ describe('ReportScreen: a report that is gone', () => {
     const { analytics } = setup({ api, props: { onReportGone } });
 
     // What the screen is with no report: the way to get one.
-    expect(await screen.findByRole('button', { name: copy.order })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: copy.goneOrder })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: copy.goneTitle })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByText(/req-404/)).not.toBeInTheDocument();
     expect(onReportGone).toHaveBeenCalledTimes(1);
@@ -273,7 +274,8 @@ describe('ReportScreen: a report that is gone', () => {
 
     await pass(POLL_DELAYS_MS[0]);
 
-    expect(await screen.findByRole('button', { name: copy.order })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: copy.goneOrder })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: copy.goneTitle })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     for (const section of sections) expect(container.innerHTML).not.toContain(section.body_md);
     expect(onReportGone).toHaveBeenCalledWith(REPORT_ID);
@@ -576,7 +578,8 @@ describe('ReportScreen: no such report on the server, and the question whether t
     const onReportGone = vi.fn();
     const { analytics } = setup({ api, props: { isChartThere, onReportGone } });
 
-    expect(await screen.findByRole('button', { name: copy.order })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: copy.goneOrder })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: copy.goneTitle })).toBeInTheDocument();
     expect(onReportGone).toHaveBeenCalledWith(REPORT_ID);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(analytics.events).toEqual([]);
@@ -609,7 +612,7 @@ describe('ReportScreen: no such report on the server, and the question whether t
     await pass(0);
 
     if (ordered) expect(screen.getByRole('alert')).toHaveTextContent(SERVER_TEXT);
-    else expect(order()).toBeInTheDocument();
+    else expect(screen.getByRole('button', { name: copy.goneOrder })).toBeInTheDocument();
     expect(onReportGone).toHaveBeenCalledTimes(ordered ? 0 : 1);
   });
 

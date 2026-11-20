@@ -242,11 +242,21 @@ describe('CompatibilityScreen', () => {
     api.getCompatibility.mockResolvedValue(failed);
     const { refreshMe } = mount(api, failed.id);
 
-    expect(await screen.findByText(copy.genericError)).toBeInTheDocument();
+    expect(await screen.findByText(copy.failedResult)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.createAnother })).toBeInTheDocument();
     await waitFor(() => {
       expect(api.getCompatibilities).toHaveBeenCalledTimes(2);
       expect(refreshMe).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('does not show cached compatibility copy when the linked chart-backed result has disappeared', async () => {
+    const api = fakeApi();
+    api.getCompatibility.mockRejectedValue(apiError('NOT_FOUND', { status: 404 }));
+    mount(api, compatibilityReady.id);
+    expect(await screen.findByText(copy.genericError)).toBeInTheDocument();
+    for (const text of Object.values(liveCompatibilityText)) expect(screen.queryByText(text)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Что совпадает|Где трёт/)).not.toBeInTheDocument();
   });
 
   it('shares a fixed text without any partner data', async () => {

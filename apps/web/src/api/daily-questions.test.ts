@@ -16,6 +16,20 @@ describe('round30 API routes', () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe('/api/v1/forecast/today');
     expect(fetcher.mock.calls[0]?.[1]?.method).toBe('GET');
   });
+  it('gives forecast/today its dedicated 30-second deadline', async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn<typeof fetch>((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => { reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+    }));
+    const api = createApi({ baseUrl: '', getInitData: () => 'init', fetch: fetcher, retries: 0 });
+    const result = api.getForecastToday().then(() => 'resolved', (error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fetcher.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await result).toMatchObject({ code: 'TIMEOUT' });
+    vi.useRealTimers();
+  });
+
   it('lists a maximum of twenty questions and URL-encodes an id when reading one', async () => {
     const { api, fetcher } = setup();
     fetcher.mockResolvedValue(response({ items: [], quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }));

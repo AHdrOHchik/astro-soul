@@ -37,6 +37,7 @@ const isReportOffer = (offer: PlanOffer): boolean => offer.plan_code === REPORT_
 const CONFIRM_ATTEMPTS: Record<Extract<InvoiceStatus, 'paid' | 'pending'>, number> = { paid: 2, pending: 3 };
 /** The pause between two such questions. */
 export const CONFIRM_INTERVAL_MS = 2000;
+const isSignalAborted = (signal: AbortSignal): boolean => signal.aborted;
 
 export interface PaywallScreenProps {
   api: Pick<Api, 'getPlans' | 'createInvoice'>;
@@ -320,6 +321,22 @@ export function PaywallScreen({
         invoice = await api.createInvoice({ plan_code: plan.plan_code, ...forChart }, signal);
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
+        if (isApiError(error) && error.status === 409) {
+          // A conflict can mean the webhook granted this product between catalogue load
+          // and invoice creation. Only fresh server state may open it; never infer access
+          // from the conflict or from Telegram's window closing.
+          try {
+            const fresh = await refreshMe(signal);
+            if (isSignalAborted(signal)) return;
+            if (grants(fresh, isReportOffer(plan), forChart === null ? null : reportChartId)) {
+              if (isReportOffer(plan) && reportChartId !== null) onReportPaid();
+              else setPhase('choosing');
+              return;
+            }
+          } catch {
+            if (isSignalAborted(signal)) return;
+          }
+        }
         setPhase('choosing');
         if (onChartGone && forChart !== null && fieldErrorsOf(error).some(({ field }) => field === 'chart_id')) {
           // The chart the report was to be bought for is not the user's any more. Nothing to show of it: the app leads on.
@@ -347,6 +364,9 @@ export function PaywallScreen({
     setPhase('paying');
     track('checkout_opened', { plan_code: plan.plan_code });
     const outcome = await telegram.openInvoice(invoice.invoice_link);
+    // An invoice that has been shown is never reused after its window closes, regardless
+    // of whether the user paid, cancelled, or Telegram is still processing the webhook.
+    setInvoices((current) => ({ ...current, [plan.plan_code]: undefined }));
     const maybePaid = outcome === 'paid' || outcome === 'pending';
     // Said before anything else, and even if the screen is gone by now: from here on the app must not offer to pay for this again.
     if (maybePaid) onAwaiting?.(plan, isReportOffer(plan));
@@ -373,7 +393,6 @@ export function PaywallScreen({
         return;
       default:
         // Telegram's word that the invoice is paid, or about to be. It only tells when to ask the server.
-        setInvoices((current) => ({ ...current, [plan.plan_code]: undefined }));
         await confirm(
           { planCode: plan.plan_code, kind: plan.kind, report: isReportOffer(plan) },
           isReportOffer(plan) ? reportChartId : null,

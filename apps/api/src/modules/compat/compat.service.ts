@@ -559,6 +559,9 @@ export class CompatService {
       this.logger.error('compat_failed', {
         compatibility_id: compatibilityId,
         code,
+        // Причина дублируется в `reason`: по этому ключу её ищут поддержка и
+        // дежурный, а `code` остаётся прежним именем поля (коды не переименовываем).
+        reason: code,
         attempts: budget.attempts,
         cost_rub: budget.costRub,
         error: error instanceof Error ? error.message : String(error),

@@ -5,8 +5,7 @@ import { fakeApi, fakeTelegram } from '../test/fixtures';
 import { QuestionsScreen } from './QuestionsScreen';
 
 const result = (overrides: Partial<Question> = {}): Question => ({ id: 'q-1', status: 'pending', question: 'Как мне распределить силы?', sections: [], chars: 0, warnings: [], topic: 'self', created_at: '2026-11-15T10:00:00Z', disclaimer: 'Дисклеймер сервера.', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' }, ...overrides });
-function setup({ subscribed = true } = {}) {
-  const api = fakeApi();
+function setup({ subscribed = true, api = fakeApi() }: { subscribed?: boolean; api?: ReturnType<typeof fakeApi> } = {}) {
   const onSubscribe = vi.fn();
   const onChartGone = vi.fn();
   const view = render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed={subscribed} onSubscribe={onSubscribe} onChartGone={onChartGone}/>);
@@ -65,10 +64,19 @@ describe('QuestionsScreen', () => {
   it('presents examples before the subscription route for non-subscribers', async () => {
     const { api } = setup({ subscribed: false });
     expect(screen.getByText('Как лучше распределить силы на этой неделе?')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Как лучше распределить силы на этой неделе?' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Посмотреть подписку' })).toBeInTheDocument();
     expect(await screen.findByText('Вопросы удаляются только вместе с аккаунтом.')).toBeInTheDocument();
     expect(api.createQuestion).not.toHaveBeenCalled();
   });
+  it('uses examples as buttons only for subscribers, and selecting one fills the field without sending', () => {
+    const { api } = setup();
+    const example = 'Как лучше распределить силы на этой неделе?';
+    fireEvent.click(screen.getByRole('button', { name: example }));
+    expect(screen.getByLabelText('Напиши вопрос о своей карте')).toHaveValue(example);
+    expect(api.createQuestion).not.toHaveBeenCalled();
+  });
+
   it('does not load question history or submit without a chart', () => {
     const api = fakeApi();
     render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed={false} chartAvailable={false} onChartGone={vi.fn()}/>);
@@ -106,12 +114,19 @@ describe('QuestionsScreen', () => {
     expect(api.createQuestion).toHaveBeenCalledOnce();
     expect(screen.queryByText(/NOT_FOUND|404|Не удалось отправить вопрос/)).not.toBeInTheDocument();
   });
-  it('shows no technical message when a history request fails', async () => {
+  it('keeps history failure separate: retry reloads only GET, preserving the question draft without a POST', async () => {
     const api = fakeApi();
-    api.listQuestions.mockRejectedValue(new ApiError('INTERNAL', { status: 500, serverMessage: 'internal detail' }));
+    api.listQuestions.mockRejectedValueOnce(new ApiError('INTERNAL', { status: 500, serverMessage: 'internal detail' })).mockResolvedValue({ items: [], quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } });
     render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed onChartGone={vi.fn()}/>);
-    expect(await screen.findByText('Не удалось отправить вопрос')).toBeInTheDocument();
+    expect(await screen.findByText('Не удалось загрузить историю вопросов.')).toBeInTheDocument();
     expect(screen.queryByText(/internal detail|INTERNAL|500/)).not.toBeInTheDocument();
+    const field = screen.getByRole('textbox', { name: 'Напиши вопрос о своей карте' });
+    fireEvent.change(field, { target: { value: 'Как мне распределить силы?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить' }));
+    await screen.findByText('Вопросов пока нет.');
+    expect(field).toHaveValue('Как мне распределить силы?');
+    expect(api.listQuestions).toHaveBeenCalledTimes(2);
+    expect(api.createQuestion).not.toHaveBeenCalled();
   });
   it('shows the refused server message and does not poll again', async () => {
     const { api } = setup();
@@ -180,6 +195,54 @@ describe('QuestionsScreen', () => {
     expect(screen.getByRole('heading', { name: 'История' })).toBeInTheDocument();
     expect(screen.queryByText(/CONFLICT|question_in_progress/)).not.toBeInTheDocument();
   });
+  it('silently filters failed rows from a legacy three-question list without logging', async () => {
+    const api = fakeApi();
+    const failed = result({ id: 'failed-q', question: 'Неудачный текст вопроса', status: 'failed' });
+    const ready = result({ id: 'ready-q', status: 'ready' });
+    const refused = result({ id: 'refused-q', status: 'refused', message: 'Отказ по теме.' });
+    api.listQuestions.mockResolvedValue({ items: [ready, failed, refused], quota: ready.quota });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed onChartGone={vi.fn()}/>);
+    expect(await screen.findByRole('heading', { name: 'История' })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /15 нояб/ })).toHaveLength(2);
+    expect(screen.queryByText('Неудачный текст вопроса')).not.toBeInTheDocument();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('shows refused questions as ordinary history entries with their answer, distinct from failure', async () => {
+    const api = fakeApi();
+    const refused = result({ status: 'refused', message: 'Этот вопрос вне темы карты.' });
+    api.listQuestions.mockResolvedValue({ items: [refused], quota: refused.quota });
+    render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed onChartGone={vi.fn()}/>);
+    const entry = await screen.findByRole('button', { name: /Как мне распределить силы/ });
+    expect(entry).toHaveTextContent('Этот вопрос вне темы карты.');
+    fireEvent.click(entry);
+    expect(screen.getAllByText('Этот вопрос вне темы карты.')).toHaveLength(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/не удалось|попробуй позже/i)).not.toBeInTheDocument();
+  });
+
+  it('shows a failed GET-by-id result, refreshes quota without consuming it, and retries as a new question', async () => {
+    const api = fakeApi();
+    const pending = result({ id: 'old-question', status: 'pending' });
+    const failed = result({ id: 'old-question', status: 'failed' });
+    api.listQuestions.mockResolvedValueOnce({ items: [pending], quota: { ...pending.quota, used: 1 } }).mockResolvedValueOnce({ items: [], quota: { ...pending.quota, used: 1 } });
+    api.getQuestion.mockResolvedValue(failed);
+    setup({ api });
+    await screen.findByRole('button', { name: /Как мне распределить силы/ });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole('button', { name: /Как мне распределить силы/ }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(screen.getByText('Этот вопрос не удался. Квота не списана.')).toBeInTheDocument();
+    expect(screen.getByText('Использовано вопросов: 1 из 3.')).toBeInTheDocument();
+    expect(api.listQuestions).toHaveBeenCalledTimes(2);
+    expect(api.createQuestion).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Спросить снова' })); await Promise.resolve(); await Promise.resolve(); });
+    expect(api.createQuestion).toHaveBeenCalledOnce();
+    expect(api.createQuestion.mock.calls[0]?.[0]).toBe(pending.question);
+  });
+
   it('ignores unknown warnings rather than showing a technical code', async () => {
     const api = fakeApi();
     api.listQuestions.mockResolvedValue({ items: [result({ status: 'ready', sections: [{ key: 'answer', title: 'Ответ', body: 'Готовый ответ.' }], warnings: ['future_internal_code'] as unknown as Question['warnings'] })], quota: result().quota });

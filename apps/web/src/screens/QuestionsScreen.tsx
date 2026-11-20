@@ -33,7 +33,9 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
   const [active, setActive] = useState<Question | null>(null);
   const [loading, setLoading] = useState(chartAvailable);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<unknown>(null);
+  const [historyError, setHistoryError] = useState(false);
+  const [submitError, setSubmitError] = useState<unknown>(null);
+  const [quota, setQuota] = useState<Question['quota'] | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const listRef = useRef<HTMLElement>(null);
   const retryKey = useRef<string | null>(null);
@@ -49,14 +51,17 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
   }, [scroll]);
   const loadHistory = useCallback(async (signal?: AbortSignal) => {
     const result = await api.listQuestions(20, signal);
-    setHistory(result.items);
-    return result.items;
+    const visible = result.items.filter((item) => item.status !== 'failed');
+    setHistory(visible);
+    setQuota(result.quota);
+    setHistoryError(false);
+    return visible;
   }, [api]);
 
   useEffect(() => {
     if (!chartAvailable) return undefined;
     const controller = new AbortController();
-    void Promise.resolve().then(() => loadHistory(controller.signal)).catch((reason: unknown) => { if (!controller.signal.aborted) setError(reason); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    void Promise.resolve().then(() => loadHistory(controller.signal)).catch(() => { if (!controller.signal.aborted) setHistoryError(true); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); };
   }, [loadHistory, chartAvailable]);
 
@@ -72,18 +77,23 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
         const result = await api.getQuestion(active.id, controller.signal);
         if (controller.signal.aborted) return;
         setActive(result);
-        if (result.status !== 'pending') { setHistory((current) => [result, ...current.filter((item) => item.id !== result.id)].slice(0, 20)); return; }
+        if (result.status !== 'pending') {
+          if (result.status === 'failed') void loadHistory(controller.signal).catch(() => { if (!controller.signal.aborted) setHistoryError(true); });
+          else setHistory((current) => [result, ...current.filter((item) => item.id !== result.id)].slice(0, 20));
+          return;
+        }
       } catch { if (controller.signal.aborted) return; }
       timer = window.setTimeout(() => { delay = Math.min(10_000, delay + 3000); void poll(); }, delay);
     };
     timer = window.setTimeout(() => { void poll(); }, delay);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [active?.id, active?.status, api]);
+  }, [active?.id, active?.status, api, loadHistory]);
 
-  const submit = async () => {
-    const text = question.trim();
+  const submit = async (retryText?: string) => {
+    const text = (retryText ?? question).trim();
     if (text.length < 10 || text.length > 300 || submitting || !subscribed) return;
-    setSubmitting(true); setError(null); setNotice(null);
+    if (retryText !== undefined) retryKey.current = null;
+    setSubmitting(true); setSubmitError(null); setNotice(null);
     const controller = new AbortController();
     submitLife.current = controller;
     const idempotencyKey = retryKey.current ?? newIdempotencyKey();
@@ -115,7 +125,7 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
         return;
       }
       if (isApiError(reason) && reason.status === 429 && reasonOf(reason) === 'daily_cost_cap') { setNotice(copy30.questions.costCap); return; }
-      setError(reason);
+      setSubmitError(reason);
     } finally {
       if (!controller.signal.aborted) setSubmitting(false);
       if (submitLife.current === controller) submitLife.current = null;
@@ -131,7 +141,7 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
       {!subscribed ? <>
         <p className={styles.text}>{chartAvailable ? copy30.questions.examplesTitle : copy30.questions.noChart}</p>
         {!chartAvailable && onBuildChart && <Button onClick={onBuildChart}>{copy30.questions.build}</Button>}
-        <ul className={styles.examples}>{copy30.questions.examples.map((example) => <li key={example}><button type="button" onClick={() => { changeQuestion(example); }}>{example}</button></li>)}</ul>
+        <ul className={styles.examples}>{copy30.questions.examples.map((example) => <li key={example}><span>{example}</span></li>)}</ul>
         <p className={styles.muted}>{copy30.questions.deleteInfo}</p>
         {onSubscribe && <Button onClick={onSubscribe}>{copy30.questions.subscribe}</Button>}
       </> : <>
@@ -143,16 +153,20 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
         <p className={styles.label}>{copy30.questions.examplesLabel}</p>
         <ul className={styles.examples}>{copy30.questions.examples.map((example) => <li key={example}><button type="button" onClick={() => { changeQuestion(example); }}>{example}</button></li>)}</ul>
         {notice && <StateView title="" text={notice}>{notice === copy30.questions.subscriptionRequired && onSubscribe && <Button onClick={onSubscribe}>{copy30.questions.subscribe}</Button>}{notice === copy30.questions.costCap && <SupportButton link={config.supportLink} telegram={telegram}/>}</StateView>}
-        {error && <StateView title={copy30.questions.failedTitle} text={copy30.questions.retry}><Button onClick={() => void submit()}>{copy30.questions.retryButton}</Button></StateView>}
+        {submitError && <StateView title={copy30.questions.failedTitle} text={copy30.questions.retry}><Button onClick={() => void submit()}>{copy30.questions.retryButton}</Button></StateView>}
         {activeQuestion && <article className={styles.exchange}>
           <p className={styles.label}>{copy30.questions.asked}</p><p>{activeQuestion.question}</p>
-          {activeQuestion.status === 'pending' ? <><SkeletonGroup label={copy30.questions.polling}><Skeleton/><Skeleton/><Skeleton/></SkeletonGroup></> : activeQuestion.status === 'refused' ? <><p>{activeQuestion.message}</p><Button variant="secondary" onClick={() => { setActive(null); }}>{copy30.questions.refusedAnother}</Button></> : activeQuestion.status === 'ready' ? <>
+          {activeQuestion.status === 'pending' ? <><SkeletonGroup label={copy30.questions.polling}><Skeleton/><Skeleton/><Skeleton/></SkeletonGroup></> : activeQuestion.status === 'refused' ? <><p>{activeQuestion.message}</p><Button variant="secondary" onClick={() => { setActive(null); }}>{copy30.questions.refusedAnother}</Button></> : activeQuestion.status === 'failed' ? <StateView title={copy30.questions.failedAnswerTitle} text={copy30.questions.failedResult}><Button onClick={() => void submit(activeQuestion.question)}>{copy30.questions.retryFailed}</Button></StateView> : <>
             {activeQuestion.sections.map((section) => <section key={section.key}><h2>{section.title}</h2><p>{section.body}</p></section>)}
             {activeQuestion.warnings.includes('ungrounded') && <p className={styles.muted}>{copy30.questions.ungrounded}</p>}
             <Disclaimer text={activeQuestion.disclaimer}/>
-          </> : <StateView title={copy30.questions.failedAnswerTitle} text={copy30.questions.failedAnswerText}><Button onClick={() => { setActive(null); }}>{copy30.questions.refusedAnother}</Button></StateView>}
+          </>}
         </article>}
-        {loading ? <SkeletonGroup label={copy30.questions.historyLoading}><Skeleton/><Skeleton/></SkeletonGroup> : history.length > 0 && <section className={styles.history}><h2>{copy30.questions.history}</h2>{history.map((item) => <button key={item.id} type="button" onClick={() => { setActive(item); }}><time>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(item.created_at))}</time><span>{item.question}</span></button>)}</section>}
+        {quota && <p className={styles.muted}>{copy30.questions.quotaStatus.replace('{used}', String(quota.used)).replace('{limit}', String(quota.limit))}</p>}
+        {loading ? <SkeletonGroup label={copy30.questions.historyLoading}><Skeleton/><Skeleton/></SkeletonGroup> : <section className={styles.history}>
+          <h2>{copy30.questions.history}</h2>
+          {historyError ? <div role="alert"><p>{copy30.questions.historyRetry}</p><Button variant="secondary" onClick={() => { setLoading(true); setHistoryError(false); void loadHistory().catch(() => { setHistoryError(true); }).finally(() => { setLoading(false); }); }}>{copy30.questions.retryButton}</Button></div> : history.length === 0 ? <p>{copy30.questions.historyEmpty}</p> : history.map((item) => <button key={item.id} type="button" onClick={() => { setActive(item); }}><time>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(item.created_at))}</time><span>{item.question}</span>{item.status === 'refused' && item.message && <span>{item.message}</span>}</button>)}
+        </section>}
         <p className={styles.muted}>{copy30.questions.deleteInfo}</p>
       </>}
     </div>

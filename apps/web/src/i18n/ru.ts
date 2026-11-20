@@ -442,6 +442,9 @@ export const ru = {
     order: 'Получить разбор',
     ordering: 'Отправляем заказ…',
     loading: 'Загружаем разбор…',
+    goneTitle: 'Разбор удалён',
+    goneText: 'Этот разбор больше недоступен. Можно создать новый.',
+    goneOrder: 'Создать новый разбор',
     /** Owner's wording. */
     queuedTitle: 'Разбор в очереди',
     /** Owner's wording. */
@@ -527,7 +530,9 @@ export const ru = {
     listTitle: 'Совместимости',
     backToList: 'К списку совместимостей',
     listEmpty: 'Совместимостей пока нет.',
+    listPriceLoading: 'Загружаем цену…',
     listRetry: 'Не удалось загрузить совместимости.',
+    failedResult: 'Этот разбор не удался. Квота не списана.',
     status: { pending: 'Считается', ready: 'Готово', failed: 'Не получилось' },
     noPrice: 'Оплата временно недоступна',
     buy: (stars: number) => `Купить за ${String(stars)} ⭐`,

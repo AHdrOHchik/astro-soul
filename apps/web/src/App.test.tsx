@@ -409,6 +409,19 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(api.getReport).toHaveBeenCalledTimes(1);
   });
 
+  it('after a stale report id returns 404, refreshes Me, forgets latest_report_id and does not show old chapters', async () => {
+    const { api } = returning((fake) => {
+      fake.getMe.mockResolvedValueOnce({ ...mePaid, latest_report_id: REPORT_ID }).mockResolvedValue({ ...mePaid, latest_report_id: null });
+      fake.getReport.mockRejectedValue(apiError('NOT_FOUND', { status: 404 }));
+    });
+    expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+    expect(api.getReport).toHaveBeenCalledOnce();
+    const firstSection = sections[0];
+    if (firstSection !== undefined) expect(screen.queryByText(firstSection.body_md)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('settings are a tap away from the chart; deleting the data ends the app on the screen that says so, and nothing more is reported', async () => {
     const { api, analytics, keys, telegram, user } = returning();
     // An order made earlier left its key on the device.
@@ -1238,9 +1251,9 @@ describe('App: going back', () => {
 });
 
 describe('App: round30 main tabs', () => {
-  function returning(startMe: Me, subscriptions = true) {
+  function returning(startMe: Me, subscriptions = true, refreshedMe: Me = startMe) {
     const api = fakeApi();
-    api.getMe.mockResolvedValue(startMe);
+    api.getMe.mockResolvedValueOnce(startMe).mockResolvedValue(refreshedMe);
     api.getCurrentChart.mockResolvedValue({ ...chartResult, is_restored: true });
     const telegram = fakeTelegram();
     const analytics = fakeAnalytics();
@@ -1264,6 +1277,32 @@ describe('App: round30 main tabs', () => {
     await user.click(await screen.findByRole('button', { name: 'Сегодня' }));
     expect(await screen.findByText('Сначала построй карту')).toBeInTheDocument();
     expect(api.getForecastToday).not.toHaveBeenCalled();
+  });
+
+  it('after forecast reports a deleted chart, Today stops requesting it and fresh settings keep the subscription and quotas', async () => {
+    const afterDeletion: Me = {
+      ...meSubscribed,
+      has_chart: false,
+      chart_id: null,
+      latest_report_id: null,
+      quotas: [
+        { code: 'forecast_daily', used: 1, limit: 5, reset_at: '2026-11-16T00:00:00Z' },
+        { code: 'ask_daily', used: 2, limit: 5, reset_at: '2026-11-16T00:00:00Z' },
+      ],
+    };
+    const { api, user } = returning(meSubscribed, true, afterDeletion);
+    api.getForecastToday.mockRejectedValue(apiError('NOT_FOUND', { status: 404, details: { reason: 'chart_not_found' } }));
+    await screen.findByRole('heading', { name: ru.chart.title });
+    await user.click(screen.getByRole('button', { name: 'Сегодня' }));
+    expect(await screen.findByText('Сначала построй карту')).toBeInTheDocument();
+    expect(api.getForecastToday).toHaveBeenCalledOnce();
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole('button', { name: 'Кабинет' }));
+    expect(await screen.findByText(/Подписка активна до 10 декабря 2026 г\./)).toBeInTheDocument();
+    expect(screen.getByText(ru.settings.quotas.left(4, 5))).toBeInTheDocument();
+    expect(screen.getByText(ru.settings.quotas.left(3, 5))).toBeInTheDocument();
+    expect(within(screen.getByRole('list')).getByText(ru.compatibility.quotaPaid)).toBeInTheDocument();
+    expect(api.getForecastToday).toHaveBeenCalledOnce();
   });
 
   it('shows examples before opening the subscription paywall to a non-subscriber', async () => {

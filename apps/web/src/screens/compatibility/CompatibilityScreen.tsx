@@ -316,8 +316,9 @@ export function CompatibilityScreen({
   if (compatibilityId !== null && result?.status === 'failed') {
     return (
       <Screen back={back}>
-        <StateViewCompat title={copy.errorTitle} text={copy.genericError}>
+        <StateViewCompat title={copy.errorTitle} text={copy.failedResult}>
           <Button onClick={createAnother}>{copy.createAnother}</Button>
+          {quota !== null && <p className={styles.note}>{formatCompatQuota(quota).value}</p>}
         </StateViewCompat>
       </Screen>
     );

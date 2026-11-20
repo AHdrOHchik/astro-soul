@@ -29,6 +29,7 @@ export type ReportView =
   | { kind: 'report'; report: Report; stalled: boolean }
   /** The purchase was made a moment ago and the server does not know of it yet. */
   | { kind: 'processing' }
+  | { kind: 'gone' }
   | { kind: 'error'; error: unknown; from: 'order' | 'load' };
 
 export interface UseReportOptions {
@@ -269,7 +270,7 @@ export function useReport({
               // what it is with no report.
               latest.current.onReportGone?.(asked);
               setReportId(null);
-              setView({ kind: 'idle' });
+              setView({ kind: 'gone' });
             };
             const check = latest.current.isChartThere;
             if (check === undefined) {

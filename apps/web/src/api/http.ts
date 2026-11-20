@@ -28,6 +28,8 @@ export interface RequestOptions {
   cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
   /** Lets the browser finish the call after the page is gone. For the last words of a page that is being closed. */
   keepalive?: boolean;
+  /** Per-request deadline; overrides the client default without changing other calls. */
+  timeoutMs?: number;
 }
 
 export type HttpMethod = 'GET' | 'POST' | 'DELETE';
@@ -78,6 +80,7 @@ export function createHttpClient(options: HttpClientOptions): HttpRequest {
 
   return async function request<T>(method: HttpMethod, path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const { body, headers, signal, retry = true, cache, keepalive } = requestOptions;
+    const requestTimeoutMs = requestOptions.timeoutMs ?? timeoutMs;
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
     const controller = new AbortController();
     // `signal.reason` would tell a timeout from a caller's cancel, but Safari 15.0–15.3 lacks it.
@@ -85,7 +88,7 @@ export function createHttpClient(options: HttpClientOptions): HttpRequest {
     const timer = setTimeout(() => {
       deadline.passed = true;
       controller.abort();
-    }, timeoutMs);
+    }, requestTimeoutMs);
     const cancel = () => {
       controller.abort();
     };
