@@ -345,6 +345,7 @@ export const ru = {
     title: 'Твоя карта',
     loading: 'Строим карту…',
     timeUnknown: 'время неизвестно',
+    planetPositions: 'Планеты в знаках: позиции на карте',
     wheelAlt: 'Колесо натальной карты: планеты по знакам зодиака',
     wheelLoading: 'Загружаем колесо карты…',
     wheelErrorTitle: 'Колесо не загрузилось',

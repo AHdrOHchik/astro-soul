@@ -361,8 +361,9 @@ function ChartView({
   const asc = timeKnown ? chart.asc : null;
   const houseOf = (house: number | null | undefined) => (timeKnown && typeof house === 'number' ? copy.house(house) : undefined);
 
+  const positions = chart.planets.filter((planet) => typeof planet.name === 'string' && planet.name.trim() && typeof planet.sign === 'string' && planet.sign.trim());
   const hasReading = [reading.sun, reading.moon, reading.asc, reading.summary].some((line) => line !== '');
-  if (!sun && !moon && !asc?.sign && !wheelUrl && !hasReading) {
+  if (positions.length === 0 && !sun && !moon && !asc?.sign && !wheelUrl && !hasReading) {
     return (
       <StateView title={copy.emptyTitle} text={copy.emptyText} icon={<InfoIcon />}>
         <Button onClick={onRetry}>{ru.common.retry}</Button>
@@ -394,6 +395,21 @@ function ChartView({
         <Wheel src={wheelUrl} onFailedChange={setWheelFailed} />
       ) : (
         <p className={styles.wheelMissing}>{copy.wheelMissing}</p>
+      )}
+
+      {positions.length > 0 && (
+        <details className={styles.positions}>
+          <summary>{copy.planetPositions}</summary>
+          <ul role="list">
+            {positions.map((planet) => (
+              <li key={planet.key}>
+                <strong>{planet.name}</strong>{': '}
+                {formatPosition(planet.sign, Number.isFinite(planet.degree) ? planet.degree : undefined, Number.isFinite(planet.minute) ? planet.minute : undefined)}
+                {houseOf(planet.house) && ` · ${houseOf(planet.house)}`}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {/* What the server says about the input, in its order. The screen adds no warnings of its own. */}

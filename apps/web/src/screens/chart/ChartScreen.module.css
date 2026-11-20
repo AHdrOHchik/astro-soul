@@ -51,3 +51,15 @@
 .cardSkeleton {
   height: var(--size-card-skeleton);
 }
+
+.positions summary {
+  min-height: var(--size-tap);
+  padding: var(--space-3) 0;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.positions ul {
+  display: grid;
+  gap: var(--space-2);
+}
