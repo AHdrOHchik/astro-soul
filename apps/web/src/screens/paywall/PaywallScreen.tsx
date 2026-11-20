@@ -21,6 +21,7 @@ import { Reference } from '../../components/Reference';
 import { Stars } from '../../components/Stars';
 import { formatDay, formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
+import { copy30 } from '../../i18n/round30';
 import { grants, REPORT_PLAN } from '../../lib/plans';
 import { wait } from '../../lib/wait';
 import type { InvoiceStatus, Telegram } from '../../telegram';
@@ -485,12 +486,12 @@ export function PaywallScreen({
           setProblem(null);
         }}
         title={offer.title}
-        description={offer.subtitle}
+        description={offer.kind === 'subscription' ? undefined : offer.subtitle}
         aside={<Stars count={priceOf(offer)} />}
       />
-      {offer.includes.length > 0 && (
+      {offer.includes.filter((item) => offer.kind !== 'subscription' || !copy30.unapprovedSubscriptionClaim.test(item)).length > 0 && (
         <ul className={styles.includes}>
-          {offer.includes.map((item, index) => <li key={`${String(index)}:${item}`}>{item}</li>)}
+          {offer.includes.filter((item) => offer.kind !== 'subscription' || !copy30.unapprovedSubscriptionClaim.test(item)).map((item, index) => <li key={`${String(index)}:${item}`}>{item}</li>)}
         </ul>
       )}
     </div>

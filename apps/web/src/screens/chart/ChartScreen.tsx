@@ -40,6 +40,7 @@ import type { KnownForecast } from '../forecast/useForecast';
 import styles from './ChartScreen.module.css';
 import { PointCard } from './PointCard';
 import { ReportTeaser } from './ReportTeaser';
+import { SubscriptionPromotion } from './SubscriptionPromotion';
 import { Wheel } from './Wheel';
 
 const copy = ru.chart;
@@ -134,6 +135,8 @@ export interface ChartScreenProps {
   scroll?: { current: number };
   /** The full report: the block under the cards. */
   report: ChartReportProps;
+  /** Shows the server-owned subscription offer when the caller says access is absent. */
+  subscriptionPromotion?: { onOpen: () => void };
   /** The forecast: the card above the chart. Without it the screen shows none and asks for none. */
   forecast?: ChartForecastProps;
   onOpenSettings: () => void;
@@ -159,6 +162,7 @@ export function ChartScreen({
   scroll,
   report,
   forecast,
+  subscriptionPromotion,
   onOpenSettings,
 }: ChartScreenProps) {
   const titleId = useId();
@@ -256,6 +260,7 @@ export function ChartScreen({
             track={track}
             report={report}
             forecast={forecast}
+            subscriptionPromotion={subscriptionPromotion}
             editLabel={editLabel}
             // After the form the way back to it is the back button; a chart opened at the start has only this one.
             offersEdit={request === null}
@@ -313,6 +318,7 @@ interface ChartViewProps {
   track: Track;
   report: ChartReportProps;
   forecast?: ChartForecastProps;
+  subscriptionPromotion?: { onOpen: () => void };
   editLabel: string;
   /** Whether the chart itself offers the way to the birth data, under everything else. */
   offersEdit: boolean;
@@ -329,6 +335,7 @@ function ChartView({
   track,
   report,
   forecast,
+  subscriptionPromotion,
   editLabel,
   offersEdit,
   onRetry,
@@ -451,6 +458,8 @@ function ChartView({
           />
         )}
       </section>
+
+      {subscriptionPromotion && <SubscriptionPromotion api={api} onOpen={subscriptionPromotion.onOpen}/>}
 
       <ReportTeaser
         api={api}

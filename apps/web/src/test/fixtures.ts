@@ -346,6 +346,10 @@ export function fakeApi() {
     getCompatibility: vi.fn<Api['getCompatibility']>().mockResolvedValue(compatibilityPending),
     // The server has prepared no forecast yet: so it is for every chart on its first day.
     getForecast: vi.fn<Api['getForecast']>().mockResolvedValue(null),
+    getForecastToday: vi.fn<Api['getForecastToday']>().mockResolvedValue({ date: '2026-11-15', timezone: 'Europe/Amsterdam', status: 'facts_only', access: 'facts_only', sections: [], chars: 0, warnings: [], facts: { moon_sign: 'Овен', moon_phase: 'растущая', illumination: 0.5 }, disclaimer: 'Развлекательный текст.' }),
+    listQuestions: vi.fn<Api['listQuestions']>().mockResolvedValue({ items: [], quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
+    createQuestion: vi.fn<Api['createQuestion']>().mockResolvedValue({ id: 'question-id', status: 'pending', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
+    getQuestion: vi.fn<Api['getQuestion']>().mockResolvedValue({ id: 'question-id', status: 'pending', question: 'Как лучше распределить силы?', sections: [], chars: 0, warnings: [], topic: 'self', created_at: '2026-11-15T10:00:00Z', disclaimer: 'Развлекательный текст.', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
     ask: vi.fn<Api['ask']>().mockResolvedValue(askAnswer),
   };
 }
