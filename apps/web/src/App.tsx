@@ -403,10 +403,9 @@ function Screens({
   );
   // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
   const [home, setHome] = useState<Home>(meAtStart.has_chart || typeof meAtStart.chart_id === 'string' ? 'current' : 'welcome');
-  const [knownDailyForecast, setKnownDailyForecast] = useState<ForecastDay | null>(null);
+  const [knownDailyForecast, setKnownDailyForecast] = useState<{ context: string; day: ForecastDay } | null>(null);
   const dailyScroll = useRef(0);
   const questionScroll = useRef(0);
-  const rememberDailyForecast = useCallback((day: ForecastDay | null) => { setKnownDailyForecast(day); }, []);
   const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? [home, 'consent'] : [home]));
   const [draft, setDraft] = useState<BirthDraft>(EMPTY_DRAFT);
   const [serverErrors, setServerErrors] = useState(NO_SERVER_ERRORS);
@@ -414,6 +413,11 @@ function Screens({
   const [termsNotice, setTermsNotice] = useState(termsRenewed);
   const [shownCharts, setShownCharts] = useState<ShownCharts>({ current: null, built: null });
   // Counts the times the app has dropped a chart: the chart screen of before is not the chart screen of after.
+  const tabChartId = me.chart_id ?? shownCharts.current?.chart.chart_id ?? shownCharts.built?.result.chart.chart_id ?? null;
+  const dailyContext = `${tabChartId ?? ''}:${String(me.entitlements.is_active)}`;
+  const rememberDailyForecast = useCallback((day: ForecastDay | null) => {
+    setKnownDailyForecast(day === null ? null : { context: dailyContext, day });
+  }, [dailyContext]);
   const [chartEpoch, setChartEpoch] = useState(0);
   const chartScroll = useRef(0);
   // The chart the paywall and the report screen were opened from.
@@ -790,8 +794,13 @@ function Screens({
       );
     case 'today':
     case 'ask': {
-      const chartId = me.chart_id ?? shownCharts.current?.chart.chart_id ?? shownCharts.built?.result.chart.chart_id ?? null;
-      if (route === 'today') return withTabs(<DailyForecastScreen api={api} chartId={chartId} telegram={telegram} known={knownDailyForecast} onKnown={rememberDailyForecast} onBuildChart={handleMissing} onChartGone={handleChartGone} onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll}/>);
+      const chartId = tabChartId;
+      if (route === 'today') return withTabs(
+        <DailyForecastScreen key={dailyContext} api={api} chartId={chartId} telegram={telegram}
+          known={knownDailyForecast?.context === dailyContext ? knownDailyForecast.day : null}
+          now={clock} onKnown={rememberDailyForecast} onBuildChart={handleMissing} onChartGone={handleChartGone}
+          onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll} />
+      );
       return withTabs(<QuestionsScreen api={api} telegram={telegram} subscribed={me.entitlements.is_active && chartId !== null} chartAvailable={chartId !== null} onSubscribe={canSubscribe ? openSubscriptions : undefined} onBuildChart={handleMissing} onChartGone={handleChartGone} scroll={questionScroll}/>);
     }
     case 'report':
