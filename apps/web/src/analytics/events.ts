@@ -48,6 +48,7 @@ export const EVENT_NAMES: Record<EventName, true> = {
   error_shown: true,
   share_clicked: true,
   screen_view: true,
+  share_sent: true,
 };
 
 /**

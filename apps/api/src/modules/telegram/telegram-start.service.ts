@@ -106,18 +106,13 @@ export class TelegramStartService {
       url === undefined ? {} : { button: { text: 'Открыть', webAppUrl: url } },
     );
 
-    // Два события без ПДн, и оба — правда о разных вещах:
-    //   `share_card_opened` — человек нажал ссылку из карточки;
-    //   `share_sent` — карточка ушла в чат (это единственная отправка, которую
-    //   сервер видит своими глазами; клиентский inline-шеринг он не видит).
+    // Одно событие без ПДн: человек перешёл по ссылке из карточки. Отправку
+    // (`share_sent`) с 1.6.9 пишет клиент — сервер видит только переход, и
+    // называть переход отправкой значило бы считать одно и то же дважды.
     // Кто переслал и кому — не пишем: получатель согласия не давал.
     await this.events.log({
       name: 'share_card_opened',
       props: { kind: card.kind, channel: 'link', cached: true },
-    });
-    await this.events.log({
-      name: 'share_sent',
-      props: { kind: card.kind, channel: 'telegram' },
     });
 
     return true;

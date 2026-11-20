@@ -1,4 +1,6 @@
 import type {
+  BotApiAnswer,
+  InlineQueryPhotoResult,
   InvoiceLinkParams,
   StarSubscriptionCancelResult,
 } from '../src/modules/telegram/telegram.client';
@@ -22,6 +24,12 @@ export interface FakeTelegram {
   /** Пуши удержания: что отправили и чем ответил «Bot API». */
   /** Картинки, отправленные ботом: карточки шеринга по `/start sh_<short_id>`. */
   readonly photos: { chatId: number | string; photo: string; caption: string }[];
+  /** Ответы на `inline_query` (1.6.9): что бот предложил в чат. */
+  readonly inlineAnswers: { queryId: string; results: readonly InlineQueryPhotoResult[] }[];
+  /** Включён ли inline-режим у «бота»: `getMe().supports_inline_queries`. */
+  inlineMode: boolean;
+  /** `true` — «Bot API недоступен», `getMe` вернёт `ok: false`. */
+  getMeError: boolean;
   readonly pushes: {
     chatId: number | string;
     text: string;
@@ -60,6 +68,11 @@ export interface FakeTelegram {
   answerPreCheckoutQuery(queryId: string, ok: boolean, errorMessage?: string): Promise<void>;
   sendMessage(chatId: number | string, text: string): Promise<void>;
   sendPhoto(chatId: number | string, photo: string, caption: string): Promise<void>;
+  answerInlineQuery(
+    inlineQueryId: string,
+    results: readonly InlineQueryPhotoResult[],
+  ): Promise<void>;
+  getMe(): Promise<BotApiAnswer<{ id: number; username?: string; supports_inline_queries?: boolean }>>;
   refundStarPayment(userId: number, chargeId: string): Promise<boolean>;
   editUserStarSubscription(
     userId: number | null,
@@ -74,6 +87,7 @@ export function makeFakeTelegram(): FakeTelegram {
   const refunds: { userId: number; chargeId: string }[] = [];
   const pushes: FakeTelegram['pushes'] = [];
   const photos: FakeTelegram['photos'] = [];
+  const inlineAnswers: FakeTelegram['inlineAnswers'] = [];
   const starSubscriptionCancels: FakeTelegram['starSubscriptionCancels'] = [];
 
   const fake: FakeTelegram = {
@@ -83,7 +97,10 @@ export function makeFakeTelegram(): FakeTelegram {
     refunds,
     pushes,
     photos,
+    inlineAnswers,
     starSubscriptionCancels,
+    inlineMode: true,
+    getMeError: false,
     pushOutcome: 'sent',
     sendMessageError: null,
     invoiceError: null,
@@ -118,6 +135,29 @@ export function makeFakeTelegram(): FakeTelegram {
     sendPhoto(chatId, photo, caption) {
       photos.push({ chatId, photo, caption });
       return Promise.resolve();
+    },
+    answerInlineQuery(inlineQueryId, results) {
+      inlineAnswers.push({ queryId: inlineQueryId, results });
+      return Promise.resolve();
+    },
+    getMe() {
+      if (fake.getMeError) {
+        return Promise.resolve({
+          reachable: false,
+          ok: false,
+          status: 0,
+          result: null,
+          description: 'unreachable',
+        });
+      }
+
+      return Promise.resolve({
+        reachable: true,
+        ok: true,
+        status: 200,
+        result: { id: 1, username: 'astro_soul_bot', supports_inline_queries: fake.inlineMode },
+        description: null,
+      });
     },
     refundStarPayment(userId, chargeId) {
       refunds.push({ userId, chargeId });

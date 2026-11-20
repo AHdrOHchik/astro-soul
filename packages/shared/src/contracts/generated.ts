@@ -598,6 +598,13 @@ export interface paths {
          *     * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
          *       рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
          *       события отбрасываются на сервере и в БД не попадают;
+         *     * у `share_sent` (1.6.9) `props` закрыты: `{kind, channel}` со
+         *       значениями из `x-event-strict-props`. Неизвестное значение или
+         *       отсутствующее поле — `422` с `field_errors[{field:
+         *       "events.props.<ключ>"}]`, лишние ключи вырезаются. Остальные события
+         *       принимают свободные `props`;
+         *     * имя события — только из `x-analytics-events`: произвольное имя не
+         *       принимается (`422`, весь батч), иначе аналитика стала бы свалкой;
          *     * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
          *       или позже серверного времени более чем на 5 минут — отбрасывается;
          *     * лимит: общий, 60 запросов в минуту; `429` клиент игнорирует.
@@ -983,7 +990,7 @@ export interface paths {
         put?: never;
         /**
          * Карточка для шеринга
-         * @description Отдаёт готовую картинку для чата: `{url, expires_at, caption}`.
+         * @description Отдаёт готовую картинку для чата: `{url, share_url, expires_at, caption}`.
          *
          *     Виды (`ShareCardKind`):
          *       • `day` — 1080×1920: знак Луны, фаза, освещённость, строка «сегодня
@@ -1001,6 +1008,16 @@ export interface paths {
          *     Ссылка в подписи — `t.me/<bot>?start=sh_<short_id>`. `short_id` выводится
          *     из хеша содержимого карточки: ни `user_id`, ни `report_id` в ссылку не
          *     попадают, а две одинаковые карточки дают один файл (кэш по содержимому).
+         *
+         *     `share_url` (1.6.9) — та же ссылка целиком, собранная на сервере из
+         *     `BOT_USERNAME`. Нужна фронту: `short_id` наружу больше нигде не отдаётся,
+         *     а имя бота — конфиг сервера. `share_url` и файловый `url` — разные вещи:
+         *     `url` живёт 24 часа и в шеринг не идёт, `share_url` бессрочная и именно
+         *     она уходит в чат текстом, когда `switchInlineQuery` недоступен.
+         *
+         *     Сервер пишет событие `share_card_created` (`kind`, `bytes`, `cached`,
+         *     `build_ms`) — «карточка отдана». Отправку в чат сервер не видит:
+         *     `share_sent` присылает клиент (`POST /events`).
          *
          *     **Совместимость не шарится.** `kind: "compat"` — `404` с
          *     `details.reason = share_compat_not_available`: данные партнёра — ПДн
@@ -3055,7 +3072,7 @@ export interface components {
              * @description Имя события из `x-analytics-events`
              * @enum {string}
              */
-            name: "app_open" | "onboarding_start" | "onboarding_birth_date_set" | "onboarding_time_set" | "onboarding_place_set" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "mini_reading_view" | "wheel_shared" | "validation_failed" | "validation_failed_client" | "paywall_view" | "checkout_started" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "report_requested" | "report_ready_view" | "forecast_view" | "ask_used" | "quota_exhausted" | "subscription_expired_seen" | "data_deleted" | "error_shown" | "screen_view" | "share_clicked";
+            name: "app_open" | "onboarding_start" | "onboarding_birth_date_set" | "onboarding_time_set" | "onboarding_place_set" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "mini_reading_view" | "wheel_shared" | "validation_failed" | "validation_failed_client" | "paywall_view" | "checkout_started" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "report_requested" | "report_ready_view" | "forecast_view" | "ask_used" | "quota_exhausted" | "subscription_expired_seen" | "data_deleted" | "error_shown" | "screen_view" | "share_clicked" | "share_sent";
             /**
              * Format: date-time
              * @description Время события на устройстве (ISO 8601 с часовым поясом). Так поле
@@ -3074,6 +3091,8 @@ export interface components {
             chart_id?: string | null;
             /**
              * @description Идентификаторы, шаг, код ошибки. Строки до 64 символов.
+             *     У `share_sent` набор закрыт (`x-event-strict-props`):
+             *     `kind` (`day | wheel | insight`) и `channel` (`inline | link`).
              *     Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
              *     `city`, `query`, `date`, `time`, `lat`, `lon`, `tz`, `first_name`,
              *     `username`, `phone`, `email`) запрещены — такое событие отбрасывается.
@@ -3392,15 +3411,38 @@ export interface components {
          */
         ShareCardKind: "day" | "wheel" | "insight";
         /**
-         * @description Готовая карточка: картинка по подписанной ссылке и подпись к ней.
+         * @description Готовая карточка: картинка по подписанной ссылке, постоянная ссылка в
+         *     бота и подпись к ней.
          *
          *     В карточке нет ПДн: ни имени, ни даты/времени/места рождения, ни
          *     координат — ни на картинке, ни в метаданных PNG (EXIF не пишется
          *     вовсе). `url` ведёт на наш домен, а не в хранилище.
+         *
+         *     `url` и `share_url` — разные поля с разным назначением:
+         *
+         *       • `url` — файл. Приватная подписанная ссылка на 24 часа; её
+         *         открывает Telegram при отправке картинки. В шеринг не попадает и
+         *         не должна: у получателя ссылка умрёт через сутки, а подпись в
+         *         пересланном тексте — это утечка доступа к файлу;
+         *       • `share_url` — бот. Постоянная ссылка `t.me/<bot>?start=sh_<short_id>`:
+         *         её отправляют текстом (`switchInlineQuery` недоступен, `openTelegramLink`
+         *         как fallback) и вставляют в чаты. Сроком не ограничена: подпись на
+         *         файл бот выпускает сам в момент открытия.
          */
         ShareCard: {
             /** @description Подписанная ссылка на PNG (TTL 24 часа, продлевается новым запросом). */
             url: string;
+            /**
+             * @description `https://t.me/<bot_username>?start=sh_<short_id>` — постоянная
+             *     ссылка в бота, собранная на сервере из `BOT_USERNAME` (клиент имя
+             *     бота не знает и хардкодить его не должен).
+             *
+             *     Не ссылка на файл: подписи (`sig=`) в ней нет и быть не может.
+             *     `null` — имя бота на сервере не настроено: тогда доступен только
+             *     `switchInlineQuery`, а fallback ссылкой собрать не из чего.
+             * @example https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz
+             */
+            share_url: string | null;
             /** Format: date-time */
             expires_at: string;
             /**

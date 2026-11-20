@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.8
+  version: 1.6.9
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -525,6 +525,35 @@ info:
         длительность;
       • в PDF и в карточках нет персональных данных: ни даты/времени/места
         рождения, ни координат, ни имени. EXIF в PNG не пишется вовсе.
+
+    1.6.9 — события шеринга разведены (итерация 34), а `ShareCard` получил
+    постоянную ссылку. Одно переименование, остальное аддитивно:
+      • **переименовано серверное событие** `share_sent` → `share_card_created`:
+        в 1.6.8 имя `share_sent` означало «карточка сгенерирована и закэширована»
+        (его писал сервер на `POST /share/card`), то есть метрика «поделились»
+        считала генерации, а не отправки. Теперь `share_card_created` — про
+        картинку (`kind`, `bytes`, `build_ms`, `cached`), а отправку сообщает
+        клиент. Данные за прошлые сутки под старым именем не пересчитываются:
+        счётчик «создано карточек» начинается заново, объём данных на тестовом
+        этапе ничтожен;
+      • **новое клиентское событие** `share_sent` (`x-analytics-events`):
+        `props` закрыты — `{kind: day | wheel | insight, channel: inline | link}`
+        (`x-event-strict-props`). Человек нажал «Поделиться» и карточка ушла в
+        чат: единственный источник этого факта — сам клиент, сервер отправку не
+        видит. Неизвестный `kind`/`channel` или отсутствие поля — `422` с
+        `field_errors[{field: "events.props.<ключ>"}]`, лишние ключи
+        вырезаются. Список событий остаётся закрытым;
+      • `ShareCard.share_url` — `https://t.me/<bot>?start=sh_<short_id>`, полная
+        ссылка в бота, собранная на сервере из `BOT_USERNAME`. Сроком не
+        ограничена (подпись на файл бот выпускает сам при открытии) и **не
+        является ссылкой на файл**: файловый `url` остаётся приватным и в
+        шеринг не попадает. `null` — имя бота на сервере не настроено;
+      • обработчик `inline_query`: бот отвечает карточкой на inline-запрос
+        (`switchInlineQuery` работает только при включённом в BotFather
+        inline-режиме; состояние проверяется при старте API по
+        `getMe().supports_inline_queries` и пишется в лог
+        `telegram_inline_mode`). Событий продукта на inline нет: это показ
+        карточки, а не отправка.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1184,7 +1213,7 @@ components:
         name:
           type: string
           description: Имя события из `x-analytics-events`
-          enum: [app_open, onboarding_start, onboarding_birth_date_set, onboarding_time_set, onboarding_place_set, consent_view, consent_accepted, birth_date_done, birth_time_done, birth_place_done, step_back, place_search, place_search_empty, place_search_failed, chart_requested, chart_created, chart_failed, chart_restored, mini_reading_view, wheel_shared, validation_failed, validation_failed_client, paywall_view, checkout_started, checkout_opened, payment_succeeded, payment_cancelled, report_requested, report_ready_view, forecast_view, ask_used, quota_exhausted, subscription_expired_seen, data_deleted, error_shown, screen_view, share_clicked]
+          enum: [app_open, onboarding_start, onboarding_birth_date_set, onboarding_time_set, onboarding_place_set, consent_view, consent_accepted, birth_date_done, birth_time_done, birth_place_done, step_back, place_search, place_search_empty, place_search_failed, chart_requested, chart_created, chart_failed, chart_restored, mini_reading_view, wheel_shared, validation_failed, validation_failed_client, paywall_view, checkout_started, checkout_opened, payment_succeeded, payment_cancelled, report_requested, report_ready_view, forecast_view, ask_used, quota_exhausted, subscription_expired_seen, data_deleted, error_shown, screen_view, share_clicked, share_sent]
         occurred_at:
           type: string
           format: date-time
@@ -1207,6 +1236,8 @@ components:
             type: [string, number, boolean]
           description: |
             Идентификаторы, шаг, код ошибки. Строки до 64 символов.
+            У `share_sent` набор закрыт (`x-event-strict-props`):
+            `kind` (`day | wheel | insight`) и `channel` (`inline | link`).
             Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
             `city`, `query`, `date`, `time`, `lat`, `lon`, `tz`, `first_name`,
             `username`, `phone`, `email`) запрещены — такое событие отбрасывается.
@@ -1600,17 +1631,40 @@ components:
 
     ShareCard:
       type: object
-      required: [url, expires_at, caption]
+      required: [url, share_url, expires_at, caption]
       description: |-
-        Готовая карточка: картинка по подписанной ссылке и подпись к ней.
+        Готовая карточка: картинка по подписанной ссылке, постоянная ссылка в
+        бота и подпись к ней.
 
         В карточке нет ПДн: ни имени, ни даты/времени/места рождения, ни
         координат — ни на картинке, ни в метаданных PNG (EXIF не пишется
         вовсе). `url` ведёт на наш домен, а не в хранилище.
+
+        `url` и `share_url` — разные поля с разным назначением:
+
+          • `url` — файл. Приватная подписанная ссылка на 24 часа; её
+            открывает Telegram при отправке картинки. В шеринг не попадает и
+            не должна: у получателя ссылка умрёт через сутки, а подпись в
+            пересланном тексте — это утечка доступа к файлу;
+          • `share_url` — бот. Постоянная ссылка `t.me/<bot>?start=sh_<short_id>`:
+            её отправляют текстом (`switchInlineQuery` недоступен, `openTelegramLink`
+            как fallback) и вставляют в чаты. Сроком не ограничена: подпись на
+            файл бот выпускает сам в момент открытия.
       properties:
         url:
           type: string
           description: Подписанная ссылка на PNG (TTL 24 часа, продлевается новым запросом).
+        share_url:
+          type: [string, 'null']
+          description: |-
+            `https://t.me/<bot_username>?start=sh_<short_id>` — постоянная
+            ссылка в бота, собранная на сервере из `BOT_USERNAME` (клиент имя
+            бота не знает и хардкодить его не должен).
+
+            Не ссылка на файл: подписи (`sig=`) в ней нет и быть не может.
+            `null` — имя бота на сервере не настроено: тогда доступен только
+            `switchInlineQuery`, а fallback ссылкой собрать не из чего.
+          example: https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz
         expires_at:
           type: string
           format: date-time
@@ -2077,6 +2131,13 @@ paths:
         * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
           рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
           события отбрасываются на сервере и в БД не попадают;
+        * у `share_sent` (1.6.9) `props` закрыты: `{kind, channel}` со
+          значениями из `x-event-strict-props`. Неизвестное значение или
+          отсутствующее поле — `422` с `field_errors[{field:
+          "events.props.<ключ>"}]`, лишние ключи вырезаются. Остальные события
+          принимают свободные `props`;
+        * имя события — только из `x-analytics-events`: произвольное имя не
+          принимается (`422`, весь батч), иначе аналитика стала бы свалкой;
         * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
           или позже серверного времени более чем на 5 минут — отбрасывается;
         * лимит: общий, 60 запросов в минуту; `429` клиент игнорирует.
@@ -2303,7 +2364,7 @@ paths:
       tags: [share]
       summary: Карточка для шеринга
       description: |-
-        Отдаёт готовую картинку для чата: `{url, expires_at, caption}`.
+        Отдаёт готовую картинку для чата: `{url, share_url, expires_at, caption}`.
 
         Виды (`ShareCardKind`):
           • `day` — 1080×1920: знак Луны, фаза, освещённость, строка «сегодня
@@ -2321,6 +2382,16 @@ paths:
         Ссылка в подписи — `t.me/<bot>?start=sh_<short_id>`. `short_id` выводится
         из хеша содержимого карточки: ни `user_id`, ни `report_id` в ссылку не
         попадают, а две одинаковые карточки дают один файл (кэш по содержимому).
+
+        `share_url` (1.6.9) — та же ссылка целиком, собранная на сервере из
+        `BOT_USERNAME`. Нужна фронту: `short_id` наружу больше нигде не отдаётся,
+        а имя бота — конфиг сервера. `share_url` и файловый `url` — разные вещи:
+        `url` живёт 24 часа и в шеринг не идёт, `share_url` бессрочная и именно
+        она уходит в чат текстом, когда `switchInlineQuery` недоступен.
+
+        Сервер пишет событие `share_card_created` (`kind`, `bytes`, `cached`,
+        `build_ms`) — «карточка отдана». Отправку в чат сервер не видит:
+        `share_sent` присылает клиент (`POST /events`).
 
         **Совместимость не шарится.** `kind: "compat"` — `404` с
         `details.reason = share_compat_not_available`: данные партнёра — ПДн
@@ -3355,6 +3426,12 @@ paths:
 # помечены в x-event-aliases. В 1.6.0 останется по одному имени на шаг, второй
 # будет удалён — это отдельный PR, после того как фронт подтвердит фактические
 # имена в отчёте.
+# События, которые присылает клиент (`POST /events`). Список закрытый: имя вне
+# него — `422` на весь батч. `share_sent` (1.6.9) — единственное событие с
+# закрытыми `props` (см. `x-event-strict-props`).
+#
+# Комментарии внутри списка не ставить: тесты фронта читают его построчно и
+# останавливаются на первой строке, которая не `  - имя`.
 x-analytics-events:
   - app_open
   - onboarding_start
@@ -3393,6 +3470,7 @@ x-analytics-events:
   - error_shown
   - screen_view
   - share_clicked
+  - share_sent
 
 # Пары «одно и то же событие под двумя именами»: слева — имя, справа — синоним.
 # Живут только до 1.6.0. Считать воронку по объединению пар, а не выборочно.
@@ -3440,7 +3518,7 @@ x-analytics-server-events:
   - pdf_failed
   - pdf_downloaded
   - share_card_opened
-  - share_sent
+  - share_card_created
 # payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
 #                    invoice_invalidated | user_deleted | refund_failed)
 #                    refund_failed означает: отказ записан, но звёзды вернуть
@@ -3478,6 +3556,15 @@ x-analytics-server-events:
 #                    из приложения — заполнен. Повтор идёт в
 #                    `pdn_retention_cleanup`; после 5 неудач —
 #                    `subscriptions.telegram_cancel_state = 'gave_up'`.
+# share_card_created — props: kind, bytes, cached, build_ms (есть, когда карточка
+#                    реально нарисована; у кэш-попадания его нет).
+#                    «Мы отдали картинку»: `POST /share/card` отдал файл. Это
+#                    НЕ отправка в чат — отправку сообщает клиент (`share_sent`),
+#                    иначе метрика «поделились» считала бы генерации, как было
+#                    до 1.6.9. Ни получателя, ни текста в событии нет.
+# share_card_opened — props: kind, channel (link | miniapp), cached.
+#                    Человек перешёл по `t.me/<bot>?start=sh_<short_id>`:
+#                    переход сервер видит, отправку — нет.
 
 # Ключи, которых не может быть в `props` события (`POST /events`).
 # Совпадает с BANNED_PROP_KEYS в apps/api/src/modules/events/events.dto.ts:
@@ -3501,6 +3588,17 @@ x-events-forbidden-prop-keys:
   - username
   - phone
   - email
+
+# События с закрытым набором свойств (`POST /events`): значение вне списка или
+# отсутствующее поле — `422` с `field_errors[{field: "events.props.<ключ>"}]`,
+# лишние ключи вырезаются и в БД не попадают.
+# Совпадает с STRICT_PROPS в apps/api/src/modules/events/events.dto.ts.
+# Остальные клиентские события принимают свободные `props` (кроме запрещённых
+# ключей ПДн) — но не свободные имена: список `x-analytics-events` закрыт.
+x-event-strict-props:
+  share_sent:
+    kind: [day, wheel, insight]
+    channel: [inline, link]
 
 # Шаблон ссылки шаринга на конкретную карту. `{username}` — имя бота из
 # `BOT_USERNAME` сервера (без `@`), `{chart_id}` — `Chart.chart_id`.

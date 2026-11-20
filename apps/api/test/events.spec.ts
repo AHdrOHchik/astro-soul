@@ -135,16 +135,92 @@ describe('POST /api/v1/events', () => {
       .expect(401);
   });
 
-  it('список событий в коде совпадает с контрактом 1.6.8: 37 штук без дублей', () => {
-    expect(ANALYTICS_EVENTS).toHaveLength(37);
-    expect(new Set(ANALYTICS_EVENTS).size).toBe(37);
+  it('список событий в коде совпадает с контрактом 1.6.9: 38 штук без дублей', () => {
+    expect(ANALYTICS_EVENTS).toHaveLength(38);
+    expect(new Set(ANALYTICS_EVENTS).size).toBe(38);
     // QA: `validation_failed_client` теперь в контракте, и сервер его принимает.
     expect(ANALYTICS_EVENTS).toContain('validation_failed_client');
-    // 1.6.8: события PDF и карточек пишет сервер, поэтому в клиентском списке
-    // их нет — иначе фронт смог бы их подделать, а контракт разошёлся бы с
-    // `apps/web` (там список сверяется тестом).
+    // 1.6.9: `share_sent` — клиентское событие («человек отправил»), а
+    // `share_card_created` и `share_card_opened` — серверные. Два набора не
+    // пересекаются: одно имя в двух наборах гарантирует путаницу в отчётах.
+    expect(ANALYTICS_EVENTS).toContain('share_sent');
     expect(ANALYTICS_EVENTS).not.toContain('share_card_opened');
-    expect(ANALYTICS_EVENTS).not.toContain('share_sent');
+    expect(ANALYTICS_EVENTS).not.toContain('share_card_created');
+  });
+
+  it('`share_sent` от клиента принимается: 202 и запись с `kind`/`channel`', async () => {
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ events: [event('share_sent', { kind: 'day', channel: 'inline' })] })
+      .expect(202);
+
+    expect(response.body).toEqual({ accepted: 1 });
+
+    const rows = await ctx.db.query<{ name: string; props: Record<string, unknown> }>(
+      'SELECT name, props FROM events',
+    );
+    expect(rows.map((row) => row.name)).toEqual(['share_sent']);
+    expect(rows[0]?.props).toEqual({ kind: 'day', channel: 'inline' });
+  });
+
+  it('`share_sent` с `kind: "compat"` → 422: такой карточки не существует', async () => {
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ events: [event('share_sent', { kind: 'compat', channel: 'inline' })] })
+      .expect(422);
+
+    expect(response.body.code).toBe('VALIDATION_FAILED');
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'events.props.kind', message: 'Вид карточки — day, wheel или insight' },
+    ]);
+
+    const rows = await ctx.db.query('SELECT 1 FROM events');
+    expect(rows).toHaveLength(0);
+  });
+
+  it('`share_sent` без свойств → 422, а лишние свойства вырезаются', async () => {
+    const missing = await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ events: [event('share_sent')] })
+      .expect(422);
+
+    const missingFields = (missing.body as { details: { field_errors: { field: string }[] } }).details
+      .field_errors.map((error) => error.field);
+    expect(missingFields).toEqual(['events.props.kind', 'events.props.channel']);
+
+    // Лишнее поле в `props` — не ошибка: контракт знает про `kind`/`channel`,
+    // остальное в БД не попадает. Так «на всякий случай» присланная ссылка на
+    // файл не осядет в аналитике.
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({
+        events: [
+          event('share_sent', { kind: 'wheel', channel: 'link', url: 'https://api.test/files/x?sig=1' }),
+        ],
+      })
+      .expect(202);
+
+    const rows = await ctx.db.query<{ props: Record<string, unknown> }>(
+      "SELECT props FROM events WHERE name = 'share_sent'",
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.props).toEqual({ kind: 'wheel', channel: 'link' });
+  });
+
+  it('неизвестный канал отправки → 422: свободные свойства у `share_sent` не проходят', async () => {
+    const response = await request(ctx.app.getHttpServer())
+      .post('/api/v1/events')
+      .set(INIT_DATA_HEADER, initData())
+      .send({ events: [event('share_sent', { kind: 'day', channel: 'telegram' })] })
+      .expect(422);
+
+    expect(response.body.details.field_errors).toEqual([
+      { field: 'events.props.channel', message: 'Канал отправки — inline или link' },
+    ]);
   });
 
   it('validation_failed_client принимается, а серверное событие — нет', async () => {
