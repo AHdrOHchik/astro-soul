@@ -1016,6 +1016,131 @@ describe('подписка: одна совместимость в 30 дней',
   });
 });
 
+describe('список совместимостей: `failed` в историю не попадает (1.6.7)', () => {
+  it('ready и pending в списке, failed — нет; по id failed доступен и посчитан в метрике', async () => {
+    const fixture = await userWithChart();
+
+    // Товар: купленная и готовая совместимость.
+    await grantCompat(fixture);
+    const readyAccepted = await orderCompat(fixture, 'list-ready').expect(202);
+    const ready = await waitFor(readyAccepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+
+    // Провал: пустой ответ модели — та же причина `format`, что в тесте квоты.
+    await grantCompat(fixture);
+    spyOnLogs();
+    llmAnswer = () => '';
+    const failedAccepted = await orderCompat(fixture, 'list-failed').expect(202);
+    const failed = await waitFor(failedAccepted.body.compatibility_id as string, [
+      'ready',
+      'failed',
+    ]);
+    expect(failed.body.status).toBe('failed');
+    llmAnswer = null;
+
+    // Незавершённый заказ живёт секунды. Гонку с воркером в тесте не
+    // воспроизводим: ставим строку напрямую тем же статусом, что пишет
+    // конвейер внутри (`planning` → в ответе `pending`).
+    await ctx.db.query(
+      `INSERT INTO reports (chart_id, user_id, kind, status,
+                            report_structure_version, prompt_version)
+       VALUES ($1, $2, 'compat', 'planning', 'v1', $3)`,
+      [fixture.chartId, fixture.userId, COMPAT_PROMPT_VERSION],
+    );
+
+    const list = await request(ctx.app.getHttpServer())
+      .get('/api/v1/compatibility')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    // Четыре записи в БД, две в списке: `failed` скрыт, `pending` нужен для
+    // восстановления экрана. Длина списка — и есть счётчик после фильтра:
+    // отдельного `total` в схеме нет (схемы в 1.6.7 не меняются).
+    expect(list.body.items).toHaveLength(2);
+    expect((list.body.items as { status: string }[]).map((item) => item.status).sort()).toEqual([
+      'pending',
+      'ready',
+    ]);
+    expect(
+      (list.body.items as { id: string }[]).some((item) => item.id === failed.body.id),
+    ).toBe(false);
+
+    // Провал не тронул право: кредит на месте.
+    expect(list.body.quota).toMatchObject({ kind: 'purchase', left: 1 });
+    const credit = await ctx.db.query<{ used_at: Date | null }>(
+      `SELECT used_at FROM entitlements WHERE kind = 'compat'`,
+    );
+    expect(credit.filter((row) => row.used_at !== null)).toHaveLength(1);
+
+    // Прямая ссылка не фильтруется: воркер, QA и разбор инцидентов видят cause.
+    const byId = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/compatibility/${failed.body.id}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(byId.body.status).toBe('failed');
+    expect(byId.body.error_code).toBe('format');
+
+    // Скрытый из истории провал обязан остаться в логе — с причиной.
+    const failedLine = logLines.find((line) => line.includes('compat_failed'));
+    expect(failedLine).toBeDefined();
+    expect(failedLine).toContain('"reason":"format"');
+    expect(failedLine).toContain('"code":"format"');
+
+    // И провал виден в метрике — иначе он не виден нигде, кроме лога.
+    const metrics = await request(ctx.app.getHttpServer())
+      .get('/api/v1/admin/metrics')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(metrics.body.compat_failed_24h).toBe(1);
+  });
+
+  it('чужой провал не виден ни в списке, ни по ссылке', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+    llmAnswer = () => '';
+    const accepted = await orderCompat(fixture, 'list-own-failed').expect(202);
+    const ownFailed = await waitFor(accepted.body.compatibility_id as string, ['failed']);
+    llmAnswer = null;
+
+    // Второй человек с такой же картой: копируем строку целиком, чтобы не
+    // собирать расчёт по частям, — тест про фильтр, а не про астрологию.
+    const other = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO users (id, telegram_id, language_code)
+       VALUES (gen_random_uuid(), 999001, 'ru') RETURNING id`,
+    );
+    const otherChart = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO charts (user_id, input_hash, data, engine_version, time_known, warnings)
+       SELECT $1, input_hash, data, engine_version, time_known, warnings
+         FROM charts WHERE id = $2
+       RETURNING id`,
+      [other?.id, fixture.chartId],
+    );
+    const foreign = await ctx.db.queryOne<{ id: string }>(
+      `INSERT INTO reports (chart_id, user_id, kind, status,
+                            report_structure_version, prompt_version)
+       VALUES ($1, $2, 'compat', 'failed', 'v1', $3)
+       RETURNING id`,
+      [otherChart?.id, other?.id, COMPAT_PROMPT_VERSION],
+    );
+
+    const list = await request(ctx.app.getHttpServer())
+      .get('/api/v1/compatibility')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(list.body.items).toHaveLength(0);
+
+    // Свой провал — по id (200), чужой — 404: ссылка не обходит владение.
+    await request(ctx.app.getHttpServer())
+      .get(`/api/v1/compatibility/${ownFailed.body.id}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    await request(ctx.app.getHttpServer())
+      .get(`/api/v1/compatibility/${foreign?.id}`)
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(404);
+  });
+});
+
 describe('ПДн партнёра', () => {
   it('не уходят в промпт: модель видит факты пары, а не дату и место', async () => {
     const fixture = await userWithChart();

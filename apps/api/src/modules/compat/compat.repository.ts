@@ -269,11 +269,26 @@ export class CompatRepository {
     );
   }
 
+  /**
+   * История совместимостей для человека (контракт 1.6.7).
+   *
+   * `ready` и незавершённые (`queued`/`planning`/`writing` → в ответе
+   * `pending`) отдаются, `failed` и `refunded` — **никогда**. Решение
+   * владельца: неудачная попытка — наша внутренняя история, а не товар; в
+   * приложении она читается как «я заплатил и получил ошибку», даже когда
+   * кредит не списан. По `id` такая запись по-прежнему доступна
+   * (`GET /compatibility/{id}`): это нужно воркеру, QA и разбору инцидентов.
+   *
+   * Фильтр стоит в SQL **до** `LIMIT`: если появится пагинация или `total`,
+   * они обязаны считаться от того же набора, иначе счётчик и список
+   * разойдутся.
+   */
   async listForUser(userId: string, limit = 20): Promise<CompatReportRow[]> {
     return this.db.query<CompatReportRow>(
       `SELECT ${COLUMNS} FROM reports r
          LEFT JOIN compat_partners p ON p.id = r.compat_partner_id
         WHERE r.user_id = $1 AND r.kind = 'compat'
+          AND r.status NOT IN ('failed', 'refunded')
         ORDER BY r.created_at DESC
         LIMIT $2`,
       [userId, limit],

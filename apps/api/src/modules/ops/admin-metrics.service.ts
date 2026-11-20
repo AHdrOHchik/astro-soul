@@ -172,6 +172,15 @@ export interface ProductMetrics {
    * о чём карта не отвечает).
    */
   readonly questions_refused_by_reason: Readonly<Record<string, number>>;
+  /**
+   * Провалы совместимости за 24 часа (1.6.7).
+   *
+   * С 1.6.7 неудачный заказ не виден человеку в `GET /compatibility` — и
+   * именно поэтому цифра нужна здесь: без неё провал не был бы виден нигде,
+   * кроме лога. Считается по `reports.updated_at`, как и `compat_failed_30d`:
+   * провал фиксируется обновлением строки.
+   */
+  readonly compat_failed_24h: number;
   readonly questions_cost_rub_24h: number;
   /**
    * p95 времени ответа на вопрос, миллисекунды.
@@ -451,6 +460,7 @@ export class AdminMetricsService {
           questionsRefusedByReason: Record<string, number>;
           questionsCost: string;
           questionP95: number;
+          compatFailed: number;
         }>(
           `SELECT
              (SELECT count(*)::int FROM events
@@ -488,7 +498,10 @@ export class AdminMetricsService {
                         WITHIN GROUP (ORDER BY duration_ms), 0)::int
                 FROM questions
                WHERE duration_ms IS NOT NULL
-                 AND created_at >= now() - interval '24 hours') AS "questionP95"`,
+                 AND created_at >= now() - interval '24 hours') AS "questionP95",
+             (SELECT count(*)::int FROM reports
+               WHERE kind = 'compat' AND status = 'failed'
+                 AND updated_at >= now() - interval '24 hours') AS "compatFailed"`,
         ),
       ]);
 
@@ -575,6 +588,7 @@ export class AdminMetricsService {
       questions_failed_24h: daily?.questionsFailed ?? 0,
       questions_refused_24h: daily?.questionsRefused ?? 0,
       questions_refused_by_reason: daily?.questionsRefusedByReason ?? {},
+      compat_failed_24h: daily?.compatFailed ?? 0,
       questions_cost_rub_24h: Math.round(Number(daily?.questionsCost ?? 0) * 10_000) / 10_000,
       question_p95_ms: daily?.questionP95 ?? 0,
     };

@@ -109,12 +109,27 @@ export class QuestionsRepository {
     );
   }
 
-  /** История: свежие сверху, только готовые и отказы (pending не показываем). */
+  /**
+   * История вопросов (контракт 1.6.7): `ready`, `refused`, `pending`.
+   *
+   * `failed` в список не попадает — решение владельца: сбой генерации это наша
+   * внутренняя история, а не ответ карты. Человек видел бы «я спросил и
+   * получил ошибку», хотя квота за неудачу не списывается (её возвращает
+   * `QuestionsService`).
+   *
+   * `pending` наоборот отдаётся: по нему клиент восстанавливает экран после
+   * закрытия мини-аппа и отличает `409 question_in_progress` от «вопроса не
+   * было». `refused` — настоящий ответ («про здоровье не отвечаю»), его прятать
+   * нельзя: человек должен видеть, что спросил и получил ответ.
+   *
+   * Фильтр в SQL — до `LIMIT`: счётчики и будущая пагинация считаются от того
+   * же набора, что и список.
+   */
   async list(userId: string, limit: number): Promise<QuestionRow[]> {
     return this.db.query<QuestionRow>(
       `SELECT ${COLUMNS}
          FROM questions
-        WHERE user_id = $1 AND status IN ('ready', 'refused', 'failed')
+        WHERE user_id = $1 AND status IN ('ready', 'refused', 'pending')
         ORDER BY created_at DESC, id DESC
         LIMIT $2`,
       [userId, limit],
