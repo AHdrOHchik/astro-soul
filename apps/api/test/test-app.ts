@@ -20,7 +20,16 @@ export interface TestContextOptions {
   /** Подмена сайдкара движка: в тестах не поднимаем Python-процесс. */
   readonly astro?: Pick<
     AstroClient,
-    'createChart' | 'transits' | 'synastry' | 'wheelSvg' | 'health' | 'isConfigured' | 'forecastFacts'
+    | 'createChart'
+    | 'transits'
+    | 'synastry'
+    | 'wheelSvg'
+    | 'wheelPng'
+    | 'buildPdf'
+    | 'buildCard'
+    | 'health'
+    | 'isConfigured'
+    | 'forecastFacts'
   >;
   /** Подмена Bot API: никаких сетевых вызовов в тестах. */
   readonly telegram?: Pick<
@@ -28,6 +37,7 @@ export interface TestContextOptions {
     | 'createInvoiceLink'
     | 'answerPreCheckoutQuery'
     | 'sendMessage'
+    | 'sendPhoto'
     | 'refundStarPayment'
     | 'editUserStarSubscription'
   >;
@@ -94,6 +104,11 @@ const TABLES = [
   'daily_forecasts',
   'questions',
   'question_usage',
+  // Итерация 32: PDF и карточки шеринга. Строки каскадятся от `reports` и
+  // `users`, но `share_cards` ни к чему не привязана — её чистим явно, иначе
+  // кэш по содержимому «переживает» тесты и второй прогон видит готовый файл.
+  'report_pdfs',
+  'share_cards',
   // Партнёр совместимости: у него нет FK на `charts`, но есть на `users`,
   // поэтому TRUNCATE users не всегда доходит до него в том же порядке.
   'compat_partners',

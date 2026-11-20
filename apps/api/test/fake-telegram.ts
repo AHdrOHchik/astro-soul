@@ -20,6 +20,8 @@ export interface FakeTelegram {
     chargeId: string | null;
   }[];
   /** Пуши удержания: что отправили и чем ответил «Bot API». */
+  /** Картинки, отправленные ботом: карточки шеринга по `/start sh_<short_id>`. */
+  readonly photos: { chatId: number | string; photo: string; caption: string }[];
   readonly pushes: {
     chatId: number | string;
     text: string;
@@ -57,6 +59,7 @@ export interface FakeTelegram {
   createInvoiceLink(params: InvoiceLinkParams): Promise<string>;
   answerPreCheckoutQuery(queryId: string, ok: boolean, errorMessage?: string): Promise<void>;
   sendMessage(chatId: number | string, text: string): Promise<void>;
+  sendPhoto(chatId: number | string, photo: string, caption: string): Promise<void>;
   refundStarPayment(userId: number, chargeId: string): Promise<boolean>;
   editUserStarSubscription(
     userId: number | null,
@@ -70,6 +73,7 @@ export function makeFakeTelegram(): FakeTelegram {
   const messages: { chatId: number | string; text: string }[] = [];
   const refunds: { userId: number; chargeId: string }[] = [];
   const pushes: FakeTelegram['pushes'] = [];
+  const photos: FakeTelegram['photos'] = [];
   const starSubscriptionCancels: FakeTelegram['starSubscriptionCancels'] = [];
 
   const fake: FakeTelegram = {
@@ -78,6 +82,7 @@ export function makeFakeTelegram(): FakeTelegram {
     messages,
     refunds,
     pushes,
+    photos,
     starSubscriptionCancels,
     pushOutcome: 'sent',
     sendMessageError: null,
@@ -108,6 +113,10 @@ export function makeFakeTelegram(): FakeTelegram {
         return Promise.reject(fake.sendMessageError);
       }
 
+      return Promise.resolve();
+    },
+    sendPhoto(chatId, photo, caption) {
+      photos.push({ chatId, photo, caption });
       return Promise.resolve();
     },
     refundStarPayment(userId, chargeId) {

@@ -8,6 +8,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { VerifiedInitData } from '../auth/init-data';
@@ -48,8 +49,12 @@ export class CompatController {
    * как пустой параметр и ответит 404 вместо истории.
    */
   @Get()
-  async list(@CurrentUser() auth: VerifiedInitData): Promise<CompatibilityListView> {
-    return this.compat.list(auth);
+  async list(
+    @CurrentUser() auth: VerifiedInitData,
+    @Query('limit') limit: string | undefined,
+    @Query('offset') offset: string | undefined,
+  ): Promise<CompatibilityListView> {
+    return this.compat.list(auth, limit, offset);
   }
 
   @Get(':compatibilityId')

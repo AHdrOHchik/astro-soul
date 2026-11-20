@@ -190,6 +190,28 @@ export interface ProductMetrics {
    * ожидании после `202`.
    */
   readonly question_p95_ms: number;
+  /**
+   * PDF разбора за сутки (1.6.8).
+   *
+   * `pdf_generated_24h` и `pdf_failed_24h` считаются по таблице `report_pdfs`
+   * (`updated_at` — момент, когда строка стала `ready`/`failed`), а
+   * `pdf_downloaded_24h` — по событиям: скачивание не меняет строку, только
+   * увеличивает счётчик, и времени у него в таблице нет.
+   *
+   * `pdf_cost_rub_24h` — **ноль по построению**: документ собирается на CPU
+   * нашим же кодом (reportlab + Pillow), модель не вызывается. Переменная
+   * оставлена в контракте намеренно: если PDF когда-нибудь начнёт звать
+   * модель (например, для вступления), стоимость должна появиться здесь, а не
+   * в отдельном месте, о котором забыли.
+   *
+   * `pdf_build_p95_ms` — цена в другом смысле: время сборки. Для CPU-работы
+   * это и есть «стоимость» — секунды сайдкара, которые кто-то ждёт.
+   */
+  readonly pdf_generated_24h: number;
+  readonly pdf_downloaded_24h: number;
+  readonly pdf_failed_24h: number;
+  readonly pdf_cost_rub_24h: number;
+  readonly pdf_build_p95_ms: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -461,6 +483,10 @@ export class AdminMetricsService {
           questionsCost: string;
           questionP95: number;
           compatFailed: number;
+          pdfGenerated: number;
+          pdfDownloaded: number;
+          pdfFailed: number;
+          pdfBuildP95: number;
         }>(
           `SELECT
              (SELECT count(*)::int FROM events
@@ -501,7 +527,21 @@ export class AdminMetricsService {
                  AND created_at >= now() - interval '24 hours') AS "questionP95",
              (SELECT count(*)::int FROM reports
                WHERE kind = 'compat' AND status = 'failed'
-                 AND updated_at >= now() - interval '24 hours') AS "compatFailed"`,
+                 AND updated_at >= now() - interval '24 hours') AS "compatFailed",
+             (SELECT count(*)::int FROM report_pdfs
+               WHERE status = 'ready'
+                 AND updated_at >= now() - interval '24 hours') AS "pdfGenerated",
+             (SELECT count(*)::int FROM events
+               WHERE name = 'pdf_downloaded'
+                 AND created_at >= now() - interval '24 hours') AS "pdfDownloaded",
+             (SELECT count(*)::int FROM report_pdfs
+               WHERE status = 'failed'
+                 AND updated_at >= now() - interval '24 hours') AS "pdfFailed",
+             (SELECT COALESCE(percentile_cont(0.95)
+                        WITHIN GROUP (ORDER BY build_ms), 0)::int
+                FROM report_pdfs
+               WHERE status = 'ready' AND build_ms IS NOT NULL
+                 AND updated_at >= now() - interval '24 hours') AS "pdfBuildP95"`,
         ),
       ]);
 
@@ -591,6 +631,12 @@ export class AdminMetricsService {
       compat_failed_24h: daily?.compatFailed ?? 0,
       questions_cost_rub_24h: Math.round(Number(daily?.questionsCost ?? 0) * 10_000) / 10_000,
       question_p95_ms: daily?.questionP95 ?? 0,
+      pdf_generated_24h: daily?.pdfGenerated ?? 0,
+      pdf_downloaded_24h: daily?.pdfDownloaded ?? 0,
+      pdf_failed_24h: daily?.pdfFailed ?? 0,
+      // Ноль — не «не посчитали», а факт: сборка PDF не тратит токенов.
+      pdf_cost_rub_24h: 0,
+      pdf_build_p95_ms: daily?.pdfBuildP95 ?? 0,
     };
   }
 }

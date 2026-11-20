@@ -6,6 +6,7 @@ import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { ApiError, notFound, validationFailed } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
+import { pageLimit, pageOffset } from '../../common/paging';
 import { ChartsRepository } from '../charts/charts.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
@@ -58,6 +59,11 @@ export interface QuestionView {
 export interface QuestionList {
   readonly items: readonly QuestionView[];
   readonly quota: QuestionQuota;
+  /** Сколько записей всего (после фильтра, до `LIMIT`). */
+  readonly total: number;
+  /** Сколько запрошено и с какого смещения — чтобы клиент не гадал. */
+  readonly limit: number;
+  readonly offset: number;
 }
 
 export interface QuestionAccepted {
@@ -200,14 +206,28 @@ export class QuestionsService {
   }
 
   /** `GET /api/v1/questions?limit=20`. */
-  async list(auth: VerifiedInitData, limit: string | undefined): Promise<QuestionList> {
+  async list(
+    auth: VerifiedInitData,
+    limit: string | undefined,
+    offset?: string,
+  ): Promise<QuestionList> {
     const userId = this.users.userIdFor(auth.telegramUserId);
-    const size = Math.min(QUESTIONS_PAGE_MAX, Math.max(1, Number(limit ?? QUESTIONS_PAGE_MAX) || QUESTIONS_PAGE_MAX));
+    const size = pageLimit(limit, QUESTIONS_PAGE_MAX);
+    const skip = pageOffset(offset);
 
-    const rows = await this.repo.list(userId, size);
-    const quota = await this.quota(userId, await this.localContext(userId));
+    const [rows, total, quota] = await Promise.all([
+      this.repo.list(userId, size, skip),
+      this.repo.count(userId),
+      this.quota(userId, await this.localContext(userId)),
+    ]);
 
-    return { items: rows.map((row) => this.toView(row, quota)), quota };
+    return {
+      items: rows.map((row) => this.toView(row, quota)),
+      quota,
+      total,
+      limit: size,
+      offset: skip,
+    };
   }
 
   /**

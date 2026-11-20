@@ -7,6 +7,8 @@ import { UsersRepository } from '../users/users.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { QuotasService } from '../quotas/quotas.service';
 import { EventsRepository } from '../events/events.repository';
+import { FileStorageService } from '../files/file-storage.service';
+import { PdfRepository } from '../pdf/pdf.repository';
 import { PaymentsService } from '../billing/payments.service';
 import { SubscriptionCancelService } from '../billing/subscription-cancel.service';
 import { APP_ENV } from '../../config/env.module';
@@ -38,6 +40,8 @@ export class MeService {
     @Inject(QuotasService) private readonly quotas: QuotasService,
     @Inject(DbService) private readonly db: DbService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
+    @Inject(PdfRepository) private readonly pdfs: PdfRepository,
+    @Inject(FileStorageService) private readonly storage: FileStorageService,
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(SubscriptionCancelService) private readonly subscriptionCancel: SubscriptionCancelService,
     @Inject(APP_ENV) private readonly env: AppEnv,
@@ -158,6 +162,12 @@ export class MeService {
   async deleteMe(auth: VerifiedInitData): Promise<void> {
     const userId = this.users.userIdFor(auth.telegramUserId);
 
+    // Ключи файлов читаются **до** транзакции: `report_pdfs` уйдёт каскадом
+    // вместе с пользователем, и после коммита узнать имена файлов будет негде.
+    // PDF разбора — это текст разбора целиком, то есть самые персональные
+    // данные из всего, что мы храним: файл обязан исчезнуть вместе со строкой.
+    const pdfKeys = await this.pdfs.keysForUser(userId);
+
     await this.resolvePendingPayments(userId);
     await this.refundStillPendingPayments(userId);
 
@@ -263,7 +273,21 @@ export class MeService {
         telegram_cancel_state: cancel.state,
         compatibilities_deleted: compatRows.rowCount ?? 0,
         compat_partners_deleted: partnerRows.rowCount ?? 0,
+        pdf_keys_deleted: pdfKeys.length,
       });
+    });
+
+    // 3. Файлы на диске — после коммита, но в том же обработчике.
+    //
+    // Почему после, а не внутри: удаление файла нельзя откатить транзакцией,
+    // поэтому «сначала БД, потом диск» — единственный порядок, при котором
+    // сбой диска оставляет недостижимый мусор, а не живую ссылку на удалённые
+    // данные. Ошибка удаления не роняет `DELETE /me`: право на удаление
+    // первично, а факт пишется в лог и в метрику.
+    const removedFiles = await this.storage.removeMany(pdfKeys);
+    this.logger.info('account_files_deleted', {
+      pdf_files: pdfKeys.length,
+      pdf_files_removed: removedFiles,
     });
 
     await this.events.log({ name: 'account_deleted' });

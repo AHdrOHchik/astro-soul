@@ -37,6 +37,65 @@ export function buildMiniAppUrl(miniAppUrl: string | undefined, chartId: string)
 }
 
 /**
+ * `sh_<short_id>` — метка карточки шеринга (контракт 1.6.8).
+ *
+ * Отдельный префикс, а не `chart_`: по ссылке `t.me/<bot>?start=sh_…` бот
+ * показывает карточку, которую человек переслал, а не чужую карту. `short_id`
+ * выводится из хеша содержимого карточки, поэтому ни `user_id`, ни `report_id`
+ * в ссылку не попадают.
+ */
+export const SHARE_START_PREFIX = 'sh_';
+
+/**
+ * Алфавит `short_id` — без `0`, `1`, `o`, `l`: метку диктуют голосом и
+ * перепечатывают руками, а эти символы читаются неоднозначно.
+ */
+const SHORT_ID_PATTERN = /^[abcdefghijkmnpqrstuvwxyz23456789]{10}$/u;
+
+/**
+ * Ссылка на бота с карточкой: `https://t.me/<bot>?start=sh_<short_id>`.
+ *
+ * `null` без имени бота — по той же причине, что и у карты: битая ссылка хуже
+ * отсутствующей.
+ */
+export function buildShareCardLink(
+  botUsername: string | undefined,
+  shortId: string,
+): string | null {
+  if (botUsername === undefined || botUsername === '') {
+    return null;
+  }
+
+  return `https://t.me/${botUsername}?start=${SHARE_START_PREFIX}${shortId}`;
+}
+
+/**
+ * Разбор `/start sh_<short_id>`.
+ *
+ * Возвращает `short_id`, если метка похожа на нашу: только буквы и цифры из
+ * алфавита `shortIdOf`, ровно 10 символов. Всё остальное (в том числе
+ * `chart_…`) — `null`: обработчик карты по-прежнему получает свой префикс.
+ */
+export function parseStartShareShortId(text: string | undefined): string | null {
+  if (text === undefined) {
+    return null;
+  }
+
+  const parts = text.trim().split(/\s+/);
+  if (parts[0] !== '/start' || parts.length !== 2) {
+    return null;
+  }
+
+  const value = parts[1] ?? '';
+  if (!value.startsWith(SHARE_START_PREFIX)) {
+    return null;
+  }
+
+  const shortId = value.slice(SHARE_START_PREFIX.length);
+  return SHORT_ID_PATTERN.test(shortId) ? shortId : null;
+}
+
+/**
  * Разбор `/start chart_<id>`.
  *
  * Возвращает `chartId`, если параметр похож на UUID, иначе `null`: чужие

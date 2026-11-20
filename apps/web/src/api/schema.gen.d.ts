@@ -811,6 +811,355 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/reports/{report_id}/pdf": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Статус PDF и свежая ссылка
+         * @description `200` всегда, когда разбор свой и оплаченный: `pending` — сборка идёт
+         *     (или её ещё не просили), `ready` — `url` + `expires_at`, `failed` —
+         *     `error` с кодом причины; повторный `POST` разрешён.
+         *
+         *     **Ссылка подписанная и короткоживущая.** Каждый `GET` возвращает новую
+         *     подпись (TTL 24 часа); старую ссылку клиент должен забыть. Прямых
+         *     адресов хранилища в ответе нет никогда: файл открывается только
+         *     `GET /files/{scope}/{name}?sig=…` на нашем домене.
+         *
+         *     Ошибки те же, что у `POST`, кроме `422` (заголовок не нужен).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    report_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Статус сборки */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PdfStatus"];
+                    };
+                };
+                /** @description `details.reason = report_not_paid` */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = report_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = report_not_ready` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Собрать PDF разбора (асинхронно)
+         * @description `202` в любом случае: сборка идёт в фоне (5–15 секунд), а готовый файл
+         *     отдаётся сразу — `{status: "ready", url, expires_at}`. Если файла ещё
+         *     нет, ответ `{status: "pending"}`, клиент опрашивает `GET`.
+         *
+         *     `Idempotency-Key` обязателен: двойной тап не должен ставить две сборки
+         *     на один разбор. Кэш — по `(report_id, engine_version, prompt_version)`:
+         *     повтор не пересобирает документ и не зовёт сайдкар.
+         *
+         *     PDF — **часть оплаченного разбора**, а не отдельный товар:
+         *       • `403 FORBIDDEN`, `details.reason = report_not_paid` — чужой или
+         *         неоплаченный разбор (тизер тоже сюда: текста в нём нет);
+         *       • `404 NOT_FOUND` — такого разбора нет;
+         *       • `409 CONFLICT`, `details.reason = report_not_ready` — разбор ещё
+         *         собирается (тизер или `writing`): в документе был бы огрызок текста;
+         *       • `422 VALIDATION_FAILED` — нет `Idempotency-Key`.
+         *
+         *     Провал **самой** сборки — не ошибка запроса: он живёт в теле как
+         *     `status: "failed"` (см. `PdfStatus.error`), а повторный `POST` ставит
+         *     новую попытку. Отдельного `503` на провал сборки нет намеренно: опрос
+         *     статуса не должен выглядеть как падение сервиса. `503` с
+         *     `details.reason = pdf_failed` остаётся за случаем «не удалось даже
+         *     поставить сборку в очередь».
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    "Idempotency-Key": string;
+                };
+                path: {
+                    report_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сборка поставлена (или файл уже готов) */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["PdfStatus"];
+                    };
+                };
+                /** @description `details.reason = report_not_paid` — чужой или неоплаченный разбор */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = report_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = report_not_ready` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Нет `Idempotency-Key` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/share/card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Карточка для шеринга
+         * @description Отдаёт готовую картинку для чата: `{url, expires_at, caption}`.
+         *
+         *     Виды (`ShareCardKind`):
+         *       • `day` — 1080×1920: знак Луны, фаза, освещённость, строка «сегодня
+         *         хорошо для…» из `summary` прогноза, дата. Доступен **всем**, у кого
+         *         есть карта, включая бесплатный режим: это вирусный вход;
+         *       • `wheel` — 1080×1920: колесо карты. Ни даты, ни времени, ни места
+         *         рождения — ни на картинке, ни в метаданных PNG;
+         *       • `insight` — 1080×1080: 2–3 предложения из главы «Ядро» **оплаченного**
+         *         разбора, без астрономических терминов. Нет оплаченного разбора —
+         *         `403 report_not_paid`.
+         *
+         *     `caption` — одна готовая строка для `switchInlineQuery`; слова
+         *     «астрология», «гороскоп», «предсказание» в ней не встречаются.
+         *
+         *     Ссылка в подписи — `t.me/<bot>?start=sh_<short_id>`. `short_id` выводится
+         *     из хеша содержимого карточки: ни `user_id`, ни `report_id` в ссылку не
+         *     попадают, а две одинаковые карточки дают один файл (кэш по содержимому).
+         *
+         *     **Совместимость не шарится.** `kind: "compat"` — `404` с
+         *     `details.reason = share_compat_not_available`: данные партнёра — ПДн
+         *     третьего лица, согласия на публикацию он не давал. Это продуктовое
+         *     решение, а не отсутствующая функция.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        kind: components["schemas"]["ShareCardKind"];
+                    };
+                };
+            };
+            responses: {
+                /** @description Карточка готова */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ShareCard"];
+                    };
+                };
+                /**
+                 * @description `details.reason`:
+                 *       • `chart_required` — нет карты (`day`, `wheel`);
+                 *       • `report_not_paid` — `insight` без оплаченного разбора;
+                 *       • `insight_unavailable` — в разборе нет фразы без терминов.
+                 */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = share_compat_not_available` — общих карточек нет */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `kind` не из `ShareCardKind` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Сайдкар не смог нарисовать карточку (`UPSTREAM`), повтори позже */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/files/{scope}/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Приватный файл по подписанной ссылке
+         * @description Единственный вход к файлам: PDF разбора (`pdf/*.pdf`) и карточки
+         *     шеринга (`card/*.png`). Каталог не отдаётся статикой — без подписи
+         *     маршрут отвечает `403`, поэтому утечка ключа из БД доступа не даёт.
+         *
+         *     `sig` = `<expires>.<hmac>` (HMAC-SHA256 от `«{key}:{expires}»`) — тот же
+         *     формат, что у колеса карты. Срок — часть подписи, продлить ссылку
+         *     правкой query нельзя.
+         *
+         *     Ответ `cache-control: private, no-store`: подписанный адрес не должен
+         *     осесть в общих кэшах и пережить свой срок. Скачивание PDF считается
+         *     (`report_pdfs.downloads`, событие `pdf_downloaded`); карточки не
+         *     считаются — Telegram кэширует картинки у себя.
+         *
+         *     Маршрут без initData (`security: []`): право даёт подпись.
+         */
+        get: {
+            parameters: {
+                query: {
+                    sig: string;
+                };
+                header?: never;
+                path: {
+                    scope: "pdf" | "card";
+                    name: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Файл */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/pdf": string;
+                        "image/png": string;
+                    };
+                };
+                /**
+                 * @description `details.reason`:
+                 *       • `file_signature_invalid` — подписи нет или она не сходится;
+                 *       • `file_link_expired` — срок вышел, запроси свежую ссылку.
+                 */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = file_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/compatibility": {
         parameters: {
             query?: never;
@@ -831,9 +1180,14 @@ export interface paths {
          *     товар, и в приложении она читается как «заплатил и получил ошибку»,
          *     даже когда право не списано. Такая запись по-прежнему доступна по
          *     `GET /compatibility/{id}` — это нужно воркеру, QA и разбору инцидентов.
-         *     Фильтр применён до `LIMIT`: счётчики и пагинация, если появятся,
-         *     считаются от того же набора, что и список, — иначе они разойдутся.
-         *     Отдельного поля `total` в схеме нет: список отдаётся одним окном.
+         *     Фильтр применён до `LIMIT`: `total` считается от того же набора, что и
+         *     список, — иначе они разошлись бы.
+         *
+         *     **Пагинация (1.6.8).** `limit` (1…20, по умолчанию 20) и `offset`
+         *     (по умолчанию 0). `total` — сколько заказов всего после фильтра; он
+         *     считается отдельным запросом, поэтому на пустой последней странице
+         *     `total` остаётся прежним, а не превращается в ноль. Мусор в параметрах
+         *     (`?limit=abc`) не даёт `422`: значение приравнивается к умолчанию.
          *
          *     `quota.kind`: `purchase` — есть неизрасходованная разовая покупка;
          *     `subscription` — подписка, окно открыто или закрыто (`left` = 1 или 0);
@@ -2579,6 +2933,14 @@ export interface components {
         QuestionList: {
             items: components["schemas"]["Question"][];
             quota: components["schemas"]["QuestionQuota"];
+            /**
+             * @description Сколько записей всего — **после фильтра и до `LIMIT`**. Считается
+             *      отдельным запросом, поэтому не зависит от `offset`: на последней
+             *      странице `total` больше `items.length`, а не ноль.
+             */
+            total?: number;
+            limit?: number;
+            offset?: number;
         };
         Chart: {
             /** Format: uuid */
@@ -2920,6 +3282,13 @@ export interface components {
         CompatibilityList: {
             items: components["schemas"]["CompatibilityListItem"][];
             quota: components["schemas"]["CompatibilityQuota"];
+            /**
+             * @description Сколько заказов всего — **после фильтра** (`failed` и `refunded` не
+             *      входят) и **до `LIMIT`**.
+             */
+            total?: number;
+            limit?: number;
+            offset?: number;
         };
         Report: {
             /** Format: uuid */
@@ -2983,6 +3352,63 @@ export interface components {
                  */
                 code: "paragraphs" | "too_long" | "repeats" | "format" | "paragraphs_split" | "paragraphs_merged" | "trimmed" | "teaser_terms" | "disclaimer_added";
             }[];
+        };
+        /**
+         * @description Состояние PDF разбора (1.6.8).
+         *
+         *     `pending` — сборка идёт (или её ещё не просили), `ready` — файл готов,
+         *     `failed` — сборка не удалась: `error` содержит код причины, повторный
+         *     `POST` ставит новую попытку. Статусы `failed` **не** удаляются и не
+         *     переписываются: строка — история попытки.
+         */
+        PdfStatus: {
+            /** @enum {string} */
+            status: "pending" | "ready" | "failed";
+            /**
+             * @description Подписанная ссылка на файл (`/api/v1/files/pdf/…?sig=…`), только при
+             *     `ready`. Живёт 24 часа; каждый `GET` отдаёт новую. Прямых адресов
+             *     хранилища не бывает.
+             */
+            url?: string;
+            /**
+             * Format: date-time
+             * @description Когда истекает `url` (`+24 ч` от выдачи).
+             */
+            expires_at?: string;
+            /**
+             * @description Код причины при `status: "failed"`: `pdf_failed` (сборка/рендер) или
+             *     `astro_unavailable` (движок не ответил). Машинный код, не текст —
+             *     показывать пользователю нужно свой текст.
+             */
+            error?: string;
+        };
+        /**
+         * @description Вид карточки шеринга. `day` — карточка дня (знак Луны, фаза,
+         *     освещённость, строка «хорошо для…», дата), доступна всем; `wheel` —
+         *     колесо карты (нужна карта); `insight` — цитата из «Ядра» (нужен
+         *     оплаченный разбор). Общих карточек (`compat`) нет: данные партнёра без
+         *     его согласия не публикуются — такой `kind` даёт `404`.
+         * @enum {string}
+         */
+        ShareCardKind: "day" | "wheel" | "insight";
+        /**
+         * @description Готовая карточка: картинка по подписанной ссылке и подпись к ней.
+         *
+         *     В карточке нет ПДн: ни имени, ни даты/времени/места рождения, ни
+         *     координат — ни на картинке, ни в метаданных PNG (EXIF не пишется
+         *     вовсе). `url` ведёт на наш домен, а не в хранилище.
+         */
+        ShareCard: {
+            /** @description Подписанная ссылка на PNG (TTL 24 часа, продлевается новым запросом). */
+            url: string;
+            /** Format: date-time */
+            expires_at: string;
+            /**
+             * @description Одна строка для `switchInlineQuery`: готовая подпись к картинке.
+             *     Слова «астрология», «гороскоп», «предсказание» не используются.
+             * @example Мне тут сделали разбор личности — залипательно
+             */
+            caption: string;
         };
         Forecast: {
             /** Format: date */

@@ -254,6 +254,42 @@ export class TelegramClient {
   }
 
   /**
+   * Картинка с подписью — карточка шеринга по ссылке `/start sh_<short_id>`.
+   *
+   * `photo` — подписанный адрес нашего API (TTL 24 часа). Telegram сам скачает
+   * файл по URL, поэтому отдавать боту байты не нужно. Ошибки, как и у
+   * `sendMessage`, не бросаются: карточку человек уже видел в чате-источнике.
+   */
+  async sendPhoto(
+    chatId: number | string,
+    photoUrl: string,
+    caption: string,
+    options: { readonly button?: { readonly text: string; readonly webAppUrl: string } } = {},
+  ): Promise<void> {
+    const replyMarkup =
+      options.button === undefined
+        ? {}
+        : {
+            reply_markup: {
+              inline_keyboard: [[{ text: options.button.text, web_app: { url: options.button.webAppUrl } }]],
+            },
+          };
+
+    try {
+      await this.call('sendPhoto', {
+        chat_id: chatId,
+        photo: photoUrl,
+        caption,
+        ...replyMarkup,
+      });
+    } catch (error) {
+      this.logger.warn('telegram_send_photo_failed', {
+        reason: error instanceof ApiError ? error.code : 'unknown',
+      });
+    }
+  }
+
+  /**
    * Пуш с разбором результата — в отличие от `sendMessage`, который глотает
    * ошибки ради платежа. Здесь важно знать причину:
    *   `blocked` — 403 (бот заблокирован): карту больше не пушим;

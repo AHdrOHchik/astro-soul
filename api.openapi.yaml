@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.7
+  version: 1.6.8
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -499,6 +499,32 @@ info:
         провала остаётся в логах `compat_failed` (`code`) и `question_failed`
         (`error_code`) — текст вопроса в лог не попадает, правило 1.6.6
         действует и на сбоях.
+
+    1.6.8 — PDF разбора и карточки для шеринга (итерация 32). Всё аддитивно:
+      существующие маршруты, поля и статусы не менялись.
+      • `POST /reports/{report_id}/pdf` (`202`, обязательный `Idempotency-Key`)
+        и `GET /reports/{report_id}/pdf` — новая схема `PdfStatus`
+        (`status | url | expires_at | error`). PDF — часть **оплаченного**
+        разбора: `403 report_not_paid`, `404`, `409 report_not_ready`.
+        Ссылка подписанная, TTL 24 часа, выдаётся заново на каждый `GET`;
+        прямых адресов хранилища в контракте нет;
+      • новый публичный маршрут `GET /files/{scope}/{name}?sig=…` — приватные
+        файлы (PDF и карточки) по подписи, `security: []`;
+      • `POST /share/card` — новые схемы `ShareCard` и `ShareCardKind`
+        (`day | wheel | insight`). Общих карточек нет: `kind: "compat"` —
+        `404` с `details.reason = share_compat_not_available`;
+      • пагинация списков: `GET /compatibility` и `GET /questions` получили
+        `limit` (1…20) и `offset` и **обязательное** поле `total` — количество
+        после фильтра и до `LIMIT`. Это аддитивное поле: старые клиенты его
+        игнорируют;
+      • `GET /admin/metrics`: `pdf_generated_24h`, `pdf_downloaded_24h`,
+        `pdf_failed_24h`, `pdf_cost_rub_24h`, `pdf_build_p95_ms`;
+      • `x-analytics-server-events`: `pdf_ready`, `pdf_failed`,
+        `pdf_downloaded`, `share_card_opened`, `share_sent`. В событиях нет
+        ПДн: у `share_*` только `kind` и канал, у `pdf_*` — размер, страницы и
+        длительность;
+      • в PDF и в карточках нет персональных данных: ни даты/времени/места
+        рождения, ни координат, ни имени. EXIF в PNG не пишется вовсе.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1003,12 +1029,26 @@ components:
 
     QuestionList:
       type: object
+      # `total`, `limit`, `offset` — новые в 1.6.8 и **не** в `required`
+      # намеренно: сервер отдаёт их всегда (это проверено тестом), но
+      # обязательными в схеме они сломали бы клиентов и фикстуры, которые
+      # собирают `{items, quota}` руками. Поле, которого нет в старой фикстуре,
+      # не должно превращаться в ошибку компиляции фронта.
       required: [items, quota]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/Question' }
         quota: { $ref: '#/components/schemas/QuestionQuota' }
+        total:
+          type: integer
+          minimum: 0
+          description: |1-
+            Сколько записей всего — **после фильтра и до `LIMIT`**. Считается
+            отдельным запросом, поэтому не зависит от `offset`: на последней
+            странице `total` больше `items.length`, а не ноль.
+        limit: { type: integer, minimum: 1, maximum: 20 }
+        offset: { type: integer, minimum: 0 }
 
     Chart:
       type: object
@@ -1419,12 +1459,22 @@ components:
 
     CompatibilityList:
       type: object
+      # См. `QuestionList`: аддитивные поля пагинации не в `required` — сервер
+      # их всегда отдаёт, но фронтовые фикстуры без них остаются валидными.
       required: [items, quota]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/CompatibilityListItem' }
         quota: { $ref: '#/components/schemas/CompatibilityQuota' }
+        total:
+          type: integer
+          minimum: 0
+          description: |1-
+            Сколько заказов всего — **после фильтра** (`failed` и `refunded` не
+            входят) и **до `LIMIT`**.
+        limit: { type: integer, minimum: 1, maximum: 20 }
+        offset: { type: integer, minimum: 0 }
 
     Report:
       type: object
@@ -1506,6 +1556,70 @@ components:
                   `paragraphs`/`repeats`/`format`/`too_long` — нарушение
                   осталось после нормализации; остальные коды — что именно
                   поправил код (`normalize.ts`).
+
+    PdfStatus:
+      type: object
+      required: [status]
+      description: |-
+        Состояние PDF разбора (1.6.8).
+
+        `pending` — сборка идёт (или её ещё не просили), `ready` — файл готов,
+        `failed` — сборка не удалась: `error` содержит код причины, повторный
+        `POST` ставит новую попытку. Статусы `failed` **не** удаляются и не
+        переписываются: строка — история попытки.
+      properties:
+        status:
+          type: string
+          enum: [pending, ready, failed]
+        url:
+          type: string
+          description: |-
+            Подписанная ссылка на файл (`/api/v1/files/pdf/…?sig=…`), только при
+            `ready`. Живёт 24 часа; каждый `GET` отдаёт новую. Прямых адресов
+            хранилища не бывает.
+        expires_at:
+          type: string
+          format: date-time
+          description: Когда истекает `url` (`+24 ч` от выдачи).
+        error:
+          type: string
+          description: |-
+            Код причины при `status: "failed"`: `pdf_failed` (сборка/рендер) или
+            `astro_unavailable` (движок не ответил). Машинный код, не текст —
+            показывать пользователю нужно свой текст.
+
+    ShareCardKind:
+      type: string
+      description: |-
+        Вид карточки шеринга. `day` — карточка дня (знак Луны, фаза,
+        освещённость, строка «хорошо для…», дата), доступна всем; `wheel` —
+        колесо карты (нужна карта); `insight` — цитата из «Ядра» (нужен
+        оплаченный разбор). Общих карточек (`compat`) нет: данные партнёра без
+        его согласия не публикуются — такой `kind` даёт `404`.
+      enum: [day, wheel, insight]
+
+    ShareCard:
+      type: object
+      required: [url, expires_at, caption]
+      description: |-
+        Готовая карточка: картинка по подписанной ссылке и подпись к ней.
+
+        В карточке нет ПДн: ни имени, ни даты/времени/места рождения, ни
+        координат — ни на картинке, ни в метаданных PNG (EXIF не пишется
+        вовсе). `url` ведёт на наш домен, а не в хранилище.
+      properties:
+        url:
+          type: string
+          description: Подписанная ссылка на PNG (TTL 24 часа, продлевается новым запросом).
+        expires_at:
+          type: string
+          format: date-time
+        caption:
+          type: string
+          description: |-
+            Одна строка для `switchInlineQuery`: готовая подпись к картинке.
+            Слова «астрология», «гороскоп», «предсказание» не используются.
+          example: Мне тут сделали разбор личности — залипательно
 
     Forecast:
       type: object
@@ -2079,6 +2193,235 @@ paths:
               schema: { $ref: '#/components/schemas/Report' }
         '404': { description: NOT_FOUND — разбора нет или он чужой }
 
+  /api/v1/reports/{report_id}/pdf:
+    post:
+      tags: [reports]
+      summary: Собрать PDF разбора (асинхронно)
+      description: |-
+        `202` в любом случае: сборка идёт в фоне (5–15 секунд), а готовый файл
+        отдаётся сразу — `{status: "ready", url, expires_at}`. Если файла ещё
+        нет, ответ `{status: "pending"}`, клиент опрашивает `GET`.
+
+        `Idempotency-Key` обязателен: двойной тап не должен ставить две сборки
+        на один разбор. Кэш — по `(report_id, engine_version, prompt_version)`:
+        повтор не пересобирает документ и не зовёт сайдкар.
+
+        PDF — **часть оплаченного разбора**, а не отдельный товар:
+          • `403 FORBIDDEN`, `details.reason = report_not_paid` — чужой или
+            неоплаченный разбор (тизер тоже сюда: текста в нём нет);
+          • `404 NOT_FOUND` — такого разбора нет;
+          • `409 CONFLICT`, `details.reason = report_not_ready` — разбор ещё
+            собирается (тизер или `writing`): в документе был бы огрызок текста;
+          • `422 VALIDATION_FAILED` — нет `Idempotency-Key`.
+
+        Провал **самой** сборки — не ошибка запроса: он живёт в теле как
+        `status: "failed"` (см. `PdfStatus.error`), а повторный `POST` ставит
+        новую попытку. Отдельного `503` на провал сборки нет намеренно: опрос
+        статуса не должен выглядеть как падение сервиса. `503` с
+        `details.reason = pdf_failed` остаётся за случаем «не удалось даже
+        поставить сборку в очередь».
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 64 }
+      responses:
+        '202':
+          description: Сборка поставлена (или файл уже готов)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PdfStatus' }
+        '403':
+          description: '`details.reason = report_not_paid` — чужой или неоплаченный разбор'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`details.reason = report_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`details.reason = report_not_ready`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: 'Нет `Idempotency-Key`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+    get:
+      tags: [reports]
+      summary: Статус PDF и свежая ссылка
+      description: |-
+        `200` всегда, когда разбор свой и оплаченный: `pending` — сборка идёт
+        (или её ещё не просили), `ready` — `url` + `expires_at`, `failed` —
+        `error` с кодом причины; повторный `POST` разрешён.
+
+        **Ссылка подписанная и короткоживущая.** Каждый `GET` возвращает новую
+        подпись (TTL 24 часа); старую ссылку клиент должен забыть. Прямых
+        адресов хранилища в ответе нет никогда: файл открывается только
+        `GET /files/{scope}/{name}?sig=…` на нашем домене.
+
+        Ошибки те же, что у `POST`, кроме `422` (заголовок не нужен).
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Статус сборки
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PdfStatus' }
+        '403':
+          description: '`details.reason = report_not_paid`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`details.reason = report_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`details.reason = report_not_ready`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/share/card:
+    post:
+      tags: [share]
+      summary: Карточка для шеринга
+      description: |-
+        Отдаёт готовую картинку для чата: `{url, expires_at, caption}`.
+
+        Виды (`ShareCardKind`):
+          • `day` — 1080×1920: знак Луны, фаза, освещённость, строка «сегодня
+            хорошо для…» из `summary` прогноза, дата. Доступен **всем**, у кого
+            есть карта, включая бесплатный режим: это вирусный вход;
+          • `wheel` — 1080×1920: колесо карты. Ни даты, ни времени, ни места
+            рождения — ни на картинке, ни в метаданных PNG;
+          • `insight` — 1080×1080: 2–3 предложения из главы «Ядро» **оплаченного**
+            разбора, без астрономических терминов. Нет оплаченного разбора —
+            `403 report_not_paid`.
+
+        `caption` — одна готовая строка для `switchInlineQuery`; слова
+        «астрология», «гороскоп», «предсказание» в ней не встречаются.
+
+        Ссылка в подписи — `t.me/<bot>?start=sh_<short_id>`. `short_id` выводится
+        из хеша содержимого карточки: ни `user_id`, ни `report_id` в ссылку не
+        попадают, а две одинаковые карточки дают один файл (кэш по содержимому).
+
+        **Совместимость не шарится.** `kind: "compat"` — `404` с
+        `details.reason = share_compat_not_available`: данные партнёра — ПДн
+        третьего лица, согласия на публикацию он не давал. Это продуктовое
+        решение, а не отсутствующая функция.
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { $ref: '#/components/schemas/ShareCardKind' }
+      responses:
+        '200':
+          description: Карточка готова
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShareCard' }
+        '403':
+          description: |-
+            `details.reason`:
+              • `chart_required` — нет карты (`day`, `wheel`);
+              • `report_not_paid` — `insight` без оплаченного разбора;
+              • `insight_unavailable` — в разборе нет фразы без терминов.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`details.reason = share_compat_not_available` — общих карточек нет'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: '`kind` не из `ShareCardKind`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: Сайдкар не смог нарисовать карточку (`UPSTREAM`), повтори позже
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/files/{scope}/{name}:
+    get:
+      tags: [files]
+      summary: Приватный файл по подписанной ссылке
+      description: |-
+        Единственный вход к файлам: PDF разбора (`pdf/*.pdf`) и карточки
+        шеринга (`card/*.png`). Каталог не отдаётся статикой — без подписи
+        маршрут отвечает `403`, поэтому утечка ключа из БД доступа не даёт.
+
+        `sig` = `<expires>.<hmac>` (HMAC-SHA256 от `«{key}:{expires}»`) — тот же
+        формат, что у колеса карты. Срок — часть подписи, продлить ссылку
+        правкой query нельзя.
+
+        Ответ `cache-control: private, no-store`: подписанный адрес не должен
+        осесть в общих кэшах и пережить свой срок. Скачивание PDF считается
+        (`report_pdfs.downloads`, событие `pdf_downloaded`); карточки не
+        считаются — Telegram кэширует картинки у себя.
+
+        Маршрут без initData (`security: []`): право даёт подпись.
+      security: []
+      parameters:
+        - name: scope
+          in: path
+          required: true
+          schema: { type: string, enum: [pdf, card] }
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, description: '`<uuid>.pdf` или `<uuid>.png`' }
+        - name: sig
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Файл
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+        '403':
+          description: |-
+            `details.reason`:
+              • `file_signature_invalid` — подписи нет или она не сходится;
+              • `file_link_expired` — срок вышел, запроси свежую ссылку.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`details.reason = file_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /api/v1/compatibility:
     post:
       tags: [compatibility]
@@ -2168,9 +2511,14 @@ paths:
         товар, и в приложении она читается как «заплатил и получил ошибку»,
         даже когда право не списано. Такая запись по-прежнему доступна по
         `GET /compatibility/{id}` — это нужно воркеру, QA и разбору инцидентов.
-        Фильтр применён до `LIMIT`: счётчики и пагинация, если появятся,
-        считаются от того же набора, что и список, — иначе они разойдутся.
-        Отдельного поля `total` в схеме нет: список отдаётся одним окном.
+        Фильтр применён до `LIMIT`: `total` считается от того же набора, что и
+        список, — иначе они разошлись бы.
+
+        **Пагинация (1.6.8).** `limit` (1…20, по умолчанию 20) и `offset`
+        (по умолчанию 0). `total` — сколько заказов всего после фильтра; он
+        считается отдельным запросом, поэтому на пустой последней странице
+        `total` остаётся прежним, а не превращается в ноль. Мусор в параметрах
+        (`?limit=abc`) не даёт `422`: значение приравнивается к умолчанию.
 
         `quota.kind`: `purchase` — есть неизрасходованная разовая покупка;
         `subscription` — подписка, окно открыто или закрыто (`left` = 1 или 0);
@@ -2442,14 +2790,22 @@ paths:
 
           По `id` запись со `status: failed` по-прежнему доступна — этим
           занимается `GET /questions/{id}`. Фильтр применён до `LIMIT`, поэтому
-          счётчики и пагинация, если появятся, считаются от того же набора, что
-          и список. Отдельного поля `total` в схеме нет.
+          `total` считается от того же набора, что и список.
+
+          **Пагинация (1.6.8).** `limit` (1…20, по умолчанию 20) и `offset`
+          (по умолчанию 0). `total` — сколько записей всего после фильтра:
+          отдельный `count`, а не окно поверх выборки, иначе на последней
+          странице он показывал бы ноль.
         security: [{ TelegramInitData: [] }]
         parameters:
           - name: limit
             in: query
             required: false
             schema: { type: integer, minimum: 1, maximum: 20, default: 20 }
+          - name: offset
+            in: query
+            required: false
+            schema: { type: integer, minimum: 0, default: 0 }
         responses:
           '200':
             description: OK
@@ -3080,6 +3436,11 @@ x-analytics-server-events:
   - forecast_cache_hit
   - question_ready
   - question_refused
+  - pdf_ready
+  - pdf_failed
+  - pdf_downloaded
+  - share_card_opened
+  - share_sent
 # payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
 #                    invoice_invalidated | user_deleted | refund_failed)
 #                    refund_failed означает: отказ записан, но звёзды вернуть

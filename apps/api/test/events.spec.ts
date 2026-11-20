@@ -135,11 +135,16 @@ describe('POST /api/v1/events', () => {
       .expect(401);
   });
 
-  it('список событий в коде совпадает с контрактом 1.5.2: 37 штук без дублей', () => {
+  it('список событий в коде совпадает с контрактом 1.6.8: 37 штук без дублей', () => {
     expect(ANALYTICS_EVENTS).toHaveLength(37);
     expect(new Set(ANALYTICS_EVENTS).size).toBe(37);
     // QA: `validation_failed_client` теперь в контракте, и сервер его принимает.
     expect(ANALYTICS_EVENTS).toContain('validation_failed_client');
+    // 1.6.8: события PDF и карточек пишет сервер, поэтому в клиентском списке
+    // их нет — иначе фронт смог бы их подделать, а контракт разошёлся бы с
+    // `apps/web` (там список сверяется тестом).
+    expect(ANALYTICS_EVENTS).not.toContain('share_card_opened');
+    expect(ANALYTICS_EVENTS).not.toContain('share_sent');
   });
 
   it('validation_failed_client принимается, а серверное событие — нет', async () => {

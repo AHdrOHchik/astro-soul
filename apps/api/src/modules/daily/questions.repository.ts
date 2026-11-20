@@ -125,15 +125,33 @@ export class QuestionsRepository {
    * Фильтр в SQL — до `LIMIT`: счётчики и будущая пагинация считаются от того
    * же набора, что и список.
    */
-  async list(userId: string, limit: number): Promise<QuestionRow[]> {
+  async list(userId: string, limit: number, offset = 0): Promise<QuestionRow[]> {
     return this.db.query<QuestionRow>(
       `SELECT ${COLUMNS}
          FROM questions
         WHERE user_id = $1 AND status IN ('ready', 'refused', 'pending')
         ORDER BY created_at DESC, id DESC
-        LIMIT $2`,
-      [userId, limit],
+        LIMIT $2 OFFSET $3`,
+      [userId, limit, offset],
     );
+  }
+
+  /**
+   * Сколько записей в истории **до** `LIMIT`.
+   *
+   * Отдельный запрос, а не `count(*) over ()` в выборке: при `offset` больше
+   * длины списка оконная функция не вернёт ни одной строки, и `total` схлопнется
+   * в ноль ровно там, где он нужнее всего (последняя страница).
+   */
+  async count(userId: string): Promise<number> {
+    const row = await this.db.queryOne<{ total: string }>(
+      `SELECT count(*)::text AS total
+         FROM questions
+        WHERE user_id = $1 AND status IN ('ready', 'refused', 'pending')`,
+      [userId],
+    );
+
+    return Number(row?.total ?? 0);
   }
 
   async markReady(

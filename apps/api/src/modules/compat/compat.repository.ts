@@ -283,16 +283,32 @@ export class CompatRepository {
    * они обязаны считаться от того же набора, иначе счётчик и список
    * разойдутся.
    */
-  async listForUser(userId: string, limit = 20): Promise<CompatReportRow[]> {
+  async listForUser(userId: string, limit = 20, offset = 0): Promise<CompatReportRow[]> {
     return this.db.query<CompatReportRow>(
       `SELECT ${COLUMNS} FROM reports r
          LEFT JOIN compat_partners p ON p.id = r.compat_partner_id
         WHERE r.user_id = $1 AND r.kind = 'compat'
           AND r.status NOT IN ('failed', 'refunded')
         ORDER BY r.created_at DESC
-        LIMIT $2`,
-      [userId, limit],
+        LIMIT $2 OFFSET $3`,
+      [userId, limit, offset],
     );
+  }
+
+  /**
+   * Всего заказов совместимости — по тому же фильтру, что и список, и **до**
+   * `LIMIT`. Отдельным запросом, потому что при пустой странице (`offset`
+   * дальше конца) оконный `count(*) over ()` вернул бы 0.
+   */
+  async countForUser(userId: string): Promise<number> {
+    const row = await this.db.queryOne<{ total: string }>(
+      `SELECT count(*)::text AS total FROM reports r
+        WHERE r.user_id = $1 AND r.kind = 'compat'
+          AND r.status NOT IN ('failed', 'refunded')`,
+      [userId],
+    );
+
+    return Number(row?.total ?? 0);
   }
 
   async partnerInfo(reportId: string): Promise<CompatPartnerRow | null> {

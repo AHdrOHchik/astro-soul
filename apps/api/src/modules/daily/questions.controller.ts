@@ -45,8 +45,9 @@ export class QuestionsController {
   async list(
     @CurrentUser() auth: VerifiedInitData,
     @Query('limit') limit: string | undefined,
+    @Query('offset') offset: string | undefined,
   ): Promise<QuestionList> {
-    return this.questions.list(auth, limit);
+    return this.questions.list(auth, limit, offset);
   }
 
   @Get(':id')
