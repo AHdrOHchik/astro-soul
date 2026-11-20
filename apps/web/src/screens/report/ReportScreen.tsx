@@ -15,7 +15,7 @@ import {
 } from '@astro-soul/ui';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import type { Track } from '../../analytics';
-import { absoluteApiUrl, isAbortError, isApiError, rejectionTextOf, REPORT_SECTION_KEYS, type Api, type Report, type ReportSection } from '../../api';
+import { absoluteApiUrl, isAbortError, isApiError, rejectionTextOf, REPORT_SECTION_KEYS, type Api, type Me, type Report, type ReportSection } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
 import { Markdown } from '../../components/Markdown';
 import { Reference } from '../../components/Reference';
@@ -34,6 +34,7 @@ const SKELETON_LINES = [0, 1, 2, 3];
 
 export interface ReportScreenProps {
   api: Pick<Api, 'orderReport' | 'getReport' | 'createReportPdf' | 'getReportPdf' | 'createShareCard' | 'getCompatibilities' | 'getPlans'>;
+  share?: Me['share'];
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   keys: IdempotencyKeys;
   /** The chart the report is about. */
@@ -74,6 +75,7 @@ export interface ReportScreenProps {
 export function ReportScreen({
   api,
   telegram,
+  share,
   keys,
   chartId,
   reportId,
@@ -316,7 +318,7 @@ export function ReportScreen({
           />
         )}
         {done && <Download report={shown} api={api} apiBaseUrl={apiBaseUrl} telegram={telegram} />}
-        {done && <ShareCardButton api={api} kind="insight" telegram={telegram} track={track} label={ru.chart.share}/> }
+        {done && <ShareCardButton api={api} kind="insight" telegram={telegram} track={track} label={ru.chart.share} share={share}/> }
       </div>
     </Screen>
   );
