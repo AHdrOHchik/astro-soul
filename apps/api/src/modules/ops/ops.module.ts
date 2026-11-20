@@ -5,8 +5,10 @@ import { EventsModule } from '../events/events.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { AdminController } from './admin.controller';
 import { AdminMetricsService } from './admin-metrics.service';
+import { AlertsService } from './alerts.service';
 import { JobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
+import { ProdGuardService } from './prod-guard.service';
 
 /**
  * Служебные маршруты: метрики для владельца и джобы для крона.
@@ -15,6 +17,9 @@ import { JobsService } from './jobs.service';
 @Module({
   imports: [BillingModule, EngagementModule, EventsModule, TelegramModule],
   controllers: [AdminController, JobsController],
-  providers: [AdminMetricsService, JobsService],
+  providers: [AdminMetricsService, AlertsService, JobsService, ProdGuardService],
+  // Прод-гард нужен `main.ts` до `listen`: он спрашивает провайдер у корневого
+  // инжектора, а не создаёт его руками.
+  exports: [ProdGuardService],
 })
 export class OpsModule {}

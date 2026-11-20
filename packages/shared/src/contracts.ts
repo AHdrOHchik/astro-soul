@@ -29,6 +29,9 @@ export type QuotaCode = Schemas['Quota']['code'];
 export type Me = Schemas['Me'];
 export type OnboardingStep = NonNullable<Schemas['Me']['onboarding_step']>;
 
+/** Согласия на уведомления (1.6.10): `Me.notifications` и `POST /me/notifications`. */
+export type Notifications = Schemas['Notifications'];
+
 export type GeoPlace = Schemas['GeoPlace'];
 export type PlanetPosition = Schemas['PlanetPosition'];
 export type Aspect = Schemas['Aspect'];

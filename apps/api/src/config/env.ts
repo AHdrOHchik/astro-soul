@@ -352,6 +352,17 @@ const envSchema = z.object({
    * инвалидирует старые ссылки, а это и так допустимо (они живут 24 часа).
    * Отдельная переменная нужна, чтобы можно было менять подпись без перца.
    */
+  /**
+   * Файл-маркер последнего успешного бэкапа (`scripts/db-dump.sh`).
+   *
+   * Не задан — алерт `backup_stale` в `/admin/alerts` стреляет как «не знаем,
+   * делаются ли бэкапы»: молчание здесь было бы равно «всё хорошо», а это
+   * неправда. В проде файл пишется скриптом дампа после успешной выгрузки.
+   */
+  BACKUP_STATE_FILE: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   FILE_SIGNING_SECRET: z.preprocess(
     (value) => (value === '' ? undefined : value),
     z.string().min(16).optional(),
