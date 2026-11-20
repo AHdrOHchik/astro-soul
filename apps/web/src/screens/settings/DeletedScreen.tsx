@@ -1,6 +1,5 @@
-import { Button, ButtonLink, CheckIcon, Screen, StateView } from '@astro-soul/ui';
+import { Button, CheckIcon, Screen, StateView } from '@astro-soul/ui';
 import { ru } from '../../i18n/ru';
-import { TELEGRAM_SUBSCRIPTIONS } from '../../lib/telegramLinks';
 import type { Telegram } from '../../telegram';
 
 const copy = ru.settings.deletion;
@@ -30,7 +29,6 @@ export function DeletedScreen({
             {ru.common.close}
           </Button>
         )}
-        {hadSubscription && <ButtonLink href={TELEGRAM_SUBSCRIPTIONS}>{copy.manageSubscriptions}</ButtonLink>}
       </StateView>
     </Screen>
   );

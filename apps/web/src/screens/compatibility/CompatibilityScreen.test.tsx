@@ -1,10 +1,11 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
+import type { Compatibility } from '../../api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiError, cataloguePlans, compatibilityPending, compatibilityReady, fakeApi, fakeAnalytics, fakeKeys, fakeTelegram, rejection } from '../../test/fixtures';
+import { apiError, cataloguePlans, compatibilityPending, compatibilityReady, fakeApi, fakeAnalytics, fakeKeys, fakeTelegram, meSubscribed, rejection } from '../../test/fixtures';
 import { ru } from '../../i18n/ru';
-import { COMPATIBILITY_POLL_DELAYS_MS, CompatibilityScreen } from './CompatibilityScreen';
+import { COMPATIBILITY_POLL_DELAYS_MS, CompatibilityScreen, stepItems } from './CompatibilityScreen';
 
 const copy = ru.compatibility;
 const chartId = '11111111-1111-4111-8111-111111111111';
@@ -16,6 +17,7 @@ afterEach(() => {
 function mount(api = fakeApi(), initialId: string | null = null, telegram = fakeTelegram()) {
   const analytics = fakeAnalytics();
   const onBuy = vi.fn();
+  const refreshMe = vi.fn(() => Promise.resolve(meSubscribed));
   function Harness() {
     const [compatibilityId, setCompatibilityId] = useState(initialId);
     return (
@@ -27,6 +29,7 @@ function mount(api = fakeApi(), initialId: string | null = null, telegram = fake
         keys={fakeKeys()}
         telegram={telegram}
         limits={{ geo_min_query_length: 2, geo_max_query_length: 40 }}
+        refreshMe={refreshMe}
         supportLink="https://t.me/support"
         track={analytics.track}
         onBuy={onBuy}
@@ -34,7 +37,7 @@ function mount(api = fakeApi(), initialId: string | null = null, telegram = fake
     );
   }
   const view = render(<Harness />);
-  return { api, analytics, onBuy, telegram, ...view };
+  return { api, analytics, onBuy, refreshMe, telegram, ...view };
 }
 
 async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
@@ -46,6 +49,20 @@ async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
   await user.type(placeField, 'Ka');
   await user.click(await screen.findByRole('button', { name: /Казань/ }));
 }
+
+describe('stepItems', () => {
+  it.each([
+    ['2', '— Первый шаг.\n— Второй шаг.', ['Первый шаг.', 'Второй шаг.']],
+    ['3', '1. Первый шаг.\n2. Второй шаг.\n3. Третий шаг.', ['Первый шаг.', 'Второй шаг.', 'Третий шаг.']],
+    ['4', '• Первый шаг.\n• Второй шаг.\n• Третий шаг.\n• Четвёртый шаг.', ['Первый шаг.', 'Второй шаг.', 'Третий шаг.', 'Четвёртый шаг.']],
+  ])('parses %s marked items', (_count, text, expected) => {
+    expect(stepItems(text)).toEqual(expected);
+  });
+
+  it('leaves prose as prose when it has no list markers', () => {
+    expect(stepItems('Поговорите о планах и договоритесь о следующем шаге.')).toEqual([]);
+  });
+});
 
 describe('CompatibilityScreen', () => {
   it('sends only the specified partner fields and null birth_time when time is unknown', async () => {
@@ -100,9 +117,13 @@ describe('CompatibilityScreen', () => {
   it('shows the server result in its order with server titles and does not add a PDF or a second disclaimer', async () => {
     const api = fakeApi();
     api.getCompatibility.mockResolvedValue(compatibilityReady);
-    mount(api, compatibilityReady.id);
+    const { refreshMe } = mount(api, compatibilityReady.id);
 
     expect(await screen.findByRole('heading', { name: 'Что совпадает' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.getCompatibilities).toHaveBeenCalledTimes(2);
+      expect(refreshMe).toHaveBeenCalledTimes(1);
+    });
     expect(screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.textContent)).toEqual([
       'Что совпадает', 'Где трёт', 'Как вы разговариваете', 'Что сделать на этой неделе',
     ]);
@@ -111,6 +132,62 @@ describe('CompatibilityScreen', () => {
     expect(screen.getByText(/инструмент саморефлексии, а не предсказание и не замена специалисту/)).toBeInTheDocument();
     expect(document.body.textContent.match(/инструмент саморефлексии/g)).toHaveLength(1);
     expect(screen.getByRole('button', { name: copy.createAnother })).toBeEnabled();
+  });
+
+  it('shows only the trimmed warning from the closed allow-list', async () => {
+    const withWarnings = {
+      ...compatibilityReady,
+      warnings: [
+        { section: 'clicks', code: 'trimmed' },
+        { section: 'friction', code: 'length_off' },
+        { section: 'scenario', code: 'partner_pronoun' },
+        { section: 'steps', code: 'gender_brackets' },
+        { section: 'steps', code: 'teaser_terms' },
+        { section: 'steps', code: 'disclaimer_added' },
+        { section: 'steps', code: 'future_internal_code' },
+      ],
+    } as unknown as Compatibility;
+    const api = fakeApi();
+    api.getCompatibility.mockResolvedValue(withWarnings);
+    mount(api, compatibilityReady.id);
+
+    expect(await screen.findByText(copy.sectionTrimmed)).toBeInTheDocument();
+    expect(screen.getAllByText(copy.sectionTrimmed)).toHaveLength(1);
+    for (const hiddenCode of ['length_off', 'partner_pronoun', 'gender_brackets', 'teaser_terms', 'disclaimer_added', 'future_internal_code']) {
+      expect(screen.queryByText(new RegExp(hiddenCode))).not.toBeInTheDocument();
+    }
+  });
+
+  it('keeps the steps disclaimer in its own quiet paragraph exactly once', async () => {
+    const duplicate = {
+      ...compatibilityReady,
+      sections: compatibilityReady.sections.map((section) => section.key === 'steps'
+        ? { ...section, text: `— Первый шаг. ${copy.stepDisclaimer}\n— Второй шаг. ${copy.stepDisclaimer}` }
+        : section),
+    };
+    const api = fakeApi();
+    api.getCompatibility.mockResolvedValue(duplicate);
+    mount(api, duplicate.id);
+
+    await screen.findByRole('heading', { name: 'Что совпадает' });
+    const notes = screen.getAllByText(copy.stepDisclaimer);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toHaveClass('disclaimer');
+    expect(screen.getByRole('list').textContent).toContain('Первый шаг.');
+    expect(screen.getByRole('list').textContent).toContain('Второй шаг.');
+  });
+
+  it('refreshes both compatibility quota and GET /me after a failed result', async () => {
+    const failed = { ...compatibilityPending, status: 'failed' as const };
+    const api = fakeApi();
+    api.getCompatibility.mockResolvedValue(failed);
+    const { refreshMe } = mount(api, failed.id);
+
+    expect(await screen.findByText(copy.genericError)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(api.getCompatibilities).toHaveBeenCalledTimes(2);
+      expect(refreshMe).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('shares a fixed text without any partner data', async () => {
@@ -134,7 +211,7 @@ describe('CompatibilityScreen', () => {
     mount(api, compatibilityReady.id);
     await screen.findByRole('heading', { name: 'Что совпадает' });
 
-    expect(await screen.findByText(copy.quotaNext('18 декабря'))).toBeInTheDocument();
+    expect(await screen.findByText(/Осталось 0 из 1 · Обновится 18 декабря/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: copy.createAnother })).toBeDisabled();
   });
 

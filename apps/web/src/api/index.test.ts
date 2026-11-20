@@ -277,6 +277,31 @@ describe('getMe', () => {
   });
 });
 
+describe('cancelSubscription', () => {
+  it('posts without a body, sends the idempotency key, and validates the server confirmation', async () => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockResolvedValue(json(200, { status: 'cancelled', auto_renew: false, current_period_end: '2026-12-20T09:00:00Z' }));
+
+    await expect(api.cancelSubscription('uuid-v4-key')).resolves.toEqual({ status: 'cancelled', auto_renew: false, current_period_end: '2026-12-20T09:00:00Z' });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('/api/v1/subscription/cancel');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get('Idempotency-Key')).toBe('uuid-v4-key');
+    expect(init?.body).toBeUndefined();
+
+    fetchMock.mockResolvedValue(json(200, { status: 'cancelled', auto_renew: true, current_period_end: '2026-12-20T09:00:00Z' }));
+    await expect(api.cancelSubscription('uuid-v4-key')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('does not retry a 502 automatically; the user controls a repeat with the same key', async () => {
+    const { api, fetchMock } = setup({ retries: 3 });
+    fetchMock.mockResolvedValue(json(502, { code: 'INTERNAL', message: 'Не получилось', request_id: 'r', details: { reason: 'telegram_error' } }));
+
+    await expect(api.cancelSubscription('same-key')).rejects.toMatchObject({ status: 502, details: { reason: 'telegram_error' } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('deleteMe', () => {
   it('sends DELETE /me once, whatever the answer: repeating it is the user\'s decision', async () => {
     const { api, fetchMock } = setup({ retries: 2 });

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Me } from '../../api';
 import { ru } from '../../i18n/ru';
-import { apiError, deferred, fakeAnalytics, fakeApi, fakeTelegram, meSubscribed, meWithChart, setupUser } from '../../test/fixtures';
+import { apiError, compatibilityList, deferred, fakeAnalytics, fakeApi, fakeTelegram, meSubscribed, meWithChart, setupUser } from '../../test/fixtures';
 import { DELETE_GUARD_MS, SettingsScreen, type SettingsScreenProps } from './SettingsScreen';
 
 const copy = ru.settings;
@@ -78,6 +78,22 @@ describe('SettingsScreen', () => {
     expect(onOpenCompatibility).toHaveBeenCalledWith(meWithChart.chart_id);
   });
 
+  it('lists saved compatibility results from the server and opens the selected item', async () => {
+    const api = fakeApi();
+    const savedId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    api.getCompatibilities.mockResolvedValue({
+      ...compatibilityList,
+      items: [{ id: savedId, status: 'ready', relationship: 'friend', created_at: '2026-11-10T12:00:00Z', titles_only: ['Что совпадает'] }],
+    });
+    const onOpenSavedCompatibility = vi.fn();
+    const { user } = setup({ api, props: { onOpenSavedCompatibility } });
+
+    const history = await screen.findByRole('region', { name: ru.compatibility.listTitle });
+    expect(within(history).getByText('Что совпадает')).toBeInTheDocument();
+    await user.click(within(history).getByRole('button', { name: ru.compatibility.goTo }));
+    expect(onOpenSavedCompatibility).toHaveBeenCalledWith(savedId);
+  });
+
   it('loading: a skeleton while the server is asked; error: the failure, with a way to repeat', async () => {
     const pending = deferred<Me>();
     const { refreshMe, onDeleted, user } = setup({ me: pending.promise });
@@ -118,24 +134,110 @@ describe('SettingsScreen', () => {
     const { onSubscribe, onOpenDocument, user } = setup();
 
     expect(await screen.findByText(copy.subscription.none)).toBeInTheDocument();
-    expect(screen.getByText(copy.quotas.empty)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: copy.subscription.subscribe }));
+    expect(screen.getByText(ru.compatibility.quotaPaid)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: copy.subscription.offer }));
     expect(onSubscribe).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: ru.consent.documents.privacy }));
     expect(onOpenDocument).toHaveBeenCalledWith('privacy');
     expect(screen.getByRole('button', { name: copy.deletion.open })).toBeEnabled();
   });
 
-  it('ready: the plan, until when, the renewal, how to cancel in Telegram; the app itself cancels nothing', async () => {
-    setup({ me: meSubscribed });
+  it('cancels only after confirmation and a server 200, then rereads GET /me', async () => {
+    const api = fakeApi();
+    const cancelled: Me = {
+      ...meSubscribed,
+      subscription: { ...meSubscribed.subscription, auto_renew: false, cancelled_at: '2026-11-15T10:00:00Z' },
+    };
+    api.cancelSubscription.mockResolvedValue({ status: 'cancelled', auto_renew: false, current_period_end: '2026-12-10T09:00:00Z' });
+    const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockResolvedValueOnce(meSubscribed).mockResolvedValue(cancelled);
+    const { user } = setup({ me: meSubscribed, api, props: { refreshMe } });
 
-    await screen.findByText(copy.subscription.names.month);
-    const subscription = section(copy.subscription.title);
-    expect(subscription.getByText(new RegExp(`^Действует до \\d+ декабря 2026 г\\. ${copy.subscription.renews}$`))).toBeInTheDocument();
-    expect(subscription.getByRole('heading', { name: copy.subscription.cancelTitle })).toBeInTheDocument();
-    expect(subscription.getByText(copy.subscription.cancelText)).toBeInTheDocument();
-    expect(subscription.getByRole('link', { name: copy.subscription.openTelegram })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
-    expect(subscription.queryByRole('button', { name: copy.subscription.subscribe })).not.toBeInTheDocument();
+    const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+    expect(within(subscription).getByText(new RegExp(copy.subscription.renews))).toBeInTheDocument();
+    await user.click(within(subscription).getByRole('button', { name: copy.subscription.cancelAutoRenew }));
+    const confirm = screen.getByRole('alertdialog', { name: copy.subscription.cancelTitle });
+    expect(within(confirm).getByText(copy.subscription.noRefundStars)).toBeInTheDocument();
+    expect(api.cancelSubscription).not.toHaveBeenCalled();
+    await user.click(within(confirm).getByRole('button', { name: copy.subscription.confirmCancelAction }));
+
+    await screen.findByText(copy.subscription.cancelledAt('15 ноября 2026 г.', '10 декабря 2026 г.'));
+    expect(api.cancelSubscription).toHaveBeenCalledOnce();
+    expect(api.cancelSubscription.mock.calls[0]?.[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(refreshMe).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('button', { name: copy.subscription.cancelAutoRenew })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Возобновить/i })).not.toBeInTheDocument();
+  });
+
+  it('reuses the same Idempotency-Key after a 502 retry and never shows cancellation before GET /me confirms it', async () => {
+    const api = fakeApi();
+    const cancelled: Me = { ...meSubscribed, subscription: { ...meSubscribed.subscription, auto_renew: false } };
+    api.cancelSubscription
+      .mockRejectedValueOnce(apiError('INTERNAL', { status: 502, details: { reason: 'timeout' } }))
+      .mockResolvedValueOnce({ status: 'cancelled', auto_renew: false, current_period_end: '2026-12-10T09:00:00Z' });
+    const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockResolvedValueOnce(meSubscribed).mockResolvedValue(cancelled);
+    const { user } = setup({ me: meSubscribed, api, supportLink: 'https://t.me/support', props: { refreshMe } });
+    const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+    await user.click(within(subscription).getByRole('button', { name: copy.subscription.cancelAutoRenew }));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: copy.subscription.confirmCancelAction }));
+
+    expect(await screen.findByText(copy.subscription.cancelFailed('10 декабря 2026 г.'))).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(copy.subscription.renews))).toBeInTheDocument();
+    const retry = screen.getByRole('button', { name: copy.subscription.retryCancel });
+    await user.click(retry);
+    await screen.findByText(copy.subscription.noRenewalUntil('10 декабря 2026 г.'));
+    expect(api.cancelSubscription).toHaveBeenCalledTimes(2);
+    expect(api.cancelSubscription.mock.calls[1]?.[0]).toBe(api.cancelSubscription.mock.calls[0]?.[0]);
+  });
+
+  it('routes no_charge_id and gave_up to support without retrying the invalid server action', async () => {
+    for (const reason of ['no_charge_id', 'gave_up']) {
+      const api = fakeApi();
+      api.cancelSubscription.mockRejectedValue(apiError('INTERNAL', { status: 502, details: { reason } }));
+      const { user, unmount } = setup({ me: meSubscribed, api, supportLink: 'https://t.me/support' });
+      const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+      await user.click(within(subscription).getByRole('button', { name: copy.subscription.cancelAutoRenew }));
+      await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: copy.subscription.confirmCancelAction }));
+      expect(await screen.findByText(reason === 'no_charge_id' ? copy.subscription.noChargeId('10 декабря 2026 г.') : copy.subscription.gaveUp('10 декабря 2026 г.'))).toBeInTheDocument();
+      expect(within(screen.getByRole('alert')).getByRole('button', { name: ru.support.write })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: copy.subscription.retryCancel })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: copy.subscription.cancelAutoRenew })).not.toBeInTheDocument();
+      expect(api.cancelSubscription).toHaveBeenCalledTimes(1);
+      unmount();
+    }
+  });
+
+  it('treats 422 as a request defect, with support and refresh but no false success or retry', async () => {
+    const api = fakeApi();
+    api.cancelSubscription.mockRejectedValue(apiError('VALIDATION_FAILED', { status: 422 }));
+    const { user, refreshMe } = setup({ me: meSubscribed, api, supportLink: 'https://t.me/support' });
+    const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+    await user.click(within(subscription).getByRole('button', { name: copy.subscription.cancelAutoRenew }));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: copy.subscription.confirmCancelAction }));
+
+    expect(await screen.findByText(copy.subscription.cancelInvalidKey)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(copy.subscription.renews))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy.subscription.retryCancel })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: copy.subscription.refreshStatus })).toBeInTheDocument();
+    expect(api.cancelSubscription).toHaveBeenCalledOnce();
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes the server state on both 409 cancellation reasons', async () => {
+    for (const reason of ['already_cancelled', 'no_active_subscription']) {
+      const api = fakeApi();
+      api.cancelSubscription.mockRejectedValue(apiError('CONFLICT', { status: 409, details: { reason } }));
+      const fresh: Me = reason === 'already_cancelled'
+        ? { ...meSubscribed, subscription: { ...meSubscribed.subscription, auto_renew: false, cancelled_at: '2026-11-15T10:00:00Z' } }
+        : { ...meSubscribed, subscription: { plan: 'none', is_active: false, auto_renew: false, expires_at: null } };
+      const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockResolvedValueOnce(meSubscribed).mockResolvedValue(fresh);
+      const { user, unmount } = setup({ me: meSubscribed, api, props: { refreshMe } });
+      const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+      await user.click(within(subscription).getByRole('button', { name: copy.subscription.cancelAutoRenew }));
+      await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: copy.subscription.confirmCancelAction }));
+      await screen.findByText(reason === 'already_cancelled' ? copy.subscription.alreadyCancelled : copy.subscription.none);
+      expect(refreshMe).toHaveBeenCalledTimes(2);
+      unmount();
+    }
   });
 
   it('quotas: «left X of Y» with the time of renewal, and a limit of -1 as «no limit», never as «-1»', async () => {
@@ -152,15 +254,17 @@ describe('SettingsScreen', () => {
     };
     setup({ me });
 
-    const quotas = within(await screen.findByRole('list'));
+    await screen.findByText(ru.compatibility.quotaPaid);
+    const quotas = within(screen.getByRole('list'));
     const rows = quotas.getAllByRole('listitem').map((row) => row.textContent);
     expect(rows).toHaveLength(4);
     expect(rows[0]).toBe(`${copy.quotas.names.forecast_daily}${copy.quotas.unlimited}`);
     // The day and the hour as the device's locale data writes them: «11 ноября в 03:00» or «11 ноября, 03:00».
     expect(rows[1]).toMatch(new RegExp(`^${copy.quotas.names.ask_daily}Осталось 3 из 5Обновится 1\\d ноября(,| в) \\d\\d:\\d\\d$`));
     // More used than allowed is still «0 left», not a negative number.
-    expect(rows[2]).toContain('Осталось 0 из 1');
-    expect(rows[3]).toBe(`${copy.quotas.names.report_month}${copy.quotas.unavailable}`);
+    expect(rows[2]).toBe(`${copy.quotas.names.report_month}${copy.quotas.unavailable}`);
+    expect(rows[3]).toContain(ru.compatibility.quotaPaid);
+
     expect(screen.getByRole('main').textContent).not.toContain('-1');
   });
 
@@ -478,16 +582,16 @@ describe('SettingsScreen: a build that sells no subscriptions (no `onSubscribe`)
     const ended: Me = { ...meSubscribed, subscription: { ...meSubscribed.subscription, is_active: false } };
     setupWithoutOffer(ended);
 
-    expect(await screen.findByText(copy.subscription.ended)).toBeInTheDocument();
+    expect(await screen.findByText(copy.subscription.endedAt('10 декабря 2026 г.'))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.subscription.subscribe })).not.toBeInTheDocument();
   });
 
-  it('shows a subscription the user has in full: the plan, until when, and how to cancel it', async () => {
+  it('shows a renewing subscription and an in-app cancellation action', async () => {
     setupWithoutOffer(meSubscribed);
 
     await screen.findByText(copy.subscription.names.month);
     const subscription = section(copy.subscription.title);
-    expect(subscription.getByText(new RegExp(`^Действует до \\d+ декабря 2026 г\\. ${copy.subscription.renews}$`))).toBeInTheDocument();
-    expect(subscription.getByRole('link', { name: copy.subscription.openTelegram })).toHaveAttribute('href', 'tg://settings/star_subscriptions');
+    expect(subscription.getByText(new RegExp(`^Подписка активна до \\d+ декабря 2026 г\\. ${copy.subscription.renews}$`))).toBeInTheDocument();
+    expect(subscription.getByRole('button', { name: copy.subscription.cancelAutoRenew })).toBeEnabled();
   });
 });

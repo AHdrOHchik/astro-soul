@@ -34,6 +34,10 @@ export interface IdempotencyKeysOptions {
 }
 
 /** A random UUID (version 4). `crypto.randomUUID` is newer than the oldest supported WebViews, `getRandomValues` is not. */
+export function newIdempotencyKey(): string {
+  return uuid4();
+}
+
 function uuid4(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;

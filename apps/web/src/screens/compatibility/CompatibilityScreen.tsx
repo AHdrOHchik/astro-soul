@@ -12,6 +12,7 @@ import { ru } from '../../i18n/ru';
 import type { IdempotencyKeys } from '../../lib/idempotency';
 import type { Telegram } from '../../telegram';
 import { CompatibilityEntry } from './CompatibilityEntry';
+import { formatCompatQuota } from './CompatQuota';
 import styles from './CompatibilityScreen.module.css';
 
 const copy = ru.compatibility;
@@ -38,11 +39,13 @@ export interface CompatibilityScreenProps {
   onCompatibilityId: (id: string | null) => void;
   keys: IdempotencyKeys;
   limits?: Me['limits'];
+  refreshMe: (signal?: AbortSignal) => Promise<Me>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
   supportLink: string;
   track: Track;
   back?: ScreenProps['back'];
   onBuy: (chartId: string) => void;
+  onBackToList?: () => void;
 }
 
 export function CompatibilityScreen({
@@ -52,11 +55,13 @@ export function CompatibilityScreen({
   onCompatibilityId,
   keys,
   limits,
+  refreshMe,
   telegram,
   supportLink,
   track,
   back,
   onBuy,
+  onBackToList,
 }: CompatibilityScreenProps) {
   const titleId = useId();
   const [relationship, setRelationship] = useState<Relationship>('romantic');
@@ -103,10 +108,10 @@ export function CompatibilityScreen({
         const fresh = await api.getCompatibility(compatibilityId, controller.signal);
         if (controller.signal.aborted) return;
         setResult(fresh);
-        if (fresh.status === 'ready') {
-          void api.getCompatibilities(controller.signal).then(({ quota: freshQuota }) => {
-            if (!controller.signal.aborted) setQuota(freshQuota);
-          }).catch(() => undefined);
+        if (fresh.status === 'ready' || fresh.status === 'failed') {
+          void Promise.allSettled([api.getCompatibilities(controller.signal), refreshMe(controller.signal)]).then(([list]) => {
+            if (!controller.signal.aborted && list.status === 'fulfilled') setQuota(list.value.quota);
+          });
         }
         if (fresh.status === 'pending') {
           const delay = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)] ?? 10000;
@@ -123,7 +128,7 @@ export function CompatibilityScreen({
       controller.abort();
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [api, compatibilityId, pollRetry]);
+  }, [api, compatibilityId, pollRetry, refreshMe]);
 
   const dateString = dateOf(birthDate);
   const dateError = submitted ? (dateString === null ? (Object.values(birthDate).some(Boolean) ? copy.invalidDate : copy.missingDate) : undefined) : undefined;
@@ -276,21 +281,21 @@ export function CompatibilityScreen({
 
   if (compatibilityId !== null && result?.status === 'ready') {
     const sections = [...result.sections].sort((a, b) => a.order - b.order);
-    const depleted = quota?.left === 0;
     const canCreateAnother = quota !== null && quota.left > 0;
-    const nextDate = quota?.resets_at ? formatDayMonth(quota.resets_at.slice(0, 10)) : null;
+    const quotaDisplay = quota === null ? null : formatCompatQuota(quota);
     return (
       <Screen labelledBy={titleId} back={back}>
         <div className={styles.content}>
           <ScreenHeading id={titleId} title={copy.title} focusOnMount />
           <p className={styles.note}>{copy.purchaseDisclosure}</p>
-          <CompatibilitySections sections={sections} />
+          <CompatibilitySections sections={sections} warnings={result.warnings} />
+          {onBackToList && <Button variant="secondary" onClick={onBackToList}>{copy.backToList}</Button>}
           <Button variant="secondary" onClick={() => {
             track('share_clicked');
             try { telegram.share(window.location.origin, copy.shareMessage); } catch { /* sharing never blocks the result */ }
           }}>{copy.share}</Button>
           <Button disabled={!canCreateAnother} onClick={createAnother}>{copy.createAnother}</Button>
-          {depleted && <p className={styles.note}>{nextDate ? copy.quotaNext(nextDate) : copy.quotaNextUnknown}</p>}
+          {quotaDisplay && <p className={styles.note} aria-label={copy.quotaLabel}>{quotaDisplay.value}{quotaDisplay.reset ? ` · ${quotaDisplay.reset}` : ''}</p>}
         </div>
       </Screen>
     );
@@ -419,17 +424,65 @@ export function CompatibilityScreen({
   }
 }
 
-function CompatibilitySections({ sections }: { sections: CompatibilitySection[] }) {
+const DISPLAYED_COMPAT_WARNINGS = ['trimmed'] as const satisfies readonly Compatibility['warnings'][number]['code'][];
+
+function CompatibilitySections({ sections, warnings }: { sections: CompatibilitySection[]; warnings: Compatibility['warnings'] }) {
+  const safeWarnings: unknown[] = Array.isArray(warnings) ? warnings : [];
   return (
     <div className={styles.sections}>
-      {sections.map((section) => (
-        <section key={`${section.key}-${String(section.order)}`} className={styles.section}>
-          <h2>{section.title}</h2>
-          <Markdown text={section.text} />
-        </section>
-      ))}
+      {sections.map((section) => {
+        const trimmed = safeWarnings.some((warning) =>
+          typeof warning === 'object' && warning !== null &&
+          'section' in warning && warning.section === section.key &&
+          'code' in warning && DISPLAYED_COMPAT_WARNINGS.includes(warning.code as (typeof DISPLAYED_COMPAT_WARNINGS)[number]),
+        );
+        return (
+          <section key={`${section.key}-${String(section.order)}`} className={styles.section}>
+            <h2>{section.title}</h2>
+            {section.key === 'steps' ? <StepsContent text={section.text} /> : <Markdown text={section.text} />}
+            {trimmed && <p className={styles.warning}>{copy.sectionTrimmed}</p>}
+          </section>
+        );
+      })}
     </div>
   );
+}
+
+function StepsContent({ text }: { text: string }) {
+  const disclaimerCount = text.split(copy.stepDisclaimer).length - 1;
+  const hasDisclaimer = disclaimerCount > 0;
+  const body = text.split(copy.stepDisclaimer).join(' ').trim();
+  const items = stepItems(body);
+  return (
+    <>
+      {items.length > 0 ? (
+        <ul className={styles.steps}>
+          {items.map((item, index) => <li key={index}><Markdown text={item} /></li>)}
+        </ul>
+      ) : (
+        <Markdown text={body} />
+      )}
+      {hasDisclaimer && <p className={styles.disclaimer}>{copy.stepDisclaimer}</p>}
+    </>
+  );
+}
+
+/** Reads `—`, `–` and `-` markers even when the server joined continued lines into one string. */
+export function stepItems(text: string): string[] {
+  const markers = [...text.matchAll(/(^|\s)([—–-•]|\d+[.)])\s+/g)];
+  const first = markers[0];
+  if (first === undefined || first.index !== 0) return [];
+  const items: string[] = [];
+  for (let index = 0; index < markers.length; index += 1) {
+    const marker = markers[index];
+    if (marker === undefined) continue;
+    const start = marker.index + marker[0].length;
+    const next = markers[index + 1];
+    const end = next?.index ?? text.length;
+    const item = text.slice(start, end).trim();
+    if (item !== '') items.push(item);
+  }
+  return items;
 }
 
 function fieldAlias(field: string): string {

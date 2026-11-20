@@ -558,7 +558,18 @@ function Screens({
   };
   const openCompatibility = (chartId: string | null) => {
     setCompatibilityChartId(chartId);
+    setCompatibilityId(null);
     open('compatibility');
+  };
+  const openSavedCompatibility = (id: string) => {
+    setCompatibilityChartId(null);
+    setCompatibilityId(id);
+    open('compatibility');
+  };
+  const backToCompatibilityList = () => {
+    setCompatibilityChartId(null);
+    setCompatibilityId(null);
+    open('settings');
   };
   const buyCompatibility = (chartId: string) => {
     setCompatibilityChartId(chartId);
@@ -817,10 +828,12 @@ function Screens({
           onCompatibilityId={setCompatibilityId}
           keys={keys}
           limits={me.limits}
+          refreshMe={refreshMe}
           telegram={telegram}
           supportLink={supportLink}
           track={track}
           back={back}
+          onBackToList={backToCompatibilityList}
           onBuy={buyCompatibility}
         />
       );
@@ -838,6 +851,7 @@ function Screens({
           onOpenDocument={open}
           onSubscribe={subscriptions ? openSubscriptions : undefined}
           onOpenCompatibility={openCompatibility}
+          onOpenSavedCompatibility={openSavedCompatibility}
           onBuyCompatibility={buyCompatibility}
           onDeleted={onDeleted}
         />

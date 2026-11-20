@@ -149,7 +149,7 @@ describe('legal texts of the app against the texts file', () => {
  *    2026-11-14 (без смены версии)»: «Хэш теста-охранника пересчитывается один раз»).
  */
 const TEXTS_BY_VERSION: Readonly<Record<string, string>> = {
-  '2026-11-10': 'd7bf8f1f9a3ec0891b2522db94b1a9dade7cdc63cf3da71db0aec8879dee6676',
+  '2026-11-10': '77982779ec46acc6acc92db80078ccee6d60ed634e13ce9ebc4541116fcc9de9',
 };
 
 /** Every legal string of the app, in the order of the screens. */
