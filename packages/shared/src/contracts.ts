@@ -20,6 +20,9 @@ export type Problem = Schemas['Problem'];
 export type SubscriptionPlanName = Schemas['SubscriptionState']['plan'];
 export type SubscriptionState = Schemas['SubscriptionState'];
 
+/** Ответ `POST /subscription/cancel` (контракт 1.6.5). */
+export type SubscriptionCancelResult = Schemas['SubscriptionCancelResult'];
+
 export type Quota = Schemas['Quota'];
 export type QuotaCode = Schemas['Quota']['code'];
 

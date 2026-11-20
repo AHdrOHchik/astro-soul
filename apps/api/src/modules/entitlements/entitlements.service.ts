@@ -148,9 +148,12 @@ export class EntitlementsService {
         status: 'active' | 'expired' | 'cancelled';
         expires_at: Date;
         auto_renew: boolean;
-      }>(`SELECT plan, status, expires_at, auto_renew FROM subscriptions WHERE user_id = $1`, [
-        userId,
-      ]),
+        cancelled_at: Date | null;
+      }>(
+        `SELECT plan, status, expires_at, auto_renew, cancelled_at
+           FROM subscriptions WHERE user_id = $1`,
+        [userId],
+      ),
       this.db.queryOne<{ stars: string | null }>(
         `SELECT COALESCE(SUM(total_amount), 0)::text AS stars
            FROM payments
@@ -167,6 +170,7 @@ export class EntitlementsService {
         is_active: false,
         expires_at: null,
         auto_renew: false,
+        cancelled_at: null,
         stars_paid_total: starsPaidTotal,
       };
     }
@@ -179,7 +183,11 @@ export class EntitlementsService {
       // отдельный джоб помечает её `expired` (payments.md §3.4).
       is_active: isActive,
       expires_at: subscription.expires_at.toISOString(),
+      // `auto_renew = false` — человек уже отменил (итерация 29). Доступ при
+      // этом считается по `status`/`expires_at` выше и остаётся до конца
+      // периода: отмена ≠ возврат.
       auto_renew: subscription.auto_renew,
+      cancelled_at: subscription.cancelled_at?.toISOString() ?? null,
       stars_paid_total: starsPaidTotal,
     };
   }
