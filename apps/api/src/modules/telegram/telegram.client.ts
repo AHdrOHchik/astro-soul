@@ -40,6 +40,24 @@ export interface InvoiceLinkParams {
   readonly subscriptionPeriod?: number;
 }
 
+/**
+ * Результат inline-запроса — карточка шеринга (контракт 1.6.9).
+ *
+ * `photo_url` — подписанный адрес нашего API: Telegram скачивает картинку сам,
+ * байты через метод не гоняем. Подпись выдаётся в момент ответа, а не берётся
+ * из пересланного сообщения: чужая живёт 24 часа и могла истечь.
+ */
+export interface InlineQueryPhotoResult {
+  readonly type: 'photo';
+  readonly id: string;
+  readonly photo_url: string;
+  /** Миниатюра — тот же файл: карточки не настолько большие, чтобы резать их дважды. */
+  readonly thumbnail_url: string;
+  readonly photo_width: number;
+  readonly photo_height: number;
+  readonly caption: string;
+}
+
 export interface TelegramUserRef {
   readonly id: number;
 }
@@ -170,8 +188,12 @@ export class TelegramClient {
    * Нужен диагностике: счёт и `pre_checkout_query` может подтвердить только
    * бот, создавший счёт, а токен в `.env` мог остаться от другого бота.
    */
-  async getMe(): Promise<BotApiAnswer<{ id: number; username?: string }>> {
-    return this.safeCall<{ id: number; username?: string }>('getMe');
+  async getMe(): Promise<
+    BotApiAnswer<{ id: number; username?: string; supports_inline_queries?: boolean }>
+  > {
+    return this.safeCall<{ id: number; username?: string; supports_inline_queries?: boolean }>(
+      'getMe',
+    );
   }
 
   /** `getWebhookInfo` — доставляются ли нам апдейты вообще. */
@@ -284,6 +306,36 @@ export class TelegramClient {
       });
     } catch (error) {
       this.logger.warn('telegram_send_photo_failed', {
+        reason: error instanceof ApiError ? error.code : 'unknown',
+      });
+    }
+  }
+
+  /**
+   * Ответ на `inline_query` (контракт 1.6.9).
+   *
+   * Пустой массив — валидный ответ: «ничего не нашёл» лучше, чем молчание, на
+   * которое Telegram отвечает человеку «бот не отвечает». `cache_time: 0` —
+   * кэш результатов не нужен: подпись на файл выпускается в момент ответа, а
+   * карточка за это время не меняется, поэтому лишний вызов дешевле, чем
+   * протухшая ссылка.
+   *
+   * Ошибки не бросаются: inline-шеринг — не платеж, и вебхук из-за него
+   * повторно доставлять апдейт не должен.
+   */
+  async answerInlineQuery(
+    inlineQueryId: string,
+    results: readonly InlineQueryPhotoResult[],
+  ): Promise<void> {
+    try {
+      await this.call('answerInlineQuery', {
+        inline_query_id: inlineQueryId,
+        results,
+        cache_time: 0,
+        is_personal: false,
+      });
+    } catch (error) {
+      this.logger.warn('telegram_answer_inline_failed', {
         reason: error instanceof ApiError ? error.code : 'unknown',
       });
     }

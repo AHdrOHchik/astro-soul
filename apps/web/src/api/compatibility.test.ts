@@ -12,12 +12,12 @@ function setup() {
 describe('compatibility API', () => {
   it('reads the server-owned quota with no-store', async () => {
     const { api, fetchMock } = setup();
-    const response = { items: [], quota: { kind: 'subscription', left: 0, resets_at: '2026-12-18T00:00:00Z' } };
+    const response = { items: [], total: 0, limit: 20, offset: 0, quota: { kind: 'subscription', left: 0, resets_at: '2026-12-18T00:00:00Z' } };
     fetchMock.mockResolvedValue(json(200, response));
 
     await expect(api.getCompatibilities()).resolves.toEqual(response);
     const [url, init] = fetchMock.mock.calls[0] ?? [];
-    expect([url, init?.method, init?.cache]).toEqual(['/api/v1/compatibility', 'GET', 'no-store']);
+    expect([url, init?.method, init?.cache]).toEqual(['/api/v1/compatibility?limit=20&offset=0', 'GET', 'no-store']);
     expect(init?.headers).toMatchObject({ 'X-Telegram-Init-Data': 'signed-init-data' });
   });
 

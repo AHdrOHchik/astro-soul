@@ -5,15 +5,12 @@
  *
  * Product events are a closed list there (`x-analytics-events`). The server refuses a
  * whole batch for one name it does not know, and silently drops an event whose props
- * carry a key it takes for personal data (`x-events-forbidden-prop-keys`). The link
- * that goes out with a shared chart has a template there (`x-bot`). This file holds the
- * app's side of all three to the contract as it is written, not as somebody remembers it.
+ * carry a key it takes for personal data (`x-events-forbidden-prop-keys`).
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { EVENT_NAMES, PROP_KEYS } from '../src/analytics/events.ts';
-import { botShareLink, botUsernameOf } from '../src/lib/share.ts';
 
 const CONTRACT = readFileSync(join(import.meta.dirname, '../../../api.openapi.yaml'), 'utf8').split('\n');
 
@@ -35,15 +32,6 @@ function topLevelList(key: string): string[] {
   return items;
 }
 
-/** The value of `  key: value` right under a top-level `section:`. */
-function topLevelValue(section: string, key: string): string {
-  for (const line of CONTRACT.slice(lineIndex(`${section}:`) + 1)) {
-    if (!line.startsWith(' ')) break;
-    const [name, ...value] = line.trim().split(': ');
-    if (name === key) return value.join(': ');
-  }
-  throw new Error(`api.openapi.yaml has no «${key}» under «${section}»`);
-}
 
 describe('product events against the contract', () => {
   it('have the same names in the app and in the contract: none missing, none of the app\'s own', () => {
@@ -53,24 +41,14 @@ describe('product events against the contract', () => {
     expect(Object.keys(EVENT_NAMES).sort()).toEqual([...contract].sort());
   });
 
+  it('contains all 38 client event names from contract 1.6.9', () => {
+    expect(Object.keys(EVENT_NAMES)).toHaveLength(38);
+    expect(EVENT_NAMES).toHaveProperty('share_sent', true);
+  });
+
   it('use none of the prop keys the contract forbids as personal data', () => {
     const forbidden = topLevelList('x-events-forbidden-prop-keys');
     expect(forbidden).toEqual(expect.arrayContaining(['birth_date', 'birth_time', 'birth_place', 'query', 'tz']));
     expect(PROP_KEYS.filter((key) => forbidden.includes(key))).toEqual([]);
-  });
-});
-
-describe('the link of a shared chart against the contract', () => {
-  it('is built by the contract\'s template, and only for a bot that is named by a username', () => {
-    const template = topLevelValue('x-bot', 'share_link_template');
-    const chartId = '0f1c2d3e-4b5a-4c6d-8e7f-90a1b2c3d4e5';
-
-    expect(botShareLink(botUsernameOf('@astro_soul_bot'), chartId)).toBe(
-      template.replace('{username}', 'astro_soul_bot').replace('{chart_id}', chartId),
-    );
-    // Not usernames: nothing, a link to the bot, a name too short, a name with a space.
-    for (const value of [undefined, '', 'https://t.me/astro_soul_bot', 'bot', 'astro soul bot']) {
-      expect(botShareLink(botUsernameOf(value), chartId)).toBeNull();
-    }
   });
 });

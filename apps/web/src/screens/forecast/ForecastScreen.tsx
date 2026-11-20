@@ -1,8 +1,9 @@
-import { Button, InfoIcon, Screen, ScreenHeading, ShareIcon, Skeleton, SkeletonGroup, StateView, type ScreenProps } from '@astro-soul/ui';
+import { Button, InfoIcon, Screen, ScreenHeading, Skeleton, SkeletonGroup, StateView, type ScreenProps } from '@astro-soul/ui';
 import { useEffect, useId, useRef } from 'react';
 import type { Track } from '../../analytics';
 import { failureCodeOf, type Api, type Forecast } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
+import { ShareCardButton } from '../../components/ShareCardButton';
 import { SubscriptionHint } from '../../components/SubscriptionHint';
 import { ru } from '../../i18n/ru';
 import type { Telegram } from '../../telegram';
@@ -13,8 +14,8 @@ const copy = ru.forecast;
 const SKELETON_LINES = [0, 1, 2];
 
 export interface ForecastScreenProps {
-  api: Pick<Api, 'getForecast'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
+  api: Pick<Api, 'getForecast' | 'createShareCard'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
   /** The chart the forecast is for. */
   chartId: string;
   /** IANA zone of the birth place: «today» is its calendar day, not the device's. Null when the chart names none. */
@@ -23,8 +24,6 @@ export interface ForecastScreenProps {
   known?: KnownForecast | null;
   /** The server's fresh word. Keep the reference stable: a new function is a new request. */
   onKnown?: (chartId: string, forecast: Forecast | null) => void;
-  /** What the share button sends: the picture of the chart and the words with it. Never the text of the forecast. */
-  share: { url: string; text: string } | null;
   /** The current moment; the device clock unless a test pins it. */
   now?: () => Date;
   track: Track;
@@ -61,7 +60,6 @@ export function ForecastScreen({
   timeZone,
   known,
   onKnown,
-  share,
   now = () => new Date(),
   track,
   back,
@@ -153,18 +151,7 @@ export function ForecastScreen({
         <p className={styles.text}>{forecast.text}</p>
         {/* Under the short text, never over it and never instead of it. */}
         {!forecast.is_paid && onSubscribe && <SubscriptionHint text={copy.subscriptionOnly} onOpen={onSubscribe} />}
-        {share && (
-          <Button
-            variant="secondary"
-            icon={<ShareIcon />}
-            onClick={() => {
-              track('share_clicked');
-              telegram.share(share.url, share.text);
-            }}
-          >
-            {copy.share}
-          </Button>
-        )}
+        <ShareCardButton api={api} kind="day" telegram={telegram} track={track} label={copy.share}/>
       </div>
     </Screen>
   );

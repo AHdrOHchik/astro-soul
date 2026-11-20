@@ -4,6 +4,7 @@ import { isApiError, type Api, type Question } from '../api';
 import { config } from '../config';
 import { copy30 } from '../i18n/round30';
 import { newIdempotencyKey } from '../lib/idempotency';
+import { HISTORY_PAGE_SIZE, type HistoryPageCache } from '../lib/history-pagination';
 import { SupportButton } from '../components/SupportButton';
 import { Disclaimer } from '../components/Disclaimer';
 import styles from './QuestionsScreen.module.css';
@@ -15,6 +16,8 @@ const resetText = (value: string) => {
   return Number.isNaN(date.getTime()) ? copy30.questions.resetFallback : new Intl.DateTimeFormat('ru-RU', { dateStyle: 'long', timeStyle: 'short' }).format(date);
 };
 
+export type QuestionsHistoryCache = HistoryPageCache<Question> & { quota: Question['quota'] | null };
+
 export interface QuestionsScreenProps {
   api: Pick<Api, 'listQuestions' | 'createQuestion' | 'getQuestion'>;
   telegram: Pick<Telegram, 'openLink'>;
@@ -24,18 +27,27 @@ export interface QuestionsScreenProps {
   onBuildChart?: () => void;
   onChartGone: () => void;
   scroll?: { current: number };
+  cache?: QuestionsHistoryCache | null;
+  onCacheChange?: (cache: QuestionsHistoryCache) => void;
 }
 
-export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = true, onSubscribe, onBuildChart, onChartGone, scroll }: QuestionsScreenProps) {
+export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = true, onSubscribe, onBuildChart, onChartGone, scroll, cache = null, onCacheChange }: QuestionsScreenProps) {
   const titleId = useId();
   const [question, setQuestion] = useState('');
-  const [history, setHistory] = useState<Question[]>([]);
+  const [history, setHistory] = useState<Question[]>(() => cache?.items ?? []);
+  const historyRef = useRef(cache?.items ?? []);
+  const [historyTotal, setHistoryTotal] = useState(() => cache?.total ?? 0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(false);
+  const [hasMore, setHasMore] = useState(() => cache?.hasMore ?? false);
+  const nextOffset = useRef(cache?.nextOffset ?? 0);
+  const moreInFlight = useRef(false);
   const [active, setActive] = useState<Question | null>(null);
-  const [loading, setLoading] = useState(chartAvailable);
+  const [loading, setLoading] = useState(chartAvailable && cache === null);
   const [submitting, setSubmitting] = useState(false);
   const [historyError, setHistoryError] = useState(false);
   const [submitError, setSubmitError] = useState<unknown>(null);
-  const [quota, setQuota] = useState<Question['quota'] | null>(null);
+  const [quota, setQuota] = useState<Question['quota'] | null>(() => cache?.quota ?? null);
   const [notice, setNotice] = useState<string | null>(null);
   const listRef = useRef<HTMLElement>(null);
   const retryKey = useRef<string | null>(null);
@@ -49,21 +61,73 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
     element.addEventListener('scroll', remember, { passive: true });
     return () => { element.removeEventListener('scroll', remember); };
   }, [scroll]);
-  const loadHistory = useCallback(async (signal?: AbortSignal) => {
-    const result = await api.listQuestions(20, signal);
+  const loadHistory = useCallback(async (offset = 0, signal?: AbortSignal) => {
+    const result = await api.listQuestions(HISTORY_PAGE_SIZE, offset, signal);
     const visible = result.items.filter((item) => item.status !== 'failed');
-    setHistory(visible);
+    const total = result.total ?? visible.length;
+    const next = offset + result.items.length;
+    nextOffset.current = next;
+    const existing = historyRef.current;
+    const merged = offset === 0 ? visible : [...existing, ...visible.filter((item) => !existing.some((old) => old.id === item.id))];
+    historyRef.current = merged;
+    const more = result.items.length > 0 && next < total;
+    setHistory(merged);
+    setHistoryTotal(total);
+    setHasMore(more);
+    setLoading(false);
+    onCacheChange?.({ items: merged, total, nextOffset: next, hasMore: more, quota: result.quota });
     setQuota(result.quota);
     setHistoryError(false);
+    setLoadMoreError(false);
     return visible;
-  }, [api]);
+  }, [api, onCacheChange]);
+
+  const rememberQuestion = useCallback((item: Question) => {
+    const existing = historyRef.current;
+    const isNew = !existing.some((old) => old.id === item.id);
+    const merged = [item, ...existing.filter((old) => old.id !== item.id)].slice(0, Math.max(existing.length, HISTORY_PAGE_SIZE));
+    historyRef.current = merged;
+    setHistory(merged);
+    const total = historyTotal + (isNew ? 1 : 0);
+    if (isNew) nextOffset.current += 1;
+    setHistoryTotal(total);
+    setQuota(item.quota);
+    onCacheChange?.({ items: merged, total, nextOffset: nextOffset.current, hasMore, quota: item.quota });
+  }, [hasMore, historyTotal, onCacheChange]);
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loadingMore || moreInFlight.current) return;
+    moreInFlight.current = true;
+    setLoadingMore(true);
+    setLoadMoreError(false);
+    try {
+      await loadHistory(nextOffset.current);
+    } catch {
+      setLoadMoreError(true);
+    } finally {
+      moreInFlight.current = false;
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadHistory, loadingMore]);
 
   useEffect(() => {
-    if (!chartAvailable) return undefined;
+    if (!chartAvailable || cache !== null) return undefined;
     const controller = new AbortController();
-    void Promise.resolve().then(() => loadHistory(controller.signal)).catch(() => { if (!controller.signal.aborted) setHistoryError(true); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    void Promise.resolve().then(() => loadHistory(0, controller.signal)).catch(() => { if (!controller.signal.aborted) setHistoryError(true); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => { controller.abort(); };
-  }, [loadHistory, chartAvailable]);
+  }, [cache, loadHistory, chartAvailable]);
+
+
+
+  useEffect(() => {
+    const element = listRef.current;
+    if (element === null) return undefined;
+    const onScroll = () => {
+      if (element.scrollHeight - element.scrollTop - element.clientHeight < 120) void loadMore();
+    };
+    element.addEventListener('scroll', onScroll, { passive: true });
+    return () => { element.removeEventListener('scroll', onScroll); };
+  }, [loadMore]);
 
   useEffect(() => {
     if (active?.status !== 'pending') return undefined;
@@ -78,8 +142,8 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
         if (controller.signal.aborted) return;
         setActive(result);
         if (result.status !== 'pending') {
-          if (result.status === 'failed') void loadHistory(controller.signal).catch(() => { if (!controller.signal.aborted) setHistoryError(true); });
-          else setHistory((current) => [result, ...current.filter((item) => item.id !== result.id)].slice(0, 20));
+          if (result.status === 'failed') void loadHistory(0, controller.signal).catch(() => { if (!controller.signal.aborted) setHistoryError(true); });
+          else rememberQuestion(result);
           return;
         }
       } catch { if (controller.signal.aborted) return; }
@@ -87,7 +151,7 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
     };
     timer = window.setTimeout(() => { void poll(); }, delay);
     return () => { controller.abort(); window.clearTimeout(timer); };
-  }, [active?.id, active?.status, api, loadHistory]);
+  }, [active?.id, active?.status, api, loadHistory, rememberQuestion]);
 
   const submit = async (retryText?: string) => {
     const text = (retryText ?? question).trim();
@@ -106,7 +170,7 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
       if (accepted.status === 'refused') {
         const result = await api.getQuestion(accepted.id, controller.signal);
         setActive(result);
-        setHistory((current) => [result, ...current.filter((item) => item.id !== result.id)].slice(0, 20));
+        rememberQuestion(result);
       } else setActive({ ...optimistic, id: accepted.id });
     } catch (reason) {
       if (controller.signal.aborted) return;
@@ -163,9 +227,13 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
           </>}
         </article>}
         {quota && <p className={styles.muted}>{copy30.questions.quotaStatus.replace('{used}', String(quota.used)).replace('{limit}', String(quota.limit))}</p>}
-        {loading ? <SkeletonGroup label={copy30.questions.historyLoading}><Skeleton/><Skeleton/></SkeletonGroup> : <section className={styles.history}>
+          {loading ? <SkeletonGroup label={copy30.questions.historyLoading}><Skeleton/><Skeleton/></SkeletonGroup> : <section className={styles.history}>
           <h2>{copy30.questions.history}</h2>
-          {historyError ? <div role="alert"><p>{copy30.questions.historyRetry}</p><Button variant="secondary" onClick={() => { setLoading(true); setHistoryError(false); void loadHistory().catch(() => { setHistoryError(true); }).finally(() => { setLoading(false); }); }}>{copy30.questions.retryButton}</Button></div> : history.length === 0 ? <p>{copy30.questions.historyEmpty}</p> : history.map((item) => <button key={item.id} type="button" onClick={() => { setActive(item); }}><time>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(item.created_at))}</time><span>{item.question}</span>{item.status === 'refused' && item.message && <span>{item.message}</span>}</button>)}
+          <p>{copy30.questions.historyCount(historyTotal)}</p>
+          {historyError ? <div role="alert"><p>{copy30.questions.historyRetry}</p><Button variant="secondary" onClick={() => { setLoading(true); setHistoryError(false); void loadHistory(0).catch(() => { setHistoryError(true); }).finally(() => { setLoading(false); }); }}>{copy30.questions.retryButton}</Button></div> : history.length === 0 ? (historyTotal === 0 ? <p>{copy30.questions.historyEmpty}</p> : null) : history.map((item) => <button key={item.id} type="button" onClick={() => { setActive(item); }}><time>{new Intl.DateTimeFormat('ru-RU', { dateStyle: 'medium' }).format(new Date(item.created_at))}</time><span>{item.question}</span>{item.status === 'refused' && item.message && <span>{item.message}</span>}</button>)}
+          {loadingMore && <p role="status">{copy30.questions.historyLoading}</p>}
+          {loadMoreError && <div role="alert"><p>{copy30.questions.loadMoreError}</p><Button variant="secondary" onClick={() => { void loadMore(); }}>{copy30.questions.retryButton}</Button></div>}
+          {hasMore && !loadingMore && !loadMoreError && <Button variant="secondary" onClick={() => { void loadMore(); }}>{copy30.questions.loadMore}</Button>}
         </section>}
         <p className={styles.muted}>{copy30.questions.deleteInfo}</p>
       </>}

@@ -54,7 +54,6 @@ createRoot(root).render(
       api={api}
       telegram={telegram}
       apiBaseUrl={config.apiBaseUrl}
-      botUsername={config.botUsername}
       supportLink={config.supportLink}
       subscriptions={config.subscriptions}
       keys={keys}

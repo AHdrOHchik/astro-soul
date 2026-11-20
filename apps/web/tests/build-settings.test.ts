@@ -12,27 +12,25 @@ describe('the settings of a build, in the words it prints', () => {
     expect(readBuildSettings({}).lines).toEqual([
       'subscriptions: OFF (set VITE_SUBSCRIPTIONS=enabled to sell)',
       'support:       NOT SET → кнопка поддержки будет неактивна',
-      'bot:           NOT SET → «Поделиться» уйдёт без ссылки на бота',
       `consent:       ${CONSENT_VERSION}`,
     ]);
   });
 
-  it('everything set: the same four lines, in the same order, with the values', () => {
-    const env = { VITE_SUBSCRIPTIONS: 'enabled', VITE_SUPPORT_CONTACT: '@astro_soul_support', VITE_BOT_USERNAME: 'wildcard_astro_soul_bot' };
+  it('all settings set: the three lines stay in the same order with the values', () => {
+    const env = { VITE_SUBSCRIPTIONS: 'enabled', VITE_SUPPORT_CONTACT: '@astro_soul_support' };
     expect(readBuildSettings(env).lines).toEqual([
       'subscriptions: ON SALE',
       'support:       @astro_soul_support',
-      'bot:           @wildcard_astro_soul_bot',
       `consent:       ${CONSENT_VERSION}`,
     ]);
   });
 
   it('the consent line is the version of the legal texts the app sends, a date', () => {
-    expect(readBuildSettings({}).lines[3]).toMatch(/^consent: {7}\d{4}-\d{2}-\d{2}$/);
+    expect(readBuildSettings({}).lines[2]).toMatch(/^consent: {7}\d{4}-\d{2}-\d{2}$/);
   });
 });
 
-describe('a build without the support contact or the bot', () => {
+describe('a build without the support contact', () => {
   it('an empty VITE_SUPPORT_CONTACT does not stop the build: the line says NOT SET, the app gets no link', () => {
     const settings = readBuildSettings({ VITE_SUPPORT_CONTACT: '' });
     expect(settings.lines[1]).toBe('support:       NOT SET → кнопка поддержки будет неактивна');
@@ -50,11 +48,7 @@ describe('a build without the support contact or the bot', () => {
     expect(settings.supportLink).toBe(link);
   });
 
-  it('an empty VITE_BOT_USERNAME does not stop it either; a set one is shown with @, however it was written', () => {
-    expect(readBuildSettings({ VITE_BOT_USERNAME: '' }).lines[2]).toBe('bot:           NOT SET → «Поделиться» уйдёт без ссылки на бота');
-    expect(readBuildSettings({ VITE_BOT_USERNAME: 'wildcard_astro_soul_bot' }).lines[2]).toBe('bot:           @wildcard_astro_soul_bot');
-    expect(readBuildSettings({ VITE_BOT_USERNAME: '@wildcard_astro_soul_bot' })).toMatchObject({ botUsername: 'wildcard_astro_soul_bot' });
-  });
+
 });
 
 describe('what a build sells', () => {
@@ -90,7 +84,4 @@ describe('a value nobody can read stops the build (and the dev server: vite.conf
     },
   );
 
-  it.each(['бот', 'a b', 'bot', 'https://t.me/wildcard_astro_soul_bot'])('VITE_BOT_USERNAME=%s: not a username', (value) => {
-    expect(() => readBuildSettings({ VITE_BOT_USERNAME: value })).toThrow(/^VITE_BOT_USERNAME is not a Telegram username/);
-  });
 });

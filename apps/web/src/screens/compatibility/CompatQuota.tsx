@@ -26,7 +26,7 @@ export function CompatQuotaRow({ api }: { api: Pick<Api, 'getCompatibilities'> }
 
   useEffect(() => {
     const controller = new AbortController();
-    void api.getCompatibilities(controller.signal).then(({ quota }) => {
+    void api.getCompatibilities(20, 0, controller.signal).then(({ quota }) => {
       if (!controller.signal.aborted) setState({ status: 'ready', quota });
     }).catch(() => {
       if (!controller.signal.aborted) setState({ status: 'error' });

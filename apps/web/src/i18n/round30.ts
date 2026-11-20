@@ -6,7 +6,7 @@ export const copy30 = {
     title: 'Сегодня', missingTitle: 'Сначала построй карту', missingText: 'Чтобы открыть этот раздел, сначала нужна натальная карта.', build: 'Построить карту',
     loading: 'Загружаем', slow: 'Обычно до 25 секунд', offline: 'Нет связи', timeoutTitle: 'Прогноз не успел собраться', timeoutText: 'Попробуй ещё раз.', serviceTitle: 'Сегодня прогноз не собрался', serviceText: 'Прогноз временно недоступен.',
     monthTitle: 'Прогнозы приостановлены', monthText: 'Прогнозы приостановлены до следующего месяца.', retry: 'Попробовать снова', retryAfter: 'Попробовать снова через {seconds} сек.',
-    oneStep: 'Один шаг', warning: 'Текст немного короче обычного', moonSign: 'Луна в знаке: {value}', moonPhase: 'Фаза Луны: {value}', illumination: 'Освещённость: {value}%',
+    oneStep: 'Один шаг', share: 'Поделиться', warning: 'Текст немного короче обычного', moonSign: 'Луна в знаке: {value}', moonPhase: 'Фаза Луны: {value}', illumination: 'Освещённость: {value}%',
     subscribe: 'Открыть подписку', birthplace: 'По месту рождения · {timezone}', update: 'Обновление — после полуночи по месту рождения', quota: 'Прогнозы на день: {used} из {limit}.', quotaUnlimited: 'без лимита'
   },
   questions: {
@@ -19,6 +19,7 @@ export const copy30 = {
     failedTitle: 'Не удалось отправить вопрос', retry: 'Попробуй ещё раз.', retryButton: 'Повторить', asked: 'Твой вопрос', polling: 'Обычно 20–40 секунд',
     refusedAnother: 'Спросить другое', ungrounded: 'Ответ может быть менее точно связан с положениями карты.', failedAnswerTitle: 'Ответ не готов', failedAnswerText: 'Попробуй задать другой вопрос.',
     failedResult: 'Этот вопрос не удался. Квота не списана.', retryFailed: 'Спросить снова', historyLoading: 'Загружаем историю', history: 'История',
-    historyEmpty: 'Вопросов пока нет.', historyRetry: 'Не удалось загрузить историю вопросов.', quotaStatus: 'Использовано вопросов: {used} из {limit}.',
+    historyEmpty: 'Вопросов пока нет.', historyRetry: 'Не удалось загрузить историю вопросов.', historyCount: (total: number) => `Всего: ${String(total)}`,
+    loadMoreError: 'Не удалось загрузить ещё.', loadMore: 'Загрузить ещё', quotaStatus: 'Использовано вопросов: {used} из {limit}.',
   },
 } as const;

@@ -20,7 +20,7 @@ import { SupportButton } from '../../components/SupportButton';
 import { CompatQuotaRow } from '../compatibility/CompatQuota';
 import { SubscriptionInfo } from './SubscriptionInfo';
 import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
-import { CompatibilityHistory } from '../compatibility/CompatibilityHistory';
+import { CompatibilityHistory, type CompatibilityHistoryCache } from '../compatibility/CompatibilityHistory';
 import { useRequest } from '../../hooks/useRequest';
 import { formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
@@ -50,6 +50,8 @@ export interface SettingsScreenProps {
   onOpenCompatibility?: (chartId: string | null) => void;
   onOpenSavedCompatibility?: (compatibilityId: string) => void;
   onBuyCompatibility?: (chartId: string) => void;
+  compatibilityCache?: CompatibilityHistoryCache | null;
+  onCompatibilityCacheChange?: (cache: CompatibilityHistoryCache) => void;
   /** The server has deleted everything; the argument is the non-access fact captured when deletion was opened. */
   onDeleted: (hadSubscription: boolean) => void;
 }
@@ -73,9 +75,12 @@ export function SettingsScreen({
   onOpenCompatibility,
   onOpenSavedCompatibility,
   onBuyCompatibility,
+  compatibilityCache,
+  onCompatibilityCacheChange,
   onDeleted,
 }: SettingsScreenProps) {
   const titleId = useId();
+  const body = useRef<HTMLElement>(null);
   const request = useRequest(refreshMe);
   const [deleting, setDeleting] = useState(false);
   // Snapshot only for the post-deletion wording; it never grants access or affects deletion.
@@ -126,6 +131,9 @@ export function SettingsScreen({
         onOpenCompatibility={onOpenCompatibility}
         onOpenSavedCompatibility={onOpenSavedCompatibility}
         onBuyCompatibility={onBuyCompatibility}
+        compatibilityCache={compatibilityCache ?? null}
+        onCompatibilityCacheChange={onCompatibilityCacheChange}
+        scrollContainer={body}
         onDelete={() => {
           openDeletion(request.data);
         }}
@@ -171,7 +179,7 @@ export function SettingsScreen({
   };
 
   return (
-    <Screen labelledBy={titleId} back={back} busy={state === 'loading'}>
+    <Screen labelledBy={titleId} back={back} busy={state === 'loading'} bodyRef={body}>
       <div className={styles.content}>
         <ScreenHeading id={titleId} title={copy.title} focusOnMount />
         {views[state]?.()}
@@ -193,10 +201,13 @@ interface SectionsProps {
   onOpenCompatibility?: (chartId: string | null) => void;
   onOpenSavedCompatibility?: (compatibilityId: string) => void;
   onBuyCompatibility?: (chartId: string) => void;
+  compatibilityCache: CompatibilityHistoryCache | null;
+  onCompatibilityCacheChange?: (cache: CompatibilityHistoryCache) => void;
+  scrollContainer: { current: HTMLElement | null };
   onDelete: () => void;
 }
 
-function Sections({ me, api, support, telegram, supportLink, track, refreshMe, onOpenDocument, onSubscribe, onOpenCompatibility, onOpenSavedCompatibility, onBuyCompatibility, onDelete }: SectionsProps) {
+function Sections({ me, api, support, telegram, supportLink, track, refreshMe, onOpenDocument, onSubscribe, onOpenCompatibility, onOpenSavedCompatibility, onBuyCompatibility, compatibilityCache, onCompatibilityCacheChange, scrollContainer, onDelete }: SectionsProps) {
   const ids = { subscription: useId(), quotas: useId(), documents: useId(), support: useId(), deletion: useId() };
   return (
     <div className={styles.sections}>
@@ -226,7 +237,7 @@ function Sections({ me, api, support, telegram, supportLink, track, refreshMe, o
         </div>
       </Card>
 
-      {onOpenSavedCompatibility && <CompatibilityHistory api={api} onOpen={onOpenSavedCompatibility} chartId={me.chart_id} onBuy={onBuyCompatibility} />}
+      {onOpenSavedCompatibility && <CompatibilityHistory api={api} onOpen={onOpenSavedCompatibility} chartId={me.chart_id} onBuy={onBuyCompatibility} cache={compatibilityCache} onCacheChange={onCompatibilityCacheChange} scrollContainer={scrollContainer} />}
 
       {onOpenCompatibility && onBuyCompatibility && (
         <CompatibilityEntry

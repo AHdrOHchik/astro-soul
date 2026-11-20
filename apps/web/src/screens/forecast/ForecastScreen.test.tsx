@@ -8,10 +8,9 @@ import { ForecastScreen, type ForecastScreenProps } from './ForecastScreen';
 
 const copy = ru.forecast;
 const CHART_ID = chart.chart_id;
-const SHARE = { url: 'https://api.test/api/v1/charts/c/wheel.png?sig=s', text: 'Моя натальная карта в «Разборе личности»' };
 const TEN_MINUTES = 10 * 60_000;
 
-interface SetupOptions extends Partial<Pick<ForecastScreenProps, 'timeZone' | 'known' | 'share' | 'onSubscribe'>> {
+interface SetupOptions extends Partial<Pick<ForecastScreenProps, 'timeZone' | 'known' | 'onSubscribe'>> {
   /** What `GET /engagement/forecast` answers: a forecast, null for the contract's 404, or a failure. */
   answer?: Forecast | null | Error | Promise<Forecast | null>;
   now?: Date;
@@ -19,10 +18,10 @@ interface SetupOptions extends Partial<Pick<ForecastScreenProps, 'timeZone' | 'k
   manualClock?: boolean;
 }
 
-function setup({ answer = forecast, now = TODAY, manualClock = false, timeZone = 'Europe/Moscow', share = SHARE, ...props }: SetupOptions = {}) {
+function setup({ answer = forecast, now = TODAY, manualClock = false, timeZone = 'Europe/Moscow', ...props }: SetupOptions = {}) {
   const api = fakeApi();
   api.getForecast.mockImplementation(() => (answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)));
-  const telegram = fakeTelegram();
+  const telegram = fakeTelegram({ canSwitchInlineQuery: true });
   const analytics = fakeAnalytics();
   const onAsk = vi.fn();
   const onClose = vi.fn();
@@ -35,7 +34,6 @@ function setup({ answer = forecast, now = TODAY, manualClock = false, timeZone =
       telegram={telegram}
       chartId={CHART_ID}
       timeZone={timeZone}
-      share={share}
       now={() => now}
       track={analytics.track}
       onKnown={onKnown}
@@ -231,21 +229,25 @@ describe('ForecastScreen', () => {
 
   describe('sharing', () => {
     it('sends the picture of the chart with its words, and not a word of the forecast', async () => {
-      const { telegram, analytics, user } = setup();
+      const { api, telegram, analytics, user } = setup();
       await screen.findByText(forecast.text);
       analytics.clear();
+      expect(api.createShareCard).not.toHaveBeenCalled();
+      expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([]);
 
       await user.click(screen.getByRole('button', { name: 'Поделиться' }));
-      expect(telegram.share).toHaveBeenCalledTimes(1);
-      expect(telegram.share).toHaveBeenCalledWith(SHARE.url, SHARE.text);
-      expect(JSON.stringify(telegram.share.mock.calls)).not.toContain('предложение');
-      expect(analytics.events).toEqual([{ name: 'share_clicked' }]);
+      expect(api.createShareCard).toHaveBeenCalledWith('day');
+      expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
+      expect(analytics.events).toEqual([
+        { name: 'share_clicked' },
+        { name: 'share_sent', props: { kind: 'day', channel: 'inline' } },
+      ]);
     });
 
     it('has no share button without a picture to send', async () => {
-      setup({ share: null });
+      setup();
       await screen.findByText(forecast.text);
-      expect(screen.queryByRole('button', { name: copy.share })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: copy.share })).toBeInTheDocument();
     });
   });
 
@@ -313,7 +315,11 @@ describe('ForecastScreen', () => {
     await user.click(screen.getByRole('button', { name: copy.share }));
     await user.click(screen.getByRole('button', { name: copy.ask }));
 
-    expect(analytics.events).toEqual([{ name: 'forecast_view' }, { name: 'share_clicked' }]);
+    expect(analytics.events).toEqual([
+      { name: 'forecast_view' },
+      { name: 'share_clicked' },
+      { name: 'share_sent', props: { kind: 'day', channel: 'inline' } },
+    ]);
     expect(JSON.stringify(analytics.events)).not.toMatch(/[А-Яа-яЁё]/);
   });
 
@@ -330,7 +336,6 @@ describe('ForecastScreen', () => {
           timeZone="Europe/Moscow"
           // The way the app opens the screen: the card on the chart has heard the forecast already.
           known={{ chartId: CHART_ID, forecast }}
-          share={SHARE}
           now={() => TODAY}
           track={analytics.track}
           onAsk={vi.fn()}
@@ -354,7 +359,6 @@ describe('ForecastScreen', () => {
           telegram={fakeTelegram()}
           chartId={CHART_ID}
           timeZone="Europe/Moscow"
-          share={SHARE}
           now={() => TODAY}
           track={vi.fn()}
           onAsk={vi.fn()}
