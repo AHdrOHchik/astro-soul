@@ -77,15 +77,14 @@ describe('/start sh_<short_id>', () => {
     expect(url.searchParams.get('sig')).toMatch(/^\d+\.[A-Za-z0-9_-]+$/u);
     expect(storage.verify(key, url.searchParams.get('sig') ?? undefined)).toBe('ok');
 
-    // События без ПДн: вид и канал, ни отправителя, ни получателя.
+    // Одно событие без ПДн: вид и канал, ни отправителя, ни получателя.
+    // `share_sent` здесь нет с 1.6.9: переход по ссылке — не отправка, а
+    // отправку сообщает клиент, который её и делает.
     const events = await ctx.db.query<{ name: string; props: Record<string, unknown> }>(
       `SELECT name, props FROM events ORDER BY id`,
     );
-    expect(events.map((event) => event.name)).toEqual(['share_card_opened', 'share_sent']);
+    expect(events.map((event) => event.name)).toEqual(['share_card_opened']);
     expect(events[0]?.props).toMatchObject({ kind: 'day', channel: 'link' });
-    // `share_sent` = карточка ушла в чат: единственная отправка, которую сервер
-    // видит своими глазами.
-    expect(events[1]?.props).toMatchObject({ kind: 'day', channel: 'telegram' });
   });
 
   it('неизвестная метка → текст и кнопка, а не тишина', async () => {
