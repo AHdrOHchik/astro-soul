@@ -1262,6 +1262,16 @@ describe('App: round30 main tabs', () => {
     return { api, telegram, analytics, user, ...view };
   }
 
+  it.each([['new', me], ['returning', meWithChart]] as const)('matches every selected tab to the screen on a %s profile', async (_, profile) => {
+    const { user } = returning(profile);
+    for (const [tab, title] of [['Кабинет', ru.settings.title], ['Сегодня', 'Сегодня'], ['Спросить', 'Спросить карту'], ['Карта', profile.has_chart ? ru.chart.title : ru.welcome.title]] as const) {
+      const button = await screen.findByRole('button', { name: tab });
+      await user.click(button);
+      expect(await screen.findByRole('heading', { name: title, level: 1 })).toBeInTheDocument();
+      expect(within(screen.getByRole('navigation')).getByRole('button', { name: tab })).toHaveAttribute('aria-current', 'page');
+    }
+  });
+
   it('shows the four persistent tabs and requests the new forecast only on Today', async () => {
     const { api, user } = returning(meWithChart);
     expect(await screen.findByRole('heading', { name: ru.chart.title })).toBeInTheDocument();
