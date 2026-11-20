@@ -1155,6 +1155,273 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/forecast/today": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Прогноз дня
+         * @description Прогноз на **местную дату места рождения** (часовой пояс из профиля,
+         *     `profiles.place_tz`). Ограничение честное: если человек уехал в другой
+         *     город, прогноз всё равно считается по поясу рождения — другого пояса у
+         *     нас нет, и это написано на экране.
+         *
+         *     Текст пишет модель **один раз в сутки на человека**; факты (Луна на
+         *     полдень, фаза, ретро-планеты, транзиты к Солнцу/Луне/Асценденту/MC,
+         *     управитель дня, окна времени) считает Python-сайдкар детерминированно.
+         *     Повторный запрос в тот же день отдаёт сохранённый текст и не вызывает
+         *     модель. Маршрута «перегенерировать» нет.
+         *
+         *     Без действующей подписки модель не вызывается вообще: `status =
+         *     facts_only`, `sections` пустой, в `facts` — знак Луны, фаза и
+         *     освещённость. Это `200`, а не `403`: человек видит, что прогноз есть.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Прогноз готов или доступны только факты */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["ForecastDay"];
+                    };
+                };
+                /**
+                 * @description `FORBIDDEN`, `details.reason = subscription_required` — подписки
+                 *     нет, а `FORECAST_FREE_FACTS=0` (бесплатных фактов не показываем).
+                 */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Карты нет (`details.reason = chart_not_found`) — приложение ведёт в
+                 *     онбординг.
+                 */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Прогноз не получился. `details.reason`:
+                 *       • `forecast_failed` — модель не ответила, ответ не разобрался или
+                 *         текст не прошёл проверку. Повтор возможен через 60 секунд;
+                 *       • `forecast_breaker_open` — три провала подряд, генерация
+                 *         приостановлена до починки.
+                 *     Вчерашний текст и заглушка в этом случае **не отдаются**: человек
+                 *     читал бы их как прогноз на сегодня. `details.code` уточняет
+                 *     причину для поддержки, клиенту он не нужен.
+                 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Задать вопрос карте
+         * @description Вопрос 10–300 знаков после `trim`, ссылки запрещены. Ответ готовится в
+         *     фоне, поэтому успешный приём — всегда `202`: клиент опрашивает
+         *     `GET /questions/{id}`.
+         *
+         *     `Idempotency-Key` обязателен: повтор с тем же ключом возвращает тот же
+         *     `id` и второго вызова модели не делает.
+         *
+         *     Отказ по теме (медицина, юристы, кредиты, смерть, вопросы про третьих
+         *     лиц, 18+) детерминированный и происходит **до** модели: ответ приходит
+         *     сразу со `status = refused`, `reason` — из закрытого списка, квота не
+         *     тратится, расход нулевой.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /** @description Тот же ключ → тот же вопрос, без второго вызова модели. */
+                    "Idempotency-Key": string;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @example Стоит ли мне менять работу этой осенью? */
+                        question: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Вопрос принят (или отклонён по теме) */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["QuestionAccepted"];
+                    };
+                };
+                /**
+                 * @description `details.reason`:
+                 *       • `subscription_required` — подписки нет (`QUESTION_FOR_NON_SUBSCRIBERS=0`);
+                 *       • `quota_exhausted` — дневной лимит вопросов исчерпан.
+                 *         `details.quota = {used, limit, resets_at}`, `details.resets_at` —
+                 *         местная полночь места рождения.
+                 */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Карты нет (`details.reason = chart_not_found`). */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description `CONFLICT`, `details.reason = question_in_progress` — предыдущий
+                 *     вопрос ещё готовится. Квота за отклонённый запрос не списывается.
+                 */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description `VALIDATION_FAILED` + `details.field_errors`: вопрос пустой, короче
+                 *     10 или длиннее 300 знаков, содержит ссылку; либо нет
+                 *     `Idempotency-Key`.
+                 */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /**
+                 * @description `QUOTA_EXCEEDED`, `details.reason = daily_cost_cap` — дневной потолок
+                 *     расходов на вопросы (`LLM_QUESTION_DAILY_CAP_RUB`). `resets_at` —
+                 *     местная полночь. Ответ `429`, а не молчание: человек должен
+                 *     понимать, что лимит на сегодня, а не что приложение сломалось.
+                 */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/questions/{question_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ответ на вопрос
+         * @description `status = pending` — ответ ещё готовится, `sections` пустой.
+         *     `status = refused` — отказ по теме: `reason` из закрытого списка, текст
+         *     в `message`, разделов нет. `status = failed` — генерация не удалась,
+         *     повтор — новый вопрос с новым `Idempotency-Key`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    question_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Question"];
+                    };
+                };
+                /** @description Вопроса нет или он чужой (`details.reason = question_not_found`). */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/billing/subscription": {
         parameters: {
             query?: never;
@@ -1783,6 +2050,55 @@ export interface paths {
                                 checkout_opened?: number;
                                 payment_succeeded?: number;
                             };
+                            /** @description Прогнозов дня сгенерировано за 24 часа (события `forecast_ready`). */
+                            forecast_ready_24h?: number;
+                            /**
+                             * @description Провалов генерации за 24 часа. Три подряд открывают
+                             *     брейкер: дальше `GET /forecast/today` отвечает `503
+                             *     forecast_breaker_open` без вызова модели.
+                             */
+                            forecast_failed_24h?: number;
+                            /**
+                             * @description Экран без подписки за 24 часа. Модель при этом не
+                             *     вызывалась — значит, расход нулевой, и цифра не должна
+                             *     попадать в `forecast_cost_rub_24h`.
+                             */
+                            forecast_facts_only_24h?: number;
+                            /**
+                             * @description Повторных запросов за 24 часа, обслуженных сохранённым
+                             *     текстом. Это прямая экономия: кэш-попадание стоит 0 ₽.
+                             */
+                            forecast_cache_hits_24h?: number;
+                            /** @description Сумма `daily_forecasts.cost_rub` за 24 часа, рубли. */
+                            forecast_cost_rub_24h?: number;
+                            questions_ready_24h?: number;
+                            questions_failed_24h?: number;
+                            /**
+                             * @description Отказов по теме за 24 часа. Квота за них не тратится и
+                             *     модель не вызывается, поэтому в `questions_cost_rub_24h`
+                             *     они не входят.
+                             */
+                            questions_refused_24h?: number;
+                            /**
+                             * @description Отказы за 24 часа по причинам: `medical`, `legal`,
+                             *     `money`, `death`, `third_party`, `adult`. Разбивка нужна
+                             *     продукту — «пять отказов» и «пять отказов про здоровье»
+                             *     ведут к разным решениям.
+                             * @example {
+                             *       "medical": 3,
+                             *       "third_party": 2
+                             *     }
+                             */
+                            questions_refused_by_reason?: {
+                                [key: string]: number;
+                            };
+                            questions_cost_rub_24h?: number;
+                            /**
+                             * @description p95 времени от вставки вопроса до готового текста, мс.
+                             *     Это время, которое человек проводит в ожидании после
+                             *     `202`, — включая вызов модели.
+                             */
+                            question_p95_ms?: number;
                         };
                     };
                 };
@@ -2079,6 +2395,153 @@ export interface components {
              * @example /api/v1/charts/0f1c.../wheel.png?sig=1767225600.abc123
              */
             wheel_png_url: string;
+        };
+        ForecastSection: {
+            /** @enum {string} */
+            key: "summary" | "easier" | "careful" | "step";
+            /**
+             * @description Заголовок с сервера. Клиент не хардкодит названия разделов: правка
+             *     текста иначе требовала бы релиза приложения.
+             * @example Где будет легче
+             */
+            title: string;
+            /**
+             * @description Текст раздела, обрезанный по границе предложения. Объёмы: summary
+             *     120–200, easier и careful 300–450, step 200–300 знаков.
+             */
+            body: string;
+        };
+        /**
+         * @description Прогноз дня (1.6.6). Один и тот же конверт для полного прогноза и для
+         *     бесплатного экрана фактов: разница в `status`, `access` и `sections`.
+         */
+        ForecastDay: {
+            /**
+             * Format: date
+             * @description Местная дата места рождения (`YYYY-MM-DD`), не серверная.
+             */
+            date: string;
+            /**
+             * @description Часовой пояс места рождения из профиля.
+             * @example Europe/Moscow
+             */
+            timezone: string;
+            /**
+             * @description `ready` — полный прогноз; `facts_only` — подписки нет, показаны
+             *     только факты (модель не вызывалась).
+             * @enum {string}
+             */
+            status: "ready" | "facts_only";
+            /** @enum {string} */
+            access: "subscription" | "facts_only";
+            /** @description Пустой массив при `status = facts_only`. */
+            sections: components["schemas"]["ForecastSection"][];
+            /**
+             * @description Сумма знаков в `sections`. Полный прогноз — 900–1400 без подписи;
+             *     вне диапазона сервер отдаёт текст и `warnings: ["length_off"]`.
+             */
+            chars: number;
+            /**
+             * @description `length_off` — раздел пришлось обрезать или текст не уложился в
+             *     общий объём. Текст всё равно отдаётся: человеку он полезен.
+             */
+            warnings: "length_off"[];
+            /**
+             * Format: date-time
+             * @description Когда текст был сгенерирован (`null` для `facts_only`).
+             */
+            generated_at?: string | null;
+            /**
+             * @description Только при `status = facts_only`: три детерминированных факта от
+             *     сайдкара. В полном прогнозе `null`.
+             */
+            facts?: {
+                /** @example Овен */
+                moon_sign?: string;
+                /** @example растущая */
+                moon_phase?: string;
+                /** @description Освещённость Луны на полдень, доля от 1. */
+                illumination?: number;
+            } | null;
+            /**
+             * @description Подпись-дисклеймер. Одна константа на весь продукт: приходит с
+             *     сервера, чтобы текст можно было править без релиза фронта.
+             */
+            disclaimer: string;
+        };
+        QuestionSection: {
+            /** @enum {string} */
+            key: "answer" | "why" | "do";
+            /** @example Почему */
+            title: string;
+            /**
+             * @description Объёмы: answer 150–300, why 250–400, do 150–250 знаков; всего
+             *     550–950. Обрезка — только по границе предложения.
+             */
+            body: string;
+        };
+        QuestionQuota: {
+            used: number;
+            /** @description `QUESTION_DAILY_LIMIT` из окружения (3 по умолчанию). */
+            limit: number;
+            /**
+             * Format: date-time
+             * @description Местная полночь места рождения — когда лимит обновится.
+             */
+            resets_at: string;
+        };
+        QuestionAccepted: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description `pending` — ответ готовится; `refused` — отказ по теме, он виден
+             *     сразу (строка уже создана, `GET /questions/{id}` отдаст текст).
+             * @enum {string}
+             */
+            status: "pending" | "refused";
+            quota: components["schemas"]["QuestionQuota"];
+        };
+        Question: {
+            /** Format: uuid */
+            id: string;
+            /** @enum {string} */
+            status: "pending" | "ready" | "failed" | "refused";
+            /**
+             * @description Текст вопроса возвращается **только владельцу**: он хранится до
+             *     удаления аккаунта и не пишется ни в логи, ни в аналитику (там
+             *     `question_hash`, длина и тема).
+             */
+            question: string;
+            /** @description Пустой массив при `pending`, `failed` и `refused`. */
+            sections: components["schemas"]["QuestionSection"][];
+            chars: number;
+            /**
+             * @description `length_off` — обрезано по границе предложения; `ungrounded` —
+             *     ответ не упомянул ни одной позиции карты. Второй случай не
+             *     выбрасывается: текст полезен, но помечен.
+             */
+            warnings: ("length_off" | "ungrounded")[];
+            /**
+             * @description Для `refused` — из закрытого списка: `medical`, `legal`, `money`,
+             *     `death`, `third_party`, `adult`. Для `failed` — код сбоя.
+             */
+            reason?: string | null;
+            /**
+             * @description Грубая тема вопроса для аналитики: в событиях вместо текста
+             *     попадает она, `question_hash` и длина.
+             * @enum {string}
+             */
+            topic: "love" | "career" | "money" | "self" | "health" | "other";
+            /** @description Текст отказа при `status = refused` (постоянный, не от модели). */
+            message?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            disclaimer: string;
+            quota: components["schemas"]["QuestionQuota"];
+        };
+        QuestionList: {
+            items: components["schemas"]["Question"][];
+            quota: components["schemas"]["QuestionQuota"];
         };
         Chart: {
             /** Format: uuid */

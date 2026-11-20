@@ -38,6 +38,17 @@ export type PlanCodeName = Schemas['PlanCode'];
 export type Invoice = Schemas['Invoice'];
 export type Forecast = Schemas['Forecast'];
 export type AskResponse = Schemas['AskResponse'];
+
+/** `GET /api/v1/forecast/today` (контракт 1.6.6). */
+export type ForecastDay = Schemas['ForecastDay'];
+export type ForecastSection = Schemas['ForecastSection'];
+
+/** «Спроси карту» 1.6.6: вопрос, его разделы и квота. */
+export type Question = Schemas['Question'];
+export type QuestionSection = Schemas['QuestionSection'];
+export type QuestionQuota = Schemas['QuestionQuota'];
+export type QuestionAccepted = Schemas['QuestionAccepted'];
+export type QuestionList = Schemas['QuestionList'];
 export type Report = Schemas['Report'];
 
 /** `GET /api/v1/health` — схема объявлена прямо в пути, не в components. */

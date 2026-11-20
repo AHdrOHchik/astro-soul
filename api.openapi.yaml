@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.5
+  version: 1.6.6
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -433,6 +433,50 @@ info:
       • `DELETE /me` не изменился: там по-прежнему удаляются данные, доступ
         закрывается сразу, а автопродление гасится тем же вызовом Bot API.
 
+    1.6.6 — прогноз дня и «спроси карту» (итерация 30). Аддитивно: два новых
+      маршрута и один вспомогательный, четыре схемы ответов; существующие поля
+      не переименованы и не удалены.
+      • новый `GET /api/v1/forecast/today` → `ForecastDay`: прогноз на местную
+        дату места рождения. Факты (Луна на полдень, фаза, ретро-планеты,
+        транзиты к Солнцу/Луне/Асценденту/MC, управитель дня, окна времени)
+        считает Python-сайдкар детерминированно — один и тот же вход даёт
+        побайтово одинаковый JSON; текст пишет модель, **один раз в сутки на
+        человека**. Повтор в тот же день отдаёт сохранённое (`forecast_cache_hit`),
+        маршрута перегенерации нет;
+      • без действующей подписки модель не вызывается: `status = facts_only`,
+        `sections` пустой, `facts {moon_sign, moon_phase, illumination}` — это
+        `200`, а не `403`. `FORECAST_FREE_FACTS=0` выключает и это, тогда `403
+        subscription_required`;
+      • `503` при провале: `details.reason = forecast_failed |
+        forecast_breaker_open`. Вчерашний текст и заглушка не отдаются никогда.
+        Таймаут генерации 25 с; после провала или таймаута повтор — не чаще
+        раза в 60 секунд на человека;
+      • новый `POST /api/v1/questions` → `202 QuestionAccepted`, `GET
+        /api/v1/questions` → `QuestionList`, `GET /api/v1/questions/{id}` →
+        `Question`. Вопрос 10–300 знаков, ссылки запрещены, `Idempotency-Key`
+        обязателен (тот же ключ → тот же `id`, без второго вызова модели).
+        Разделы ответа: `answer` 150–300, `why` 250–400, `do` 150–250, всего
+        550–950 знаков; обрезка по границе предложения, `warnings:
+        [length_off]`, а `ungrounded` — если ответ не упомянул ни одной позиции
+        карты;
+      • отказ по теме детерминированный и **до** модели: медицина, юристы и
+        налоги, кредиты и инвестиции, смерть и болезни, вопросы про третьих
+        лиц, 18+. `status = refused`, `reason` из закрытого списка, квота не
+        тратится, расход нулевой, текст постоянный (`message`);
+      • `403` на вопросы: `subscription_required` (нет подписки) и
+        `quota_exhausted` (+`details.quota` и `resets_at`). `429` с
+        `details.reason = daily_cost_cap` — дневной потолок расходов на вопросы.
+        `409 question_in_progress` — предыдущий вопрос ещё готовится;
+      • `GET /admin/metrics`: `forecast_ready_24h`, `forecast_failed_24h`,
+        `forecast_facts_only_24h`, `forecast_cache_hits_24h`,
+        `forecast_cost_rub_24h`, `questions_ready_24h`, `questions_failed_24h`,
+        `questions_refused_24h`, `questions_refused_by_reason`,
+        `questions_cost_rub_24h`, `question_p95_ms`;
+      • `x-analytics-server-events`: `forecast_ready`, `forecast_failed`,
+        `forecast_facts_only`, `forecast_cache_hit`, `question_ready`,
+        `question_refused`. Текст вопроса не попадает ни в события, ни в логи —
+        только `question_hash`, `question_len` и `topic`.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
@@ -768,6 +812,180 @@ components:
             всегда, но клиент может его не читать, пока не делает шаринг картинкой.
             Так поле можно ввести, не ломая уже собранный фронт.
           example: /api/v1/charts/0f1c.../wheel.png?sig=1767225600.abc123
+
+    ForecastSection:
+      type: object
+      required: [key, title, body]
+      properties:
+        key:
+          type: string
+          enum: [summary, easier, careful, step]
+        title:
+          type: string
+          description: |
+            Заголовок с сервера. Клиент не хардкодит названия разделов: правка
+            текста иначе требовала бы релиза приложения.
+          example: Где будет легче
+        body:
+          type: string
+          description: |
+            Текст раздела, обрезанный по границе предложения. Объёмы: summary
+            120–200, easier и careful 300–450, step 200–300 знаков.
+
+    ForecastDay:
+      type: object
+      description: |
+        Прогноз дня (1.6.6). Один и тот же конверт для полного прогноза и для
+        бесплатного экрана фактов: разница в `status`, `access` и `sections`.
+      required: [date, timezone, status, access, sections, chars, warnings, disclaimer]
+      properties:
+        date:
+          type: string
+          format: date
+          description: Местная дата места рождения (`YYYY-MM-DD`), не серверная.
+        timezone:
+          type: string
+          description: Часовой пояс места рождения из профиля.
+          example: Europe/Moscow
+        status:
+          type: string
+          enum: [ready, facts_only]
+          description: |
+            `ready` — полный прогноз; `facts_only` — подписки нет, показаны
+            только факты (модель не вызывалась).
+        access:
+          type: string
+          enum: [subscription, facts_only]
+        sections:
+          type: array
+          description: Пустой массив при `status = facts_only`.
+          items: { $ref: '#/components/schemas/ForecastSection' }
+        chars:
+          type: integer
+          description: |
+            Сумма знаков в `sections`. Полный прогноз — 900–1400 без подписи;
+            вне диапазона сервер отдаёт текст и `warnings: ["length_off"]`.
+        warnings:
+          type: array
+          description: |
+            `length_off` — раздел пришлось обрезать или текст не уложился в
+            общий объём. Текст всё равно отдаётся: человеку он полезен.
+          items: { type: string, enum: [length_off] }
+        generated_at:
+          type: [string, 'null']
+          format: date-time
+          description: Когда текст был сгенерирован (`null` для `facts_only`).
+        facts:
+          type: [object, 'null']
+          description: |
+            Только при `status = facts_only`: три детерминированных факта от
+            сайдкара. В полном прогнозе `null`.
+          properties:
+            moon_sign: { type: string, example: Овен }
+            moon_phase: { type: string, example: растущая }
+            illumination:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: Освещённость Луны на полдень, доля от 1.
+        disclaimer:
+          type: string
+          description: |
+            Подпись-дисклеймер. Одна константа на весь продукт: приходит с
+            сервера, чтобы текст можно было править без релиза фронта.
+
+    QuestionSection:
+      type: object
+      required: [key, title, body]
+      properties:
+        key:
+          type: string
+          enum: [answer, why, do]
+        title: { type: string, example: Почему }
+        body:
+          type: string
+          description: |
+            Объёмы: answer 150–300, why 250–400, do 150–250 знаков; всего
+            550–950. Обрезка — только по границе предложения.
+
+    QuestionQuota:
+      type: object
+      required: [used, limit, resets_at]
+      properties:
+        used: { type: integer, minimum: 0 }
+        limit:
+          type: integer
+          description: "`QUESTION_DAILY_LIMIT` из окружения (3 по умолчанию)."
+        resets_at:
+          type: string
+          format: date-time
+          description: Местная полночь места рождения — когда лимит обновится.
+
+    QuestionAccepted:
+      type: object
+      required: [id, status, quota]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, refused]
+          description: |
+            `pending` — ответ готовится; `refused` — отказ по теме, он виден
+            сразу (строка уже создана, `GET /questions/{id}` отдаст текст).
+        quota: { $ref: '#/components/schemas/QuestionQuota' }
+
+    Question:
+      type: object
+      required: [id, status, question, sections, chars, warnings, topic, created_at, disclaimer, quota]
+      properties:
+        id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [pending, ready, failed, refused]
+        question:
+          type: string
+          description: |
+            Текст вопроса возвращается **только владельцу**: он хранится до
+            удаления аккаунта и не пишется ни в логи, ни в аналитику (там
+            `question_hash`, длина и тема).
+        sections:
+          type: array
+          description: Пустой массив при `pending`, `failed` и `refused`.
+          items: { $ref: '#/components/schemas/QuestionSection' }
+        chars: { type: integer }
+        warnings:
+          type: array
+          description: |
+            `length_off` — обрезано по границе предложения; `ungrounded` —
+            ответ не упомянул ни одной позиции карты. Второй случай не
+            выбрасывается: текст полезен, но помечен.
+          items: { type: string, enum: [length_off, ungrounded] }
+        reason:
+          type: [string, 'null']
+          description: |
+            Для `refused` — из закрытого списка: `medical`, `legal`, `money`,
+            `death`, `third_party`, `adult`. Для `failed` — код сбоя.
+        topic:
+          type: string
+          enum: [love, career, money, self, health, other]
+          description: |
+            Грубая тема вопроса для аналитики: в событиях вместо текста
+            попадает она, `question_hash` и длина.
+        message:
+          type: [string, 'null']
+          description: Текст отказа при `status = refused` (постоянный, не от модели).
+        created_at: { type: string, format: date-time }
+        disclaimer: { type: string }
+        quota: { $ref: '#/components/schemas/QuestionQuota' }
+
+    QuestionList:
+      type: object
+      required: [items, quota]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Question' }
+        quota: { $ref: '#/components/schemas/QuestionQuota' }
 
     Chart:
       type: object
@@ -2035,6 +2253,184 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/AskRequest' }
 
+  /api/v1/forecast/today:
+    get:
+      tags: [forecast]
+      summary: Прогноз дня
+      description: |
+        Прогноз на **местную дату места рождения** (часовой пояс из профиля,
+        `profiles.place_tz`). Ограничение честное: если человек уехал в другой
+        город, прогноз всё равно считается по поясу рождения — другого пояса у
+        нас нет, и это написано на экране.
+
+        Текст пишет модель **один раз в сутки на человека**; факты (Луна на
+        полдень, фаза, ретро-планеты, транзиты к Солнцу/Луне/Асценденту/MC,
+        управитель дня, окна времени) считает Python-сайдкар детерминированно.
+        Повторный запрос в тот же день отдаёт сохранённый текст и не вызывает
+        модель. Маршрута «перегенерировать» нет.
+
+        Без действующей подписки модель не вызывается вообще: `status =
+        facts_only`, `sections` пустой, в `facts` — знак Луны, фаза и
+        освещённость. Это `200`, а не `403`: человек видит, что прогноз есть.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: Прогноз готов или доступны только факты
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForecastDay' }
+        '403':
+          description: |
+            `FORBIDDEN`, `details.reason = subscription_required` — подписки
+            нет, а `FORECAST_FREE_FACTS=0` (бесплатных фактов не показываем).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: |
+            Карты нет (`details.reason = chart_not_found`) — приложение ведёт в
+            онбординг.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: |
+            Прогноз не получился. `details.reason`:
+              • `forecast_failed` — модель не ответила, ответ не разобрался или
+                текст не прошёл проверку. Повтор возможен через 60 секунд;
+              • `forecast_breaker_open` — три провала подряд, генерация
+                приостановлена до починки.
+            Вчерашний текст и заглушка в этом случае **не отдаются**: человек
+            читал бы их как прогноз на сегодня. `details.code` уточняет
+            причину для поддержки, клиенту он не нужен.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/questions:
+    post:
+      tags: [questions]
+      summary: Задать вопрос карте
+      description: |
+        Вопрос 10–300 знаков после `trim`, ссылки запрещены. Ответ готовится в
+        фоне, поэтому успешный приём — всегда `202`: клиент опрашивает
+        `GET /questions/{id}`.
+
+        `Idempotency-Key` обязателен: повтор с тем же ключом возвращает тот же
+        `id` и второго вызова модели не делает.
+
+        Отказ по теме (медицина, юристы, кредиты, смерть, вопросы про третьих
+        лиц, 18+) детерминированный и происходит **до** модели: ответ приходит
+        сразу со `status = refused`, `reason` — из закрытого списка, квота не
+        тратится, расход нулевой.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 64 }
+          description: Тот же ключ → тот же вопрос, без второго вызова модели.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question:
+                  type: string
+                  minLength: 10
+                  maxLength: 300
+                  example: Стоит ли мне менять работу этой осенью?
+      responses:
+        '202':
+          description: Вопрос принят (или отклонён по теме)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuestionAccepted' }
+        '403':
+          description: |
+            `details.reason`:
+              • `subscription_required` — подписки нет (`QUESTION_FOR_NON_SUBSCRIBERS=0`);
+              • `quota_exhausted` — дневной лимит вопросов исчерпан.
+                `details.quota = {used, limit, resets_at}`, `details.resets_at` —
+                местная полночь места рождения.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: Карты нет (`details.reason = chart_not_found`).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: |
+            `CONFLICT`, `details.reason = question_in_progress` — предыдущий
+            вопрос ещё готовится. Квота за отклонённый запрос не списывается.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: |
+            `VALIDATION_FAILED` + `details.field_errors`: вопрос пустой, короче
+            10 или длиннее 300 знаков, содержит ссылку; либо нет
+            `Idempotency-Key`.
+        '429':
+          description: |
+            `QUOTA_EXCEEDED`, `details.reason = daily_cost_cap` — дневной потолок
+            расходов на вопросы (`LLM_QUESTION_DAILY_CAP_RUB`). `resets_at` —
+            местная полночь. Ответ `429`, а не молчание: человек должен
+            понимать, что лимит на сегодня, а не что приложение сломалось.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+      get:
+        tags: [questions]
+        summary: История вопросов
+        description: |
+          Готовые ответы и отказы, свежие сверху. Вопросы в работе (`pending`)
+          в истории не показываются — их видно через `GET /questions/{id}`.
+        security: [{ TelegramInitData: [] }]
+        parameters:
+          - name: limit
+            in: query
+            required: false
+            schema: { type: integer, minimum: 1, maximum: 20, default: 20 }
+        responses:
+          '200':
+            description: OK
+            content:
+              application/json:
+                schema: { $ref: '#/components/schemas/QuestionList' }
+
+  /api/v1/questions/{question_id}:
+    get:
+      tags: [questions]
+      summary: Ответ на вопрос
+      description: |
+        `status = pending` — ответ ещё готовится, `sections` пустой.
+        `status = refused` — отказ по теме: `reason` из закрытого списка, текст
+        в `message`, разделов нет. `status = failed` — генерация не удалась,
+        повтор — новый вопрос с новым `Idempotency-Key`.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: question_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Question' }
+        '404':
+          description: Вопроса нет или он чужой (`details.reason = question_not_found`).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /api/v1/billing/subscription:
     get:
       tags: [billing]
@@ -2470,6 +2866,53 @@ paths:
                       chart_created: { type: integer }
                       checkout_opened: { type: integer }
                       payment_succeeded: { type: integer }
+                  forecast_ready_24h:
+                    type: integer
+                    description: Прогнозов дня сгенерировано за 24 часа (события `forecast_ready`).
+                  forecast_failed_24h:
+                    type: integer
+                    description: |
+                      Провалов генерации за 24 часа. Три подряд открывают
+                      брейкер: дальше `GET /forecast/today` отвечает `503
+                      forecast_breaker_open` без вызова модели.
+                  forecast_facts_only_24h:
+                    type: integer
+                    description: |
+                      Экран без подписки за 24 часа. Модель при этом не
+                      вызывалась — значит, расход нулевой, и цифра не должна
+                      попадать в `forecast_cost_rub_24h`.
+                  forecast_cache_hits_24h:
+                    type: integer
+                    description: |
+                      Повторных запросов за 24 часа, обслуженных сохранённым
+                      текстом. Это прямая экономия: кэш-попадание стоит 0 ₽.
+                  forecast_cost_rub_24h:
+                    type: number
+                    description: Сумма `daily_forecasts.cost_rub` за 24 часа, рубли.
+                  questions_ready_24h: { type: integer }
+                  questions_failed_24h: { type: integer }
+                  questions_refused_24h:
+                    type: integer
+                    description: |
+                      Отказов по теме за 24 часа. Квота за них не тратится и
+                      модель не вызывается, поэтому в `questions_cost_rub_24h`
+                      они не входят.
+                  questions_refused_by_reason:
+                    type: object
+                    description: |
+                      Отказы за 24 часа по причинам: `medical`, `legal`,
+                      `money`, `death`, `third_party`, `adult`. Разбивка нужна
+                      продукту — «пять отказов» и «пять отказов про здоровье»
+                      ведут к разным решениям.
+                    additionalProperties: { type: integer }
+                    example: { medical: 3, third_party: 2 }
+                  questions_cost_rub_24h: { type: number }
+                  question_p95_ms:
+                    type: integer
+                    description: |
+                      p95 времени от вставки вопроса до готового текста, мс.
+                      Это время, которое человек проводит в ожидании после
+                      `202`, — включая вызов модели.
         '403': { description: FORBIDDEN }
 
 # Закрытый список событий, которые отправляет КЛИЕНТ (контракт 1.5.1).
@@ -2557,6 +3000,12 @@ x-analytics-server-events:
   - subscription_expired
   - subscription_cancelled
   - subscription_cancel_failed
+  - forecast_ready
+  - forecast_failed
+  - forecast_facts_only
+  - forecast_cache_hit
+  - question_ready
+  - question_refused
 # payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
 #                    invoice_invalidated | user_deleted | refund_failed)
 #                    refund_failed означает: отказ записан, но звёзды вернуть
@@ -2571,6 +3020,22 @@ x-analytics-server-events:
 #                    кнопка в приложении (`POST /subscription/cancel`); у
 #                    `DELETE /me` этого события нет: там отмена — часть
 #                    удаления, и она видна в `account_deleted`.
+# forecast_ready       — props: date, chars, warnings, cost_rub
+#                    Текст прогноза дня сгенерирован. Повторный запрос в тот же
+#                    день даёт `forecast_cache_hit`, а не второе событие.
+# forecast_failed      — props: date, error_code
+#                    Генерация не удалась (модель, формат, запрещённый текст,
+#                    потолок стоимости). Три подряд открывают брейкер.
+# forecast_facts_only  — props: date
+#                    Экран без подписки: модель не вызывалась, показаны факты.
+#                    Отдельное событие, потому что строки в БД у этого запроса нет.
+# forecast_cache_hit   — props: date, prompt_version
+#                    Прогноз отдан из сохранённого: деньги не потрачены.
+# question_ready       — props: topic, question_hash, question_len, chars,
+#                    warnings, cost_rub. Текста вопроса в событии нет никогда.
+# question_refused     — props: reason (medical | legal | money | death |
+#                    third_party | adult), topic. Отказ детерминированный, до
+#                    модели: квота не тратится, расход нулевой.
 # subscription_cancel_failed — props: code (telegram_error | timeout | no_charge_id),
 #                    source (endpoint | delete; у повтора нет)
 #                    Отмена автопродления не прошла. При `DELETE /me` `user_id`

@@ -146,6 +146,21 @@ services:
       # По умолчанию 0 — решение владельца: возврата нет. Строка нужна здесь,
       # потому что compose подставляет из .env только перечисленные переменные.
       REFUND_ON_REPORT_FAILED: ${REFUND_ON_REPORT_FAILED:-0}
+      # Прогноз дня и «спроси карту» (итерация 30). Значения — решения
+      # владельца; здесь они нужны, потому что compose подставляет из .env
+      # только перечисленные переменные.
+      FORECAST_REQUIRES_SUBSCRIPTION: ${FORECAST_REQUIRES_SUBSCRIPTION:-1}
+      FORECAST_FREE_FACTS: ${FORECAST_FREE_FACTS:-1}
+      LLM_DAILY_FORECAST_CAP_RUB: ${LLM_DAILY_FORECAST_CAP_RUB:-3}
+      QUESTION_DAILY_LIMIT: ${QUESTION_DAILY_LIMIT:-3}
+      QUESTION_FOR_NON_SUBSCRIBERS: ${QUESTION_FOR_NON_SUBSCRIBERS:-0}
+      LLM_QUESTION_CAP_RUB: ${LLM_QUESTION_CAP_RUB:-3}
+      LLM_QUESTION_DAILY_CAP_RUB: ${LLM_QUESTION_DAILY_CAP_RUB:-15}
+      FORECAST_TIMEOUT_MS: ${FORECAST_TIMEOUT_MS:-25000}
+      FORECAST_RETRY_SECONDS: ${FORECAST_RETRY_SECONDS:-60}
+      PROMPT_VERSION_FORECAST: ${PROMPT_VERSION_FORECAST:-prompts_v1.0}
+      PROMPT_VERSION_QUESTION: ${PROMPT_VERSION_QUESTION:-prompts_v1.0}
+      ENGINE_VERSION: ${ENGINE_VERSION:-1.1.0}
       # Тестовые тарифы за 1 ⭐ (test_1, test_report_1): по умолчанию пусто —
       # флага нет в .env.example, и без явной строки в .env он выключен.
       # Строка нужна, потому что compose подставляет из .env только те

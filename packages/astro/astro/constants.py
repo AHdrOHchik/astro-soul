@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
 
 #: Режим расчёта: fallback — встроенная эфемерида Moshier, swisseph — файлы .se1.
 ENGINE_MODES = ("fallback", "swisseph")

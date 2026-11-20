@@ -141,6 +141,46 @@ export interface ProductMetrics {
    */
   readonly compat_sections_trimmed_24h: number;
   readonly compat_sections_dropped_24h: number;
+  /**
+   * Прогноз дня и «спроси карту» за 24 часа (итерация 30).
+   *
+   * Почему окно сутки, а не 30 дней: и прогноз, и вопрос — ежедневные действия.
+   * Тридцатидневная сумма по ним ничего не говорит о том, что происходит
+   * сегодня, а именно это решает, чинить ли сейчас.
+   *
+   * Источники разные и это осознанно:
+   *   • `forecast_ready` / `forecast_failed` / `forecast_facts_only` /
+   *     `forecast_cache_hits` — события, потому что у бесплатного экрана и
+   *     кэш-попадания нет строки в БД (ничего не создаётся, ничего не меняется);
+   *   • `forecast_cost_rub` и все `questions_*` — по таблицам: там есть
+   *     статус, стоимость и длительность, и агрегировать их из событий значило
+   *     бы держать две копии одного факта.
+   */
+  readonly forecast_ready_24h: number;
+  readonly forecast_failed_24h: number;
+  readonly forecast_facts_only_24h: number;
+  readonly forecast_cache_hits_24h: number;
+  readonly forecast_cost_rub_24h: number;
+  readonly questions_ready_24h: number;
+  readonly questions_failed_24h: number;
+  readonly questions_refused_24h: number;
+  /**
+   * Отказы за сутки по причинам — закрытый список `RefusalReason`.
+   *
+   * Разбивка нужна продукту: «пять отказов» и «пять отказов про здоровье» —
+   * разные решения (второе — быть может, стоит честно сказать в интерфейсе,
+   * о чём карта не отвечает).
+   */
+  readonly questions_refused_by_reason: Readonly<Record<string, number>>;
+  readonly questions_cost_rub_24h: number;
+  /**
+   * p95 времени ответа на вопрос, миллисекунды.
+   *
+   * Считается по `questions.duration_ms` — от вставки строки до готового
+   * текста, включая вызов модели. Это то время, которое человек проводит в
+   * ожидании после `202`.
+   */
+  readonly question_p95_ms: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -183,6 +223,7 @@ export class AdminMetricsService {
       compatHistory,
       telegramCancel,
       paymentHealth,
+      daily,
     ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -397,6 +438,58 @@ export class AdminMetricsService {
              (SELECT count(*)::int FROM payments
                WHERE status = 'rejected' AND paid_at >= now() - interval '24 hours') AS payment_failed`,
         ),
+        // Прогноз дня и «спроси карту» (итерация 30).
+        this.db.queryOne<{
+          forecastReady: number;
+          forecastFailed: number;
+          forecastFactsOnly: number;
+          forecastCacheHits: number;
+          forecastCost: string;
+          questionsReady: number;
+          questionsFailed: number;
+          questionsRefused: number;
+          questionsRefusedByReason: Record<string, number>;
+          questionsCost: string;
+          questionP95: number;
+        }>(
+          `SELECT
+             (SELECT count(*)::int FROM events
+               WHERE name = 'forecast_ready'
+                 AND created_at >= now() - interval '24 hours') AS "forecastReady",
+             (SELECT count(*)::int FROM events
+               WHERE name = 'forecast_failed'
+                 AND created_at >= now() - interval '24 hours') AS "forecastFailed",
+             (SELECT count(*)::int FROM events
+               WHERE name = 'forecast_facts_only'
+                 AND created_at >= now() - interval '24 hours') AS "forecastFactsOnly",
+             (SELECT count(*)::int FROM events
+               WHERE name = 'forecast_cache_hit'
+                 AND created_at >= now() - interval '24 hours') AS "forecastCacheHits",
+             (SELECT COALESCE(SUM(cost_rub), 0)::text FROM daily_forecasts
+               WHERE created_at >= now() - interval '24 hours') AS "forecastCost",
+             (SELECT count(*)::int FROM questions
+               WHERE status = 'ready'
+                 AND created_at >= now() - interval '24 hours') AS "questionsReady",
+             (SELECT count(*)::int FROM questions
+               WHERE status = 'failed'
+                 AND created_at >= now() - interval '24 hours') AS "questionsFailed",
+             (SELECT count(*)::int FROM questions
+               WHERE status = 'refused'
+                 AND created_at >= now() - interval '24 hours') AS "questionsRefused",
+             (SELECT COALESCE(jsonb_object_agg(reason, total), '{}'::jsonb)
+                FROM (SELECT reason, count(*)::int AS total
+                        FROM questions
+                       WHERE status = 'refused' AND reason IS NOT NULL
+                         AND created_at >= now() - interval '24 hours'
+                       GROUP BY reason) AS by_reason) AS "questionsRefusedByReason",
+             (SELECT COALESCE(SUM(cost_rub), 0)::text FROM questions
+               WHERE created_at >= now() - interval '24 hours') AS "questionsCost",
+             (SELECT COALESCE(percentile_cont(0.95)
+                        WITHIN GROUP (ORDER BY duration_ms), 0)::int
+                FROM questions
+               WHERE duration_ms IS NOT NULL
+                 AND created_at >= now() - interval '24 hours') AS "questionP95"`,
+        ),
       ]);
 
     const eventsByName: Record<string, number> = {};
@@ -473,6 +566,17 @@ export class AdminMetricsService {
       compat_breaker_open: compatClosed,
       compat_sections_trimmed_24h: compatSections?.trimmed ?? 0,
       compat_sections_dropped_24h: compatSections?.dropped ?? 0,
+      forecast_ready_24h: daily?.forecastReady ?? 0,
+      forecast_failed_24h: daily?.forecastFailed ?? 0,
+      forecast_facts_only_24h: daily?.forecastFactsOnly ?? 0,
+      forecast_cache_hits_24h: daily?.forecastCacheHits ?? 0,
+      forecast_cost_rub_24h: Math.round(Number(daily?.forecastCost ?? 0) * 10_000) / 10_000,
+      questions_ready_24h: daily?.questionsReady ?? 0,
+      questions_failed_24h: daily?.questionsFailed ?? 0,
+      questions_refused_24h: daily?.questionsRefused ?? 0,
+      questions_refused_by_reason: daily?.questionsRefusedByReason ?? {},
+      questions_cost_rub_24h: Math.round(Number(daily?.questionsCost ?? 0) * 10_000) / 10_000,
+      question_p95_ms: daily?.questionP95 ?? 0,
     };
   }
 }

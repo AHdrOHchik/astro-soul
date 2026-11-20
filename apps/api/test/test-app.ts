@@ -20,7 +20,7 @@ export interface TestContextOptions {
   /** Подмена сайдкара движка: в тестах не поднимаем Python-процесс. */
   readonly astro?: Pick<
     AstroClient,
-    'createChart' | 'transits' | 'synastry' | 'wheelSvg' | 'health' | 'isConfigured'
+    'createChart' | 'transits' | 'synastry' | 'wheelSvg' | 'health' | 'isConfigured' | 'forecastFacts'
   >;
   /** Подмена Bot API: никаких сетевых вызовов в тестах. */
   readonly telegram?: Pick<
@@ -88,6 +88,12 @@ export async function createTestContext(options: TestContextOptions = {}): Promi
 const TABLES = [
   'events',
   'quotas',
+  // Итерация 30: прогноз дня и «спроси карту». Перечислены явно, хотя FK с
+  // `ON DELETE CASCADE` до них и так дотягивается: тест, который чистит данные,
+  // не должен зависеть от того, что каскад не забыли в схеме.
+  'daily_forecasts',
+  'questions',
+  'question_usage',
   // Партнёр совместимости: у него нет FK на `charts`, но есть на `users`,
   // поэтому TRUNCATE users не всегда доходит до него в том же порядке.
   'compat_partners',

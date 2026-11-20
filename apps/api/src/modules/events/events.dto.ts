@@ -52,7 +52,21 @@ export const ANALYTICS_EVENTS = [
  * Серверные события: клиент их отправить не может (422 на весь батч),
  * API пишет их сам. Контракт 1.5.1, `x-analytics-server-events`.
  */
-export const SERVER_EVENTS = ['payment_rejected', 'refund_issued', 'subscription_expired'] as const;
+export const SERVER_EVENTS = [
+  'payment_rejected',
+  'refund_issued',
+  'subscription_expired',
+  // Итерация 30. Прогноз дня и «спроси карту»: четыре события продукта плюс
+  // два счётчика, без которых не посчитать `forecast_facts_only_24h` и
+  // `forecast_cache_hits_24h` — у этих двух запросов нет своей строки в БД
+  // (бесплатный экран ничего не пишет, а кэш-попадание не меняет данные).
+  'forecast_ready',
+  'forecast_failed',
+  'forecast_facts_only',
+  'forecast_cache_hit',
+  'question_ready',
+  'question_refused',
+] as const;
 
 export type ServerEvent = (typeof SERVER_EVENTS)[number];
 
