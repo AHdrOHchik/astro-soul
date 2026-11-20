@@ -4,6 +4,8 @@
  * Правило: middleware на всех `/api/v1/*`, кроме `/health`.
  * У маршрутов ниже в контракте `security: []`, но своя защита:
  *   - /api/v1/charts/{id}/wheel.svg и wheel.png — подписанный `?sig=` (HMAC, TTL 30 дней);
+ *   - /api/v1/files/{pdf|card}/{name} — подписанный `?sig=` (HMAC, TTL 24 ч):
+ *     PDF разбора и карточки шеринга лежат приватно, а открывает их ссылка;
  *   - /api/v1/internal/telegram/webhook/{secret} — секрет в пути + заголовок
  *     X-Telegram-Bot-Api-Secret-Token (следующая итерация).
  * Список закрытый: добавление маршрута без проверки — ошибка ревью.
@@ -15,6 +17,13 @@ const WHEEL_SVG_PATH = /^\/api\/v1\/charts\/[^/]+\/wheel\.svg$/;
 
 /** PNG колеса для шаринга: тоже по подписи (картинку вставляет Telegram). */
 const WHEEL_PNG_PATH = /^\/api\/v1\/charts\/[^/]+\/wheel\.png$/;
+
+/**
+ * Приватные файлы: PDF и карточки. Только два скоупа — `files/anything/else`
+ * до обработчика не дойдёт, а сам ключ дополнительно проверяется регуляркой в
+ * `FileStorageService`.
+ */
+const FILES_PATH = /^\/api\/v1\/files\/(pdf|card)\/[^/]+$/;
 
 /** Триггер джобов: секрет в заголовке `X-Jobs-Secret` (крон, не пользователь). */
 const JOBS_RUN_PATH = /^\/api\/v1\/internal\/jobs\/run$/;
@@ -28,6 +37,7 @@ export function isPublicPath(requestPath: string): boolean {
     PUBLIC_PATHS.has(normalized) ||
     WHEEL_SVG_PATH.test(normalized) ||
     WHEEL_PNG_PATH.test(normalized) ||
+    FILES_PATH.test(normalized) ||
     JOBS_RUN_PATH.test(normalized) ||
     TELEGRAM_WEBHOOK_PATH.test(normalized)
   );

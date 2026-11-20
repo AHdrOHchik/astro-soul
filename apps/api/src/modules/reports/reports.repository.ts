@@ -101,6 +101,29 @@ export class ReportsRepository {
     return row !== null;
   }
 
+  /**
+   * Ключ готового PDF разбора для `Report.pdf_url` (1.6.8).
+   *
+   * Возвращается именно ключ хранилища, а не ссылка: подпись живёт 24 часа,
+   * поэтому её считает сервис в момент ответа. `null` — файла ещё нет (или он
+   * собран другим движком/промптом: тогда это другой документ).
+   */
+  async readyPdfKey(
+    reportId: string,
+    engineVersion: string,
+    promptVersion: string,
+  ): Promise<string | null> {
+    const row = await this.db.queryOne<{ storage_key: string }>(
+      `SELECT storage_key FROM report_pdfs
+        WHERE report_id = $1 AND engine_version = $2 AND prompt_version = $3
+          AND status = 'ready' AND storage_key IS NOT NULL
+        LIMIT 1`,
+      [reportId, engineVersion, promptVersion],
+    );
+
+    return row?.storage_key ?? null;
+  }
+
   async byId(id: string): Promise<ReportRow | null> {
     return this.db.queryOne<ReportRow>(
       `SELECT ${COLUMNS} FROM reports WHERE id = $1 AND kind = 'report'`,

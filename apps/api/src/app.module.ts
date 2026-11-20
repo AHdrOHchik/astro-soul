@@ -12,12 +12,15 @@ import { ChartsModule } from './modules/charts/charts.module';
 import { CompatModule } from './modules/compat/compat.module';
 import { DailyModule } from './modules/daily/daily.module';
 import { EventsModule } from './modules/events/events.module';
+import { FilesModule } from './modules/files/files.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { HealthModule } from './modules/health/health.module';
 import { MeModule } from './modules/me/me.module';
 import { EngagementModule } from './modules/engagement/engagement.module';
 import { OpsModule } from './modules/ops/ops.module';
+import { PdfModule } from './modules/pdf/pdf.module';
 import { ReportsModule } from './modules/reports/reports.module';
+import { ShareModule } from './modules/share/share.module';
 
 @Module({
   imports: [
@@ -35,6 +38,9 @@ import { ReportsModule } from './modules/reports/reports.module';
     ReportsModule,
     CompatModule,
     DailyModule,
+    PdfModule,
+    ShareModule,
+    FilesModule,
   ],
   providers: [
     RequestIdMiddleware,

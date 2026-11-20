@@ -8,6 +8,12 @@ import { JsonLogger } from '../../common/logger';
 /** Жёсткий таймаут вызова сайдкара (ТЗ: 2 с). */
 export const ASTRO_TIMEOUT_MS = 2000;
 
+/**
+ * Таймаут сборки PDF и карточки. Не 2 с: это не расчёт карты, а рендер
+ * документа — 5–15 с нормального времени, 60 с — потолок.
+ */
+export const PDF_TIMEOUT_MS = 60_000;
+
 export interface AstroBirthInput {
   readonly birth_date: string;
   readonly birth_time: string | null;
@@ -41,6 +47,41 @@ export interface AstroTransitReport {
 }
 
 export type WheelTheme = 'dark' | 'light';
+
+/** Вход `POST /pdf/build`: только безопасные строки, ни одного ПДн. */
+export interface PdfBuildRequest {
+  readonly subtitle: string;
+  readonly chapters: readonly { readonly title: string; readonly paragraphs: readonly string[] }[];
+  readonly actions: readonly string[];
+  readonly link: string | null;
+  readonly wheel_png_base64: string | null;
+  readonly max_bytes: number;
+}
+
+export interface PdfBuildResponse {
+  readonly pdf_base64: string;
+  readonly bytes: number;
+  readonly pages: number;
+  readonly wheel_scale: number;
+  readonly build_ms: number;
+}
+
+/** Вход `POST /card/build`: строки уже проверены API. */
+export interface CardBuildRequest {
+  readonly kind: 'day' | 'wheel' | 'insight';
+  readonly title: string;
+  readonly lines: readonly string[];
+  readonly footer: string | null;
+  readonly wheel_png_base64: string | null;
+  readonly moon_illumination: number | null;
+}
+
+export interface CardBuildResponse {
+  readonly png_base64: string;
+  readonly bytes: number;
+  readonly width: number;
+  readonly height: number;
+}
 
 /**
  * Факты дня из `POST /forecast/facts` (итерация 30).
@@ -133,6 +174,38 @@ export class AstroClient {
     return response.svg;
   }
 
+  /**
+   * `POST /wheel/png` — колесо растром (обложка PDF, карточка `wheel`).
+   *
+   * Отдельный маршрут, а не растеризация SVG: в сайдкаре нет librsvg, и
+   * картинка рисуется тем же Pillow из тех же чисел движка.
+   */
+  async wheelPng(data: AstroChartData, theme: WheelTheme, size = 900): Promise<Buffer> {
+    const response = await this.post<{ png_base64: string }>(
+      '/wheel/png',
+      { data, theme, size },
+      PDF_TIMEOUT_MS,
+    );
+
+    return Buffer.from(response.png_base64, 'base64');
+  }
+
+  /**
+   * `POST /pdf/build` — PDF разбора.
+   *
+   * Таймаут не общий (2 с): сборка документа занимает 5–15 с, и общий таймаут
+   * отменял бы нормальную работу. Вызов идёт из фоновой задачи, а не из
+   * HTTP-запроса, поэтому держать его дольше — нормально.
+   */
+  async buildPdf(input: PdfBuildRequest): Promise<PdfBuildResponse> {
+    return this.post<PdfBuildResponse>('/pdf/build', input, PDF_TIMEOUT_MS);
+  }
+
+  /** `POST /card/build` — карточка шеринга (PNG). */
+  async buildCard(input: CardBuildRequest): Promise<CardBuildResponse> {
+    return this.post<CardBuildResponse>('/card/build', input, PDF_TIMEOUT_MS);
+  }
+
   /** Для `/health`: сам факт ответа, без разбора тела. */
   async health(): Promise<'ok' | 'down'> {
     try {
@@ -143,17 +216,21 @@ export class AstroClient {
     }
   }
 
-  private async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await this.request(path, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+  private async post<T>(path: string, body: unknown, timeoutMs = ASTRO_TIMEOUT_MS): Promise<T> {
+    const response = await this.request(
+      path,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      timeoutMs,
+    );
 
     return (await response.json()) as T;
   }
 
-  private async request(path: string, init: RequestInit): Promise<Response> {
+  private async request(path: string, init: RequestInit, timeoutMs = ASTRO_TIMEOUT_MS): Promise<Response> {
     if (this.baseUrl === undefined) {
       throw this.unavailable('astro_not_configured');
     }
@@ -162,7 +239,7 @@ export class AstroClient {
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
         ...init,
-        signal: AbortSignal.timeout(ASTRO_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       this.logger.error('astro_unavailable', {

@@ -9,6 +9,7 @@ import type { VerifiedInitData } from '../auth/init-data';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { LLM_PROVIDER } from '../llm/llm.module';
 import { LlmError, type LlmMessage, type LlmProvider, type LlmResponse } from '../llm/llm.client';
+import { FileStorageService } from '../files/file-storage.service';
 import { UsersRepository } from '../users/users.repository';
 import { CHART_FACTS_VERSION, serializeTopFactors } from './top-factors';
 import { fewShotBlocks } from './corpus';
@@ -140,7 +141,12 @@ export interface ReportView {
   readonly progress: number;
   readonly created_at: string;
   readonly ready_at: string | null;
-  readonly pdf_url: null;
+  /**
+   * Подписанная ссылка на собранный PDF (1.6.8) или `null`, если файла ещё
+   * нет. Ссылка живёт 24 часа и обновляется на каждом `GET /reports/{id}`;
+   * прямых адресов хранилища не бывает.
+   */
+  readonly pdf_url: string | null;
   readonly sections: readonly ReportSectionView[];
   readonly is_paid: boolean;
   readonly teaser?: string;
@@ -245,6 +251,7 @@ export class ReportsService {
     @Inject(ReportsRepository) private readonly repo: ReportsRepository,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
     @Inject(UsersRepository) private readonly users: UsersRepository,
+    @Inject(FileStorageService) private readonly storage: FileStorageService,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
@@ -355,7 +362,17 @@ export class ReportsService {
     }
 
     const entitlement = await this.entitlements.getEntitlements(userId);
-    return this.view(report, entitlement.fullReport);
+
+    // `pdf_url` — свежая подписанная ссылка на уже собранный документ.
+    // `null` означает «PDF ещё не собирали», а не «недоступно»: заказывают его
+    // через `POST /reports/{id}/pdf`, и это отдельное действие.
+    const paid = entitlement.fullReport;
+    const key =
+      paid && report.status === 'ready'
+        ? await this.repo.readyPdfKey(report.id, this.env.ENGINE_VERSION, PROMPT_VERSION)
+        : null;
+
+    return this.view(report, paid, key);
   }
 
   /**
@@ -371,7 +388,7 @@ export class ReportsService {
     return serializeTopFactors(chart);
   }
 
-  private view(report: ReportRow, paid: boolean): ReportView {
+  private view(report: ReportRow, paid: boolean, pdfKey: string | null = null): ReportView {
     const status = contractStatus(report.status);
     const chapters = report.chapters ?? [];
     const progress =
@@ -419,7 +436,7 @@ export class ReportsService {
       progress,
       created_at: report.created_at.toISOString(),
       ready_at: status === 'ready' ? report.updated_at.toISOString() : null,
-      pdf_url: null,
+      pdf_url: pdfKey === null ? null : this.storage.signedUrl(pdfKey).url,
       sections,
       is_paid: paid,
       ...(report.teaser === null ? {} : { teaser: report.teaser }),

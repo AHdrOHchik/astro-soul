@@ -32,6 +32,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Причина ошибки в двух местах сразу: `reason` уходит в лог, `details.reason` —
+ * клиенту (контракт: `Problem.details.reason`). Дублирование намеренное:
+ * клиент разбирает `details.reason`, а лог не должен зависеть от того, что
+ * кто-то решил не отдавать детали наружу.
+ */
+export function reasonOptions(reason: string, message?: string): ApiErrorOptions {
+  return {
+    reason,
+    details: { reason },
+    ...(message === undefined ? {} : { message }),
+  };
+}
+
 export function unauthorized(options: ApiErrorOptions = {}): ApiError {
   return new ApiError('UNAUTHORIZED', 401, options);
 }

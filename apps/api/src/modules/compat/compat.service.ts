@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ApiError, notFound } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
+import { pageLimit, pageOffset } from '../../common/paging';
 import { findNearestCity, type GeoPlace } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
@@ -42,6 +43,9 @@ import {
 } from './compat-validators';
 import { quotaOf, type CompatQuota } from './compat-quota';
 import { parseIdempotencyKey } from '../reports/reports.dto';
+
+/** Сколько заказов совместимости отдаётся за один листинг. */
+export const COMPAT_PAGE_MAX = 20;
 
 /**
  * Потолок стоимости одной совместимости по умолчанию, рубли.
@@ -89,6 +93,10 @@ export interface CompatibilityListItem {
 export interface CompatibilityListView {
   readonly items: readonly CompatibilityListItem[];
   readonly quota: CompatQuota;
+  /** Сколько заказов всего (после фильтра, до `LIMIT`). */
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
 }
 
 /** Ответ `POST /compatibility` — 202 и ничего лишнего. */
@@ -392,9 +400,16 @@ export class CompatService {
     return this.view(row);
   }
 
-  async list(auth: VerifiedInitData): Promise<CompatibilityListView> {
+  async list(
+    auth: VerifiedInitData,
+    limit?: string,
+    offset?: string,
+  ): Promise<CompatibilityListView> {
     const userId = this.users.userIdFor(auth.telegramUserId);
-    const rows = await this.repo.listForUser(userId);
+    const size = pageLimit(limit, COMPAT_PAGE_MAX);
+    const skip = pageOffset(offset);
+    const rows = await this.repo.listForUser(userId, size, skip);
+    const total = await this.repo.countForUser(userId);
 
     const [credit, subscription, lastReadyAt] = await Promise.all([
       this.repo.hasActivePurchase(userId),
@@ -420,6 +435,9 @@ export class CompatService {
         titles_only: this.statusOf(row) === 'ready' ? this.titlesOf(row) : [],
       })),
       quota,
+      total,
+      limit: size,
+      offset: skip,
     };
   }
 
