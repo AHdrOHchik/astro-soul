@@ -656,21 +656,22 @@ describe('ReportScreen: no such report on the server, and the question whether t
 
     it('creates a job with a mandatory idempotency key, polls and opens only the fresh ready URL without reloading the report', async () => {
       const api = fakeApi();
+      api.getReportPdf.mockResolvedValueOnce({ status: 'pending' }).mockResolvedValueOnce({ status: 'pending' }).mockResolvedValueOnce({ status: 'ready', url: '/api/v1/files/new.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' });
       api.createReportPdf.mockResolvedValue({ status: 'pending' });
-      api.getReportPdf.mockResolvedValueOnce({ status: 'pending' }).mockResolvedValueOnce({ status: 'ready', url: '/api/v1/files/new.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' });
       const { telegram } = setup({ api, answer: ready, manualClock: true });
       await pass(0);
 
       fireEvent.click(screen.getByRole('button', { name: copy.pdf }));
       await pass(0);
+      expect(api.getReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(AbortSignal));
+      expect(api.getReportPdf).toHaveBeenCalledTimes(1);
       expect(api.createReportPdf).toHaveBeenCalledWith(REPORT_ID, expect.any(String), expect.any(AbortSignal));
-      expect(api.getReportPdf).not.toHaveBeenCalled();
       expect(telegram.openLink).not.toHaveBeenCalled();
       await pass(3000);
-      expect(api.getReportPdf).toHaveBeenCalledTimes(1);
+      expect(api.getReportPdf).toHaveBeenCalledTimes(2);
       expect(telegram.openLink).not.toHaveBeenCalled();
       await pass(5000);
-      expect(api.getReportPdf).toHaveBeenCalledTimes(2);
+      expect(api.getReportPdf).toHaveBeenCalledTimes(3);
       expect(telegram.openLink).toHaveBeenCalledWith('https://api.test/api/v1/files/new.pdf?sig=fresh');
       expect(api.getReport).toHaveBeenCalledTimes(1);
       expect(screen.queryByText(/%/)).not.toBeInTheDocument();
@@ -702,6 +703,7 @@ describe('ReportScreen: no such report on the server, and the question whether t
 
     it('shows retry after a failed job, but enforces the server 10-second cooldown for pdf_failed', async () => {
       const api = fakeApi();
+      api.getReportPdf.mockResolvedValueOnce({ status: 'pending' });
       api.createReportPdf.mockRejectedValueOnce(apiError('INTERNAL', { status: 503, details: { reason: 'pdf_failed' } }));
       setup({ api, answer: ready, manualClock: true });
       await pass(0);

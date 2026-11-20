@@ -100,7 +100,7 @@ describe('QuestionsScreen', () => {
     api.getQuestion.mockResolvedValue(result({ id: 'q-refused', status: 'refused', message: 'Отказ дословно.', quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }));
     fireEvent.change(screen.getByLabelText('Напиши вопрос о своей карте'), { target: { value: 'Можно ли вылечить заболевание?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Спросить' }));
-    expect(await screen.findByText('Отказ дословно.')).toBeInTheDocument();
+    expect(await screen.findAllByText('Отказ дословно.')).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Спросить другое' })).toBeInTheDocument();
     expect(screen.queryByText(/Лимит вопросов исчерпан/)).not.toBeInTheDocument();
     expect(api.createQuestion).toHaveBeenCalledOnce();
@@ -135,7 +135,7 @@ describe('QuestionsScreen', () => {
     api.getQuestion.mockResolvedValue(result({ id: 'q-refused', status: 'refused', message: 'Этот вопрос вне темы карты.' }));
     fireEvent.change(screen.getByLabelText('Напиши вопрос о своей карте'), { target: { value: 'Можно ли вылечить заболевание?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Спросить' }));
-    expect(await screen.findByText('Этот вопрос вне темы карты.')).toBeInTheDocument();
+    expect(await screen.findAllByText('Этот вопрос вне темы карты.')).toHaveLength(2);
     expect(api.getQuestion).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: 'Спросить другое' })).toBeInTheDocument();
   });

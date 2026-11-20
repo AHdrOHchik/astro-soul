@@ -33,6 +33,7 @@ interface SetupOptions {
   /** Opens the chart the user already has instead of building one: what `GET /charts/current` answers with, null for «none». */
   current?: ChartResult | null;
   inlineShare?: boolean;
+  linkShare?: boolean;
   /** An API prepared by the test, e.g. one that fails first. */
   api?: ReturnType<typeof fakeApi>;
   /** False: nobody listens for the fields the server rejected. */
@@ -46,10 +47,10 @@ interface SetupOptions {
 /** The full report as the chart screen of a user who has bought nothing sees it. */
 const NO_REPORT: ChartReportProps = { fullReport: false, reportId: null, onBuy: vi.fn(), onOrder: vi.fn(), onOpen: vi.fn() };
 
-function setup({ result, current, inlineShare = true, api = fakeApi(), listens = true, strict = false, report }: SetupOptions = {}) {
+function setup({ result, current, inlineShare = true, linkShare = true, api = fakeApi(), listens = true, strict = false, report }: SetupOptions = {}) {
   if (result) api.createChart.mockImplementation(() => Promise.resolve(result));
   if (current !== undefined) api.getCurrentChart.mockResolvedValue(current);
-  const telegram = fakeTelegram({ canSwitchInlineQuery: inlineShare });
+  const telegram = fakeTelegram({ canSwitchInlineQuery: inlineShare, canOpenTelegramLink: linkShare });
   const analytics = fakeAnalytics();
   const onEdit = vi.fn();
   const onRejected = vi.fn<(errors: FieldError[]) => void>();
@@ -322,20 +323,23 @@ describe('ChartScreen', () => {
     });
   });
 
-  it('creates the server wheel card and shares only its caption inline', async () => {
-    const { api, telegram, user } = setup();
+  it('creates the server wheel card and reports share_sent only after the inline call', async () => {
+    const { api, telegram, analytics, user } = setup();
+    expect(analytics.events).not.toContainEqual(expect.objectContaining({ name: 'share_sent' }));
 
     await user.click(await screen.findByRole('button', { name: copy.share }));
 
     expect(api.createShareCard).toHaveBeenCalledWith('wheel');
     expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
+    expect(telegram.openTelegramLink).not.toHaveBeenCalled();
+    expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([{ name: 'share_sent', props: { kind: 'wheel', channel: 'inline' } }]);
     // On screen it is still the SVG.
     expect(screen.getByRole('img', { name: copy.wheelAlt })).toHaveAttribute('src', WHEEL_URL);
   });
 
   it('shares only the exact caption returned by the server, without a bot link or card URL', async () => {
     const { api, telegram, user } = setup();
-    api.createShareCard.mockResolvedValue({ url: 'https://private.test/signed.png', expires_at: '2026-11-16T10:00:00Z', caption: 'Серверная подпись дословно' });
+    api.createShareCard.mockResolvedValue({ url: 'https://private.test/signed.png', share_url: 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz', expires_at: '2026-11-16T10:00:00Z', caption: 'Серверная подпись дословно' });
 
     await user.click(await screen.findByRole('button', { name: copy.share }));
 
@@ -352,11 +356,35 @@ describe('ChartScreen', () => {
     expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
   });
 
-  it('hides the share button when inline-query sharing is unavailable, without a fallback', async () => {
-    const { telegram } = setup({ inlineShare: false });
+  it('uses the server share_url fallback when inline sharing is unavailable and records channel link', async () => {
+    const { api, telegram, analytics, user } = setup({ inlineShare: false });
+    await user.click(await screen.findByRole('button', { name: copy.share }));
+    expect(api.createShareCard).toHaveBeenCalledWith('wheel');
+    expect(telegram.switchInlineQuery).not.toHaveBeenCalled();
+    expect(telegram.openTelegramLink).toHaveBeenCalledWith('https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz');
+    expect(telegram.share).not.toHaveBeenCalled();
+    expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([{ name: 'share_sent', props: { kind: 'wheel', channel: 'link' } }]);
+  });
+
+  it('hides the fallback after the server says share_url is null, without sending file url or an event', async () => {
+    const api = fakeApi();
+    api.createShareCard.mockResolvedValue({ url: 'https://private.test/signed.png?sig=secret', share_url: null, expires_at: '2026-11-16T10:00:00Z', caption: 'Exact caption' });
+    const { telegram, analytics, user } = setup({ inlineShare: false, api });
+    await user.click(await screen.findByRole('button', { name: copy.share }));
+    expect(api.createShareCard).toHaveBeenCalledWith('wheel');
+    expect(telegram.openTelegramLink).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: copy.share })).not.toBeInTheDocument();
+    expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([]);
+  });
+
+  it('hides sharing without inline support or the Telegram-link bridge, without requesting a card', async () => {
+    const api = fakeApi();
+    const { telegram } = setup({ inlineShare: false, linkShare: false, api });
+    // The host without either sharing path cannot start a card request.
     expect(await screen.findByRole('heading', { name: copy.title })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: copy.share })).not.toBeInTheDocument();
-    expect(telegram.share).not.toHaveBeenCalled();
+    expect(api.createShareCard).not.toHaveBeenCalled();
+    expect(telegram.openTelegramLink).not.toHaveBeenCalled();
   });
 
   it('shows the error state with the server text and request id, then retries', async () => {
@@ -591,6 +619,7 @@ describe('ChartScreen', () => {
         'chart_requested',
         'chart_created',
         'share_clicked',
+        'share_sent',
       ]);
       const reported = JSON.stringify(analytics.events);
       expect(reported).not.toMatch(/\p{Script=Cyrillic}/u);

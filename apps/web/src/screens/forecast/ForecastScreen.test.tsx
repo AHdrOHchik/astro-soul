@@ -232,11 +232,16 @@ describe('ForecastScreen', () => {
       const { api, telegram, analytics, user } = setup();
       await screen.findByText(forecast.text);
       analytics.clear();
+      expect(api.createShareCard).not.toHaveBeenCalled();
+      expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([]);
 
       await user.click(screen.getByRole('button', { name: 'Поделиться' }));
       expect(api.createShareCard).toHaveBeenCalledWith('day');
       expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
-      expect(analytics.events).toEqual([{ name: 'share_clicked' }]);
+      expect(analytics.events).toEqual([
+        { name: 'share_clicked' },
+        { name: 'share_sent', props: { kind: 'day', channel: 'inline' } },
+      ]);
     });
 
     it('has no share button without a picture to send', async () => {
@@ -310,7 +315,11 @@ describe('ForecastScreen', () => {
     await user.click(screen.getByRole('button', { name: copy.share }));
     await user.click(screen.getByRole('button', { name: copy.ask }));
 
-    expect(analytics.events).toEqual([{ name: 'forecast_view' }, { name: 'share_clicked' }]);
+    expect(analytics.events).toEqual([
+      { name: 'forecast_view' },
+      { name: 'share_clicked' },
+      { name: 'share_sent', props: { kind: 'day', channel: 'inline' } },
+    ]);
     expect(JSON.stringify(analytics.events)).not.toMatch(/[А-Яа-яЁё]/);
   });
 

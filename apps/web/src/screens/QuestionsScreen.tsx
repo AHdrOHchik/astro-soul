@@ -74,6 +74,7 @@ export function QuestionsScreen({ api, telegram, subscribed, chartAvailable = tr
     setHistory(merged);
     setHistoryTotal(total);
     setHasMore(more);
+    setLoading(false);
     onCacheChange?.({ items: merged, total, nextOffset: next, hasMore: more, quota: result.quota });
     setQuota(result.quota);
     setHistoryError(false);

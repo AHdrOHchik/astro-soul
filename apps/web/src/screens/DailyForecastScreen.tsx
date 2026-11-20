@@ -15,7 +15,7 @@ import type { Telegram } from '../telegram';
 export interface DailyForecastScreenProps {
   api: Pick<Api, 'getForecastToday' | 'getMe' | 'createShareCard'>;
   chartId: string | null;
-  telegram: Pick<Telegram, 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery'>;
+  telegram: Pick<Telegram, 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   now?: () => Date;
   known: ForecastDay | null;
   onKnown: (day: ForecastDay | null) => void;

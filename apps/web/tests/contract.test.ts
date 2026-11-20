@@ -41,6 +41,11 @@ describe('product events against the contract', () => {
     expect(Object.keys(EVENT_NAMES).sort()).toEqual([...contract].sort());
   });
 
+  it('contains all 38 client event names from contract 1.6.9', () => {
+    expect(Object.keys(EVENT_NAMES)).toHaveLength(38);
+    expect(EVENT_NAMES).toHaveProperty('share_sent', true);
+  });
+
   it('use none of the prop keys the contract forbids as personal data', () => {
     const forbidden = topLevelList('x-events-forbidden-prop-keys');
     expect(forbidden).toEqual(expect.arrayContaining(['birth_date', 'birth_time', 'birth_place', 'query', 'tz']));

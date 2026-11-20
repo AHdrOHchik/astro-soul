@@ -346,7 +346,7 @@ export function fakeApi() {
     getReport: vi.fn<Api['getReport']>().mockResolvedValue(report),
     createReportPdf: vi.fn<Api['createReportPdf']>().mockResolvedValue({ status: 'ready', url: '/api/v1/files/pdf/report.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' }),
     getReportPdf: vi.fn<Api['getReportPdf']>().mockResolvedValue({ status: 'ready', url: '/api/v1/files/pdf/report.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' }),
-    createShareCard: vi.fn<Api['createShareCard']>().mockResolvedValue({ url: '/api/v1/files/card/card.png?sig=secret', expires_at: '2026-11-16T10:00:00Z', caption: 'Мне тут сделали разбор личности — залипательно' }),
+    createShareCard: vi.fn<Api['createShareCard']>().mockResolvedValue({ url: '/api/v1/files/card/card.png?sig=secret', share_url: 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz', expires_at: '2026-11-16T10:00:00Z', caption: 'Мне тут сделали разбор личности — залипательно' }),
     getCompatibilities: vi.fn<Api['getCompatibilities']>().mockResolvedValue(compatibilityList),
     orderCompatibility: vi.fn<Api['orderCompatibility']>().mockResolvedValue({ compatibility_id: 'compatibility-1', status: 'pending' }),
     getCompatibility: vi.fn<Api['getCompatibility']>().mockResolvedValue(compatibilityPending),
@@ -416,7 +416,7 @@ export function fakeTermsReload(options: { refusedVersion?: string | null; stora
 }
 
 /** Where the app runs; the methods are always spies. */
-type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery'>;
+type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery' | 'canOpenTelegramLink'>;
 
 /** `invoice`: how Telegram closes every invoice it is asked to open; «paid» unless the test says otherwise. */
 export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | Promise<InvoiceOutcome> } = {}) {
@@ -435,6 +435,8 @@ export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | 
     openLink: vi.fn<Telegram['openLink']>(),
     canSwitchInlineQuery: where.canSwitchInlineQuery ?? true,
     switchInlineQuery: vi.fn<Telegram['switchInlineQuery']>().mockReturnValue(true),
+    canOpenTelegramLink: where.canOpenTelegramLink ?? true,
+    openTelegramLink: vi.fn<Telegram['openTelegramLink']>().mockReturnValue(true),
   };
 }
 

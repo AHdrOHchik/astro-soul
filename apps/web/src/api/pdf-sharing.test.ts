@@ -32,7 +32,7 @@ describe('report PDF and share-card API contracts', () => {
 
   it('creates a server card using only its permitted kind and never retries creation automatically', async () => {
     const { api, fetcher } = setup();
-    const card = { url: '/private/signed.png?sig=secret', expires_at: '2026-11-16T10:00:00Z', caption: 'Exact server caption' };
+    const card = { url: '/private/signed.png?sig=secret', share_url: 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz', expires_at: '2026-11-16T10:00:00Z', caption: 'Exact server caption' };
     fetcher.mockResolvedValue(response(card));
     await expect(api.createShareCard('day')).resolves.toEqual(card);
     const [url, init] = fetcher.mock.calls[0] ?? [];

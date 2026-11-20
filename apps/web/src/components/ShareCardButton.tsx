@@ -1,5 +1,5 @@
 import { Button, Notice, ShareIcon } from '@astro-soul/ui';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Track } from '../analytics';
 import type { Api, ShareCardKind } from '../api';
 import { ru } from '../i18n/ru';
@@ -14,31 +14,47 @@ export function ShareCardButton({
 }: {
   api: Pick<Api, 'createShareCard'>;
   kind: ShareCardKind;
-  telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery'>;
+  telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   track: Track;
   label: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
-  if (!telegram.canSwitchInlineQuery) return null;
+  const [unavailable, setUnavailable] = useState(false);
+  const inFlight = useRef(false);
+  if (unavailable || (!telegram.canSwitchInlineQuery && !telegram.canOpenTelegramLink)) return null;
 
   const share = async () => {
-    if (busy) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     setError(false);
-    track('share_clicked');
+    try { track('share_clicked'); } catch { /* analytics must not block sharing */ }
     try {
       const card = await api.createShareCard(kind);
-      // `card.url` is a private, expiring file URL. Inline sharing uses only the server caption.
-      if (!telegram.switchInlineQuery(card.caption)) {
+      // `url` is a private, expiring file URL. It must never be sent to Telegram.
+      if (telegram.canSwitchInlineQuery) {
+        let invoked = false;
+        try { invoked = telegram.switchInlineQuery(card.caption); } catch { /* Telegram may already have received the request. */ }
+        if (invoked) {
+          try { track('share_sent', { kind, channel: 'inline' }); } catch { /* delivery is secondary to sharing */ }
+          return;
+        }
+      }
+      if (card.share_url === null) {
+        // There is no link fallback. Keep the button away after learning this from the server.
+        setUnavailable(true);
+        return;
+      }
+      if (!telegram.canOpenTelegramLink || !telegram.openTelegramLink(card.share_url)) {
         setError(true);
         return;
       }
-      // TODO(1.6.9): emit client-side `share_sent` here only after the API contract allows it.
-      // Contract 1.6.8 intentionally rejects this event from clients; the server owns its own event.
+      try { track('share_sent', { kind, channel: 'link' }); } catch { /* delivery is secondary to sharing */ }
     } catch {
       setError(true);
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   };

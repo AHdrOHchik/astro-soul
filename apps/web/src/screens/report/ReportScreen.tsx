@@ -34,7 +34,7 @@ const SKELETON_LINES = [0, 1, 2, 3];
 
 export interface ReportScreenProps {
   api: Pick<Api, 'orderReport' | 'getReport' | 'createReportPdf' | 'getReportPdf' | 'createShareCard' | 'getCompatibilities' | 'getPlans'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   keys: IdempotencyKeys;
   /** The chart the report is about. */
   chartId: string;
@@ -420,12 +420,11 @@ function Download({ report, apiBaseUrl, api, telegram }: DownloadProps) {
     try {
       // `Report.pdf_url` is only a hint that a PDF exists. It is never opened or cached:
       // GET must issue a fresh signature on every tap, even after this screen stayed open overnight.
-      let status = report.pdf_url !== null
-        ? await api.getReportPdf(report.report_id, controller.signal)
-        : await api.createReportPdf(report.report_id, newIdempotencyKey(), controller.signal);
-      // A fresh status check may confirm the previous job failed. Retry it with a new
-      // idempotency key rather than repeatedly polling the same terminal failure.
-      if (status.status === 'failed') {
+      // Always ask for a fresh status/signature first; Report.pdf_url is only a hint.
+      let status = await api.getReportPdf(report.report_id, controller.signal);
+      // A null hint means no request was made yet; a failed status is terminal and retryable.
+      // In either case enqueue once with a fresh mandatory key.
+      if (status.status === 'failed' || (report.pdf_url === null && status.status === 'pending')) {
         status = await api.createReportPdf(report.report_id, newIdempotencyKey(), controller.signal);
       }
       let delay = 3000;

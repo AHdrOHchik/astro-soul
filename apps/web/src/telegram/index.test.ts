@@ -90,6 +90,15 @@ describe('inside Telegram', () => {
     expect(telegram.initData).toBe(INIT_DATA);
   });
 
+  it('opens a server-built t.me share link through Telegram, not the general web-share URL', async () => {
+    launchInTelegram('8.0');
+    const telegram = await start();
+    const shareUrl = 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz';
+    expect(telegram.canOpenTelegramLink).toBe(true);
+    expect(telegram.openTelegramLink(shareUrl)).toBe(true);
+    expect(posted).toHaveBeenCalledWith('web_app_open_tg_link', JSON.stringify({ path_full: '/astro_soul_bot?start=sh_k7m2p9x4qz' }));
+  });
+
   it('expands, paints the client chrome in the app colour and blocks swipe-to-close', async () => {
     launchInTelegram('8.0');
     await start();

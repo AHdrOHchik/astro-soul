@@ -94,7 +94,7 @@ export interface ChartReportProps {
 
 export interface ChartScreenProps {
   api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'openLink'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
    * Keep the reference stable: a new object is a new request.
@@ -306,7 +306,7 @@ interface ChartViewProps {
   api: Pick<Api, 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
   result: ChartResult;
   apiBaseUrl: string;
-  telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery'>;
+  telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
   track: Track;
   report: ChartReportProps;
   forecast?: ChartForecastProps;

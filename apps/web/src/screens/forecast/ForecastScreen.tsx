@@ -15,7 +15,7 @@ const SKELETON_LINES = [0, 1, 2];
 
 export interface ForecastScreenProps {
   api: Pick<Api, 'getForecast' | 'createShareCard'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'openLink'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
   /** The chart the forecast is for. */
   chartId: string;
   /** IANA zone of the birth place: «today» is its calendar day, not the device's. Null when the chart names none. */
