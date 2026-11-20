@@ -19,7 +19,7 @@ export const reportRequestSchema = z.object({
 export type ReportRequestBody = z.infer<typeof reportRequestSchema>;
 
 export const IDEMPOTENCY_KEY_MAX = 64;
-const IDEMPOTENCY_KEY = /^[\w.:-]+$/u;
+export const IDEMPOTENCY_KEY = /^[\w.:-]+$/u;
 
 const FIELD_MESSAGE: Readonly<Record<string, string>> = {
   chart_id: 'Выбери карту, по которой нужен разбор',

@@ -20,6 +20,7 @@ import { BillingRepository } from './billing.repository';
 import { buildInvoicePayload, parseInvoiceRequest, planNotAvailable } from './billing.dto';
 import { planOffers, type PlanOffer } from './plan-offers';
 import { PlansRepository, type PlanRow } from './plans.repository';
+import { SubscriptionCancelService, type CancelAutoRenewResult } from './subscription-cancel.service';
 
 /** Антифрод-лимиты из payments.md §5. */
 export const INVOICES_PER_HOUR = 3;
@@ -39,6 +40,7 @@ export class BillingService {
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
     @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(SubscriptionCancelService) private readonly subscriptionCancel: SubscriptionCancelService,
   ) {}
 
   /**
@@ -283,6 +285,18 @@ export class BillingService {
     }
 
     return plan;
+  }
+
+  /**
+   * `POST /subscription/cancel` (итерация 29).
+   *
+   * `user_id` — псевдонимный ключ субъекта, тот же, что у подписки и платежей:
+   * его считает `UsersRepository`, поэтому контроллер не знает про `pepper`.
+   * `ensureUser` не нужен — строку подписки ищем по `user_id`, а если её нет,
+   * это и есть `no_active_subscription`.
+   */
+  async cancelSubscription(auth: VerifiedInitData): Promise<CancelAutoRenewResult> {
+    return this.subscriptionCancel.cancelAutoRenew(this.users.userIdFor(auth.telegramUserId));
   }
 
   /** `GET /billing/subscription` — та же правда, что в `/me`. */

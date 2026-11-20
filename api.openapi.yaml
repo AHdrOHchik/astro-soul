@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.4
+  version: 1.6.5
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -415,6 +415,24 @@ info:
       • `warnings` может содержать `trimmed` и `length_off` для `steps`
         так же, как для остальных разделов.
 
+    1.6.5 — отмена подписки из приложения (итерация 29). Аддитивно: новый
+      маршрут и два поля в состоянии подписки, существующие не переименованы.
+      • новый `POST /api/v1/subscription/cancel`: гасит автопродление
+        (`editUserStarSubscription(is_canceled: true)`), доступ остаётся до
+        конца оплаченного периода. `409` двух видов — `no_active_subscription`
+        и `already_cancelled`; `502` с `details.reason` =
+        `telegram_error | timeout | no_charge_id`. `Idempotency-Key`
+        обязателен. До этого отменить автопродление из приложения было нельзя:
+        кнопка вела на несуществующий `tg://settings/star_subscriptions`, и
+        единственным способом не продлевать было удалить аккаунт;
+      • `SubscriptionState.cancelled_at` — когда автопродление отключили
+        (подтверждено Bot API), `null` — включено; поле приходит всегда.
+        `SubscriptionState.auto_renew` теперь наше записываемое состояние, а
+        не «только для чтения из настроек Telegram»: `false` значит «не
+        продлится», и клиент по этим двум полям рисует кнопку «Отменить»;
+      • `DELETE /me` не изменился: там по-прежнему удаляются данные, доступ
+        закрывается сразу, а автопродление гасится тем же вызовом Bot API.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
@@ -531,10 +549,33 @@ components:
           format: date-time
         auto_renew:
           type: boolean
-          description: Управляется пользователем в настройках Telegram, только для чтения
+          description: |
+            Продлится ли подписка автоматически. `false` — автопродление
+            отключено (`POST /subscription/cancel`) либо удалением аккаунта;
+            доступ при этом живёт до `expires_at`.
+        cancelled_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            Когда автопродление отключили и Telegram это подтвердил. `null` —
+            автопродление включено. Поле есть всегда (1.6.5), в `required` не
+            включено, чтобы не ломать уже собранный клиент.
         stars_paid_total:
           type: integer
           description: Сколько звёзд пользователь заплатил суммарно
+
+    SubscriptionCancelResult:
+      type: object
+      required: [status, auto_renew, current_period_end]
+      properties:
+        status: { type: string, enum: [cancelled] }
+        auto_renew: { type: boolean, enum: [false] }
+        current_period_end:
+          type: string
+          format: date-time
+          description: |
+            Доступ сохраняется до этого момента (равен `expires_at` строки
+            подписки и `SubscriptionState.expires_at`).
 
     Quota:
       type: object
@@ -2006,6 +2047,86 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SubscriptionState' }
 
+  /api/v1/subscription/cancel:
+    post:
+      tags: [billing]
+      summary: Отключить автопродление подписки
+      description: |
+        Гасит **только автопродление**. Оплаченный период не возвращается и не
+        сокращается: `is_active` остаётся `true`, все права подписки — на месте
+        до `current_period_end`. Отмена ≠ возврат звёзд.
+
+        Зачем маршрут: кнопка «открыть подписки в Telegram» ведёт на адрес,
+        которого в Telegram нет, поэтому до 1.6.5 отменить автопродление из
+        приложения было нельзя вообще. Единственным способом было удалить
+        аккаунт (`DELETE /me`) — то есть «не продлевай, но потеряй всё».
+
+        Идемпотентность: `Idempotency-Key` обязателен (как у `POST /reports`).
+        Повтор после успеха — **`409 already_cancelled`**, а не `200`: клиент
+        должен отличать «отменили сейчас» от «уже было отменено», иначе кнопка
+        «Отменить» остаётся на экране там, где отменять нечего.
+
+        Запрос идёт в Bot API (`editUserStarSubscription(is_canceled: true)`) с
+        `charge_id` **последнего успешного** платежа подписки. Пока Telegram не
+        подтвердил, `auto_renew` не меняется: обещать «отменено», когда звёзды
+        всё ещё спишутся, — это ровно та ошибка, из-за которой маршрут появился.
+        Неуспех (`502`) пишется в `subscriptions.telegram_cancel_state` и
+        повторяется ночным джобом (окно 30 дней, до 5 попыток — тот же механизм,
+        что у `DELETE /me`). Повторное нажатие «Отменить» после `502` пробует
+        снова сразу, не дожидаясь джоба.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, maxLength: 64 }
+          description: |
+            Ключ идемпотентности: до 64 символов, буквы, цифры, «-», «_», «.»,
+            «:». Без него — `422 VALIDATION_FAILED` с
+            `details.field_errors[0].field = "Idempotency-Key"`.
+      responses:
+        '200':
+          description: |
+            Автопродление отключено: Bot API подтвердил, доступ сохранён до
+            `current_period_end`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SubscriptionCancelResult' }
+        '409':
+          description: |
+            Отменять нечего. `Problem.code = CONFLICT`, причина — в
+            `details.reason`:
+
+            * `no_active_subscription` — подписки нет, она истекла или уже
+              отменена удалением аккаунта;
+            * `already_cancelled` — автопродление уже отключено (повтор после
+              успеха).
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: Нет или неверный `Idempotency-Key`.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '502':
+          description: |
+            Telegram не подтвердил отмену. `Problem.code = INTERNAL` (в
+            контракте нет отдельного кода для Bot API — так же отвечает
+            `POST /billing/invoice`), причина — в `details.reason`:
+
+            * `telegram_error` — Bot API ответил `ok:false` (например,
+              `CHARGE_ID_INVALID`);
+            * `timeout` — не ответил за 5 секунд;
+            * `no_charge_id` — у подписки нет `charge_id`: платёж прошёл, а
+              идентификатор мы не сохранили. Это **наш** дефект, он виден
+              отдельным счётчиком `subscription_cancel_no_charge_id_24h`.
+
+            `auto_renew` при этом не меняется; повтор придёт из ночного джоба.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
   /api/v1/billing/plans:
     get:
       tags: [billing]
@@ -2303,6 +2424,34 @@ paths:
                       Сколько отменённых подписок прямо сейчас ждут повтора в
                       Telegram (`telegram_cancel_state = 'failed'`). Ноль —
                       очередь пуста; рост — повтор не справляется.
+                  subscription_cancel_total_24h:
+                    type: integer
+                    description: |
+                      Сколько отмен автопродления прошло за сутки (события
+                      `subscription_cancelled`). Считаются оба пути: кнопка в
+                      приложении и `DELETE /me`.
+                  subscription_cancel_failed_24h:
+                    type: integer
+                    description: |
+                      Из них сколько не прошло за сутки (события
+                      `subscription_cancel_failed`). Рост при растущем
+                      `subscription_cancel_total_24h` — проблема Bot API;
+                      рост при нулевом — единичные сбои, чинятся повтором.
+                  subscription_cancel_no_charge_id_24h:
+                    type: integer
+                    description: |
+                      Отмены за сутки, не прошедшие из-за отсутствия
+                      `charge_id`. Это **наш** дефект данных (платёж прошёл, а
+                      идентификатор не сохранили), а не ошибка Telegram.
+                      Ноль — норма; любое другое значение — повод искать
+                      платежи без `telegram_payment_charge_id`.
+                  subscriptions_auto_renew_off:
+                    type: integer
+                    description: |
+                      Сколько действующих подписок уже не продлятся
+                      (`auto_renew = false` при живом доступе). Это не отток, а
+                      честная отмена: доступ у этих людей есть до
+                      `expires_at`.
                   events_30d:
                     type: object
                     description: |
@@ -2406,6 +2555,7 @@ x-analytics-server-events:
   - payment_rejected
   - refund_issued
   - subscription_expired
+  - subscription_cancelled
   - subscription_cancel_failed
 # payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
 #                    invoice_invalidated | user_deleted | refund_failed)
@@ -2416,10 +2566,16 @@ x-analytics-server-events:
 #                    Одно имя для всех путей возврата: и поддержка, и
 #                    автовозврат QA-15 пишут `refund_issued`, не `payment_refunded`.
 # subscription_expired — props: last_plan
-# subscription_cancel_failed — props: code (telegram_error | timeout | no_charge_id)
-#                    Отмена автопродления при `DELETE /me` не прошла. `user_id`
-#                    события уже NULL: пишется после обезличивания, поэтому
-#                    связывает не человека, а состояние. Повтор идёт в
+# subscription_cancelled — props: source (endpoint)
+#                    Автопродление отключено (1.6.5). `source = endpoint` —
+#                    кнопка в приложении (`POST /subscription/cancel`); у
+#                    `DELETE /me` этого события нет: там отмена — часть
+#                    удаления, и она видна в `account_deleted`.
+# subscription_cancel_failed — props: code (telegram_error | timeout | no_charge_id),
+#                    source (endpoint | delete; у повтора нет)
+#                    Отмена автопродления не прошла. При `DELETE /me` `user_id`
+#                    события уже NULL (пишется после обезличивания), при отмене
+#                    из приложения — заполнен. Повтор идёт в
 #                    `pdn_retention_cleanup`; после 5 неудач —
 #                    `subscriptions.telegram_cancel_state = 'gave_up'`.
 

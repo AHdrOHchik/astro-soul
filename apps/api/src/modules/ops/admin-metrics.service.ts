@@ -62,8 +62,35 @@ export interface ProductMetrics {
   readonly payment_failed_24h: number;
   /** Задача A: сколько отмен автопродления в Telegram не прошло за 30 дней. */
   readonly subscription_cancel_failed_30d: number;
-  /** Сколько отменённых подписок всё ещё ждут повтора в Telegram. */
+  /**
+   * Сколько подписок всё ещё ждут повтора отмены в Telegram.
+   *
+   * Считается по `telegram_cancel_state = 'failed'` без оглядки на статус: с
+   * итерации 29 отменённая подписка остаётся `active` (доступ живёт до конца
+   * периода), и такая строка тоже ждёт повтора.
+   */
   readonly subscriptions_cancelled_pending_telegram: number;
+  /**
+   * Отмены автопродления за сутки (итерация 29): сколько прошло и сколько нет.
+   *
+   * Источник — события `subscription_cancelled` /
+   * `subscription_cancel_failed`, потому что оба пути (`DELETE /me` и
+   * `POST /subscription/cancel`) пишут одну и ту же пару событий. Считать по
+   * `subscriptions.cancelled_at` нельзя: там только успехи, а провалы — это
+   * строки, которые ещё ждут повтора.
+   */
+  readonly subscription_cancel_total_24h: number;
+  readonly subscription_cancel_failed_24h: number;
+  /**
+   * Из провалов за сутки — те, где нет `charge_id`.
+   *
+   * Это не отказ Telegram, а наша дырка: платёж прошёл, а идентификатор
+   * платежа мы не сохранили. Отдельная цифра нужна, чтобы такой случай искали
+   * в данных, а не в доступности Bot API.
+   */
+  readonly subscription_cancel_no_charge_id_24h: number;
+  /** Сколько действующих подписок уже не продлятся (`auto_renew = false`). */
+  readonly subscriptions_auto_renew_off: number;
   /**
    * Платежи по тестовому тарифу (`test_1`) за 30 дней — отдельная цифра, а не
    * часть выручки: владелец должен видеть свою тестовую звезду, чтобы не
@@ -316,14 +343,33 @@ export class AdminMetricsService {
         // Задача A: «повторяется в фоне» без числа — это «неизвестно, работает
         // ли». Первое — сколько отмен автопродления не прошло, второе —
         // сколько подписок всё ещё ждут повтора.
-        this.db.queryOne<{ failed: number; pending: number }>(
+        this.db.queryOne<{
+          failed: number;
+          pending: number;
+          cancelTotal: number;
+          cancelFailed: number;
+          noChargeId: number;
+          autoRenewOff: number;
+        }>(
           `SELECT
              (SELECT count(*)::int FROM events
                WHERE name = 'subscription_cancel_failed'
                  AND created_at >= now() - ${WINDOW}) AS failed,
              (SELECT count(*)::int FROM subscriptions
-               WHERE status = 'cancelled'
-                 AND telegram_cancel_state = 'failed') AS pending`,
+               WHERE telegram_cancel_state = 'failed') AS pending,
+             (SELECT count(*)::int FROM events
+               WHERE name = 'subscription_cancelled'
+                 AND created_at >= now() - interval '24 hours') AS "cancelTotal",
+             (SELECT count(*)::int FROM events
+               WHERE name = 'subscription_cancel_failed'
+                 AND created_at >= now() - interval '24 hours') AS "cancelFailed",
+             (SELECT count(*)::int FROM events
+               WHERE name = 'subscription_cancel_failed'
+                 AND props ->> 'code' = 'no_charge_id'
+                 AND created_at >= now() - interval '24 hours') AS "noChargeId",
+             (SELECT count(*)::int FROM subscriptions
+               WHERE status = 'active' AND expires_at > now()
+                 AND auto_renew = false) AS "autoRenewOff"`,
         ),
         this.db.queryOne<{
           pre_checkout_total: number;
@@ -408,6 +454,10 @@ export class AdminMetricsService {
       payment_failed_24h: paymentHealth?.payment_failed ?? 0,
       subscription_cancel_failed_30d: telegramCancel?.failed ?? 0,
       subscriptions_cancelled_pending_telegram: telegramCancel?.pending ?? 0,
+      subscription_cancel_total_24h: telegramCancel?.cancelTotal ?? 0,
+      subscription_cancel_failed_24h: telegramCancel?.cancelFailed ?? 0,
+      subscription_cancel_no_charge_id_24h: telegramCancel?.noChargeId ?? 0,
+      subscriptions_auto_renew_off: telegramCancel?.autoRenewOff ?? 0,
       test_payments_30d: payments?.test ?? 0,
       // Не из БД: это окружение процесса, поэтому метрика честна в ту же
       // секунду, когда флаг включили или сняли, — без ожидания платежа.

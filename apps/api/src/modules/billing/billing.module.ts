@@ -10,11 +10,12 @@ import { BillingService } from './billing.service';
 import { PaymentsService } from './payments.service';
 import { PlansModule } from './plans.module';
 import { SubscriptionCancelService } from './subscription-cancel.service';
+import { SubscriptionController } from './subscription.controller';
 import { TelegramWebhookController } from './webhook.controller';
 
 @Module({
   imports: [ChartsModule, TelegramModule, EventsModule, PlansModule],
-  controllers: [BillingController, TelegramWebhookController],
+  controllers: [BillingController, SubscriptionController, TelegramWebhookController],
   providers: [
     BillingService,
     BillingRepository,
