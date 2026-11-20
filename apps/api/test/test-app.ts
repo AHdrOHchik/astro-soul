@@ -38,6 +38,8 @@ export interface TestContextOptions {
     | 'answerPreCheckoutQuery'
     | 'sendMessage'
     | 'sendPhoto'
+    | 'answerInlineQuery'
+    | 'getMe'
     | 'refundStarPayment'
     | 'editUserStarSubscription'
   >;

@@ -39,6 +39,7 @@ function initDataFor(userId: number = FICTIONAL_USER.id): string {
 
 interface ShareCardBody {
   readonly url: string;
+  readonly share_url: string | null;
   readonly expires_at: string;
   readonly caption: string;
 }
@@ -134,6 +135,31 @@ describe('POST /share/card — карточка дня', () => {
     expect(call?.moon_illumination).toBeLessThanOrEqual(1);
     // Дата в карточке — сегодняшняя, а не дата рождения.
     expect(call?.lines.at(-1)).toMatch(/^\d{1,2} [а-я]+ \d{4}$/u);
+  });
+
+  it('`share_url` — постоянная ссылка в бота, а не ссылка на файл', async () => {
+    await userWithChart();
+
+    const body = (await shareCard('day').expect(200)).body as ShareCardBody;
+
+    // Имя бота берётся из окружения сервера: клиент его не знает и знать не
+    // должен, иначе оно захардкодится во фронте.
+    expect(body.share_url).toMatch(/^https:\/\/t\.me\/astro_soul_test_bot\?start=sh_[abcdefghijkmnpqrstuvwxyz23456789]{10}$/u);
+    // Ни подписи файла, ни пути к файлу: это разные поля с разным сроком жизни.
+    expect(body.share_url).not.toContain('sig=');
+    expect(body.share_url).not.toContain('/files/');
+    // Файловая ссылка при этом остаётся подписанной и приватной.
+    expect(body.url).toContain('sig=');
+
+    // `short_id` в ссылке выводится из содержимого карточки, а не из человека.
+    const shortId = new URL(body.share_url ?? '').searchParams.get('start')?.slice('sh_'.length);
+    const row = await ctx.db.queryOne<{ short_id: string; content_hash: string }>(
+      'SELECT short_id, content_hash FROM share_cards',
+    );
+    expect(shortId).toBe(row?.short_id);
+    expect(row?.content_hash).not.toContain(shortId ?? 'zzzz');
+    // Ни `user_id`, ни `report_id` в карточке и её метке нет вовсе.
+    expect(JSON.stringify(row)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/u);
   });
 
   it('подпись без запрещённых слов: «астрология», «гороскоп», «предсказание»', async () => {
@@ -333,40 +359,50 @@ describe('POST /share/card — чего нет', () => {
 });
 
 describe('аналитика карточек', () => {
-  it('событие `share_card_opened` — только вид и канал, без получателя', async () => {
+  it('`share_card_created` — только вид, размер и время сборки; без получателя и текста', async () => {
     await userWithChart();
     await shareCard('day').expect(200);
 
     const row = await ctx.db.queryOne<{ name: string; props: Record<string, unknown> }>(
-      `SELECT name, props FROM events WHERE name = 'share_card_opened' ORDER BY id DESC LIMIT 1`,
+      `SELECT name, props FROM events WHERE name = 'share_card_created' ORDER BY id DESC LIMIT 1`,
     );
 
-    expect(row?.name).toBe('share_card_opened');
-    expect(row?.props).toMatchObject({ kind: 'day', channel: 'miniapp' });
-    expect(JSON.stringify(row?.props)).not.toContain('user');
+    expect(row?.name).toBe('share_card_created');
+    expect(Object.keys(row?.props ?? {}).sort()).toEqual(['build_ms', 'bytes', 'cached', 'kind']);
+    expect(row?.props).toMatchObject({ kind: 'day', cached: false });
+    expect(typeof row?.props['bytes']).toBe('number');
+    expect(typeof row?.props['build_ms']).toBe('number');
+    // Ни имени получателя, ни текста карточки: событие техническое.
+    expect(JSON.stringify(row?.props)).not.toContain('Тест');
+    expect(JSON.stringify(row?.props)).not.toContain('Луна в');
   });
 
-  it('`share_sent` клиент прислать не может: это серверное событие', async () => {
+  it('кэш-попадание помечено `cached: true` и не врёт про время сборки', async () => {
     await userWithChart();
 
-    // Клиентский список событий сверяется с фронтом (`apps/web/tests/contract`),
-    // поэтому `share_sent` в нём нет: отправку карточки видит только сервер.
-    const response = await request(ctx.app.getHttpServer())
-      .post('/api/v1/events')
-      .set(INIT_DATA_HEADER, initDataFor())
-      .send({
-        events: [
-          {
-            name: 'share_sent',
-            occurred_at: new Date().toISOString(),
-            props: { kind: 'day', channel: 'telegram' },
-          },
-        ],
-      })
-      .expect(422);
+    await shareCard('day').expect(200);
+    await shareCard('day').expect(200);
 
-    expect(response.body.code).toBe('VALIDATION_FAILED');
-    const rows = await ctx.db.query(`SELECT id FROM events WHERE name = 'share_sent'`);
+    const rows = await ctx.db.query<{ props: Record<string, unknown> }>(
+      `SELECT props FROM events WHERE name = 'share_card_created' ORDER BY id`,
+    );
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.props['cached']).toBe(false);
+    expect(rows[1]?.props['cached']).toBe(true);
+    // Карточку не рисовали — значит и времени сборки у события нет.
+    expect(rows[1]?.props['build_ms']).toBeUndefined();
+  });
+
+  it('сервер не пишет `share_sent`: отправку сообщает клиент, а не генерация', async () => {
+    await userWithChart();
+
+    await shareCard('day').expect(200);
+    await shareCard('wheel').expect(200);
+
+    const rows = await ctx.db.query<{ name: string }>(
+      `SELECT name FROM events WHERE name IN ('share_sent', 'share_card_opened')`,
+    );
     expect(rows).toHaveLength(0);
   });
 });

@@ -5,6 +5,7 @@ import { AppModule } from './app.module';
 import { APP_ENV } from './config/env.module';
 import type { AppEnv } from './config/env';
 import { JsonLogger } from './common/logger';
+import { TelegramInlineService } from './modules/telegram/telegram-inline.service';
 import { TelegramWebhookService } from './modules/telegram/telegram-webhook.service';
 import { applyRequestContext } from './common/request-id.middleware';
 
@@ -83,6 +84,18 @@ async function bootstrap(): Promise<void> {
     });
   } catch (error) {
     logger.error('telegram_webhook_check_failed', {
+      error: error instanceof Error ? error.name : 'unknown',
+    });
+  }
+
+  // Inline-режим бота: от него зависит основной путь шаринга
+  // (`switchInlineQuery`). Настройка живёт в BotFather и кодом не включается,
+  // поэтому на старте мы её спрашиваем и называем вслух — иначе выключенный
+  // inline выглядит как «кнопка «Поделиться» ничего не делает».
+  try {
+    await app.get(TelegramInlineService).checkMode();
+  } catch (error) {
+    logger.warn('telegram_inline_check_failed', {
       error: error instanceof Error ? error.name : 'unknown',
     });
   }

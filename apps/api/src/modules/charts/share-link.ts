@@ -96,6 +96,50 @@ export function parseStartShareShortId(text: string | undefined): string | null 
 }
 
 /**
+ * `short_id` из текста inline-запроса (контракт 1.6.9).
+ *
+ * `switchInlineQuery` присылает боту то, что человек набрал после `@bot` — а
+ * это может быть что угодно. Принимаем три вида, которые действительно
+ * встречаются:
+ *   • `k7m2p9x4qz` — сам `short_id` (человек скопировал подвал карточки);
+ *   • `sh_k7m2p9x4qz` — метка из ссылки;
+ *   • `https://t.me/<bot>?start=sh_k7m2p9x4qz` — ссылка целиком, вставленная
+ *     из буфера обмена.
+ *
+ * `null` — если метки нет: пустой inline-запрос не ошибка, бот просто ничего
+ * не предлагает. Чужие `start`-метки (`ref_123`) тоже не наши.
+ */
+export function parseInlineQueryShortId(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed === '') {
+    return null;
+  }
+
+  const withPrefix = (value: string): string | null => {
+    if (value.startsWith(SHARE_START_PREFIX)) {
+      const shortId = value.slice(SHARE_START_PREFIX.length);
+      return SHORT_ID_PATTERN.test(shortId) ? shortId : null;
+    }
+    return SHORT_ID_PATTERN.test(value) ? value : null;
+  };
+
+  const direct = withPrefix(trimmed);
+  if (direct !== null) {
+    return direct;
+  }
+
+  // Ссылка целиком: параметр `start` берём как есть, без разбора хоста —
+  // имя бота в ссылке уже проверено подписью в `/start`-обработчике, а здесь
+  // важен только `short_id`.
+  const match = /[?&]start=([^&\s#]+)/u.exec(trimmed);
+  if (match === null) {
+    return null;
+  }
+
+  return withPrefix(decodeURIComponent(match[1] ?? ''));
+}
+
+/**
  * Разбор `/start chart_<id>`.
  *
  * Возвращает `chartId`, если параметр похож на UUID, иначе `null`: чужие

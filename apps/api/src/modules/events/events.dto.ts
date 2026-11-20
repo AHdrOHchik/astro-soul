@@ -46,6 +46,11 @@ export const ANALYTICS_EVENTS = [
   'error_shown',
   'screen_view',
   'share_clicked',
+  // Контракт 1.6.9. До этой версии `share_sent` был серверным событием, и
+  // значит «человек отправил карточку» им назвать было нельзя: сервер видел
+  // только генерацию. Теперь отправку сообщает клиент (он один её видит),
+  // а генерацию считает `share_card_created`.
+  'share_sent',
 ] as const;
 
 /**
@@ -104,6 +109,73 @@ const BANNED_PROP_KEYS = [
 ] as const;
 
 const propValueSchema = z.union([z.string().max(64), z.number(), z.boolean()]);
+
+/**
+ * События с закрытым набором свойств (контракт 1.6.9).
+ *
+ * У большинства клиентских событий `props` — свободные идентификаторы и флаги:
+ * шаг онбординга, код ошибки, экран. `share_sent` — исключение, потому что от
+ * его свойств зависит смысл метрики «поделились». Свободные свойства означали
+ * бы, что в отчёт попадает «сколько угодно чего»: `kind: "compat"` (карточки,
+ * которой не существует) считался бы отправкой, а отправка без `channel` —
+ * отправкой сразу везде.
+ *
+ * Поэтому набор закрыт: значения — из списка, лишние ключи вырезаются (в
+ * `events` не оседает ничего, чего нет в контракте), отсутствующее или
+ * неизвестное значение — `422` с `field_errors[{field: "events.props.<ключ>"}]`.
+ * Разрешать произвольные имена и свойства клиенту по-прежнему нельзя: список
+ * событий остаётся закрытым.
+ */
+const STRICT_PROPS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  share_sent: {
+    kind: ['day', 'wheel', 'insight'],
+    channel: ['inline', 'link'],
+  },
+};
+
+const STRICT_PROP_MESSAGES: Readonly<Record<string, string>> = {
+  kind: 'Вид карточки — day, wheel или insight',
+  channel: 'Канал отправки — inline или link',
+};
+
+type PropValue = string | number | boolean;
+
+interface StrictPropsResult {
+  /** Только ключи из контракта: всё остальное вырезано. */
+  readonly props: Record<string, PropValue>;
+  readonly errors: FieldError[];
+}
+
+/**
+ * Проверка закрытых свойств. `null` — у события свободные `props`, трогать
+ * нечего.
+ */
+function strictPropsOf(name: string, props: Record<string, PropValue>): StrictPropsResult | null {
+  const allowed = STRICT_PROPS[name];
+
+  if (allowed === undefined) {
+    return null;
+  }
+
+  const errors: FieldError[] = [];
+  const cleaned: Record<string, PropValue> = {};
+
+  for (const [key, values] of Object.entries(allowed)) {
+    const value = props[key];
+
+    if (typeof value !== 'string' || !values.includes(value)) {
+      errors.push({
+        field: `events.props.${key}`,
+        message: STRICT_PROP_MESSAGES[key] ?? 'Проверь свойства события',
+      });
+      continue;
+    }
+
+    cleaned[key] = value;
+  }
+
+  return { props: cleaned, errors };
+}
 
 export const clientEventSchema = z.object({
   name: z.enum(ANALYTICS_EVENTS),
@@ -169,6 +241,7 @@ export function parseEventsBatch(body: unknown, now: Date = new Date()): ParsedB
   }
 
   const fresh: ClientEvent[] = [];
+  const strictIssues: FieldError[] = [];
   let droppedForPrivacy = 0;
   let droppedForTime = 0;
 
@@ -179,13 +252,28 @@ export function parseEventsBatch(body: unknown, now: Date = new Date()): ParsedB
       continue;
     }
 
+    const strict = strictPropsOf(event.name, props);
+    if (strict !== null && strict.errors.length > 0) {
+      strictIssues.push(...strict.errors);
+      continue;
+    }
+
     const occurredAt = new Date(event.occurred_at).getTime();
     if (occurredAt > now.getTime() + CLOCK_SKEW_MS || occurredAt < now.getTime() - MAX_EVENT_AGE_MS) {
       droppedForTime += 1;
       continue;
     }
 
-    fresh.push(event);
+    // У событий с закрытыми свойствами в батч идёт очищенная версия: лишние
+    // ключи не должны попасть в БД даже транзитом.
+    fresh.push(strict === null ? event : { ...event, props: strict.props });
+  }
+
+  // Ошибку свойств видят все: она означает, что клиент понял контракт иначе.
+  // Батч при этом не пишется целиком — частично принятый батч врал бы в
+  // отчётах сильнее, чем отказ.
+  if (strictIssues.length > 0) {
+    throw invalidFields(strictIssues, { reason: 'events_invalid' });
   }
 
   if (droppedForTime > 0 && fresh.length === 0) {

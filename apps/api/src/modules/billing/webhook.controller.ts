@@ -5,6 +5,7 @@ import type { AppEnv } from '../../config/env';
 import { forbidden } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import { PaymentsService } from './payments.service';
+import { TelegramInlineService } from '../telegram/telegram-inline.service';
 import { TelegramStartService } from '../telegram/telegram-start.service';
 
 const SECRET_HEADER = 'x-telegram-bot-api-secret-token';
@@ -26,6 +27,29 @@ function readStartMessage(update: unknown): { chat: { id: number }; text?: strin
   }
 
   return { chat: { id: chat.id }, text };
+}
+
+/**
+ * Достаём `inline_query`: человек набрал `@bot sh_<short_id>` в поле ввода
+ * любого чата (контракт 1.6.9). Апдейт приходит только если в BotFather
+ * включён inline-режим — состояние проверяется на старте API.
+ */
+function readInlineQuery(update: unknown): { id: string; query: string } | null {
+  if (typeof update !== 'object' || update === null) {
+    return null;
+  }
+
+  const inline = (update as { inline_query?: unknown }).inline_query;
+  if (typeof inline !== 'object' || inline === null) {
+    return null;
+  }
+
+  const { id, query } = inline as { id?: unknown; query?: unknown };
+  if (typeof id !== 'string' || id === '') {
+    return null;
+  }
+
+  return { id, query: typeof query === 'string' ? query : '' };
 }
 
 function safeEqual(expected: string, provided: string | undefined): boolean {
@@ -51,6 +75,7 @@ export class TelegramWebhookController {
   constructor(
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(TelegramStartService) private readonly start: TelegramStartService,
+    @Inject(TelegramInlineService) private readonly inline: TelegramInlineService,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -80,6 +105,20 @@ export class TelegramWebhookController {
         await this.start.handleMessage(message);
       } catch (error) {
         this.logger.warn('telegram_start_failed', {
+          reason: error instanceof Error ? error.name : 'unknown',
+        });
+      }
+    }
+
+    // `inline_query` — основной путь шаринга: `switchInlineQuery` открывает
+    // выбор чата, а карточку в него присылает бот. Ответ тоже не должен ронять
+    // вебхук: Telegram повторит доставку, а человек увидит «бот не отвечает».
+    const inlineQuery = readInlineQuery(update);
+    if (inlineQuery !== null) {
+      try {
+        await this.inline.handleQuery(inlineQuery);
+      } catch (error) {
+        this.logger.warn('telegram_inline_failed', {
           reason: error instanceof Error ? error.name : 'unknown',
         });
       }
