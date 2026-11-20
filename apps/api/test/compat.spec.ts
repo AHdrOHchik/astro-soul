@@ -17,14 +17,28 @@ import {
   coverageOf,
   distributeSections,
 } from '../src/modules/compat/compat-focus-map';
-import { COMPAT_RANGES, firstTermOffset } from '../src/modules/compat/compat-validators';
+import {
+  COMPAT_ACCEPT_MIN_CHARS,
+  COMPAT_RANGES,
+  classifyLength,
+  firstTermOffset,
+  lengthDirection,
+  normalizeCompatSection,
+  trimCompatSection,
+  validateCompatSection,
+} from '../src/modules/compat/compat-validators';
 import { COMPAT_WINDOW_MS, quotaOf, windowStart } from '../src/modules/compat/compat-quota';
 import { COMPAT_PROMPT_VERSION } from '../src/modules/compat/compat-prompts';
 import { COMPAT_FACTS_VERSION } from '../src/modules/compat/compat-facts';
 import { compatFactsPayload } from './fixtures/compat-facts';
 import { compatFactsPairPayload } from './fixtures/compat-facts-pair';
 import { costRubOf } from '../src/config/llm-models';
-import { COMPAT_STUB_SECTIONS, COMPAT_STUB_FORBIDDEN } from './fixtures/compat-sections';
+import {
+  COMPAT_STUB_SECTIONS,
+  COMPAT_STUB_FORBIDDEN,
+  longSteps,
+  sectionOfMinChars,
+} from './fixtures/compat-sections';
 
 const JOBS_SECRET = 'test-jobs-secret-0123456789';
 
@@ -228,6 +242,121 @@ describe('POST /api/v1/synastry (контракт фактов)', () => {
       'sun-sun',
     ]);
     expect(compatFactsPayload.house_overlays).toBeDefined();
+  });
+});
+
+describe('длина раздела: три вердикта, а не один', () => {
+  const scenarioRange = { min: 600, max: 800 };
+
+  it('классификатор различает «коротко», «длинно» и «норма»', () => {
+    // Живой прогон `541d56a4`: 1 423 знака при границах 600–800 объявили
+    // `too_short`. Здесь зафиксировано обратное.
+    expect(classifyLength(1_423, scenarioRange)).toBe('too_long');
+    expect(classifyLength(500, scenarioRange)).toBe('too_short');
+    expect(classifyLength(700, scenarioRange)).toBe('ok');
+  });
+
+  it('границы: 599/600 и 800/801 включительно', () => {
+    expect(classifyLength(599, scenarioRange)).toBe('too_short');
+    expect(classifyLength(600, scenarioRange)).toBe('ok');
+    expect(classifyLength(800, scenarioRange)).toBe('ok');
+    expect(classifyLength(801, scenarioRange)).toBe('too_long');
+  });
+
+  it('границы берутся из конфигурации раздела, а не из общей', () => {
+    const steps = COMPAT_RANGES.find((range) => range.key === 'steps');
+    expect(steps).toMatchObject({ key: 'steps', min: 400, max: 550 });
+
+    // 600 знаков для `steps` — длинно, для `scenario` — норма.
+    expect(classifyLength(600, { min: steps?.min ?? 0, max: steps?.max ?? 0 })).toBe('too_long');
+    expect(classifyLength(600, scenarioRange)).toBe('ok');
+  });
+
+  it('направление предупреждения `length_off` совпадает с вердиктом', () => {
+    expect(lengthDirection(1_423, scenarioRange)).toBe('above');
+    expect(lengthDirection(500, scenarioRange)).toBe('below');
+    expect(lengthDirection(700, scenarioRange)).toBeNull();
+
+    const long = validateCompatSection({
+      key: 'scenario',
+      bodyMd: sectionOfMinChars(1_180),
+    });
+    expect(long.length.verdict).toBe('too_long');
+    expect(long.failures.some((failure) => failure.rule === 'too_short')).toBe(false);
+    const warning = long.warnings.find((item) => item.code === 'length_off');
+    expect(warning?.direction).toBe('above');
+    // Границы в результате — те самые, по которым сравнивали.
+    expect(long.length).toMatchObject({ min: 600, max: 800 });
+  });
+});
+
+describe('обрезка длинного раздела: режем, а не выбрасываем', () => {
+  it('1 423 знака при 600–800 → в границах, по границе абзаца', () => {
+    const long = sectionOfMinChars(1_423);
+    expect(long.length).toBeGreaterThanOrEqual(1_423);
+
+    const trimmed = trimCompatSection({ key: 'scenario', bodyMd: long, range: { min: 600, max: 800 } });
+    expect(trimmed).not.toBeNull();
+    expect(trimmed?.from).toBe(long.length);
+    expect(trimmed?.to).toBeGreaterThanOrEqual(600);
+    expect(trimmed?.to).toBeLessThanOrEqual(800);
+    expect(trimmed?.body.length).toBeLessThanOrEqual(800);
+
+    // Текст остался текстом: не оборван посередине слова.
+    expect(trimmed?.body.trimEnd().endsWith('.')).toBe(true);
+    expect(trimmed?.boundary).toBe('paragraph');
+  });
+
+  it('если абзац не влезает — режем по предложению, но не ниже минимума', () => {
+    // Один огромный абзац: границы абзаца нет, спасает предложение.
+    const oneParagraph = sectionOfMinChars(1_200, 1).replace(/\n\n/gu, ' ');
+    expect(oneParagraph).not.toContain('\n');
+
+    const trimmed = trimCompatSection({
+      key: 'friction',
+      bodyMd: oneParagraph,
+      range: { min: 700, max: 900 },
+    });
+    expect(trimmed?.boundary).toBe('sentence');
+    expect(trimmed?.to).toBeGreaterThanOrEqual(700);
+    expect(trimmed?.to).toBeLessThanOrEqual(900);
+  });
+
+  it('нормализация пробелов не выдаёт себя за обрезку по длине', () => {
+    // До итерации 27 обе правки писались как `trimmed`, и в `normalization`
+    // нельзя было отличить «убрали пробелы» от «сократили текст».
+    const padded = `\n\n${COMPAT_STUB_SECTIONS.clicks}\n\n\n`;
+    const normalized = normalizeCompatSection({ key: 'clicks', bodyMd: padded });
+
+    expect(normalized.applied).toContain('whitespace');
+    expect(normalized.applied).not.toContain('trimmed');
+  });
+
+  it('короткий и нормальный раздел не трогаем', () => {
+    expect(
+      trimCompatSection({ key: 'clicks', bodyMd: COMPAT_STUB_SECTIONS.clicks, range: { min: 700, max: 900 } }),
+    ).toBeNull();
+  });
+
+  it('длинный `steps` остаётся тремя пунктами и с подписью', () => {
+    const long = longSteps(900);
+    expect(long.split('\n')).toHaveLength(3);
+
+    const trimmed = trimCompatSection({
+      key: 'steps',
+      bodyMd: `${long}\n\nРазбор — инструмент саморефлексии, а не предсказание и не замена специалисту.`,
+      range: { min: 400, max: 550 },
+    });
+
+    expect(trimmed).not.toBeNull();
+    const lines = trimmed?.body.split('\n') ?? [];
+    // Три пункта и подпись: обрезка не должна съесть ни одного пункта.
+    expect(lines.filter((line) => line.startsWith('—'))).toHaveLength(3);
+    expect(trimmed?.body).toContain('Разбор — инструмент саморефлексии');
+
+    const check = validateCompatSection({ key: 'steps', bodyMd: trimmed?.body ?? '' });
+    expect(check.failures).toEqual([]);
+    expect(check.length.verdict).toBe('ok');
   });
 });
 
@@ -500,6 +629,243 @@ describe('POST /api/v1/compatibility', () => {
     // Следующий заказ возможен: кредит на месте.
     const retry = await orderCompat(fixture, 'key-two').expect(202);
     expect(retry.body.status).toBe('pending');
+  });
+});
+
+describe('длина раздела в конвейере: обрезка вместо провала', () => {
+  const SCENARIO_MARKER = 'как вы разговариваете, когда не согласны';
+  const CLICKS_MARKER = 'что у вас совпадает так';
+
+  function sectionText(sections: readonly { key: string; text: string }[], key: string): string {
+    return (sections.find((section) => section.key === key)?.text ?? '').replace(
+      '\n\nРазбор — инструмент саморефлексии, а не предсказание и не замена специалисту.',
+      '',
+    );
+  }
+
+  it('1 423 знака при 600–800 → ready, «trimmed» в normalized, вызовов столько же', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Живой прогон `541d56a4`: второй ответ модели по сценарию — 1 423 знака.
+    const longScenario = sectionOfMinChars(1_423);
+    expect(longScenario.length).toBeGreaterThanOrEqual(1_423);
+    llmAnswer = (prompt) =>
+      prompt.includes(SCENARIO_MARKER) ? longScenario : answerFor(prompt);
+
+    const accepted = await orderCompat(fixture).expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+    const sections = ready.body.sections as { key: string; text: string }[];
+    expect(sections).toHaveLength(4);
+
+    const scenario = sectionText(sections, 'scenario');
+    expect(scenario.length).toBeGreaterThanOrEqual(600);
+    expect(scenario.length).toBeLessThanOrEqual(800);
+    // Текст не оборван: обрезка прошла по границе, а не по середине слова.
+    expect(scenario.trimEnd().endsWith('.')).toBe(true);
+
+    // Ровно один вызов на раздел: на длину не ретраим.
+    expect(prompts).toHaveLength(4);
+
+    const row = await ctx.db.queryOne<{
+      normalization: Record<string, { normalized: string[]; warnings: string[] }>;
+      llm_cost_rub: string;
+    }>(`SELECT normalization, llm_cost_rub::text FROM reports WHERE id = $1`, [
+      accepted.body.compatibility_id,
+    ]);
+    expect(row?.normalization['scenario']?.normalized).toContain('trimmed');
+    // Обрезан только сценарий: остальные разделы в границах.
+    const trimmedSections = Object.entries(row?.normalization ?? {})
+      .filter(([, value]) => value.normalized.includes('trimmed'))
+      .map(([section]) => section);
+    expect(trimmedSections).toEqual(['scenario']);
+    // Четыре вызова по 0,6 ₽: обрезка не добавила ни одного.
+    expect(Number(row?.llm_cost_rub)).toBe(2.4);
+
+    // В контракт уходит `trimmed` — человек видит, что текст сокращён.
+    expect(ready.body.warnings).toContainEqual({ section: 'scenario', code: 'trimmed' });
+
+    // Отказа по длине не было вовсе.
+    const rejected = logLines.filter((line) => line.includes('compat_section_rejected'));
+    expect(rejected).toEqual([]);
+    const trimmedLog = logLines.find((line) => line.includes('compat_section_trimmed'));
+    // В логе — ровно тот объём, который пришёл от модели, и обе границы.
+    expect(trimmedLog).toContain(`"from":${longScenario.length}`);
+    expect(trimmedLog).toContain('"min":600');
+    expect(trimmedLog).toContain('"max":800');
+  });
+
+  it('короткий раздел → ровно один повтор, в логе отказа есть min и max', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const short = sectionOfMinChars(430, 2);
+    expect(short.length).toBeLessThan(700);
+    let clicks = 0;
+    llmAnswer = (prompt) => {
+      if (!prompt.includes(CLICKS_MARKER)) {
+        return answerFor(prompt);
+      }
+      clicks += 1;
+      // Первый ответ короче минимума, второй — нормальный.
+      return clicks === 1 ? short : answerFor(prompt);
+    };
+
+    const accepted = await orderCompat(fixture, 'short-retry').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+    expect(clicks).toBe(2);
+    // Пять вызовов: четыре раздела + один повтор по короткому.
+    expect(prompts).toHaveLength(5);
+
+    const rejected = logLines.filter(
+      (line) => line.includes('compat_section_rejected') && line.includes('"section":"clicks"'),
+    );
+    expect(rejected).toHaveLength(1);
+    // Диагностика обязана содержать границы — иначе «too_short» не проверить.
+    expect(rejected[0]).toContain('"min":700');
+    expect(rejected[0]).toContain('"max":900');
+    expect(rejected[0]).toContain('"verdict":"too_short"');
+  });
+
+  it('второй подряд короткий текст отдаём как есть: раздел не пропадает', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const short = sectionOfMinChars(430, 2);
+    llmAnswer = (prompt) => (prompt.includes(CLICKS_MARKER) ? short : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'short-twice').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+    // Один повтор — и всё: третьего вызова нет.
+    expect(prompts).toHaveLength(5);
+
+    const sections = ready.body.sections as { key: string; text: string }[];
+    const clicks = sectionText(sections, 'clicks');
+    expect(clicks.length).toBeGreaterThanOrEqual(COMPAT_ACCEPT_MIN_CHARS);
+    expect(clicks.length).toBeLessThan(700);
+    // Короткий раздел виден как предупреждение, а не как тишина.
+    expect(ready.body.warnings).toContainEqual({ section: 'clicks', code: 'length_off' });
+    expect(logLines.some((line) => line.includes('compat_section_dropped'))).toBe(false);
+    expect(logLines.some((line) => line.includes('compat_section_short_accepted'))).toBe(true);
+  });
+
+  it('обрезка не мешает трём пунктам в `steps`', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const long = longSteps(900);
+    llmAnswer = (prompt) =>
+      prompt.includes('три конкретных действия на неделю')
+        ? `${long}\n\nРазбор — инструмент саморефлексии, а не предсказание и не замена специалисту.`
+        : answerFor(prompt);
+
+    const accepted = await orderCompat(fixture, 'long-steps').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+    const sections = ready.body.sections as { key: string; text: string }[];
+    const steps = sections.find((section) => section.key === 'steps')?.text ?? '';
+    expect(steps.split('\n').filter((line) => line.startsWith('—'))).toHaveLength(3);
+    const volume = sectionText(sections, 'steps');
+    expect(volume.length).toBeGreaterThanOrEqual(400);
+    expect(volume.length).toBeLessThanOrEqual(550);
+  });
+
+  it('провал не тратит кредит: квота снова 1, повтор бесплатный', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Пустой ответ модели — единственная честная причина выбросить раздел.
+    llmAnswer = () => '';
+
+    const accepted = await orderCompat(fixture, 'broken-first').expect(202);
+    const failed = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(failed.body.status).toBe('failed');
+    // Пустой ответ — отказ формы, а не «слишком коротко».
+    expect(failed.body.error_code).toBe('format');
+
+    const afterFailure = await request(ctx.app.getHttpServer())
+      .get('/api/v1/compatibility')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+    expect(afterFailure.body.quota).toMatchObject({ kind: 'purchase', left: 1 });
+
+    const credit = await ctx.db.queryOne<{ used_at: Date | null }>(
+      `SELECT used_at FROM entitlements WHERE kind = 'compat'`,
+    );
+    expect(credit?.used_at).toBeNull();
+
+    // Повтор бесплатный: тот же кредит, новый заказ.
+    llmAnswer = null;
+    const again = await orderCompat(fixture, 'broken-second').expect(202);
+    const ready = await waitFor(again.body.compatibility_id as string, ['ready', 'failed']);
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+
+    const spent = await ctx.db.queryOne<{ used_at: Date | null }>(
+      `SELECT used_at FROM entitlements WHERE kind = 'compat'`,
+    );
+    expect(spent?.used_at).not.toBeNull();
+  });
+
+  it('метрики: сколько разделов обрезано и сколько выброшено за сутки', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+    llmAnswer = (prompt) =>
+      prompt.includes(SCENARIO_MARKER) ? sectionOfMinChars(1_423) : answerFor(prompt);
+
+    const accepted = await orderCompat(fixture, 'metrics-trim').expect(202);
+    await waitFor(accepted.body.compatibility_id as string, ['ready']);
+
+    const metrics = await request(ctx.app.getHttpServer())
+      .get('/api/v1/admin/metrics')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(metrics.body.compat_sections_trimmed_24h).toBe(1);
+    expect(metrics.body.compat_sections_dropped_24h).toBe(0);
+  });
+
+  it('метрика выброшенных разделов считает только провалы', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+    llmAnswer = () => '';
+
+    const accepted = await orderCompat(fixture, 'metrics-drop').expect(202);
+    await waitFor(accepted.body.compatibility_id as string, ['failed']);
+
+    const metrics = await request(ctx.app.getHttpServer())
+      .get('/api/v1/admin/metrics')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .expect(200);
+
+    expect(metrics.body.compat_sections_dropped_24h).toBe(1);
+    expect(metrics.body.compat_sections_trimmed_24h).toBe(0);
+  });
+
+  it('`partner_pronoun` измерен: 1 из 4 разделов, и это ложное срабатывание', () => {
+    const keys = ['clicks', 'friction', 'scenario', 'steps'] as const;
+    const flagged = keys
+      .map((key) => ({
+        key,
+        detail: validateCompatSection({ key, bodyMd: COMPAT_STUB_SECTIONS[key] }).warnings.find(
+          (warning) => warning.code === 'partner_pronoun',
+        )?.detail,
+      }))
+      .filter((item) => item.detail !== undefined);
+
+    // Число из живого прогона и из эталонных текстов совпадает: 1 из 4.
+    // В `clicks` предупреждение ложное — «она» относится к «подстраховке», а
+    // не к партнёру. Род в промпте уже запрещён прямо («не «он» и не «она»»),
+    // поэтому правило остаётся предупреждением и не блокирует продажу; но
+    // точность его видна числом, а не на глаз.
+    expect(flagged.map((item) => item.key)).toEqual(['clicks']);
+    expect(flagged[0]?.detail).toBe('«она» на 420-м знаке');
   });
 });
 

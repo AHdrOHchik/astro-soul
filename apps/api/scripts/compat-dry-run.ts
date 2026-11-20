@@ -27,7 +27,12 @@ import { makeFakeTelegram } from '../test/fake-telegram';
 import type { LlmProvider, LlmRequest, LlmResponse } from '../src/modules/llm/llm.client';
 import { costRubOf, DEFAULT_LLM_MODEL, llmModelSpec } from '../src/config/llm-models';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
-import { COMPAT_STUB_SECTIONS } from '../test/fixtures/compat-sections';
+import {
+  COMPAT_STUB_SECTIONS,
+  longSteps,
+  sectionOfMinChars,
+} from '../test/fixtures/compat-sections';
+import { COMPAT_DISCLAIMER } from '../src/modules/compat/compat-validators';
 import { compatFactsPairPayload } from '../test/fixtures/compat-facts-pair';
 import { factorsOf, parseCompatibilityFacts } from '../src/modules/compat/compat-facts';
 import {
@@ -53,11 +58,29 @@ const PRICE_PER_1K_TOKENS = MODEL.pricePer1kRub;
 let promptChars = 0;
 let answerChars = 0;
 
+/**
+ * `--long` воспроизводит живой прогон `541d56a4`: модель отвечает длиннее
+ * верхней границы каждого раздела (1 084–1 433 знака при максимуме 800).
+ *
+ * Обычный режим остаётся образцовым: четыре раздела в границах. Два режима
+ * нужны, чтобы видеть обе стороны — «как должно быть» и «как было, когда
+ * продукт падал за деньги владельца».
+ */
+const LONG_ANSWERS = process.argv.includes('--long');
+
 function answerFor(prompt: string): string {
-  if (prompt.includes('что у вас совпадает так')) return COMPAT_STUB_SECTIONS.clicks;
-  if (prompt.includes('где именно вас заедает')) return COMPAT_STUB_SECTIONS.friction;
-  if (prompt.includes('как вы разговариваете, когда не согласны')) return COMPAT_STUB_SECTIONS.scenario;
-  return COMPAT_STUB_SECTIONS.steps;
+  const long = LONG_ANSWERS;
+  if (prompt.includes('что у вас совпадает так')) {
+    return long ? sectionOfMinChars(1_084) : COMPAT_STUB_SECTIONS.clicks;
+  }
+  if (prompt.includes('где именно вас заедает')) {
+    return long ? sectionOfMinChars(1_181) : COMPAT_STUB_SECTIONS.friction;
+  }
+  if (prompt.includes('как вы разговариваете, когда не согласны')) {
+    // Ровно тот случай, на котором упал живой прогон: 1 423 знака при 600–800.
+    return long ? sectionOfMinChars(1_423) : COMPAT_STUB_SECTIONS.scenario;
+  }
+  return long ? `${longSteps(900)}\n\n${COMPAT_DISCLAIMER}` : COMPAT_STUB_SECTIONS.steps;
 }
 
 const provider: LlmProvider = {
@@ -164,9 +187,10 @@ async function main(): Promise<void> {
       llm_cost_rub: string;
       status: string;
       error_code: string | null;
+      normalization: Record<string, { normalized: string[]; warnings: string[] }> | null;
     }>(
       `SELECT prompt_version, report_structure_version, chart_facts_version,
-              llm_cost_rub::text, status::text, error_code
+              llm_cost_rub::text, status::text, error_code, normalization
          FROM reports WHERE id = $1`,
       [id],
     );
@@ -182,6 +206,25 @@ async function main(): Promise<void> {
     }
     const total = sections.reduce((sum, section) => sum + section.text.length, 0);
     process.stdout.write(`  всего     ${String(total).padStart(4)} знаков\n`);
+
+    // Что нормализатор поправил: `trimmed` — обрезка длинного раздела.
+    const normalization = row?.normalization ?? {};
+    const marks = Object.entries(normalization)
+      .filter(([, value]) => value.normalized.length > 0 || value.warnings.length > 0)
+      .map(
+        ([section, value]) =>
+          `${section}: правки ${value.normalized.join('/') || '—'}` +
+          `${value.warnings.length > 0 ? `, пометки ${value.warnings.join('/')}` : ''}`,
+      );
+    process.stdout.write(`\nНормализация: ${marks.length > 0 ? marks.join('; ') : 'не потребовалась'}\n`);
+    const viewWarnings = (view['warnings'] ?? []) as { section: string; code: string }[];
+    process.stdout.write(
+      `Предупреждения контракта: ${
+        viewWarnings.length > 0
+          ? viewWarnings.map((item) => `${item.section}/${item.code}`).join(', ')
+          : 'нет'
+      }\n`,
+    );
 
     // Деньги — по токенам, как в проде: `llm_cost_rub` собран из `usage`,
     // которое вернула (подставная) модель.

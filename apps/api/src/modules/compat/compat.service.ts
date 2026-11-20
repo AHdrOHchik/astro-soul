@@ -25,7 +25,19 @@ import { coverageOf, distributeSections, MAX_SECTIONS_PER_FACTOR } from './compa
 import { COMPAT_PROMPT_VERSION, COMPAT_SYSTEM_PROMPT, compatSectionPrompt } from './compat-prompts';
 import { parseCompatRequest, compatRefused, type Relationship } from './compat.dto';
 import { CompatRepository, type CompatReportRow, type CompatSection } from './compat.repository';
-import { COMPAT_SECTIONS, COMPAT_SECTION_TITLES, COMPAT_STRUCTURE_VERSION, COMPAT_CONTRACT_WARNINGS, normalizeCompatSection, validateCompatSection, type CompatSectionKey } from './compat-validators';
+import {
+  COMPAT_ACCEPT_MIN_CHARS,
+  COMPAT_CONTRACT_WARNINGS,
+  COMPAT_RANGES,
+  COMPAT_SECTIONS,
+  COMPAT_SECTION_TITLES,
+  COMPAT_STRUCTURE_VERSION,
+  normalizeCompatSection,
+  trimCompatSection,
+  validateCompatSection,
+  type CompatSectionKey,
+  type CompatWarning,
+} from './compat-validators';
 import { quotaOf, type CompatQuota } from './compat-quota';
 import { parseIdempotencyKey } from '../reports/reports.dto';
 
@@ -121,6 +133,18 @@ interface ValidationEntry {
   readonly severity: 'error' | 'warning';
   readonly failures: readonly string[];
   readonly chars: number;
+  /**
+   * Границы раздела и вердикт длины (итерация 27).
+   *
+   * Без `min`/`max` по логу нельзя понять, с чем сравнивали: живой прогон
+   * `541d56a4` показал `too_short chars=1423`, и вопрос «а максимум-то какой»
+   * повис в воздухе. Диагностика обязана содержать границы.
+   */
+  readonly min: number;
+  readonly max: number;
+  readonly verdict: string;
+  /** Коды предупреждений этой попытки — в том числе `partner_pronoun`. */
+  readonly warnings: readonly string[];
   readonly raw_excerpt?: string;
 }
 
@@ -473,8 +497,19 @@ export class CompatService {
       readonly normalization: Record<string, { normalized: string[]; warnings: string[] }>;
     },
   ): Promise<SectionWrite> {
+    const range = COMPAT_RANGES.find((section) => section.key === key);
+    const min = range?.min ?? 0;
+    const max = range?.max ?? Number.MAX_SAFE_INTEGER;
+
     let lastCode: FailureCode = 'format';
     let lastChars = 0;
+
+    /**
+     * Попыток на «коротко» — две: второй короткий текст отдаём как есть.
+     * Не больше общего лимита: если `MAX_ATTEMPTS` когда-нибудь станет 1,
+     * раздел не должен молча пропадать из-за `attempt >= 2`.
+     */
+    const SHORT_ATTEMPTS = Math.max(1, Math.min(2, MAX_ATTEMPTS));
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const prompt = compatSectionPrompt({
@@ -493,21 +528,101 @@ export class CompatService {
 
       const response = await this.call(context.budget, messages);
       const normalized = normalizeCompatSection({ key, bodyMd: response.content });
-      const checked = validateCompatSection({
+
+      let body = normalized.body;
+      const applied = [...normalized.applied];
+      let checked = validateCompatSection({
         key,
-        bodyMd: normalized.body,
+        bodyMd: body,
         previous: context.previous,
       });
 
-      lastChars = normalized.body.trim().length;
+      // --- Слишком длинно: обрезаем, а не выбрасываем (итерация 27).
+      //
+      // Повторный вызов модели здесь бессмысленен: она уже написала больше,
+      // чем просили, и второй раз напишет столько же (в живом прогоне 1 180 →
+      // 1 423, ещё 0,83 ₽). Режем по границе абзаца/предложения.
+      let trimmed: { readonly from: number; readonly to: number } | null = null;
+      const trimmedWarnings: CompatWarning[] = [];
+      if (checked.length.verdict === 'too_long') {
+        const cut = trimCompatSection({ key, bodyMd: body, range: { min, max } });
 
-      if (checked.failures.length === 0) {
-        const warnings = checked.warnings;
-        if (normalized.applied.length > 0 || warnings.length > 0) {
-          context.normalization[key] = {
-            normalized: [...normalized.applied],
-            warnings: warnings.map((warning) => warning.code),
-          };
+        if (cut === null) {
+          // Резать некуда (один абзац длиннее максимума, а короче минимума
+          // уже не текст) — отдаём как есть: раздел не может пропасть из-за
+          // длины.
+          this.logger.warn('compat_section_trim_failed', {
+            compatibility_id: context.compatibilityId,
+            section: key,
+            chars: checked.length.chars,
+            min,
+            max,
+          });
+        } else {
+          trimmed = { from: cut.from, to: cut.to };
+          body = cut.body;
+          applied.push('trimmed');
+          // `trimmed` — ещё и предупреждение контракта: человек вправе знать,
+          // что текст сокращён, а не оборван на полуслове (код был в перечне,
+          // но до итерации 27 не выставлялся).
+          trimmedWarnings.push({
+            code: 'trimmed',
+            detail: `${cut.from} → ${cut.to} (${cut.boundary})`,
+          });
+          this.logger.info('compat_section_trimmed', {
+            compatibility_id: context.compatibilityId,
+            section: key,
+            from: cut.from,
+            to: cut.to,
+            boundary: cut.boundary,
+            min,
+            max,
+          });
+          checked = validateCompatSection({
+            key,
+            bodyMd: body,
+            previous: context.previous,
+          });
+        }
+      }
+
+      lastChars = body.trim().length;
+      const empty = lastChars === 0;
+
+      // Структурные правила, которые могла сломать сама обрезка (абзацев
+      // стало меньше, предложений в последнем — одно), не роняют раздел:
+      // форму мы починили нормализацией, а не отказом. Всё содержательное
+      // (вердикты, запрещённые темы, разметка) остаётся провалом.
+      const hardFailures = trimmed === null
+        ? checked.failures
+        : checked.failures.filter(
+            (failure) => failure.rule !== 'paragraphs' && failure.rule !== 'sentences',
+          );
+
+      const shortOnly =
+        hardFailures.length > 0 && hardFailures.every((failure) => failure.rule === 'too_short');
+      const shortAcceptable =
+        shortOnly && attempt >= SHORT_ATTEMPTS && lastChars >= COMPAT_ACCEPT_MIN_CHARS;
+
+      if (!empty && (hardFailures.length === 0 || shortAcceptable)) {
+        const warnings: CompatWarning[] = [...checked.warnings, ...trimmedWarnings];
+
+        if (shortAcceptable) {
+          // Второй подряд короткий текст отдаём с предупреждением: раздел
+          // короче нормы — лучше, чем отсутствие раздела.
+          this.logger.warn('compat_section_short_accepted', {
+            compatibility_id: context.compatibilityId,
+            section: key,
+            attempt,
+            chars: lastChars,
+            min,
+            max,
+          });
+        }
+
+        const codes = warnings.map((warning) => warning.code);
+        if (applied.length > 0 || warnings.length > 0) {
+          context.normalization[key] = { normalized: applied, warnings: codes };
         }
 
         this.logger.info('compat_section_ok', {
@@ -515,27 +630,43 @@ export class CompatService {
           section: key,
           attempt,
           chars: lastChars,
-          normalized: normalized.applied,
-          warnings: warnings.map((warning) => warning.code),
+          min,
+          max,
+          verdict: checked.length.verdict,
+          trimmed,
+          normalized: applied,
+          warnings: codes,
         });
 
         return {
           ok: true,
-          body: normalized.body,
+          body,
           regenerated: attempt > 1,
-          normalized: normalized.applied,
+          normalized: applied,
           warnings,
         };
       }
 
-      lastCode = this.codeOf(checked.failures[0]?.rule ?? 'format');
+      // Пустой ответ — это не «слишком коротко»: коды значат разное, и по
+      // `too_short` владелец ищет проблему с длиной, а не с провайдером.
+      const firstRule = empty ? 'empty' : (hardFailures[0]?.rule ?? 'format');
+      lastCode = this.codeOf(firstRule);
+      const codes = checked.warnings.map((warning) => warning.code);
+
       context.validation.push({
         key,
         attempt,
         code: lastCode,
         severity: 'error',
-        failures: checked.failures.map((failure) => `${failure.rule}: ${failure.detail}`),
+        failures:
+          hardFailures.length > 0
+            ? hardFailures.map((failure) => `${failure.rule}: ${failure.detail}`)
+            : ['empty: модель вернула пустой текст'],
         chars: lastChars,
+        min,
+        max,
+        verdict: checked.length.verdict,
+        warnings: codes,
         // Сырой ответ — 2 000 знаков: в промпте только факты пары, ПДн нет.
         raw_excerpt: response.content.trim().slice(0, RAW_EXCERPT_LENGTH),
       });
@@ -546,8 +677,18 @@ export class CompatService {
         attempt,
         code: lastCode,
         chars: lastChars,
-        failures: checked.failures.map((failure) => failure.rule),
+        min,
+        max,
+        verdict: checked.length.verdict,
+        failures: hardFailures.map((failure) => failure.rule),
+        warnings: codes,
       });
+
+      // «Слишком коротко» — единственная причина, по которой повторяем вызов
+      // ровно один раз. Всё остальное живёт по общему лимиту `MAX_ATTEMPTS`.
+      if (shortOnly && attempt >= SHORT_ATTEMPTS) {
+        break;
+      }
     }
 
     this.logger.warn('compat_section_dropped', {
@@ -555,6 +696,9 @@ export class CompatService {
       section: key,
       code: lastCode,
       chars: lastChars,
+      min,
+      max,
+      reason: lastChars === 0 ? 'empty_response' : 'unrepairable',
     });
 
     return { ok: false, code: lastCode };
@@ -567,9 +711,16 @@ export class CompatService {
       case 'sentences':
       case 'paragraphs_split':
         return 'paragraphs';
+      // «Слишком коротко» и «слишком длинно» — разные коды, и это не
+      // косметика: по коду решают, повторять вызов или обрезать. В живом
+      // прогоне 1 423 знака при максимуме 800 получили `too_short`.
       case 'too_short':
-      case 'length':
         return 'too_short';
+      case 'too_long':
+      case 'length':
+        return 'too_long';
+      case 'empty':
+        return 'format';
       case 'format_h1':
       case 'format_table':
       case 'format_link':

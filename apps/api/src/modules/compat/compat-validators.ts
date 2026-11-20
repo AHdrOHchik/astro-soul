@@ -42,6 +42,73 @@ export const COMPAT_SECTION_TITLES: Readonly<Record<CompatSectionKey, string>> =
   steps: 'Что сделать на этой неделе',
 };
 
+/**
+ * Границы объёма для классификатора: только min и max, без «допусков».
+ *
+ * Итерация 27: раньше здесь жила двухступенчатая проверка — «меньше 300 →
+ * `too_short`», «дальше 30 % от диапазона → `length`», «иначе `length_off`».
+ * Из-за неё текст на 1 423 знака при максимуме 800 получал правило `length`,
+ * которое сервис переводил в код `too_short`: живой прогон
+ * `541d56a4-2530-4700-8831-3161ea6af554` упал как «слишком коротко», хотя
+ * текст был на 78 % длиннее нормы.
+ */
+export interface CompatLengthRange {
+  readonly min: number;
+  readonly max: number;
+}
+
+/**
+ * Вердикт длины. Их три, и они не смешиваются:
+ *   • `too_short` — только `chars < min` (лечится повторным вызовом);
+ *   • `too_long` — только `chars > max` (лечится обрезкой, **не** отказом);
+ *   • `ok` — в границах раздела.
+ *
+ * `length_off` здесь намеренно нет: это имя **предупреждения** контракта
+ * (`Compatibility.warnings`), а не отказ. Одно имя на две роли — ровно та
+ * путаница, из-за которой диагностика врала (см. `lengthWarning`).
+ */
+export type LengthVerdict = 'ok' | 'too_short' | 'too_long';
+
+/**
+ * Единственное место, где решается, «коротко», «длинно» или «норма».
+ *
+ * Три ветви, явные границы из конфигурации раздела, никаких «чужой
+ * диапазон»: `scenario` сравнивается с 600–800, `steps` — с 400–550.
+ */
+export function classifyLength(chars: number, range: CompatLengthRange): LengthVerdict {
+  if (chars < range.min) {
+    return 'too_short';
+  }
+  if (chars > range.max) {
+    return 'too_long';
+  }
+  return 'ok';
+}
+
+/** Куда отклонился объём — для предупреждения `length_off` (контракт 1.6.0). */
+export function lengthDirection(
+  chars: number,
+  range: CompatLengthRange,
+): 'below' | 'above' | null {
+  if (chars < range.min) {
+    return 'below';
+  }
+  if (chars > range.max) {
+    return 'above';
+  }
+  return null;
+}
+
+/**
+ * Минимум, при котором текст вообще считается разделом.
+ *
+ * Нужен только для повторного короткого ответа: по заданию второй подряд
+ * «короткий» текст отдаётся как есть с предупреждением, но 40 знаков — это не
+ * раздел, а обрывок ответа, и такой раздел валить весь продукт тоже нельзя:
+ * он уходит в `dropped` как «нечего показывать».
+ */
+export const COMPAT_ACCEPT_MIN_CHARS = 200;
+
 /** Первые 200 знаков раздела — «витрина»: терминов там быть не должно. */
 export const COMPAT_OPENING_LENGTH = 200;
 
@@ -94,11 +161,31 @@ export interface CompatWarning {
   /** Код; в контракт уходят только коды из `COMPAT_CONTRACT_WARNINGS`. */
   readonly code: string;
   readonly detail?: string;
+  /**
+   * Куда отклонился объём — только у `length_off`. Одно имя предупреждения
+   * на обе стороны без направления читается как «что-то не так», а решение
+   * («дописать» или «обрезать») требует знать сторону.
+   */
+  readonly direction?: 'below' | 'above';
 }
 
 export interface CompatValidationResult {
   readonly failures: readonly { readonly rule: string; readonly detail: string }[];
   readonly warnings: readonly CompatWarning[];
+  /**
+   * Вердикт длины отдельным полем, а не только через `failures`.
+   *
+   * `too_long` — не провал: его лечит обрезка (`trimCompatSection`), и
+   * вызывающий обязан сначала обрезать, а уже потом решать судьбу раздела.
+   * Раньше длина жила только в `failures`, и сервис не мог отличить
+   * «дописать» от «обрезать».
+   */
+  readonly length: {
+    readonly chars: number;
+    readonly min: number;
+    readonly max: number;
+    readonly verdict: LengthVerdict;
+  };
 }
 
 export interface CompatValidationInput {
@@ -148,18 +235,31 @@ export function validateCompatSection(input: CompatValidationInput): CompatValid
   const range = COMPAT_RANGES.find((section) => section.key === input.key);
 
   if (range === undefined) {
-    return { failures: [{ rule: 'section_unknown', detail: input.key }], warnings: [] };
+    return {
+      failures: [{ rule: 'section_unknown', detail: input.key }],
+      warnings: [],
+      length: { chars: body.length, min: 0, max: 0, verdict: 'ok' },
+    };
   }
 
   const volume = volumeOf(input.key, body);
   const chars = volume.length;
+  const verdict = classifyLength(chars, range);
+  const direction = lengthDirection(chars, range);
 
-  if (chars < 300) {
-    failures.push({ rule: 'too_short', detail: `${chars} < 300` });
-  } else if (chars > range.max * 1.3 || chars < range.min * 0.7) {
-    failures.push({ rule: 'length', detail: `${chars} вне ${range.min}–${range.max} более чем на 30 %` });
-  } else if (chars > range.max || chars < range.min) {
-    warnings.push({ code: 'length_off', detail: `${chars} вне ${range.min}–${range.max}` });
+  // Провал — только «коротко». «Длинно» чинится обрезкой (см. `section` в
+  // сервисе и `trimCompatSection` ниже), а не отказом: модель написала
+  // больше, чем просили, — это нормальное её поведение.
+  if (verdict === 'too_short') {
+    failures.push({ rule: 'too_short', detail: `${chars} < ${range.min}` });
+  }
+
+  if (verdict !== 'ok' && direction !== null) {
+    warnings.push({
+      code: 'length_off',
+      direction,
+      detail: `${chars} ${direction === 'below' ? 'меньше' : 'больше'} ${range.min}–${range.max}`,
+    });
   }
 
   if (FORMAT.h1.test(body)) failures.push({ rule: 'format_h1', detail: 'H1' });
@@ -256,7 +356,11 @@ export function validateCompatSection(input: CompatValidationInput): CompatValid
     }
   }
 
-  return { failures, warnings };
+  return {
+    failures,
+    warnings,
+    length: { chars, min: range.min, max: range.max, verdict },
+  };
 }
 
 /**
@@ -270,6 +374,186 @@ export const COMPAT_CONTRACT_WARNINGS = ['length_off', 'trimmed', 'disclaimer_ad
 export interface CompatNormalization {
   readonly body: string;
   readonly applied: readonly string[];
+}
+
+/** Результат обрезки: что осталось и где именно резали. */
+export interface CompatTrim {
+  readonly body: string;
+  /** Сколько знаков было в объёме (без подписи) до обрезки. */
+  readonly from: number;
+  /** Сколько осталось. */
+  readonly to: number;
+  /** По какой границе резали: абзац, предложение или слово. */
+  readonly boundary: 'paragraph' | 'sentence' | 'word';
+}
+
+/**
+ * Обрезка длинного раздела до диапазона — вместо отказа.
+ *
+ * Политика итерации 18 («форма чинится нормализацией») для совместимости не
+ * работала: 1 423 знака при максимуме 800 считались провалом, раздел
+ * выбрасывался, а весь продукт уходил в `failed` — за деньги владельца
+ * (3,19 ₽ за прогон 1 180 → 1 423 знака).
+ *
+ * Режем по **границе абзаца** (для `steps` — по концу предложения внутри
+ * пункта, чтобы не потерять ни один из трёх пунктов), затем по предложению,
+ * затем по слову. Результат всегда в `[min, max]`; если такого варианта нет
+ * (например, первый абзац сам длиннее максимума, а короче минимума резать
+ * нечего) — `null`, и вызывающий отдаёт раздел как есть с предупреждением, но
+ * **не выбрасывает**.
+ */
+export function trimCompatSection(input: {
+  readonly key: CompatSectionKey;
+  readonly bodyMd: string;
+  readonly range: CompatLengthRange;
+}): CompatTrim | null {
+  const body = input.bodyMd.trim();
+  const disclaimer =
+    input.key === 'steps' && body.endsWith(COMPAT_DISCLAIMER) ? COMPAT_DISCLAIMER : null;
+  const volume = disclaimer === null ? body : body.slice(0, body.length - disclaimer.length).trimEnd();
+  const from = volume.length;
+
+  if (classifyLength(from, input.range) !== 'too_long') {
+    return null;
+  }
+
+  const suffix = disclaimer === null ? '' : `\n\n${disclaimer}`;
+
+  // `steps` — отдельный путь: резать список по границе «абзаца» нельзя, а по
+  // границе предложения можно потерять третий пункт. Режем внутри пунктов,
+  // сохраняя все три.
+  if (input.key === 'steps') {
+    const byItems = trimSteps(volume, input.range, suffix);
+    if (byItems !== null) {
+      return byItems;
+    }
+  }
+
+  // Кандидаты: смещение в объёме → по какой границе режем.
+  const candidate = (offset: number, boundary: CompatTrim['boundary']): CompatTrim | null => {
+    const cut = volume.slice(0, offset).trimEnd();
+    if (classifyLength(cut.length, input.range) !== 'ok') {
+      return null;
+    }
+    return { body: `${cut}${suffix}`, from, to: cut.length, boundary };
+  };
+
+  // 1. Абзацы (для `steps` не годится: абзац там — это весь список).
+  // Берём **последний** абзац, при котором текст ещё в границах: режем
+  // максимум лишнего, а не минимум.
+  if (input.key !== 'steps') {
+    const paragraphs = splitParagraphs(volume);
+    let offset = 0;
+    let byParagraph: CompatTrim | null = null;
+    for (let index = 0; index < paragraphs.length - 1; index += 1) {
+      offset += (paragraphs[index] ?? '').length + 2; // '\n\n'
+      const next = candidate(offset - 2, 'paragraph');
+      if (next !== null) {
+        byParagraph = next;
+      } else if (byParagraph !== null) {
+        // Дальше только длиннее — в границы уже не вернёмся.
+        break;
+      }
+    }
+    if (byParagraph !== null) {
+      return byParagraph;
+    }
+  }
+
+  // 2. Предложения, от последнего к первому: длиннее всего, что влезает.
+  const sentenceEnds = sentenceEndOffsets(volume);
+  for (const end of [...sentenceEnds].reverse()) {
+    const trimmed = candidate(end, 'sentence');
+    if (trimmed !== null) {
+      return trimmed;
+    }
+  }
+
+  // 3. Слово: последний шанс уложиться в максимум, не разрывая слово.
+  for (let offset = volume.length - 1; offset > 0; offset -= 1) {
+    if (volume[offset] !== ' ') {
+      continue;
+    }
+    if (offset <= input.range.max) {
+      const trimmed = candidate(offset, 'word');
+      if (trimmed !== null) {
+        return trimmed;
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Обрезка `steps`: три пункта остаются тремя пунктами.
+ *
+ * Длинный список — это не «лишние абзацы», а три пункта по 3–4 предложения.
+ * Обрезка «по предложению» через весь текст снесла бы третий пункт, и раздел
+ * стал бы невалидным уже по количеству пунктов (`steps_count`) — то есть
+ * обрезка сама себя отменила бы. Поэтому убираем **последние предложения**
+ * самого длинного пункта, пока объём не влезет в `max`.
+ */
+function trimSteps(volume: string, range: CompatLengthRange, suffix: string): CompatTrim | null {
+  const from = volume.length;
+  const lines = volume.split('\n');
+  const itemIndexes = lines
+    .map((line, index) => (line.trim().startsWith('—') ? index : -1))
+    .filter((index) => index >= 0);
+
+  if (itemIndexes.length !== COMPAT_STEPS_COUNT) {
+    return null;
+  }
+
+  const items = itemIndexes.map((index) => {
+    const line = (lines[index] ?? '').trim();
+    const sentences = splitSentences(line.replace(/^—\s*/u, ''));
+    return { index, marker: line.slice(0, 1), sentences };
+  });
+
+  const lengthOf = (parts: readonly { marker: string; sentences: readonly string[] }[]): number =>
+    parts.reduce((sum, item) => sum + `— ${item.sentences.join(' ')}`.length, 0) +
+    (parts.length - 1);
+
+  // Снимаем по одному предложению с самого длинного пункта: текст должен
+  // остаться связным, а не «три обрывка».
+  let guard = 0;
+  while (lengthOf(items) > range.max && guard < 100) {
+    guard += 1;
+    const longest = [...items]
+      .filter((item) => item.sentences.length > 1)
+      .sort((left, right) => right.sentences.length - left.sentences.length)[0];
+    if (longest === undefined) {
+      break;
+    }
+    longest.sentences = longest.sentences.slice(0, -1);
+  }
+
+  const chars = lengthOf(items);
+  if (classifyLength(chars, range) !== 'ok') {
+    return null;
+  }
+
+  const body = items
+    .map((item) => `${item.marker} ${item.sentences.join(' ')}`)
+    .join('\n');
+
+  return { body: `${body}${suffix}`, from, to: body.length, boundary: 'sentence' };
+}
+
+/** Смещения концов предложений: `splitSentences` теряет позиции. */
+function sentenceEndOffsets(text: string): number[] {
+  const offsets: number[] = [];
+  const pattern = /[.!?…]+\s+/gu;
+  let match = pattern.exec(text);
+  while (match !== null) {
+    offsets.push(match.index + match[0].replace(/\s+$/u, '').length);
+    match = pattern.exec(text);
+  }
+  // Последнее предложение заканчивается на конце текста — если текст длиннее
+  // максимума, этот кандидат отсеется сам.
+  offsets.push(text.length);
+  return offsets;
 }
 
 /**
@@ -286,7 +570,9 @@ export function normalizeCompatSection(input: {
   const normalized = input.bodyMd.replace(/\r\n/gu, '\n');
   let body = normalized.trim();
   if (body !== normalized) {
-    applied.push('trimmed');
+    // Не `trimmed`: это имя занято обрезкой по длине (итерация 27), и два
+    // разных события под одним словом в `normalization` не различить.
+    applied.push('whitespace');
   }
 
   const withMarkers = body.replace(/^\s*[-*•]\s+/gmu, '— ');

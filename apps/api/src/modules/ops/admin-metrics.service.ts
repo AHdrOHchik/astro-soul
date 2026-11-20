@@ -103,6 +103,17 @@ export interface ProductMetrics {
   readonly compat_credits_left: number;
   readonly compat_validation_streak: number;
   readonly compat_breaker_open: boolean;
+  /**
+   * Сколько разделов совместимости за сутки пришлось обрезать и сколько
+   * всё-таки выбросили (итерация 27).
+   *
+   * Обрезка — штатная починка формы: если её число растёт, промпт просит
+   * «700–900 знаков», а модель пишет вдвое больше, и это видно по цифре, а не
+   * по жалобе владельца. Выбросы обязаны быть близки к нулю: раздел теряется
+   * только на пустом или неразобранном ответе, не на длине.
+   */
+  readonly compat_sections_trimmed_24h: number;
+  readonly compat_sections_dropped_24h: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -141,6 +152,7 @@ export class AdminMetricsService {
       cost,
       history,
       compat,
+      compatSections,
       compatHistory,
       telegramCancel,
       paymentHealth,
@@ -269,6 +281,30 @@ export class AdminMetricsService {
            FROM reports
           WHERE kind = 'compat' AND created_at >= now() - ${WINDOW}`,
         ),
+        // Обрезка и выбросы разделов за сутки (итерация 27). Источник —
+        // сохранённые `normalization`/`section_status`: считать по логам
+        // нельзя, логи не лежат в БД.
+        this.db.queryOne<{ trimmed: number; dropped: number }>(
+          `SELECT
+             (SELECT count(*)::int
+                FROM reports r,
+                     jsonb_each(
+                       CASE WHEN jsonb_typeof(r.normalization) = 'object'
+                            THEN r.normalization ELSE '{}'::jsonb END
+                     ) AS e(k, v)
+               WHERE r.kind = 'compat'
+                 AND r.created_at >= now() - interval '24 hours'
+                 AND e.v -> 'normalized' ? 'trimmed') AS trimmed,
+             (SELECT count(*)::int
+                FROM reports r,
+                     jsonb_each_text(
+                       CASE WHEN jsonb_typeof(r.section_status) = 'object'
+                            THEN r.section_status ELSE '{}'::jsonb END
+                     ) AS e(k, v)
+               WHERE r.kind = 'compat'
+                 AND r.created_at >= now() - interval '24 hours'
+                 AND e.v = 'failed') AS dropped`,
+        ),
         // Свой счётчик брейкера: только `kind = 'compat'`.
         this.db.query<ReportHistoryRow>(
           `SELECT error_code, updated_at
@@ -385,6 +421,8 @@ export class AdminMetricsService {
       compat_credits_left: compat?.credits ?? 0,
       compat_validation_streak: compatBreaker.streak,
       compat_breaker_open: compatClosed,
+      compat_sections_trimmed_24h: compatSections?.trimmed ?? 0,
+      compat_sections_dropped_24h: compatSections?.dropped ?? 0,
     };
   }
 }
