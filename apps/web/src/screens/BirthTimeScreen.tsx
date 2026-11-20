@@ -1,3 +1,4 @@
+import { useClosingConfirmation } from '../hooks/useClosingConfirmation';
 import { FieldMessage, Notice, OptionCard, SegmentedInput, Stack, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../analytics';
@@ -47,6 +48,8 @@ export function BirthTimeScreen({
   onTimeChange,
   onNext,
 }: BirthTimeScreenProps) {
+  // A completed birth date is already in the unsaved draft.
+  useClosingConfirmation(true);
   const optionsMessageId = useId();
   const timeLabelId = useId();
   const timeMessageId = useId();

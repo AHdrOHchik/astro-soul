@@ -1,3 +1,4 @@
+import { useClosingConfirmation } from '../hooks/useClosingConfirmation';
 import { FieldMessage, SegmentedInput, Stack, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { Track } from '../analytics';
@@ -30,6 +31,7 @@ export interface BirthDateScreenProps {
 
 /** Screen 2. Calendar and 18+ validation happen as soon as the date is complete. */
 export function BirthDateScreen({ value, today, serverError, track, back, onChange, onNext }: BirthDateScreenProps) {
+  useClosingConfirmation(Object.values(value).some(Boolean));
   const messageId = useId();
   const field = useRef<HTMLDivElement>(null);
   const submit = useRef<HTMLButtonElement>(null);

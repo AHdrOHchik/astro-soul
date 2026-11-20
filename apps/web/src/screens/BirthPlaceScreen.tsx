@@ -1,3 +1,4 @@
+import { useClosingConfirmation } from '../hooks/useClosingConfirmation';
 import {
   Button,
   Card,
@@ -79,6 +80,8 @@ export function BirthPlaceScreen({
   onChange,
   onNext,
 }: BirthPlaceScreenProps) {
+  // A completed birth date is already in the unsaved draft.
+  useClosingConfirmation(true);
   const messageId = useId();
   const selectedId = useId();
   const input = useRef<HTMLInputElement>(null);

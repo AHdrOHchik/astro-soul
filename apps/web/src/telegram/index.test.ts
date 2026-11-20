@@ -90,14 +90,26 @@ describe('inside Telegram', () => {
     expect(telegram.initData).toBe(INIT_DATA);
   });
 
-  it('expands, paints the client chrome in the app colour and blocks swipe-to-close', async () => {
+  it('expands, paints the client chrome in the app colour and preserves swipe-to-close', async () => {
     launchInTelegram('8.0');
     await start();
-    expect(events()).toEqual(expect.arrayContaining(['web_app_expand', 'web_app_setup_swipe_behavior']));
+    expect(events()).toEqual(expect.arrayContaining(['web_app_expand']));
     expect(payloadOf('web_app_set_header_color')).toEqual({ color: '#0f0d1a' });
     expect(payloadOf('web_app_set_background_color')).toEqual({ color: '#0f0d1a' });
     expect(payloadOf('web_app_set_bottom_bar_color')).toEqual({ color: '#0f0d1a' });
-    expect(payloadOf('web_app_setup_swipe_behavior')).toEqual({ allow_vertical_swipe: false });
+    expect(posted.mock.calls.filter(([name]) => name === 'web_app_setup_swipe_behavior').pop()?.[1]).toBe(JSON.stringify({ allow_vertical_swipe: true }));
+  });
+
+  it('enables the host dialog only until the dirty form releases it', async () => {
+    launchInTelegram('8.0');
+    await start();
+    const { setClosingConfirmation } = await import('./index');
+    posted.mockClear();
+    setClosingConfirmation(true);
+    setClosingConfirmation(false);
+    expect(posted.mock.calls.filter(([name]) => name === 'web_app_setup_closing_behavior').map(([, data]) => data)).toEqual([
+      JSON.stringify({ need_confirmation: true }), JSON.stringify({ need_confirmation: false }),
+    ]);
   });
 
   it('repaints tokens and all three native zones on theme_changed without a reload', async () => {

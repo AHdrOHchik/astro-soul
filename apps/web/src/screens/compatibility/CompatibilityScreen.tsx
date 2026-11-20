@@ -1,3 +1,4 @@
+import { useClosingConfirmation } from '../../hooks/useClosingConfirmation';
 import { AlertIcon, Button, Card, FieldMessage, Notice, OptionCard, Progress, Screen, ScreenHeading, SegmentedInput, TextField, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -77,6 +78,9 @@ export function CompatibilityScreen({
   const [lastRequest, setLastRequest] = useState<RequestState | null>(null);
   const [result, setResult] = useState<Compatibility | null>(null);
   const [quota, setQuota] = useState<CompatibilityList['quota'] | null>(null);
+  useClosingConfirmation(chartId !== null && compatibilityId === null && (
+    relationship !== 'romantic' || unknownTime || query !== '' || Object.values(birthDate).some(Boolean) || Object.values(birthTime).some(Boolean)
+  ));
   const [pollRetry, setPollRetry] = useState(0);
   const idempotencyKey = useRef({ chartId, key: chartId === null ? '' : keys.current(chartId, 'compat') });
   const activeSubmit = useRef<AbortController | null>(null);
