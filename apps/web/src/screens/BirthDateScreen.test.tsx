@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ru } from '../i18n/ru';
 import type { DateParts } from '../lib/birth';
 import { fakeAnalytics, setupUser, TODAY } from '../test/fixtures';
+import * as bridge from '../telegram';
 import { BirthDateScreen } from './BirthDateScreen';
 
 const copy = ru.birthDate;
@@ -19,8 +20,9 @@ function setup(initial: DateParts = EMPTY, serverError?: string) {
       <BirthDateScreen value={value} today={TODAY} serverError={serverError} track={analytics.track} onChange={setValue} onNext={onNext} />
     );
   }
-  render(<Harness />);
+  const { unmount } = render(<Harness />);
   return {
+    unmount,
     user,
     onNext,
     analytics,
@@ -36,6 +38,17 @@ afterEach(() => {
 });
 
 describe('BirthDateScreen', () => {
+  it('guards edited input, releases cleared input and cleans up on leaving the form', async () => {
+    const guard = vi.spyOn(bridge, 'setClosingConfirmation');
+    const { user, day, unmount } = setup();
+    expect(guard).not.toHaveBeenCalled();
+    await user.type(day, '1');
+    await user.clear(day);
+    await user.type(day, '2');
+    unmount();
+    expect(guard.mock.calls).toEqual([[true], [false], [true], [false]]);
+  });
+
   it('takes a date typed as one run of digits and hands focus to the button', async () => {
     const { user, day, month, year, next, onNext } = setup();
     expect(day).toHaveFocus();

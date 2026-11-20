@@ -76,6 +76,24 @@ describe('stepItems', () => {
 });
 
 describe('CompatibilityScreen', () => {
+  it('retries the unchanged city without losing the partner draft', async () => {
+    const user = userEvent.setup();
+    const { api } = mount();
+    api.resolveGeo.mockRejectedValueOnce(apiError('NETWORK'));
+    await user.click(screen.getByLabelText(copy.dateSegments.day));
+    await user.keyboard('17051994');
+    await user.click(screen.getByLabelText(copy.unknownTimeLabel));
+    const place = screen.getByRole('textbox', { name: copy.place });
+    await user.type(place, 'Ka');
+    await screen.findByText(copy.searchFailed);
+    expect(place).toHaveAccessibleDescription(copy.searchFailed);
+    await user.click(screen.getByRole('button', { name: copy.retryAgain }));
+    await user.click(await screen.findByRole('button', { name: /Казань/ }));
+    expect(api.resolveGeo.mock.calls.map(([query]) => query)).toEqual(['Ka', 'Ka']);
+    expect(screen.getByLabelText(copy.dateSegments.day)).toHaveValue('17');
+    expect(screen.getByLabelText(copy.unknownTimeLabel)).toBeChecked();
+  });
+
   it('sends only the specified partner fields and null birth_time when time is unknown', async () => {
     const user = userEvent.setup();
     const { api } = mount();

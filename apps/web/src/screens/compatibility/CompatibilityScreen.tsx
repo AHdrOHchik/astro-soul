@@ -1,3 +1,4 @@
+import { useClosingConfirmation } from '../../hooks/useClosingConfirmation';
 import { AlertIcon, Button, Card, FieldMessage, Notice, OptionCard, Progress, Screen, ScreenHeading, SegmentedInput, TextField, type ScreenProps, type Segment } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -77,6 +78,9 @@ export function CompatibilityScreen({
   const [lastRequest, setLastRequest] = useState<RequestState | null>(null);
   const [result, setResult] = useState<Compatibility | null>(null);
   const [quota, setQuota] = useState<CompatibilityList['quota'] | null>(null);
+  useClosingConfirmation(chartId !== null && compatibilityId === null && (
+    relationship !== 'romantic' || unknownTime || query !== '' || Object.values(birthDate).some(Boolean) || Object.values(birthTime).some(Boolean)
+  ));
   const [pollRetry, setPollRetry] = useState(0);
   const idempotencyKey = useRef({ chartId, key: chartId === null ? '' : keys.current(chartId, 'compat') });
   const activeSubmit = useRef<AbortController | null>(null);
@@ -394,10 +398,11 @@ export function CompatibilityScreen({
                 value={place?.name ?? query}
                 placeholder={copy.placePlaceholder}
                 aria-invalid={selectedPlaceError !== undefined}
+                aria-describedby={selectedPlaceError !== undefined || search.status === 'loading' || failedSearch ? `${titleId}-place` : undefined}
                 onChange={(value) => { setQuery(value); setPlace(null); }}
               />
-              <FieldMessage id={`${titleId}-place`} error={selectedPlaceError} hint={search.status === 'loading' ? copy.searching : undefined} live />
-              {failedSearch && <p role="alert" className={styles.error}>{copy.searchFailed}</p>}
+              <FieldMessage id={`${titleId}-place`} error={selectedPlaceError ?? (failedSearch ? copy.searchFailed : undefined)} hint={search.status === 'loading' ? copy.searching : undefined} live />
+              {failedSearch && <Button variant="secondary" onClick={search.retry}>{copy.retryAgain}</Button>}
               {search.status === 'ready' && search.places.map((candidate) => (
                 <Button key={`${candidate.name}|${candidate.lat}|${candidate.lon}`} variant="secondary" onClick={() => { setPlace(candidate); setQuery(candidate.name); }}>
                   {candidate.name}{formatRegion(candidate) ? `, ${formatRegion(candidate)}` : ''}

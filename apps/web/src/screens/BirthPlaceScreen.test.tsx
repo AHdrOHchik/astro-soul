@@ -1,3 +1,4 @@
+import * as bridge from '../telegram';
 import { act, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -132,6 +133,7 @@ describe('BirthPlaceScreen', () => {
   });
 
   it('takes the time zone from the chosen place and passes the API object on untouched', async () => {
+    const feedback = vi.spyOn(bridge, 'haptic');
     const { user, input, settle, submit, onChange, onNext } = setup();
     await user.type(input, 'Каз');
     await settle();
@@ -146,6 +148,7 @@ describe('BirthPlaceScreen', () => {
     expect(submit).toHaveFocus();
 
     await user.click(submit);
+    expect(feedback.mock.calls).toEqual([['light']]);
     expect(onNext).toHaveBeenCalledTimes(1);
   });
 

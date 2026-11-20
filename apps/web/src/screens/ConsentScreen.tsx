@@ -1,3 +1,4 @@
+import { useClosingConfirmation } from '../hooks/useClosingConfirmation';
 import {
   Button,
   Checkbox,
@@ -52,6 +53,7 @@ export function ConsentScreen({
   onNext,
   onDecline,
 }: ConsentScreenProps) {
+  useClosingConfirmation(accepted);
   const titleId = useId();
   const messageId = useId();
   const renewedId = useId();

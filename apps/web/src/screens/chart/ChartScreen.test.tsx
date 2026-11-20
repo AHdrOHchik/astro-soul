@@ -1,3 +1,4 @@
+import * as bridge from '../../telegram';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
@@ -120,6 +121,28 @@ describe('ChartScreen', () => {
     const asc = within(card(copy.asc));
     expect(asc.getByText('Дева, 4°09′')).toBeInTheDocument();
     expect(asc.getByText('Текст про Асцендент.')).toBeInTheDocument();
+  });
+
+  it('notifies once for a completed build, not on opening a saved chart', async () => {
+    const feedback = vi.spyOn(bridge, 'haptic');
+    const first = setup({ strict: true });
+    await screen.findByRole('img', { name: copy.wheelAlt });
+    first.unmount();
+    setup({ current: chartResult });
+    await screen.findByRole('img', { name: copy.wheelAlt });
+    expect(feedback.mock.calls).toEqual([['success']]);
+  });
+
+  it('discloses even a lone non-headline planet without a wheel or known birth time', async () => {
+    const result = { ...NOTHING_BESIDES_THE_CHART, chart: { ...chartWithoutTime.chart, planets: chart.planets.filter((p) => p.key === 'mercury') } };
+    const { user } = setup({ result });
+    const summary = await screen.findByText(copy.planetPositions);
+    expect(summary.closest('details')).not.toHaveAttribute('open');
+    await user.click(summary);
+    const rows = within(screen.getByRole('list')).getAllByRole('listitem');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent('Меркурий: Близнецы, 11°40′');
+    expect(rows[0]).not.toHaveTextContent('дом');
   });
 
   it('marks the Ascendant and houses as not calculated when the birth time is unknown', async () => {

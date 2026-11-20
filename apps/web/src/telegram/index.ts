@@ -5,6 +5,8 @@
  */
 import {
   backButton,
+  closingBehavior,
+  hapticFeedback,
   init,
   isInvoiceSupported,
   isTMA,
@@ -390,6 +392,20 @@ function paintChrome(cssColor: string): void {
   attempt(() => miniApp.setBottomBarColor.ifAvailable(color));
 }
 
+/** Input feedback is optional: never substitute browser vibration or block the action. */
+export function haptic(kind: 'selection' | 'light' | 'success' | 'error'): void {
+  attempt(() => {
+    if (kind === 'selection') hapticFeedback.selectionChanged.ifAvailable();
+    else if (kind === 'light') hapticFeedback.impactOccurred.ifAvailable('light');
+    else hapticFeedback.notificationOccurred.ifAvailable(kind);
+  });
+}
+
+export function setClosingConfirmation(dirty: boolean): void {
+  if (!closingBehavior.isMounted()) return;
+  attempt(() => (dirty ? closingBehavior.enableConfirmation : closingBehavior.disableConfirmation).ifAvailable());
+}
+
 function fitViewport(): void {
   attempt(() => viewport.expand.ifAvailable());
   attempt(() => {
@@ -399,9 +415,9 @@ function fitViewport(): void {
       viewport.bindCssVars.ifAvailable();
     });
   });
-  // The forms keep their input in memory only; a stray swipe down must not close the app and lose it.
+  // SDK state can be restored from an earlier launch with different form state.
   attempt(() => swipeBehavior.mount.ifAvailable());
-  attempt(() => swipeBehavior.disableVertical.ifAvailable());
+  attempt(() => swipeBehavior.enableVertical.ifAvailable());
 }
 
 export function initTelegram({ chromeColor, devInitData = '', devInvoice }: TelegramOptions): Telegram {
@@ -431,6 +447,8 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
     mainButton.setParams.ifAvailable({ isVisible: false, isLoaderVisible: false, isEnabled: false });
   });
   fitViewport();
+  attempt(() => closingBehavior.mount.ifAvailable());
+  setClosingConfirmation(false);
   attempt(() => backButton.mount.ifAvailable());
   const hasNativeBackButton = backButton.isMounted();
   let removeBackListener: (() => void) | undefined;

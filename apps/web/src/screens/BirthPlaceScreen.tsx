@@ -1,3 +1,5 @@
+import { haptic } from '../telegram';
+import { useClosingConfirmation } from '../hooks/useClosingConfirmation';
 import {
   Button,
   Card,
@@ -79,6 +81,8 @@ export function BirthPlaceScreen({
   onChange,
   onNext,
 }: BirthPlaceScreenProps) {
+  // A completed birth date is already in the unsaved draft.
+  useClosingConfirmation(true);
   const messageId = useId();
   const selectedId = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -108,6 +112,7 @@ export function BirthPlaceScreen({
 
   const handleSubmit = () => {
     if (place !== null) {
+      haptic('light');
       onNext();
       return;
     }

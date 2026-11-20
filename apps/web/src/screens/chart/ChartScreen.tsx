@@ -1,3 +1,4 @@
+import { haptic } from '../../telegram';
 import {
   AscendantIcon,
   Button,
@@ -186,6 +187,7 @@ export function ChartScreen({
         const result = await api.createChart(request, signal);
         // The body, not the status, tells a chart that already existed from a new one.
         if (!signal.aborted) {
+          haptic('success');
           track(result.is_restored ? 'chart_restored' : 'chart_created');
           onLoaded?.(result);
         }
@@ -193,6 +195,7 @@ export function ChartScreen({
       } catch (error) {
         // An answer nobody waits for any more (the screen was left) is neither counted nor acted on.
         if (!signal.aborted && !isAbortError(error)) {
+          haptic('error');
           track('chart_failed', { code: errorCodeOf(error) });
           trackRejection(track, 'chart', error);
           const rejected = fieldErrorsOf(error);
@@ -343,8 +346,9 @@ function ChartView({
   const asc = timeKnown ? chart.asc : null;
   const houseOf = (house: number | null | undefined) => (timeKnown && typeof house === 'number' ? copy.house(house) : undefined);
 
+  const positions = chart.planets.filter((planet) => typeof planet.name === 'string' && planet.name.trim() && typeof planet.sign === 'string' && planet.sign.trim());
   const hasReading = [reading.sun, reading.moon, reading.asc, reading.summary].some((line) => line !== '');
-  if (!sun && !moon && !asc?.sign && !wheelUrl && !hasReading) {
+  if (positions.length === 0 && !sun && !moon && !asc?.sign && !wheelUrl && !hasReading) {
     return (
       <StateView title={copy.emptyTitle} text={copy.emptyText} icon={<InfoIcon />}>
         <Button onClick={onRetry}>{ru.common.retry}</Button>
@@ -376,6 +380,21 @@ function ChartView({
         <Wheel src={wheelUrl} />
       ) : (
         <p className={styles.wheelMissing}>{copy.wheelMissing}</p>
+      )}
+
+      {positions.length > 0 && (
+        <details className={styles.positions}>
+          <summary>{copy.planetPositions}</summary>
+          <ul role="list">
+            {positions.map((planet) => (
+              <li key={planet.key}>
+                <strong>{planet.name}</strong>{': '}
+                {formatPosition(planet.sign, Number.isFinite(planet.degree) ? planet.degree : undefined, Number.isFinite(planet.minute) ? planet.minute : undefined)}
+                {houseOf(planet.house) && ` · ${houseOf(planet.house)}`}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {/* What the server says about the input, in its order. The screen adds no warnings of its own. */}
