@@ -233,6 +233,22 @@ describe('timeout', () => {
     expect(await error).toMatchObject({ code: 'TIMEOUT' });
   });
 
+  it('allows a single request to use a 30-second deadline without changing the default', async () => {
+    const { request } = setup({ fetch: stalled });
+    const settled = vi.fn();
+    const forecast = errorOf(request('GET', '/forecast/today', { timeoutMs: 30_000 })).then((value) => { settled(); return value; });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await forecast).toMatchObject({ code: 'TIMEOUT' });
+    const ordinary = errorOf(request('GET', '/ordinary'));
+    await vi.advanceTimersByTimeAsync(14_999);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await ordinary).toMatchObject({ code: 'TIMEOUT' });
+  });
+
   it('counts retries against the same 15 seconds', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(json(500)).mockImplementation(stalled);
     const { request } = setup({ fetch: fetchMock, retryDelayMs: () => 5000 });

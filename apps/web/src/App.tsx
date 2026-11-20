@@ -629,7 +629,7 @@ function Screens({
 
   if (route === 'current' && mainTab !== 'map') {
     const chartId = me.chart_id ?? shownCharts.current?.chart.chart_id ?? shownCharts.built?.result.chart.chart_id ?? null;
-    if (mainTab === 'today') return withTabs(<DailyForecastScreen api={api} chartId={chartId} telegram={telegram} known={knownDailyForecast} onKnown={rememberDailyForecast} onBuildChart={() => { setStack(['welcome']); setHome('welcome'); }} onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll}/>);
+    if (mainTab === 'today') return withTabs(<DailyForecastScreen api={api} chartId={chartId} telegram={telegram} known={knownDailyForecast} onKnown={rememberDailyForecast} onBuildChart={() => { setStack(['welcome']); setHome('welcome'); }} onChartGone={handleChartGone} onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll}/>);
     if (mainTab === 'ask') return withTabs(<QuestionsScreen api={api} telegram={telegram} subscribed={me.entitlements.is_active && chartId !== null} chartAvailable={chartId !== null} onSubscribe={canSubscribe ? openSubscriptions : undefined} onBuildChart={() => { setHome('welcome'); setStack(['welcome']); }} onChartGone={handleChartGone} scroll={questionScroll}/>);
     return withTabs(<SettingsScreen api={api} telegram={telegram} refreshMe={refreshMeForChart} supportLink={supportLink} track={track} back={back} onOpenDocument={open} onSubscribe={subscriptions ? openSubscriptions : undefined} onOpenCompatibility={openCompatibility} onOpenSavedCompatibility={openSavedCompatibility} onBuyCompatibility={buyCompatibility} onDeleted={onDeleted}/>);
   }

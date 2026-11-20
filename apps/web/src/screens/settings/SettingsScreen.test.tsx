@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Me } from '../../api';
 import { ru } from '../../i18n/ru';
-import { apiError, compatibilityList, deferred, fakeAnalytics, fakeApi, fakeTelegram, meSubscribed, meWithChart, setupUser } from '../../test/fixtures';
+import { apiError, cataloguePlans, compatibilityList, deferred, fakeAnalytics, fakeApi, fakeTelegram, meSubscribed, meWithChart, setupUser } from '../../test/fixtures';
 import { DELETE_GUARD_MS, SettingsScreen, type SettingsScreenProps } from './SettingsScreen';
 
 const copy = ru.settings;
@@ -92,6 +92,41 @@ describe('SettingsScreen', () => {
     expect(within(history).getByText('Что совпадает')).toBeInTheDocument();
     await user.click(within(history).getByRole('button', { name: ru.compatibility.goTo }));
     expect(onOpenSavedCompatibility).toHaveBeenCalledWith(savedId);
+  });
+
+  it('silently filters a legacy failed compatibility from a three-item list and keeps the two valid records', async () => {
+    const api = fakeApi();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    api.getCompatibilities.mockResolvedValue({
+      ...compatibilityList,
+      items: [
+        { id: 'ready-a', status: 'ready', relationship: 'friend', created_at: '2026-11-10T12:00:00Z', titles_only: ['Готовый разбор'] },
+        { id: 'failed-old', status: 'failed', relationship: 'romantic', created_at: '2026-11-11T12:00:00Z', titles_only: [] },
+        { id: 'pending-b', status: 'pending', relationship: 'family', created_at: '2026-11-12T12:00:00Z', titles_only: [] },
+      ],
+    });
+    setup({ api, props: { onOpenSavedCompatibility: vi.fn() } });
+    const history = await screen.findByRole('region', { name: ru.compatibility.listTitle });
+    expect(within(history).getByText('Готовый разбор')).toBeInTheDocument();
+    expect(within(history).getByText(/Считается/)).toBeInTheDocument();
+    expect(within(history).queryByText(/failed-old|Не получилось|Попробовать снова/)).not.toBeInTheDocument();
+    expect(within(history).getAllByRole('listitem')).toHaveLength(2);
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it('shows the empty compatibility state and a price from the live plans catalogue', async () => {
+    const api = fakeApi();
+    api.getCompatibilities.mockResolvedValue({ ...compatibilityList, items: [] });
+    const onBuyCompatibility = vi.fn();
+    setup({ api, props: { onOpenSavedCompatibility: vi.fn(), onBuyCompatibility } });
+    const history = await screen.findByRole('region', { name: ru.compatibility.listTitle });
+    expect(within(history).getByText(ru.compatibility.listEmpty)).toBeInTheDocument();
+    const offer = cataloguePlans.find((plan) => plan.plan_code === 'compat_249' && !plan.test);
+    if (offer === undefined) throw new Error('Compatibility offer missing from the test catalogue');
+    const buy = await within(history).findByRole('button', { name: ru.compatibility.buy(offer.stars) });
+    await setupUser().click(buy);
+    expect(onBuyCompatibility).toHaveBeenCalledWith(meWithChart.chart_id);
   });
 
   it('loading: a skeleton while the server is asked; error: the failure, with a way to repeat', async () => {
