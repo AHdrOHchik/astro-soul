@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.1
+  version: 1.6.2
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -358,6 +358,26 @@ info:
         отвечается всегда и в пределах 10 секунд — включая исключения и
         таймауты обработчика. Для клиента это видно как исчезновение
         `502` на оплате и как «оплата не проходит» → «оплата проходит».
+
+    1.6.2 — короткое название счёта и вебхук, который не умирает молча
+      (итерация 26). Схемы расширены, ни одно поле не удалено и не
+      переименовано:
+      • `GET /billing/invoice`: `title` счёта берётся из отдельной колонки
+        `invoice_title` (1–32 символа, `CHECK` в БД), а не из названия тарифа.
+        Если у тарифа название счёта некорректно — `409 CONFLICT` с
+        `details.reason = plan_invoice_title_invalid` вместо `502` от
+        Telegram: наша ошибка данных больше не выглядит как отказ платёжной
+        системы. Витрина (`paywall_title`) и название тарифа не изменились;
+      • `GET /api/v1/health`: `telegram_webhook: ok|stale|unreachable` —
+        состояние доставки `pre_checkout_query` по последней проверке;
+      • `GET /admin/metrics`: `telegram_webhook_ok`,
+        `telegram_webhook_checked_at` — те же данные для мониторинга. Ноль
+        доставок при живых попытках оплаты виден как `unreachable`/`false`,
+        а не только в логах;
+      • поведение без изменения схем: тестовая подписка `test_1` — 30 дней
+        (`subscription_period = 2592000`, как требует Bot API для звёздных
+        подписок); раньше на стендах она оставалась недельной и не
+        выставлялась вовсе.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
@@ -1317,6 +1337,20 @@ paths:
                   db: { type: string, enum: [ok, down] }
                   llm: { type: string, enum: [ok, down, unknown] }
                   astro: { type: string, enum: [ok, down], description: Доступность локального сайдкара астро-движка }
+                  telegram_webhook:
+                    type: string
+                    enum: [ok, stale, unreachable]
+                    description: |
+                      Состояние вебхука Telegram по последней проверке API
+                      (1.6.2). `ok` — при старте (или в `payments:diagnose`)
+                      подтверждено, что зарегистрирован ожидаемый адрес, и
+                      проверка моложе суток; `stale` — проверки не было или
+                      она старше суток (перезапусти API и проверь
+                      `pnpm payments:diagnose --set-webhook`); `unreachable` —
+                      проверка провалилась: адрес `MINI_APP_URL` не резолвится,
+                      Bot API недоступен или `setWebhook` не подтвердился.
+                      В этих двух состояниях `pre_checkout_query` может не
+                      доставляться: оплата в Telegram не пройдёт.
 
   /api/v1/me:
     get:
@@ -2190,6 +2224,21 @@ paths:
                       Из них — те, по которым доступ не выдан (`status =
                       'rejected'`). Растёт вместе с `pre_checkout_rejected_24h`
                       — значит проблема в данных счёта, а не в доставке.
+                  telegram_webhook_ok:
+                    type: boolean
+                    description: |
+                      Подтверждён ли ожидаемый адрес вебхука **сейчас**
+                      (1.6.2): `true` только если последняя проверка моложе
+                      суток и адрес совпал. `false` при `telegram_webhook:
+                      stale|unreachable` в `/health`.
+                  telegram_webhook_checked_at:
+                    type: [string, 'null']
+                    format: date-time
+                    description: |
+                      Когда вебхук проверяли в последний раз (`null` — ни разу
+                      с момента старта API). В паре с `telegram_webhook_ok`
+                      отвечает на вопрос «данные свежие или с прошлого
+                      деплоя».
                   test_plans_active:
                     type: boolean
                     description: |

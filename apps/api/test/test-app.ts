@@ -4,6 +4,7 @@ import { AppModule } from '../src/app.module';
 import { AstroClient } from '../src/modules/astro/astro.client';
 import { TelegramClient } from '../src/modules/telegram/telegram.client';
 import { DbService } from '../src/db/db.service';
+import { PlansRepository } from '../src/modules/billing/plans.repository';
 import { LLM_PROVIDER } from '../src/modules/llm/llm.module';
 import type { LlmProvider } from '../src/modules/llm/llm.client';
 import { applyRequestContext } from '../src/common/request-id.middleware';
@@ -34,6 +35,13 @@ export interface TestContextOptions {
   readonly llm?: LlmProvider;
   /** Точечные переопределения окружения (например, включить лимиты запросов). */
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Подмена каталога: нужна, чтобы проверить поведение на строке, которую
+   * схема БД физически не пропустит (например, `invoice_title` в 33 символа
+   * при `CHECK 1..32`). Так проверяется наш ответ `409`, а не то, что
+   * ограничение нельзя нарушить.
+   */
+  readonly plans?: Pick<PlansRepository, 'getPlan' | 'listPlans' | 'getSubscriptionPlan'>;
 }
 
 /** Поднимает настоящее приложение (с БД и middleware), как в проде. */
@@ -53,6 +61,9 @@ export async function createTestContext(options: TestContextOptions = {}): Promi
   }
   if (options.llm !== undefined) {
     builder.overrideProvider(LLM_PROVIDER).useValue(options.llm);
+  }
+  if (options.plans !== undefined) {
+    builder.overrideProvider(PlansRepository).useValue(options.plans);
   }
 
   const moduleRef = await builder.compile();

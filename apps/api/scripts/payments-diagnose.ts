@@ -12,8 +12,10 @@
  *      создавший ссылку; токен в `.env` мог остаться от другого бота.
  *   2. **Вебхук** — `getWebhookInfo` + адрес, собранный из `MINI_APP_URL` и
  *      `TELEGRAM_WEBHOOK_SECRET`, + вердикт: доставляются ли апдейты.
- *   3. **Каталог** — проходит ли каждый тариф лимиты Bot API (название ≤ 32
- *      символов, период подписки = 2 592 000). Это проверка без сети.
+ *   3. **Каталог** — проходит ли каждый тариф лимиты Bot API: `invoice_title`
+ *      (то, что реально уходит в счёт) 1–32 символа, описание ≤ 255,
+ *      `subscription_period` = 2 592 000. Проверка без сети, читает те же
+ *      строки, что уйдут в `createInvoiceLink`.
  *   4. **Периоды** (`--periods`) — живой `createInvoiceLink` на каждый период:
  *      какие Telegram принимает. Один вызов на тариф, счета не создаются.
  *   5. **Деньги** — счета по статусам, платежи за 24 часа, зависшие платежи,
@@ -77,6 +79,8 @@ export function parseArgs(argv: readonly string[]): DiagnoseOptions {
 interface CatalogueRow {
   readonly code: string;
   readonly title: string;
+  /** Название счёта — единственное, что уходит в `createInvoiceLink.title`. */
+  readonly invoice_title: string;
   readonly description: string;
   readonly price_label: string;
   readonly stars: number;
@@ -112,6 +116,8 @@ export interface DiagnoseReport {
   readonly webhook: {
     readonly state: string;
     readonly description: string;
+    /** Что делать, если адрес не резолвится или не подтвердился (итерация 26). */
+    readonly hint: string | null;
     readonly expected_url_masked: string | null;
     readonly actual_url_masked: string | null;
     readonly pending_update_count: number;
@@ -120,6 +126,10 @@ export interface DiagnoseReport {
   };
   readonly catalogue: readonly {
     readonly code: string;
+    /** Название счёта и его длина — то, что проверит Bot API. */
+    readonly invoice_title: string;
+    readonly invoice_title_chars: number;
+    /** Название тарифа: справочно, в счёт не уходит. */
     readonly title_chars: number;
     readonly period_seconds: number | null;
     readonly problem: string | null;
@@ -161,8 +171,10 @@ async function probePeriods(
       continue;
     }
 
+    // Название берём ровно то, что лежит в базе: `slice(0, 32)` скрыл бы
+    // ровно ту ошибку, ради которой тариф не продаётся (итерация 26).
     const answer = await client.safeCall<string>('createInvoiceLink', {
-      title: row.title.slice(0, 32),
+      title: row.invoice_title,
       description: row.description.slice(0, 255),
       payload: 'diagnose',
       currency: 'XTR',
@@ -180,6 +192,29 @@ async function probePeriods(
   }
 
   return probes;
+}
+
+/**
+ * Каталог из БД — с понятным текстом, если миграция 0027 не применена.
+ *
+ * `column "invoice_title" does not exist` — это не «сломался диагностический
+ * скрипт», а «на этой базе не применены миграции»; сообщение должно говорить
+ * именно это, иначе владелец ищет проблему в боте.
+ */
+async function readCatalogue(db: DbService): Promise<readonly CatalogueRow[]> {
+  try {
+    return await db.query<CatalogueRow>(
+      `SELECT code, title, invoice_title, description, price_label, stars, kind, period_seconds
+         FROM plans ORDER BY sort`,
+    );
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '42703') {
+      throw new Error(
+        'в таблице plans нет колонки invoice_title: не применена миграция 0027. Выполни pnpm db:migrate — она добавит короткое название счёта и починит период test_1',
+      );
+    }
+    throw error;
+  }
 }
 
 async function readMoneyFacts(db: DbService): Promise<MoneyFacts> {
@@ -241,16 +276,24 @@ export async function diagnose(options: DiagnoseOptions, env: AppEnv = loadEnv()
     const webhookService = new TelegramWebhookService(client, webhookEnv, logger);
     const webhook = await webhookService.ensureRegistered();
 
-    const catalogueRows = await db.query<CatalogueRow>(
-      `SELECT code, title, description, price_label, stars, kind, period_seconds
-         FROM plans ORDER BY sort`,
-    );
+    const catalogueRows = await readCatalogue(db);
 
     const catalogue = catalogueRows.map((row) => {
       // Всё, что мы можем проверить без сети: лимиты Bot API на параметры
-      // счёта и период звёздной подписки.
+      // счёта и период звёздной подписки. Название счёта — из своей колонки,
+      // как и в `billing.service`: проверять `title` значило бы проверять не
+      // то, что уходит в Telegram (итерация 26).
+      const invoiceTitleChars = [...row.invoice_title].length;
+      const base = {
+        code: row.code,
+        invoice_title: row.invoice_title,
+        invoice_title_chars: invoiceTitleChars,
+        title_chars: [...row.title].length,
+        period_seconds: row.period_seconds,
+      };
+
       const violation = invoiceParamsViolation({
-        title: row.title,
+        title: row.invoice_title,
         description: row.description,
         payload: 'diagnose',
         prices: [{ label: row.price_label, amount: row.stars }],
@@ -258,31 +301,21 @@ export async function diagnose(options: DiagnoseOptions, env: AppEnv = loadEnv()
 
       if (violation !== null) {
         return {
-          code: row.code,
-          title_chars: [...row.title].length,
-          period_seconds: row.period_seconds,
-          problem: `${violation.field}: ${String(violation.actual)} > лимита ${String(violation.limit)}`,
+          ...base,
+          problem: `${violation.field}: ${String(violation.actual)} > лимита ${String(violation.limit)} (правь через pnpm plans:set-titles)`,
           severity: 'fail' as const,
         };
       }
 
       if (!subscriptionPeriodSupported(row.period_seconds)) {
         return {
-          code: row.code,
-          title_chars: [...row.title].length,
-          period_seconds: row.period_seconds,
+          ...base,
           problem: `subscription_period ${String(row.period_seconds)} ≠ ${String(XTR_SUBSCRIPTION_PERIOD_SECONDS)}: Telegram отклонит счёт`,
           severity: 'warn' as const,
         };
       }
 
-      return {
-        code: row.code,
-        title_chars: [...row.title].length,
-        period_seconds: row.period_seconds,
-        problem: null,
-        severity: null,
-      };
+      return { ...base, problem: null, severity: null };
     });
 
     const periods = options.periods ? await probePeriods(client, catalogueRows) : null;
@@ -299,6 +332,7 @@ export async function diagnose(options: DiagnoseOptions, env: AppEnv = loadEnv()
       webhook: {
         state: webhook.state,
         description: webhookService.describe(webhook),
+        hint: webhook.hint ?? null,
         expected_url_masked: webhook.expectedUrl === null ? null : maskUrl(webhook.expectedUrl),
         actual_url_masked: webhook.actualUrl === null ? null : maskUrl(webhook.actualUrl),
         pending_update_count: webhook.pendingUpdateCount,
@@ -331,6 +365,11 @@ export function formatReport(report: DiagnoseReport): string {
   lines.push(`  ожидается: ${report.webhook.expected_url_masked ?? '—'}`);
   lines.push(`  зарегистрирован: ${report.webhook.actual_url_masked ?? '—'}`);
   lines.push(`  в очереди: ${String(report.webhook.pending_update_count)}`);
+  if (report.webhook.hint !== null) {
+    // Причина и лечение рядом: «оплата не проходит» без этой строки снова
+    // означало бы идти читать логи контейнера (итерация 26).
+    lines.push(`  что делать: ${report.webhook.hint}`);
+  }
   if (report.webhook.last_error_message !== null) {
     lines.push(
       `  последняя ошибка доставки: ${report.webhook.last_error_message} (${report.webhook.last_error_date ?? '—'})`,
@@ -338,11 +377,11 @@ export function formatReport(report: DiagnoseReport): string {
   }
 
   lines.push('');
-  lines.push('Каталог и лимиты Bot API');
+  lines.push('Каталог и лимиты Bot API (invoice_title = то, что уходит в счёт Telegram)');
   for (const row of report.catalogue) {
-    const mark = row.severity === 'fail' ? '✗' : row.severity === 'warn' ? '!' : ' ';
+    const mark = row.severity === 'fail' ? '✗' : row.severity === 'warn' ? '!' : '✓';
     lines.push(
-      `  ${mark} ${row.code.padEnd(14)} title=${String(row.title_chars).padStart(2)}  period=${String(row.period_seconds ?? '—').padStart(9)}  ${row.problem ?? 'ok'}`,
+      `  ${mark} ${row.code.padEnd(14)} invoice_title=«${row.invoice_title}» (${String(row.invoice_title_chars).padStart(2)}/32)  period=${String(row.period_seconds ?? '—').padStart(9)}  ${row.problem ?? 'ok'}`,
     );
   }
 

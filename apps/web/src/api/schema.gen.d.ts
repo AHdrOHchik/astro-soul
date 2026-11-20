@@ -40,6 +40,20 @@ export interface paths {
                              * @enum {string}
                              */
                             astro?: "ok" | "down";
+                            /**
+                             * @description Состояние вебхука Telegram по последней проверке API
+                             *     (1.6.2). `ok` — при старте (или в `payments:diagnose`)
+                             *     подтверждено, что зарегистрирован ожидаемый адрес, и
+                             *     проверка моложе суток; `stale` — проверки не было или
+                             *     она старше суток (перезапусти API и проверь
+                             *     `pnpm payments:diagnose --set-webhook`); `unreachable` —
+                             *     проверка провалилась: адрес `MINI_APP_URL` не резолвится,
+                             *     Bot API недоступен или `setWebhook` не подтвердился.
+                             *     В этих двух состояниях `pre_checkout_query` может не
+                             *     доставляться: оплата в Telegram не пройдёт.
+                             * @enum {string}
+                             */
+                            telegram_webhook?: "ok" | "stale" | "unreachable";
                         };
                     };
                 };
@@ -1557,6 +1571,21 @@ export interface paths {
                              *     — значит проблема в данных счёта, а не в доставке.
                              */
                             payment_failed_24h?: number;
+                            /**
+                             * @description Подтверждён ли ожидаемый адрес вебхука **сейчас**
+                             *     (1.6.2): `true` только если последняя проверка моложе
+                             *     суток и адрес совпал. `false` при `telegram_webhook:
+                             *     stale|unreachable` в `/health`.
+                             */
+                            telegram_webhook_ok?: boolean;
+                            /**
+                             * Format: date-time
+                             * @description Когда вебхук проверяли в последний раз (`null` — ни разу
+                             *     с момента старта API). В паре с `telegram_webhook_ok`
+                             *     отвечает на вопрос «данные свежие или с прошлого
+                             *     деплоя».
+                             */
+                            telegram_webhook_checked_at?: string | null;
                             /**
                              * @description Включены ли тестовые тарифы прямо сейчас
                              *     (`PAYMENTS_TEST_PLANS=1`). В `test_payments_30d` видно,

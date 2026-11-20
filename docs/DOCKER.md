@@ -400,6 +400,38 @@ getWebhookInfo → адрес ≠ ожидаемому → setWebhook → getWeb
 `unreachable`, `failed` — ненулевой признак проблемы виден сразу после
 рестарта, а не через жалобу «оплата не проходит».
 
+#### Почему «зарегистрировали один раз» недостаточно (итерация 26)
+
+`setWebhook` на **нерезолвящийся** адрес Telegram принимает молча: `ok: true`,
+а потом `pre_checkout_query` не приходит — бот не может достучаться до нашего
+домена. Ровно это происходит после каждого перезапуска quick-туннеля
+`cloudflared`: адрес новый, старый уже не резолвится, а в логах тишина.
+
+Поэтому теперь перед вызовом Bot API API резолвит хост `MINI_APP_URL` (таймаут
+2 с) и при провале пишет не «ошибка», а причину и лечение:
+
+```text
+WARN telegram_webhook_unreachable
+  hint: адрес MINI_APP_URL (abc-def.trycloudflare.com) не резолвится: getaddrinfo ENOTFOUND.
+        Telegram не сможет доставить pre_checkout_query — оплата в Telegram работать
+        не будет. Запусти туннель (cloudflared tunnel --url http://localhost:3000),
+        проверь MINI_APP_URL и перезапусти API: pnpm payments:diagnose --set-webhook
+```
+
+Состояние вебхука видно снаружи, без ssh в контейнер:
+
+| Где | Поле | Значения |
+|---|---|---|
+| `GET /api/v1/health` | `telegram_webhook` | `ok` — адрес подтверждён, проверка моложе суток; `stale` — проверки не было или она старше суток; `unreachable` — не резолвится адрес, Bot API недоступен или `setWebhook` не подтвердился |
+| `GET /admin/metrics` | `telegram_webhook_ok`, `telegram_webhook_checked_at` | то же число и время проверки — для мониторинга |
+
+**После каждого запуска туннеля — `pnpm payments:diagnose --set-webhook`.**
+Иначе адрес в Telegram остаётся от прошлого запуска, и оплата не проходит при
+живом API. Для разработки правильнее **именованный** туннель (постоянный
+адрес): тогда `MINI_APP_URL` не меняется, и перерегистрация нужна только после
+смены домена. Quick-туннель (`cloudflared tunnel --url …`) — для разовой
+проверки, не для ежедневной работы: он выдаёт новый адрес при каждом старте.
+
 ### `pnpm payments:diagnose`
 
 ```bash
@@ -410,16 +442,32 @@ pnpm payments:diagnose --json         # машиночитаемый отчёт
 ```
 
 Что показывает: `getMe` (какой бот отвечает за токен), `getWebhookInfo` +
-ожидаемый адрес + вердикт, все тарифы с длиной названия (лимит Telegram —
-32 символа) и периодом подписки (лимит — 2 592 000 секунд), живую таблицу
+ожидаемый адрес + вердикт + строку «что делать», если адрес не резолвится;
+все тарифы с **названием счёта** `invoice_title`, его длиной (`17/32`) и
+периодом подписки (лимит — 2 592 000 секунд); живую таблицу
 «период → ответ → текст ошибки» и деньги за сутки: счета и платежи по
 статусам, зависшие платежи, события `pre_checkout_*` и причины отказов.
 Работает и на продовых переменных — это только чтение (кроме `--set-webhook`).
 
-`/admin/metrics` (контракт 1.6.1) отдаёт ту же картину числами:
+В счёт Telegram уходит **`invoice_title`** (`plans.invoice_title`, 1–32
+символа, `CHECK` в БД), а не название тарифа и не название на витрине. Правится
+без релиза:
+
+```bash
+pnpm plans:set-titles --code=month_399 --title="Подписка на месяц"
+# 33 символа скрипт не запишет: покажет длину и предложит сокращённый вариант
+```
+
+Если `invoice_title` окажется вне лимита, `POST /billing/invoice` отвечает
+`409 CONFLICT` (`details.reason = plan_invoice_title_invalid`), а не `502`:
+это наша ошибка данных, а не отказ платёжной системы, и человеку предлагается
+другой тариф. `setWebhook` при этом не вызывается вовсе.
+
+`/admin/metrics` (контракт 1.6.2) отдаёт ту же картину числами:
 `pre_checkout_total_24h`, `pre_checkout_rejected_24h`,
 `pre_checkout_timeout_24h`, `successful_payment_total_24h`,
-`payment_failed_24h`.
+`payment_failed_24h`, а состояние доставки — `telegram_webhook_ok` и
+`telegram_webhook_checked_at`.
 
 ### Если оплата всё равно не проходит
 
@@ -429,5 +477,8 @@ pnpm payments:diagnose --json         # машиночитаемый отчёт
 | `pre_checkout_rejected_24h` растёт | лог `pre_checkout_rejected` (`reason`) | доставка работает, отказ у нас: сумма, счёт, план |
 | `pre_checkout_timeout_24h` > 0 | лог `pre_checkout_timeout`, `pre_checkout_slow` | не уложились в 10 секунд: база или таймауты |
 | `payment_failed_24h` растёт | `payments.reject_reason`, `payment_grant_failed` | деньги пришли, доступ не выдан |
-| счёт не создаётся, в логе `invoice_params_invalid` | `plans.title`/`description` | данные каталога вне лимитов Bot API |
+| счёт не создаётся, в логе `invoice_title_invalid`, ответ `409 plan_invoice_title_invalid` | `plans.invoice_title` (`pnpm plans:set-titles`) | наша ошибка данных: название счёта вне 1–32, Bot API не вызывался |
+| счёт не создаётся, в логе `invoice_params_invalid` | `plans.description`/`price_label` | данные каталога вне лимитов Bot API |
+| `telegram_webhook: stale` в `/health` | перезапустить API, `pnpm payments:diagnose --set-webhook` | проверки не было или она старше суток — про адрес ничего не известно |
+| `telegram_webhook: unreachable` в `/health` | строка `hint` в логе `telegram_webhook_unreachable` | `MINI_APP_URL` не резолвится (туннель перезапущен) или Bot API недоступен |
 | `409 plan_period_unsupported` | `payments.md` §3.6 | тариф-подписка с периодом, которого Telegram не принимает |

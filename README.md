@@ -56,6 +56,22 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 внутренний UUID пользователя, и после смены старые подписки и платежи перестанут
 быть связаны с человеком.
 
+**Оплата в Telegram на локальной машине.** Вебхук Telegram должен указывать на
+адрес, до которого Telegram дозвонится, — то есть на туннель
+(`cloudflared tunnel --url http://localhost:3000`), а `MINI_APP_URL` — на его
+адрес. После **каждого** запуска туннеля:
+
+```bash
+export MINI_APP_URL="https://<адрес-туннеля>"
+pnpm payments:diagnose --set-webhook   # перерегистрировать вебхук на новый адрес
+pnpm payments:diagnose --periods       # проверить, что все периоды принимаются
+```
+
+Quick-туннель выдаёт новый адрес при каждом старте, поэтому он годится для
+разовой проверки. Для ежедневной работы нужен **именованный** туннель
+(постоянный адрес): тогда `MINI_APP_URL` не меняется. Подробнее —
+[`docs/DOCKER.md` §10](./docs/DOCKER.md) и [`docs/LOCAL-RUN.md`](./docs/LOCAL-RUN.md).
+
 ### Команды
 
 | Команда | Что делает |
@@ -69,6 +85,9 @@ pnpm dev:api                  # http://localhost:8080/api/v1
 | `pnpm check` | всё сразу: lint, typecheck, build, тесты TS и Python |
 | `pnpm db:migrate` | накат миграций из `migrations/` |
 | `pnpm db:seed` | синхронизация таблицы `plans` |
+| `pnpm plans:set-price` | правка цены тарифа (`--code`, `--stars`) |
+| `pnpm plans:set-titles` | правка названия счёта Telegram (`--code`, `--title`, 1–32 символа) |
+| `pnpm payments:diagnose` | почему не проходит оплата: бот, вебхук, каталог, деньги |
 | `pnpm dev:api` | API в watch-режиме |
 
 Тесты используют `TEST_DATABASE_URL` (по умолчанию
@@ -195,7 +214,12 @@ Stars (`XTR`) по [`payments.md`](./payments.md): цены — только в 
   `SELECT ... FOR UPDATE` по `telegram_payment_charge_id`, поэтому повторная
   доставка не создаёт второй доступ;
 * `GET /api/v1/billing/subscription` — то же состояние, что в `GET /me`;
-* доступ всегда проверяется через `getEntitlements` — второй правды нет.
+* доступ всегда проверяется через `getEntitlements` — второй правды нет;
+* в счёт Telegram уходит **`invoice_title`** (отдельная колонка, 1–32 символа,
+  `CHECK` в БД), а не название тарифа и не название на витрине: длинное
+  название счёта — это `400` от Bot API и «оплата не проходит». Правится
+  `pnpm plans:set-titles`, а если оно всё-таки битое — `409
+  plan_invoice_title_invalid`, а не `502`.
 
 ## Статус
 
