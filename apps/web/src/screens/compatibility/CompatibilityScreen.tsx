@@ -394,10 +394,11 @@ export function CompatibilityScreen({
                 value={place?.name ?? query}
                 placeholder={copy.placePlaceholder}
                 aria-invalid={selectedPlaceError !== undefined}
+                aria-describedby={selectedPlaceError !== undefined || search.status === 'loading' || failedSearch ? `${titleId}-place` : undefined}
                 onChange={(value) => { setQuery(value); setPlace(null); }}
               />
-              <FieldMessage id={`${titleId}-place`} error={selectedPlaceError} hint={search.status === 'loading' ? copy.searching : undefined} live />
-              {failedSearch && <p role="alert" className={styles.error}>{copy.searchFailed}</p>}
+              <FieldMessage id={`${titleId}-place`} error={selectedPlaceError ?? (failedSearch ? copy.searchFailed : undefined)} hint={search.status === 'loading' ? copy.searching : undefined} live />
+              {failedSearch && <Button variant="secondary" onClick={search.retry}>{copy.retryAgain}</Button>}
               {search.status === 'ready' && search.places.map((candidate) => (
                 <Button key={`${candidate.name}|${candidate.lat}|${candidate.lon}`} variant="secondary" onClick={() => { setPlace(candidate); setQuery(candidate.name); }}>
                   {candidate.name}{formatRegion(candidate) ? `, ${formatRegion(candidate)}` : ''}
