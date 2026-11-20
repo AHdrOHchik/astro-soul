@@ -12,6 +12,7 @@
     POST /transits    — транзиты на дату по сохранённой карте
     POST /wheel       — SVG-колесо (тема dark|light)
     POST /synastry    — факты совместимости двух карт (`compatibility_facts` v1.0)
+    POST /forecast/facts — детерминированные факты дня (итерация 30)
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from .constants import DEFAULT_ENGINE_MODE, ENGINE_VERSION
+from .daily import ForecastConfigError, day_facts
 from .engine import EngineConfigError, calcChart, transitsFor
 from .synastry import compatFacts
 from .types import BirthInput, Chart, GeoPlace
@@ -81,6 +83,19 @@ class SynastryIn(BaseModel):
 
     a: ChartDataIn
     b: ChartDataIn
+
+
+class ForecastFactsIn(BaseModel):
+    """Факты дня: дата, часовой пояс места рождения и сохранённая карта.
+
+    Пояс — именно место рождения, а не текущее местоположение: «сегодня»
+    начинается там, где человек родился. Это не техническая деталь, а смысл
+    поля, поэтому она повторена в описании маршрута и в `timezone_note`.
+    """
+
+    date: date_type
+    timezone: str = Field(min_length=1, max_length=64)
+    data: ChartDataIn
 
 
 class WheelIn(BaseModel):
@@ -156,6 +171,24 @@ def _chart_of(payload: ChartDataIn) -> Chart:
 def synastry(payload: SynastryIn) -> dict[str, Any]:
     try:
         facts = compatFacts(_chart_of(payload.a), _chart_of(payload.b))
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return facts
+
+
+@app.post("/forecast/facts")
+def forecast_facts(payload: ForecastFactsIn) -> dict[str, Any]:
+    """Детерминированные факты дня — без модели и без сети.
+
+    Один и тот же вход даёт побайтово один и тот же JSON: ни времени процесса,
+    ни случайности здесь нет. Поэтому API может кэшировать ответ и сравнивать
+    прогоны между собой.
+    """
+    try:
+        facts = day_facts(payload.date, payload.timezone, _chart_of(payload.data))
+    except ForecastConfigError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (KeyError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

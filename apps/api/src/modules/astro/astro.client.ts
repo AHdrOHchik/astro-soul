@@ -43,6 +43,33 @@ export interface AstroTransitReport {
 export type WheelTheme = 'dark' | 'light';
 
 /**
+ * Факты дня из `POST /forecast/facts` (итерация 30).
+ *
+ * Форма намеренно описана здесь, а не в контракте: клиенту эти поля не нужны —
+ * он получает готовый текст и три факта для бесплатного экрана. Внутри API это
+ * вход модели, поэтому типы живут рядом с клиентом.
+ */
+export interface AstroDayFacts {
+  readonly date: string;
+  readonly timezone: string;
+  readonly timezone_note: string;
+  readonly engine_version: string;
+  readonly noon_utc: string;
+  readonly moon: {
+    readonly sign: string;
+    readonly degree: number;
+    readonly minute: number;
+    readonly phase: string;
+    readonly illumination: number;
+    readonly retrograde: boolean;
+  };
+  readonly retrograde: readonly { readonly key: string; readonly name: string }[];
+  readonly ruler: { readonly key: string; readonly name: string; readonly weekday: number };
+  readonly transits: readonly Record<string, unknown>[];
+  readonly windows: readonly Record<string, unknown>[];
+}
+
+/**
  * Клиент локального Python-сайдкара (`packages/astro`).
  *
  * Правила от владельца продукта: сайдкар слушает 127.0.0.1, таймаут 2 с,
@@ -83,6 +110,21 @@ export class AstroClient {
     return this.post<unknown>('/synastry', {
       a: { chart: a.chart, internal: a.internal, omitted_planets: a.omitted_planets },
       b: { chart: b.chart, internal: b.internal, omitted_planets: b.omitted_planets },
+    });
+  }
+
+  /**
+   * `POST /forecast/facts` — детерминированные факты дня.
+   *
+   * Никакой модели здесь нет и быть не должно: это астрономия. Ответ побайтово
+   * одинаков для одного входа, поэтому его можно хранить в `daily_forecasts`
+   * и не пересчитывать при чтении.
+   */
+  async forecastFacts(date: string, timezone: string, data: AstroChartData): Promise<AstroDayFacts> {
+    return this.post<AstroDayFacts>('/forecast/facts', {
+      date,
+      timezone,
+      data: { chart: data.chart, internal: data.internal, omitted_planets: data.omitted_planets },
     });
   }
 
