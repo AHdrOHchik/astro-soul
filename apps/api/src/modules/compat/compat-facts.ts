@@ -254,18 +254,43 @@ function aspectCategory(aspect: CrossAspectFact): string {
 export function factorsOf(facts: CompatibilityFacts): readonly CompatFactor[] {
   const factors: CompatFactor[] = [];
 
+  /**
+   * Пары светил, уже описанные кросс-аспектом (итерация 28).
+   *
+   * Ключ — пара без направления: «моё Солнце — его Луна» и «моя Луна — его
+   * Солнце» астрологически разные, но для промпта это одна и та же тема, и
+   * дважды её повторять не надо.
+   */
+  const luminaryPairs = new Set<string>();
+  const pairOf = (a: string, b: string): string => [a, b].sort().join('-');
+
   for (const aspect of facts.cross_aspects) {
+    // Светила — это семейство `luminary`, а не подпись к аспектам.
+    //
+    // Раньше семейство собиралось только из четырёх фиксированных пар блока
+    // `luminaries`, и живой прогон `46d8b893` показал дыру: все четыре пары
+    // пришли `present: false`, хотя в `cross_aspects` светила были
+    // (Венера–Луна, Юпитер–Солнце, Солнце–Марс). Семейство `luminary`
+    // оказывалось пустым ровно там, где на нём держится раздел «Что
+    // совпадает», — то есть у тизера продукта.
+    const luminary = aspect.luminary === true;
+    if (luminary) {
+      luminaryPairs.add(pairOf(aspect.a, aspect.b));
+    }
     factors.push({
-      id: `aspect:${aspect.a}-${aspect.b}`,
+      // Префикс идентификатора повторяет семейство: по нему в отчёте видно,
+      // что светило пришло из аспекта, а не из блока `luminaries`.
+      id: luminary ? `luminary:aspect:${aspect.a}-${aspect.b}` : `aspect:${aspect.a}-${aspect.b}`,
       category: aspectCategory(aspect),
-      family: 'aspect',
+      family: luminary ? 'luminary' : 'aspect',
       label: `${aspect.a_name} — ${aspect.type_ru} — ${aspect.b_name}, орб ${aspect.orb}°`,
-      significance: aspect.luminary ? 1 : 4,
+      significance: luminary ? 1 : 4,
     });
   }
 
   // Блок светил — отдельное семейство, а не подпись под аспектами: сайдкар
-  // считает его по своей формуле, и в тексте он звучит своей фразой.
+  // считает его по своей формуле, и в тексте он звучит своей фразой. Но если
+  // та же пара уже пришла кросс-аспектом, второй раз её не повторяем.
   for (const block of facts.luminaries) {
     if (!block.present) {
       continue;
@@ -273,6 +298,9 @@ export function factorsOf(facts: CompatibilityFacts): readonly CompatFactor[] {
     const [pairA = '', pairB = ''] = block.pair.split('-');
     const a = PLANET_RU[block.a ?? pairA] ?? (block.a ?? pairA);
     const b = PLANET_RU[block.b ?? pairB] ?? (block.b ?? pairB);
+    if (luminaryPairs.has(pairOf(block.a ?? pairA, block.b ?? pairB))) {
+      continue;
+    }
     factors.push({
       id: `luminary:${block.pair}`,
       category: 'luminary',

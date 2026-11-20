@@ -23,8 +23,11 @@ import {
   classifyLength,
   firstTermOffset,
   lengthDirection,
+  COMPAT_STEPS_ITEM_MAX,
+  finalizeSection,
   normalizeCompatSection,
   trimCompatSection,
+  trimSteps,
   validateCompatSection,
 } from '../src/modules/compat/compat-validators';
 import { COMPAT_WINDOW_MS, quotaOf, windowStart } from '../src/modules/compat/compat-quota';
@@ -38,6 +41,7 @@ import {
   COMPAT_STUB_FORBIDDEN,
   longSteps,
   sectionOfMinChars,
+  stepsOfVolume,
 } from './fixtures/compat-sections';
 
 const JOBS_SECRET = 'test-jobs-secret-0123456789';
@@ -1215,6 +1219,351 @@ describe('брейкер совместимости отдельный от бр
     expect(metrics.body.compat_failed_30d).toBe(0);
     // Кредит израсходован — свободных совместимостей не осталось.
     expect(metrics.body.compat_credits_left).toBe(0);
+  });
+});
+
+describe('steps: поштучная обрезка и никаких выбросов (итерация 28)', () => {
+  const STEPS_MARKER = 'три конкретных действия на неделю';
+  const CLICKS_MARKER = 'что у вас совпадает так';
+  const DISCLAIMER_TEXT = 'Разбор — инструмент саморефлексии, а не предсказание и не замена специалисту.';
+
+  const itemsOf = (text: string): string[] =>
+    text.split('\n').filter((line) => line.trim().startsWith('—'));
+
+  /** JSON из строки лога: `info compat_section_ok {…}`. */
+  const fieldsOf = (line: string): Record<string, unknown> =>
+    JSON.parse(line.slice(line.indexOf('{'))) as Record<string, unknown>;
+
+  it('651 и 799 знаков → три пункта, подпись на месте, объём в границах', () => {
+    for (const volume of [651, 799]) {
+      const source = stepsOfVolume(volume);
+      expect(source.length).toBeGreaterThan(550);
+
+      const trim = trimSteps({ bodyMd: source, range: { min: 400, max: 550 } });
+      expect(trim, `объём ${volume}`).not.toBeNull();
+      // Граница — `items`: список режется по пунктам, а не поперёк.
+      expect(trim?.boundary).toBe('items');
+
+      const body = trim?.body ?? '';
+      expect(itemsOf(body)).toHaveLength(3);
+      expect(body.endsWith(DISCLAIMER_TEXT)).toBe(true);
+      for (const item of itemsOf(body)) {
+        // «— » (2 знака) + до 140 знаков пункта + точка.
+        expect(item.length).toBeLessThanOrEqual(COMPAT_STEPS_ITEM_MAX + 3);
+        // Каждый пункт закончен, а не оборван на полуслове.
+        expect(item.trimEnd().endsWith('.')).toBe(true);
+      }
+
+      const final = finalizeSection({ key: 'steps', bodyMd: body });
+      // Один и тот же размер: то, что обрезали, то и проверим, то и отдадим.
+      expect(trim?.chars).toBe(final.chars);
+      expect(final.chars).toBe(body.length);
+      expect(final.volumeChars).toBeGreaterThanOrEqual(400);
+      expect(final.volumeChars).toBeLessThanOrEqual(550);
+      expect(validateCompatSection({ key: 'steps', bodyMd: final.text }).failures).toEqual([]);
+    }
+  });
+
+  it('общий триммер к `steps` не применяется: граница никогда не «слово»', () => {
+    // Даже когда пункты огромные и в границы не влезают, режем по пунктам.
+    const source = `${stepsOfVolume(2_400, 3)}`;
+    const trim = trimCompatSection({ key: 'steps', bodyMd: source, range: { min: 400, max: 550 } });
+
+    expect(trim?.boundary).toBe('items');
+    expect(itemsOf(trim?.body ?? '')).toHaveLength(3);
+  });
+
+  it('два пункта принимаются: ready, `steps_count` — пометка, покупка живёт', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const twoItems = stepsOfVolume(520, 2);
+    expect(itemsOf(twoItems)).toHaveLength(2);
+    llmAnswer = (prompt) => (prompt.includes(STEPS_MARKER) ? twoItems : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'steps-two').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+    const steps = (ready.body.sections as { key: string; text: string }[]).find(
+      (section) => section.key === 'steps',
+    );
+    expect(itemsOf(steps?.text ?? '')).toHaveLength(2);
+    expect(steps?.text.endsWith(DISCLAIMER_TEXT)).toBe(true);
+
+    // Кредит израсходован на готовый текст, а не на провал.
+    const credit = await ctx.db.queryOne<{ used_at: Date | null }>(
+      `SELECT used_at FROM entitlements WHERE kind = 'compat'`,
+    );
+    expect(credit?.used_at).not.toBeNull();
+
+    const row = await ctx.db.queryOne<{ section_status: Record<string, string> }>(
+      `SELECT section_status FROM reports WHERE id = $1`,
+      [accepted.body.compatibility_id],
+    );
+    expect(row?.section_status['steps']).toBeDefined();
+    // Ни один раздел не выброшен.
+    expect(Object.values(row?.section_status ?? {})).not.toContain('failed');
+  });
+
+  it('четыре пункта принимаются: «ровно три» — требование промпта, не выдачи', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const fourItems = stepsOfVolume(560, 4);
+    llmAnswer = (prompt) => (prompt.includes(STEPS_MARKER) ? fourItems : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'steps-four').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+    const steps = (ready.body.sections as { key: string; text: string }[]).find(
+      (section) => section.key === 'steps',
+    );
+    expect(itemsOf(steps?.text ?? '')).toHaveLength(4);
+  });
+
+  it('`ui_reference` в `steps` — пометка с `matched`, а не отказ', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const withUi = COMPAT_STUB_SECTIONS.steps.replace(
+      'Договоритесь о правиле паузы',
+      'Нажмите на кнопку паузы и договоритесь о правиле',
+    );
+    llmAnswer = (prompt) => (prompt.includes(STEPS_MARKER) ? withUi : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'steps-ui').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+
+    const ok = logLines
+      .filter((line) => line.includes('compat_section_ok') && line.includes('"section":"steps"'))
+      .map(fieldsOf);
+    expect(ok).toHaveLength(1);
+    // Слово, которое сработало, видно в логе: иначе код не диагностируется.
+    expect(ok[0]?.['warnings_matched']).toMatchObject({ ui_reference: 'Нажмите' });
+    expect(ok[0]?.['checks']).toMatchObject({ ui_reference: 'warn' });
+  });
+
+  it('`steps` прозой — вот это и есть «нераспарсенный»: retry, затем `dropped: unparsed`', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Ни одного пункта «—»: собрать три действия не из чего.
+    const prose = sectionOfMinChars(430, 2);
+    llmAnswer = (prompt) => (prompt.includes(STEPS_MARKER) ? prose : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'steps-prose').expect(202);
+    const failed = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(failed.body.status).toBe('failed');
+    // Один повтор по разделу: две попытки `steps`, остальные по одной.
+    const dropped = logLines.filter((line) => line.includes('compat_section_dropped')).map(fieldsOf);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]?.['section']).toBe('steps');
+    expect(dropped[0]?.['reason']).toBe('unparsed');
+
+    // И это всё равно не списывает кредит.
+    const credit = await ctx.db.queryOne<{ used_at: Date | null }>(
+      `SELECT used_at FROM entitlements WHERE kind = 'compat'`,
+    );
+    expect(credit?.used_at).toBeNull();
+  });
+
+  it('битая разметка в `steps` (таблица) — пометка, раздел отдан', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    const withTable = `${COMPAT_STUB_SECTIONS.steps.split('\n')[0] ?? ''} | важно\n${COMPAT_STUB_SECTIONS.steps.split('\n').slice(1).join('\n')}`;
+    llmAnswer = (prompt) => (prompt.includes(STEPS_MARKER) ? withTable : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'steps-table').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+
+    const ok = logLines
+      .filter((line) => line.includes('compat_section_ok') && line.includes('"section":"steps"'))
+      .map(fieldsOf);
+    expect(ok[0]?.['checks']).toMatchObject({ format_table: 'warn' });
+  });
+
+  it('`ui_reference` в абзацном разделе остаётся провалом', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    llmAnswer = (prompt) =>
+      prompt.includes('как вы разговариваете, когда не согласны')
+        ? `${COMPAT_STUB_SECTIONS.scenario} Нажми на кнопку и попробуй ещё раз.`
+        : answerFor(prompt);
+
+    const accepted = await orderCompat(fixture, 'scenario-ui').expect(202);
+    const failed = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+
+    expect(failed.body.status).toBe('failed');
+    const rejected = logLines
+      .filter((line) => line.includes('compat_section_rejected') && line.includes('"section":"scenario"'))
+      .map(fieldsOf);
+    expect(rejected[0]?.['failures']).toContain('ui_reference');
+    // Слово, которое сработало, есть и у провала — не только у пометки.
+    expect(rejected[0]?.['matched']).toMatchObject({ ui_reference: 'Нажми' });
+  });
+
+  it('запрещённое содержание в `steps` — `dropped: unsafe`, и обрезка записана в `validation`', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Форма в порядке (три пункта после поштучной обрезки), но в тексте
+    // процент совместимости — такое показывать нельзя.
+    const withPercent = `${stepsOfVolume(651)}\n— У вас 80 % совместимости, проверяйте.`;
+    llmAnswer = (prompt) => (prompt.includes(STEPS_MARKER) ? withPercent : answerFor(prompt));
+
+    const accepted = await orderCompat(fixture, 'steps-unsafe').expect(202);
+    const failed = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(failed.body.status).toBe('failed');
+
+    const dropped = logLines.filter((line) => line.includes('compat_section_dropped')).map(fieldsOf);
+    expect(dropped[0]?.['reason']).toBe('unsafe');
+
+    const row = await ctx.db.queryOne<{
+      validation: {
+        key: string;
+        code: string;
+        chars: number;
+        volume_chars: number;
+        verdict: string;
+        trimmed?: { from: number; to: number; boundary: string };
+        checks: { rule: string; status: string }[];
+      }[];
+    }>(`SELECT validation FROM reports WHERE id = $1`, [accepted.body.compatibility_id]);
+
+    const steps = (row?.validation ?? []).filter((entry) => entry.key === 'steps');
+    expect(steps).toHaveLength(2);
+    const first = steps[0];
+    // Обрезка видна в записи, а не только в логе.
+    expect(first?.trimmed).toMatchObject({ boundary: 'items' });
+    expect(first?.trimmed?.from).toBeGreaterThan(first?.trimmed?.to ?? 0);
+    // `chars` — длина текста, `volume_chars` — без подписи: числа сходятся.
+    expect(first?.chars).toBeGreaterThan(first?.volume_chars ?? 0);
+    expect(first?.verdict).toBe('ok');
+    const verdicts = Object.fromEntries((first?.checks ?? []).map((check) => [check.rule, check.status]));
+    expect(verdicts['compat_percent']).toBe('fail');
+  });
+
+  it('`chars` в логе — длина ровно того текста, что попал в ответ', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Оба случая сразу: обрезанный `clicks` и пересобранный `steps`.
+    llmAnswer = (prompt) => {
+      if (prompt.includes(CLICKS_MARKER)) {
+        return sectionOfMinChars(1_084);
+      }
+      if (prompt.includes(STEPS_MARKER)) {
+        return stepsOfVolume(651);
+      }
+      return answerFor(prompt);
+    };
+
+    const accepted = await orderCompat(fixture, 'chars-invariant').expect(202);
+    const ready = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(ready.body.status, String(ready.body.error_code)).toBe('ready');
+
+    const sections = ready.body.sections as { key: string; text: string }[];
+    const ok = logLines
+      .filter((line) => line.includes('compat_section_ok'))
+      .map(fieldsOf);
+
+    for (const key of ['clicks', 'steps'] as const) {
+      const logged = ok.find((line) => line['section'] === key);
+      const stored = sections.find((section) => section.key === key)?.text ?? '';
+      expect(logged?.['chars'], `раздел ${key}`).toBe(stored.length);
+      // Объём без подписи — отдельным числом, чтобы не путать с `chars`.
+      expect(typeof logged?.['volume_chars']).toBe('number');
+      expect(logged?.['volume_chars']).toBeLessThanOrEqual(logged?.['chars'] as number);
+    }
+
+    // То же в БД: длина сохранённого текста совпадает с логом.
+    const row = await ctx.db.queryOne<{ chapters: { key: string; text: string }[] }>(
+      `SELECT chapters FROM reports WHERE id = $1`,
+      [accepted.body.compatibility_id],
+    );
+    for (const key of ['clicks', 'steps'] as const) {
+      const stored = (row?.chapters ?? []).find((section) => section.key === key)?.text ?? '';
+      const logged = ok.find((line) => line['section'] === key);
+      expect(logged?.['chars'], `БД: раздел ${key}`).toBe(stored.length);
+    }
+  });
+
+  it('в `validation` — перечень проверок с вердиктами, а не противоречивый код', async () => {
+    const fixture = await userWithChart();
+    await grantCompat(fixture);
+
+    // Провал по содержанию: процент совместимости в `scenario`. Форма при
+    // этом нормальная — и запись должна показать оба факта.
+    llmAnswer = (prompt) =>
+      prompt.includes('как вы разговариваете, когда не согласны')
+        ? `${COMPAT_STUB_SECTIONS.scenario} В сумме у вас 78 % совместимости.`
+        : answerFor(prompt);
+
+    const accepted = await orderCompat(fixture, 'checks-list').expect(202);
+    const failed = await waitFor(accepted.body.compatibility_id as string, ['ready', 'failed']);
+    expect(failed.body.status).toBe('failed');
+
+    const row = await ctx.db.queryOne<{
+      validation: { key: string; checks: { rule: string; status: string }[]; verdict: string }[];
+    }>(`SELECT validation FROM reports WHERE id = $1`, [accepted.body.compatibility_id]);
+
+    const scenario = (row?.validation ?? []).find((entry) => entry.key === 'scenario');
+    expect(scenario).toBeDefined();
+    const verdicts = Object.fromEntries((scenario?.checks ?? []).map((check) => [check.rule, check.status]));
+    // Длина — в порядке, содержание — нет: видно обоих.
+    expect(verdicts['length_off'] ?? 'ok').not.toBe('fail');
+    expect(verdicts['compat_percent']).toBe('fail');
+    expect(scenario?.verdict).toBe('ok');
+  });
+});
+
+describe('светила: семейство не пустое, когда блок `luminaries` пуст (итерация 28)', () => {
+  /**
+   * Живой прогон `46d8b893`: все четыре пары блока пришли `present: false`,
+   * хотя в `cross_aspects` светила были. Семейство `luminary` оказывалось
+   * пустым ровно в разделе «Что совпадает» — тизере продукта.
+   */
+  function liveLikeFacts(): unknown {
+    const source = compatFactsPairPayload as unknown as {
+      luminaries: { pair: string; present: boolean; type: string | null; orb: number | null }[];
+    };
+    return {
+      ...(compatFactsPairPayload as unknown as Record<string, unknown>),
+      luminaries: source.luminaries.map((block) => ({
+        ...block,
+        present: false,
+        type: null,
+        orb: null,
+      })),
+    };
+  }
+
+  it('luminary выводится из cross_aspects.luminary, а не только из четырёх пар', () => {
+    const facts = liveLikeFacts() as never;
+    const factors = factorsOf(facts);
+    const luminary = factors.filter((factor) => factor.family === 'luminary');
+
+    // Было 0 luminary-фактов: блок пуст, а аспекты в семейство не попадали.
+    expect(luminary.length).toBeGreaterThan(0);
+    // Все они пришли из аспектов — по префиксу идентификатора это видно.
+    expect(luminary.every((factor) => factor.id.startsWith('luminary:aspect:'))).toBe(true);
+
+    const matrix = compatMatrix(distributeSections(factors));
+    expect(matrix.filter((row) => row.family === 'luminary').length).toBeGreaterThan(0);
+    expect(coverageOf(factors, distributeSections(factors)).familiesMissing).toEqual([]);
+  });
+
+  it('пары из блока не повторяются дважды', () => {
+    const factors = factorsOf(compatFactsPairPayload);
+    const labels = factors.map((factor) => factor.label);
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });
 

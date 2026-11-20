@@ -1,4 +1,5 @@
 import { DISCLAIMER } from '../../src/modules/reports/validators';
+import { trimStepsItem } from '../../src/modules/compat/compat-validators';
 
 /**
  * Тексты подставной модели — руками, а не генератором.
@@ -163,6 +164,53 @@ export function sectionOfMinChars(minChars: number, minParagraphs = 2): string {
   }
 
   return paragraphs.join('\n\n');
+}
+
+/**
+ * `steps` заданного объёма и заданного числа пунктов (итерация 28).
+ *
+ * Живой прогон `46d8b893`: первый ответ — 651 знак, второй — 799, оба при
+ * границах 400–550. Оба обязаны превратиться в три пункта с подписью и
+ * **не** потерять третий пункт.
+ */
+export function stepsOfVolume(total: number, items = 3): string {
+  // «— » (2 знака) + пункт + перевод строки (1 знак, кроме последнего).
+  const bodyBudget = total - items * 2 - (items - 1);
+
+  const build = (budget: number): string[] => {
+    const lines: string[] = [];
+    let cursor = 0;
+    let used = 0;
+
+    for (let index = 0; index < items; index += 1) {
+      // Последний пункт забирает остаток: сумма попадает в цель, а не «примерно».
+      const limit =
+        index === items - 1
+          ? Math.max(40, budget - used)
+          : Math.max(40, Math.floor(budget / items));
+      const sentences: string[] = [];
+      let length = 0;
+      while (length < limit + 40 && sentences.length < 10) {
+        const sentence = LONG_POOL[cursor % LONG_POOL.length] ?? '';
+        cursor += 1;
+        sentences.push(sentence);
+        length += sentence.length + 1;
+      }
+      const text = trimStepsItem(sentences.join(' '), limit);
+      used += text.length;
+      lines.push(`— ${text}`);
+    }
+
+    return lines;
+  };
+
+  let lines = build(bodyBudget);
+  const shortfall = total - (lines.join('\n').length);
+  if (shortfall !== 0) {
+    lines = build(bodyBudget + shortfall);
+  }
+
+  return lines.join('\n');
 }
 
 /**

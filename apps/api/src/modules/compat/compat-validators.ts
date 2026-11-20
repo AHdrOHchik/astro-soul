@@ -118,8 +118,50 @@ export const COMPAT_PARAGRAPH_MAX = 4;
 export const COMPAT_SENTENCES_MIN = 2;
 export const COMPAT_SENTENCES_MAX = 4;
 
-/** Пунктов в `steps`: ровно три действия. */
+/** Пунктов в `steps`: ровно три действия — это требование **промпта**. */
 export const COMPAT_STEPS_COUNT = 3;
+
+/**
+ * Сколько пунктов ещё считается списком действий (итерация 28).
+ *
+ * «Ровно три» — требование промпта, а не условие выдачи. Человеку четыре
+ * полезных действия не хуже трёх, а два лучше, чем ничего: оплаченная покупка
+ * не должна пропадать из-за арифметики в ответе модели. Вне этого окна ответ
+ * считается нераспарсенным (это уже не список, а проза).
+ */
+export const COMPAT_STEPS_ITEMS_MIN = 1;
+export const COMPAT_STEPS_ITEMS_MAX = 5;
+
+/**
+ * Сколько знаков допустимо в одном пункте `steps` (итерация 28).
+ *
+ * Пункт — одно действие: «что сделать, когда и в какой ситуации». 140 знаков
+ * — это 2–3 предложения. Обрезка идёт **по пунктам**, а не по всему тексту:
+ * живой прогон `46d8b893` потерял третий пункт, потому что общий триммер резал
+ * список как абзац (`from=651 to=474`, `steps_count`, `dropped`).
+ */
+export const COMPAT_STEPS_ITEM_MAX = 140;
+
+/**
+ * Правила, которые для `steps` — пометка, а не отказ.
+ *
+ * Форма `steps` чинится нормализацией: список пересобирается из пунктов, а не
+ * судится. Всё, чего здесь нет (вердикт о паре, процент совместимости,
+ * запрещённые темы, нераспарсенный список), остаётся провалом: такой текст
+ * нельзя показывать человеку ни за какие деньги.
+ */
+const SOFT_FOR_STEPS: ReadonlySet<string> = new Set([
+  'too_short',
+  'steps_count',
+  'ui_reference',
+  'paragraphs',
+  'sentences',
+  'format_h1',
+  'format_table',
+  'format_link',
+  'format_html',
+  'format_list',
+]);
 
 /**
  * Вердикты. Это не стилистика: «вам не подходите» — утверждение о двух живых
@@ -146,7 +188,19 @@ const FORBIDDEN_TOPICS: readonly { readonly rule: string; readonly pattern: RegE
 /** Пол партнёра: «он», «она», «его», «её» — домысел о человеке, которого мы не знаем. */
 const PARTNER_PRONOUN = /(?<![\p{L}\p{N}])(?:он|она|его|её|ее|ему|ей)(?![\p{L}\p{N}])/iu;
 
-/** Отсылки к интерфейсу: текст должен читаться и в PDF. */
+/**
+ * Правило `ui_reference`: отсылка к интерфейсу приложения, а не к жизни.
+ *
+ * Ищет слова «нажм…», «свайп…», «тап…», «экран…», «кнопк…» — то есть текст,
+ * который читается как инструкция к мини-аппу и ломается в PDF и в печати.
+ * Найденное слово уходит в `matched`, чтобы код был диагностируемым: в живом
+ * прогоне `46d8b893` пришло `failures: ["ui_reference"]` без единого намёка на
+ * то, какое слово сработало.
+ *
+ * Для `clicks`/`friction`/`scenario` это провал (текст переписывается), для
+ * `steps` — пометка: «отметь в календаре» в списке действий не повод не
+ * отдать покупку.
+ */
 const UI_REFERENCE = /нажм[\p{L}]*|свайп[\p{L}]*|тап[\p{L}]*|экран[\p{L}]*|кнопк[\p{L}]*/iu;
 
 const FORMAT = {
@@ -167,6 +221,34 @@ export interface CompatWarning {
    * («дописать» или «обрезать») требует знать сторону.
    */
   readonly direction?: 'below' | 'above';
+  /**
+   * Что именно нашла проверка — слово или фрагмент (итерация 28).
+   *
+   * Без этого `ui_reference` в живом логе (`failures: ["ui_reference"]`) не
+   * диагностируется: непонятно, «нажми», «экран» или «кнопка» сработали, и
+   * поэтому нельзя понять, ложное это срабатывание или настоящая отсылка к
+   * интерфейсу.
+   */
+  readonly matched?: string;
+}
+
+/**
+ * Одна проверка раздела с её вердиктом (итерация 28).
+ *
+ * Зачем списком, а не только `failures`: в живом прогоне `46d8b893` запись
+ * выглядела как `code: "format", verdict: "ok", failures: ["steps_count"]` —
+ * три поля, которые противоречат друг другу, и по ним нельзя было понять,
+ * что длина в порядке, а сломан список. Теперь в `validation` лежит весь
+ * перечень: каждая проверка и её вердикт (`ok` / `warn` / `fail`).
+ */
+export interface CompatCheck {
+  readonly rule: string;
+  readonly status: 'ok' | 'warn' | 'fail';
+  readonly detail?: string;
+  /** Код предупреждения — только у `warn`, чтобы связать с `warnings`. */
+  readonly code?: string;
+  readonly direction?: 'below' | 'above';
+  readonly matched?: string;
 }
 
 export interface CompatValidationResult {
@@ -186,6 +268,8 @@ export interface CompatValidationResult {
     readonly max: number;
     readonly verdict: LengthVerdict;
   };
+  /** Все проверки с вердиктами — для `reports.validation` и логов. */
+  readonly checks: readonly CompatCheck[];
 }
 
 export interface CompatValidationInput {
@@ -202,6 +286,39 @@ function volumeOf(key: CompatSectionKey, body: string): string {
   return key === 'steps' && body.endsWith(COMPAT_DISCLAIMER)
     ? body.slice(0, body.length - COMPAT_DISCLAIMER.length).trimEnd()
     : body;
+}
+
+/**
+ * Итог раздела: **одна строка**, которая одновременно уходит в БД, в ответ
+ * человеку и в логи (итерация 28).
+ *
+ * Почему отдельная функция: в живом прогоне `46d8b893` лог показал
+ * `compat_section_trimmed steps from=651 to=474`, а следом
+ * `compat_section_rejected steps chars=553`. Обрезали до 474, а на проверку
+ * пришло 553 знака — потому что «длина без подписи» (объём), «длина с
+ * подписью» (текст) и «длина того, что обрезали» считались в трёх местах
+ * по-разному. После такого лога любые выводы недостоверны.
+ *
+ * Теперь: `text` — ровно то, что сохраняется и отдаётся; `chars` — его длина
+ * (её и пишем в логи); `volumeChars` — длина без подписи (по ней вердикт
+ * длины, потому что подпись — не текст раздела).
+ */
+export interface CompatFinalSection {
+  readonly text: string;
+  readonly chars: number;
+  readonly volumeChars: number;
+}
+
+export function finalizeSection(input: {
+  readonly key: CompatSectionKey;
+  readonly bodyMd: string;
+}): CompatFinalSection {
+  const text = input.bodyMd.trim();
+  return {
+    text,
+    chars: text.length,
+    volumeChars: volumeOf(input.key, text).length,
+  };
 }
 
 function listItems(body: string): string[] {
@@ -229,137 +346,232 @@ function openers(body: string): string[] {
 }
 
 export function validateCompatSection(input: CompatValidationInput): CompatValidationResult {
-  const failures: { rule: string; detail: string }[] = [];
-  const warnings: CompatWarning[] = [];
-  const body = input.bodyMd.trim();
+  const checks: CompatCheck[] = [];
   const range = COMPAT_RANGES.find((section) => section.key === input.key);
+  const body = input.bodyMd.trim();
 
   if (range === undefined) {
     return {
       failures: [{ rule: 'section_unknown', detail: input.key }],
       warnings: [],
       length: { chars: body.length, min: 0, max: 0, verdict: 'ok' },
+      checks: [{ rule: 'section_unknown', status: 'fail', detail: input.key }],
     };
   }
 
+  /**
+   * Вердикт проверки: `fail` — раздел не отдаём, `warn` — отдаём с пометкой.
+   *
+   * Для `steps` форма всегда мягкая (`SOFT_FOR_STEPS`): список пересобирается,
+   * а не судится. Содержательные запреты (вердикт о паре, процент, медицина,
+   * деньги, право) остаются жёсткими для всех разделов — такой текст нельзя
+   * показывать человеку, и это единственная причина, по которой раздел ещё
+   * может не дойти до покупателя.
+   */
+  const statusOf = (rule: string): 'fail' | 'warn' =>
+    input.key === 'steps' && SOFT_FOR_STEPS.has(rule) ? 'warn' : 'fail';
+
+  const fail = (rule: string, detail: string, matched?: string): void => {
+    const status = statusOf(rule);
+    checks.push({
+      rule,
+      status,
+      detail,
+      // Понижённый до пометки провал обязан получить `code`: без него он не
+      // попадёт в `warnings`, и «ui_reference» в логе снова окажется без
+      // слова, которое его вызвало.
+      ...(status === 'warn' ? { code: rule } : {}),
+      ...(matched === undefined ? {} : { matched }),
+    });
+  };
+  const warn = (code: string, detail?: string, extra?: Partial<CompatCheck>): void => {
+    checks.push({
+      rule: extra?.rule ?? code,
+      status: 'warn',
+      code,
+      ...(detail === undefined ? {} : { detail }),
+      ...(extra?.direction === undefined ? {} : { direction: extra.direction }),
+      ...(extra?.matched === undefined ? {} : { matched: extra.matched }),
+    });
+  };
+
+  // --- длина: по объёму без подписи, границы — из конфигурации раздела.
   const volume = volumeOf(input.key, body);
   const chars = volume.length;
   const verdict = classifyLength(chars, range);
   const direction = lengthDirection(chars, range);
 
-  // Провал — только «коротко». «Длинно» чинится обрезкой (см. `section` в
-  // сервисе и `trimCompatSection` ниже), а не отказом: модель написала
-  // больше, чем просили, — это нормальное её поведение.
+  // «Коротко» — провал только там, где длина и правда условие выдачи. Для
+  // `steps` (400–550) это мягкий ориентир: три действия важнее объёма.
   if (verdict === 'too_short') {
-    failures.push({ rule: 'too_short', detail: `${chars} < ${range.min}` });
+    fail('too_short', `${chars} < ${range.min}`);
   }
-
   if (verdict !== 'ok' && direction !== null) {
-    warnings.push({
-      code: 'length_off',
-      direction,
-      detail: `${chars} ${direction === 'below' ? 'меньше' : 'больше'} ${range.min}–${range.max}`,
-    });
+    warn(
+      'length_off',
+      `${chars} ${direction === 'below' ? 'меньше' : 'больше'} ${range.min}–${range.max}`,
+      { direction },
+    );
   }
 
-  if (FORMAT.h1.test(body)) failures.push({ rule: 'format_h1', detail: 'H1' });
-  if (FORMAT.table.test(body)) failures.push({ rule: 'format_table', detail: 'таблица' });
-  if (FORMAT.link.test(body)) failures.push({ rule: 'format_link', detail: 'ссылка' });
-  if (FORMAT.html.test(body)) failures.push({ rule: 'format_html', detail: 'HTML' });
-  if (FORMAT.badListMarker.test(body)) {
-    failures.push({ rule: 'format_list', detail: 'список не маркером «—»' });
-  }
-  if (UI_REFERENCE.test(body)) {
-    failures.push({ rule: 'ui_reference', detail: 'отсылка к интерфейсу' });
+  // --- разметка. Для `steps` — пометка: ссылка или таблица в списке действий
+  // не повод не отдать покупку, а вот в абзацном разделе это ломает вёрстку.
+  if (FORMAT.h1.test(body)) fail('format_h1', 'H1');
+  if (FORMAT.table.test(body)) fail('format_table', 'таблица');
+  if (FORMAT.link.test(body)) fail('format_link', 'ссылка');
+  if (FORMAT.html.test(body)) fail('format_html', 'HTML');
+  if (FORMAT.badListMarker.test(body)) fail('format_list', 'список не маркером «—»');
+
+  // --- отсылка к интерфейсу. Регулярка ищет слова, которыми текст
+  // превращается в инструкцию к приложению («нажми», «свайпни», «экран»,
+  // «кнопка», «тап»). `matched` — то самое слово: без него код не
+  // диагностируется.
+  const ui = UI_REFERENCE.exec(body);
+  if (ui !== null) {
+    fail('ui_reference', `«${ui[0]}» на ${ui.index}-м знаке`, ui[0]);
   }
 
-  // Вердикты, проценты, запрещённые темы — провал раздела, а не пометка.
-  if (VERDICTS.test(body)) failures.push({ rule: 'verdict', detail: 'вердикт о паре' });
-  if (COMPAT_PERCENT.test(body)) {
-    failures.push({ rule: 'compat_percent', detail: 'процент совместимости' });
-  }
+  // --- содержательные запреты: вердикт о паре, процент, опасные темы.
+  if (VERDICTS.test(body)) fail('verdict', 'вердикт о паре');
+  if (COMPAT_PERCENT.test(body)) fail('compat_percent', 'процент совместимости');
   for (const topic of FORBIDDEN_TOPICS) {
     if (topic.pattern.test(body)) {
-      failures.push({ rule: `forbidden_${topic.rule}`, detail: topic.rule });
+      fail(`forbidden_${topic.rule}`, topic.rule);
     }
   }
 
-  // Служебный словарь — пометка: смысл не меняем, но фиксируем утечку.
+  // --- служебный словарь: пометка, смысл не меняем.
   const serviceTerms = SERVICE_TERMS.filter((term) => term.pattern.test(body)).map((term) => term.term);
   if (serviceTerms.length > 0) {
-    warnings.push({ code: 'service_terms', detail: serviceTerms.join(', ') });
+    checks.push({
+      rule: 'service_terms',
+      status: 'warn',
+      code: 'service_terms',
+      detail: serviceTerms.join(', '),
+      matched: serviceTerms[0],
+    });
   }
 
-  // Пол партнёра: «он/она/его/её» домысливают человека. Пометка, потому что
-  // «его» бывает и притяжательным к «партнёр» — а вот «она» уже нет.
+  // --- род партнёра.
   const pronoun = PARTNER_PRONOUN.exec(body);
   if (pronoun !== null) {
-    warnings.push({ code: 'partner_pronoun', detail: `«${pronoun[0]}» на ${pronoun.index}-м знаке` });
+    checks.push({
+      rule: 'partner_pronoun',
+      status: 'warn',
+      code: 'partner_pronoun',
+      detail: `«${pronoun[0]}» на ${pronoun.index}-м знаке`,
+      matched: pronoun[0],
+    });
   }
 
-  // Термины в первых 200 знаках: человек покупает про себя, а не про аспекты.
+  // --- термины в первых 200 знаках.
   const offset = firstTermOffset(body);
   if (offset !== null && offset < COMPAT_OPENING_LENGTH) {
-    warnings.push({ code: 'terms_in_opening', detail: `первый термин на ${offset}-м знаке` });
+    checks.push({
+      rule: 'terms_in_opening',
+      status: 'warn',
+      code: 'terms_in_opening',
+      detail: `первый термин на ${offset}-м знаке`,
+    });
   }
 
+  // --- структура.
   if (input.key === 'steps') {
     const items = listItems(body);
-    if (items.length !== COMPAT_STEPS_COUNT) {
-      failures.push({
+    if (items.length === 0) {
+      // Проза вместо списка — это не «форма не та», а нераспарсенный ответ:
+      // собирать три действия не из чего. Единственный структурный провал,
+      // который остаётся у `steps`.
+      checks.push({
+        rule: 'steps_unparsed',
+        status: 'fail',
+        detail: 'ни одного пункта «—»',
+      });
+    } else if (items.length !== COMPAT_STEPS_COUNT) {
+      // 2 или 4 пункта — принимаем. «Ровно три» — требование промпта.
+      checks.push({
         rule: 'steps_count',
+        status: 'warn',
+        code: 'steps_count',
         detail: `${items.length} пунктов вместо ${COMPAT_STEPS_COUNT}`,
+        matched: String(items.length),
+      });
+    } else {
+      checks.push({ rule: 'steps_count', status: 'ok', detail: '3 пункта' });
+    }
+    if (items.length > COMPAT_STEPS_ITEMS_MAX) {
+      // Шесть и больше пунктов — это уже не «три действия», а пересказ.
+      // Мягкая пометка: лишние пункты видны человеку, но раздел отдаём.
+      checks.push({
+        rule: 'steps_items_many',
+        status: 'warn',
+        code: 'steps_items_many',
+        detail: `${items.length} пунктов`,
+        matched: String(items.length),
       });
     }
     if (!body.includes(COMPAT_DISCLAIMER)) {
       // Дисклеймер дописывает нормализатор — здесь только след.
-      warnings.push({ code: 'disclaimer_missing' });
+      checks.push({ rule: 'disclaimer_missing', status: 'warn', code: 'disclaimer_missing' });
     }
   } else {
     const paragraphs = splitParagraphs(body);
     const listish = paragraphs.filter((paragraph) => paragraph.trimStart().startsWith('—'));
     if (listish.length > 0) {
-      failures.push({ rule: 'steps_only_list', detail: 'список не в `steps`' });
+      fail('steps_only_list', 'список не в `steps`');
     }
     if (paragraphs.length < COMPAT_PARAGRAPH_MIN || paragraphs.length > COMPAT_PARAGRAPH_MAX) {
-      failures.push({
-        rule: 'paragraphs',
-        detail: `${paragraphs.length} вне ${COMPAT_PARAGRAPH_MIN}–${COMPAT_PARAGRAPH_MAX}`,
-      });
+      fail('paragraphs', `${paragraphs.length} вне ${COMPAT_PARAGRAPH_MIN}–${COMPAT_PARAGRAPH_MAX}`);
     } else {
       for (const paragraph of paragraphs) {
         const sentences = splitSentences(paragraph).length;
         if (sentences < COMPAT_SENTENCES_MIN || sentences > COMPAT_SENTENCES_MAX) {
-          failures.push({
-            rule: 'sentences',
-            detail: `${sentences} предложений вне ${COMPAT_SENTENCES_MIN}–${COMPAT_SENTENCES_MAX}`,
-          });
+          fail('sentences', `${sentences} предложений вне ${COMPAT_SENTENCES_MIN}–${COMPAT_SENTENCES_MAX}`);
           break;
         }
       }
     }
   }
 
-  // Доля самого частого слова: текст не должен превращаться в мантру.
+  // --- доля самого частого слова.
   const share = topWordShare(body);
   if (share.share > 0.14) {
-    warnings.push({ code: 'word_share', detail: `${share.word} ${Math.round(share.share * 100)} %` });
+    checks.push({
+      rule: 'word_share',
+      status: 'warn',
+      code: 'word_share',
+      detail: `${share.word} ${Math.round(share.share * 100)} %`,
+      matched: share.word,
+    });
   }
 
-  // Повтор зачина с предыдущим разделом — та же болезнь, что в разборе.
+  // --- повтор зачина с предыдущим разделом.
   const own = openers(body);
   for (const previous of input.previous ?? []) {
     const theirs = openers(previous);
     if (own.some((opener) => opener !== '' && theirs.includes(opener))) {
-      warnings.push({ code: 'repeated_opener' });
+      checks.push({ rule: 'repeated_opener', status: 'warn', code: 'repeated_opener' });
       break;
     }
   }
+
+  const failures = checks
+    .filter((check) => check.status === 'fail')
+    .map((check) => ({ rule: check.rule, detail: check.detail ?? '' }));
+  const warnings: CompatWarning[] = checks
+    .filter((check) => check.status === 'warn' && check.code !== undefined)
+    .map((check) => ({
+      code: check.code ?? '',
+      ...(check.detail === undefined ? {} : { detail: check.detail }),
+      ...(check.direction === undefined ? {} : { direction: check.direction }),
+      ...(check.matched === undefined ? {} : { matched: check.matched }),
+    }));
 
   return {
     failures,
     warnings,
     length: { chars, min: range.min, max: range.max, verdict },
+    checks,
   };
 }
 
@@ -378,13 +590,111 @@ export interface CompatNormalization {
 
 /** Результат обрезки: что осталось и где именно резали. */
 export interface CompatTrim {
+  /** Итоговый текст — ровно тот, что уйдёт в БД и человеку (с подписью). */
   readonly body: string;
+  /** Длина его же: `body.length`. Одно число для логов, проверки и выдачи. */
+  readonly chars: number;
   /** Сколько знаков было в объёме (без подписи) до обрезки. */
   readonly from: number;
-  /** Сколько осталось. */
+  /** Сколько осталось в объёме (без подписи). */
   readonly to: number;
-  /** По какой границе резали: абзац, предложение или слово. */
-  readonly boundary: 'paragraph' | 'sentence' | 'word';
+  /** По какой границе резали. `items` — поштучно, как требует `steps`. */
+  readonly boundary: 'paragraph' | 'sentence' | 'word' | 'items';
+  /**
+   * Уложились ли в границы раздела.
+   *
+   * Для `steps` это **мягкий** ориентир: если после поштучной обрезки объём
+   * всё ещё вне 400–550, текст отдаётся как есть с предупреждением
+   * `length_off`, потому что три действия — жёсткий инвариант, а длина — нет.
+   */
+  readonly inRange: boolean;
+}
+
+/** Пункт `steps` после поштучной обрезки. */
+interface StepsItem {
+  readonly text: string;
+}
+
+/**
+ * Список `steps` из текста: пункт начинается с «—», продолжения склеиваются.
+ *
+ * Склейка нужна потому, что длинный пункт модель иногда переносит на вторую
+ * строку без маркера: если считать пункты только по маркерам, такой перенос
+ * выглядит как «потерянный» пункт, и обрезка снова начинает резать список.
+ */
+function stepsItems(body: string): string[] {
+  const items: string[] = [];
+  for (const raw of body.split('\n')) {
+    const line = raw.trim();
+    if (line === '') {
+      continue;
+    }
+    if (line.startsWith('—')) {
+      items.push(line.replace(/^—\s*/u, '').trim());
+      continue;
+    }
+    if (items.length > 0) {
+      items[items.length - 1] = `${items[items.length - 1] ?? ''} ${line}`.trim();
+    }
+  }
+  return items.filter((item) => item !== '');
+}
+
+/** Обрезка одного пункта: по границе слова, с точкой в конце. */
+export function trimStepsItem(item: string, max: number = COMPAT_STEPS_ITEM_MAX): string {
+  const text = item.trim();
+  if (text.length <= max) {
+    return /[.!?…]$/u.test(text) ? text : `${text}.`;
+  }
+
+  const window = text.slice(0, max);
+  const space = window.lastIndexOf(' ');
+  const cut = (space > 0 ? window.slice(0, space) : window).replace(/[\s,;:—–-]+$/u, '');
+
+  // Висячий союз или предлог в конце — признак обрыва: снимаем его.
+  const cleaned = cut.replace(/\s+(и|а|но|или|что|как|к|в|на|с|у|о|об|по|за|из|от|до)$/iu, '');
+
+  return `${cleaned}.`;
+}
+
+/**
+ * Поштучная обрезка `steps` — единственный допустимый путь для этого раздела.
+ *
+ * Живой прогон `46d8b893`: первый ответ (651 знак) общий триммер порезал по
+ * предложению до 474 — третий пункт исчез, `steps_count` стал провалом, раздел
+ * выброшен, оплаченная покупка ушла в `failed`. Вторая попытка (799 знаков)
+ * обрезалась «по слову» до 539 — снова без пункта, плюс `ui_reference`.
+ *
+ * Поэтому: каждый пункт ограничивается отдельно, текст собирается заново из
+ * **всех** пунктов, подпись-дисклеймер всегда прикрепляется последним абзацем
+ * и никогда не участвует в обрезке.
+ */
+export function trimSteps(input: {
+  readonly bodyMd: string;
+  readonly range: CompatLengthRange;
+}): CompatTrim | null {
+  const raw = input.bodyMd.trim();
+  const hasDisclaimer = raw.endsWith(COMPAT_DISCLAIMER);
+  const volume = hasDisclaimer ? raw.slice(0, raw.length - COMPAT_DISCLAIMER.length).trimEnd() : raw;
+  const from = volume.length;
+  const items = stepsItems(volume);
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  const cut: StepsItem[] = items.map((item) => ({ text: trimStepsItem(item) }));
+  const rebuiltVolume = cut.map((item) => `— ${item.text}`).join('\n');
+  const body = `${rebuiltVolume}\n\n${COMPAT_DISCLAIMER}`;
+
+  return {
+    body,
+    chars: body.length,
+    from,
+    to: rebuiltVolume.length,
+    boundary: 'items',
+    inRange: classifyLength(rebuiltVolume.length, input.range) === 'ok',
+  };
 }
 
 /**
@@ -395,74 +705,58 @@ export interface CompatTrim {
  * выбрасывался, а весь продукт уходил в `failed` — за деньги владельца
  * (3,19 ₽ за прогон 1 180 → 1 423 знака).
  *
- * Режем по **границе абзаца** (для `steps` — по концу предложения внутри
- * пункта, чтобы не потерять ни один из трёх пунктов), затем по предложению,
- * затем по слову. Результат всегда в `[min, max]`; если такого варианта нет
- * (например, первый абзац сам длиннее максимума, а короче минимума резать
- * нечего) — `null`, и вызывающий отдаёт раздел как есть с предупреждением, но
- * **не выбрасывает**.
+ * Для `clicks`/`friction`/`scenario` режем по границе абзаца, затем
+ * предложения, затем слова. Для `steps` этот путь **запрещён** (итерация 28):
+ * список режется только поштучно (`trimSteps`), иначе теряется пункт.
  */
 export function trimCompatSection(input: {
   readonly key: CompatSectionKey;
   readonly bodyMd: string;
   readonly range: CompatLengthRange;
 }): CompatTrim | null {
+  // `steps` — только поштучно. Общий триммер для него не вызывается никогда:
+  // абзац здесь — весь список, а «предложение» и «слово» режут его поперёк.
+  if (input.key === 'steps') {
+    return trimSteps({ bodyMd: input.bodyMd, range: input.range });
+  }
+
   const body = input.bodyMd.trim();
-  const disclaimer =
-    input.key === 'steps' && body.endsWith(COMPAT_DISCLAIMER) ? COMPAT_DISCLAIMER : null;
-  const volume = disclaimer === null ? body : body.slice(0, body.length - disclaimer.length).trimEnd();
-  const from = volume.length;
+  const from = body.length;
 
   if (classifyLength(from, input.range) !== 'too_long') {
     return null;
   }
 
-  const suffix = disclaimer === null ? '' : `\n\n${disclaimer}`;
-
-  // `steps` — отдельный путь: резать список по границе «абзаца» нельзя, а по
-  // границе предложения можно потерять третий пункт. Режем внутри пунктов,
-  // сохраняя все три.
-  if (input.key === 'steps') {
-    const byItems = trimSteps(volume, input.range, suffix);
-    if (byItems !== null) {
-      return byItems;
-    }
-  }
-
-  // Кандидаты: смещение в объёме → по какой границе режем.
-  const candidate = (offset: number, boundary: CompatTrim['boundary']): CompatTrim | null => {
-    const cut = volume.slice(0, offset).trimEnd();
+  const candidate = (
+    offset: number,
+    boundary: CompatTrim['boundary'],
+  ): CompatTrim | null => {
+    const cut = body.slice(0, offset).trimEnd();
     if (classifyLength(cut.length, input.range) !== 'ok') {
       return null;
     }
-    return { body: `${cut}${suffix}`, from, to: cut.length, boundary };
+    return { body: cut, chars: cut.length, from, to: cut.length, boundary, inRange: true };
   };
 
-  // 1. Абзацы (для `steps` не годится: абзац там — это весь список).
-  // Берём **последний** абзац, при котором текст ещё в границах: режем
-  // максимум лишнего, а не минимум.
-  if (input.key !== 'steps') {
-    const paragraphs = splitParagraphs(volume);
-    let offset = 0;
-    let byParagraph: CompatTrim | null = null;
-    for (let index = 0; index < paragraphs.length - 1; index += 1) {
-      offset += (paragraphs[index] ?? '').length + 2; // '\n\n'
-      const next = candidate(offset - 2, 'paragraph');
-      if (next !== null) {
-        byParagraph = next;
-      } else if (byParagraph !== null) {
-        // Дальше только длиннее — в границы уже не вернёмся.
-        break;
-      }
-    }
-    if (byParagraph !== null) {
-      return byParagraph;
+  // 1. Абзацы: берём **последний**, при котором текст ещё в границах.
+  const paragraphs = splitParagraphs(body);
+  let offset = 0;
+  let byParagraph: CompatTrim | null = null;
+  for (let index = 0; index < paragraphs.length - 1; index += 1) {
+    offset += (paragraphs[index] ?? '').length + 2; // '\n\n'
+    const next = candidate(offset - 2, 'paragraph');
+    if (next !== null) {
+      byParagraph = next;
+    } else if (byParagraph !== null) {
+      break;
     }
   }
+  if (byParagraph !== null) {
+    return byParagraph;
+  }
 
-  // 2. Предложения, от последнего к первому: длиннее всего, что влезает.
-  const sentenceEnds = sentenceEndOffsets(volume);
-  for (const end of [...sentenceEnds].reverse()) {
+  // 2. Предложения, от последнего к первому.
+  for (const end of [...sentenceEndOffsets(body)].reverse()) {
     const trimmed = candidate(end, 'sentence');
     if (trimmed !== null) {
       return trimmed;
@@ -470,75 +764,17 @@ export function trimCompatSection(input: {
   }
 
   // 3. Слово: последний шанс уложиться в максимум, не разрывая слово.
-  for (let offset = volume.length - 1; offset > 0; offset -= 1) {
-    if (volume[offset] !== ' ') {
+  for (let index = body.length - 1; index > 0; index -= 1) {
+    if (body[index] !== ' ' || index > input.range.max) {
       continue;
     }
-    if (offset <= input.range.max) {
-      const trimmed = candidate(offset, 'word');
-      if (trimmed !== null) {
-        return trimmed;
-      }
+    const trimmed = candidate(index, 'word');
+    if (trimmed !== null) {
+      return trimmed;
     }
   }
 
   return null;
-}
-
-/**
- * Обрезка `steps`: три пункта остаются тремя пунктами.
- *
- * Длинный список — это не «лишние абзацы», а три пункта по 3–4 предложения.
- * Обрезка «по предложению» через весь текст снесла бы третий пункт, и раздел
- * стал бы невалидным уже по количеству пунктов (`steps_count`) — то есть
- * обрезка сама себя отменила бы. Поэтому убираем **последние предложения**
- * самого длинного пункта, пока объём не влезет в `max`.
- */
-function trimSteps(volume: string, range: CompatLengthRange, suffix: string): CompatTrim | null {
-  const from = volume.length;
-  const lines = volume.split('\n');
-  const itemIndexes = lines
-    .map((line, index) => (line.trim().startsWith('—') ? index : -1))
-    .filter((index) => index >= 0);
-
-  if (itemIndexes.length !== COMPAT_STEPS_COUNT) {
-    return null;
-  }
-
-  const items = itemIndexes.map((index) => {
-    const line = (lines[index] ?? '').trim();
-    const sentences = splitSentences(line.replace(/^—\s*/u, ''));
-    return { index, marker: line.slice(0, 1), sentences };
-  });
-
-  const lengthOf = (parts: readonly { marker: string; sentences: readonly string[] }[]): number =>
-    parts.reduce((sum, item) => sum + `— ${item.sentences.join(' ')}`.length, 0) +
-    (parts.length - 1);
-
-  // Снимаем по одному предложению с самого длинного пункта: текст должен
-  // остаться связным, а не «три обрывка».
-  let guard = 0;
-  while (lengthOf(items) > range.max && guard < 100) {
-    guard += 1;
-    const longest = [...items]
-      .filter((item) => item.sentences.length > 1)
-      .sort((left, right) => right.sentences.length - left.sentences.length)[0];
-    if (longest === undefined) {
-      break;
-    }
-    longest.sentences = longest.sentences.slice(0, -1);
-  }
-
-  const chars = lengthOf(items);
-  if (classifyLength(chars, range) !== 'ok') {
-    return null;
-  }
-
-  const body = items
-    .map((item) => `${item.marker} ${item.sentences.join(' ')}`)
-    .join('\n');
-
-  return { body: `${body}${suffix}`, from, to: body.length, boundary: 'sentence' };
 }
 
 /** Смещения концов предложений: `splitSentences` теряет позиции. */

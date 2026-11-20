@@ -29,10 +29,10 @@ import { costRubOf, DEFAULT_LLM_MODEL, llmModelSpec } from '../src/config/llm-mo
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import {
   COMPAT_STUB_SECTIONS,
-  longSteps,
   sectionOfMinChars,
+  stepsOfVolume,
 } from '../test/fixtures/compat-sections';
-import { COMPAT_DISCLAIMER } from '../src/modules/compat/compat-validators';
+import { finalizeSection } from '../src/modules/compat/compat-validators';
 import { compatFactsPairPayload } from '../test/fixtures/compat-facts-pair';
 import { factorsOf, parseCompatibilityFacts } from '../src/modules/compat/compat-facts';
 import {
@@ -68,19 +68,29 @@ let answerChars = 0;
  */
 const LONG_ANSWERS = process.argv.includes('--long');
 
+/**
+ * Объём `steps` в режиме `--long` (итерация 28).
+ *
+ * Живой прогон `46d8b893` упал на двух ответах: 651 и 799 знаков при границах
+ * 400–550. Оба обязаны превратиться в три пункта с подписью и прийти человеку:
+ * `--steps=651` (по умолчанию) и `--steps=799`.
+ */
+const STEPS_ARG = process.argv.find((argument) => argument.startsWith('--steps='));
+const STEPS_VOLUME = Number(STEPS_ARG?.slice('--steps='.length) ?? 651);
+
 function answerFor(prompt: string): string {
   const long = LONG_ANSWERS;
   if (prompt.includes('что у вас совпадает так')) {
-    return long ? sectionOfMinChars(1_084) : COMPAT_STUB_SECTIONS.clicks;
+    // Живой лог: 1 011 знаков при 700–900, обрезка по предложению до 900.
+    return long ? sectionOfMinChars(1_011) : COMPAT_STUB_SECTIONS.clicks;
   }
   if (prompt.includes('где именно вас заедает')) {
-    return long ? sectionOfMinChars(1_181) : COMPAT_STUB_SECTIONS.friction;
+    return long ? sectionOfMinChars(1_265) : COMPAT_STUB_SECTIONS.friction;
   }
   if (prompt.includes('как вы разговариваете, когда не согласны')) {
-    // Ровно тот случай, на котором упал живой прогон: 1 423 знака при 600–800.
-    return long ? sectionOfMinChars(1_423) : COMPAT_STUB_SECTIONS.scenario;
+    return long ? sectionOfMinChars(1_278) : COMPAT_STUB_SECTIONS.scenario;
   }
-  return long ? `${longSteps(900)}\n\n${COMPAT_DISCLAIMER}` : COMPAT_STUB_SECTIONS.steps;
+  return long ? stepsOfVolume(STEPS_VOLUME) : COMPAT_STUB_SECTIONS.steps;
 }
 
 const provider: LlmProvider = {
@@ -200,9 +210,21 @@ async function main(): Promise<void> {
     process.stdout.write('\n=== Совместимость: прогон на подставной модели ===\n');
     process.stdout.write(`status: ${String(view['status'])}${row?.error_code ? ` (${row.error_code})` : ''}\n`);
     process.stdout.write(`prompt_version: ${row?.prompt_version} | structure: ${row?.report_structure_version} | facts: ${row?.chart_facts_version}\n`);
-    process.stdout.write('\nРазделы:\n');
+    process.stdout.write('\nРазделы (chars = длина отданного текста, объём = без подписи):\n');
     for (const section of sections) {
-      process.stdout.write(`  ${section.key.padEnd(9)} ${String(section.text.length).padStart(4)} знаков\n`);
+      // Та же функция, что и в конвейере: длина в отчёте не может отличаться
+      // от длины, которую видит человек.
+      const final = finalizeSection({
+        key: section.key as 'clicks' | 'friction' | 'scenario' | 'steps',
+        bodyMd: section.text,
+      });
+      const items =
+        section.key === 'steps'
+          ? `, пунктов ${String(section.text.split('\n').filter((line) => line.trim().startsWith('—')).length)}`
+          : '';
+      process.stdout.write(
+        `  ${section.key.padEnd(9)} chars ${String(final.chars).padStart(4)} | объём ${String(final.volumeChars).padStart(4)}${items}\n`,
+      );
     }
     const total = sections.reduce((sum, section) => sum + section.text.length, 0);
     process.stdout.write(`  всего     ${String(total).padStart(4)} знаков\n`);

@@ -32,9 +32,11 @@ import {
   COMPAT_SECTIONS,
   COMPAT_SECTION_TITLES,
   COMPAT_STRUCTURE_VERSION,
+  finalizeSection,
   normalizeCompatSection,
   trimCompatSection,
   validateCompatSection,
+  type CompatCheck,
   type CompatSectionKey,
   type CompatWarning,
 } from './compat-validators';
@@ -145,18 +147,99 @@ interface ValidationEntry {
   readonly verdict: string;
   /** Коды предупреждений этой попытки — в том числе `partner_pronoun`. */
   readonly warnings: readonly string[];
+  /**
+   * Перечень проверок с вердиктами (итерация 28): `length: ok`,
+   * `steps_count: fail`, `ui_reference: warn` и так далее.
+   *
+   * Раньше запись выглядела как `code: "format"`, `verdict: "ok"`,
+   * `failures: ["steps_count"]` — три поля, противоречащих друг другу.
+   */
+  readonly checks: readonly CompatCheck[];
+  /** Что именно нашла каждая пометка: `{код: слово}`. */
+  readonly warnings_matched: Readonly<Record<string, string>>;
+  /** Длина объёма без подписи — по ней считается вердикт длины. */
+  readonly volume_chars: number;
+  /**
+   * Что сделала обрезка на этой попытке (итерация 28).
+   *
+   * Раньше обрезка жила только в логе: по записи `validation` нельзя было
+   * понять, что текст сначала порезали. В живом прогоне `46d8b893` из-за
+   * этого 474 и 553 выглядели как противоречие, а не как «обрезали, потом
+   * собрали заново».
+   */
+  readonly trimmed?: { readonly from: number; readonly to: number; readonly boundary: string };
   readonly raw_excerpt?: string;
 }
 
 type SectionWrite =
   | {
       readonly ok: true;
+      /** Ровно та строка, что уйдёт в БД и человеку. */
       readonly body: string;
+      readonly chars: number;
       readonly regenerated: boolean;
       readonly normalized: readonly string[];
-      readonly warnings: readonly { readonly code: string }[];
+      readonly warnings: readonly CompatWarning[];
     }
-  | { readonly ok: false; readonly code: FailureCode };
+  | {
+      readonly ok: false;
+      readonly code: FailureCode;
+      /** Почему раздел не отдан: пусто, не разобрано или запрещённый текст. */
+      readonly reason: 'empty_response' | 'unparsed' | 'unsafe';
+    };
+
+/**
+ * Что именно нашла каждая пометка: `{ui_reference: "нажми"}`.
+ *
+ * Без этого `matched` живёт только в `reports.validation`, а по логу нельзя
+ * понять, ложное срабатывание или настоящее: в живом прогоне `46d8b893` код
+ * `ui_reference` пришёл без слова.
+ */
+function matchedOf(warnings: readonly CompatWarning[]): Record<string, string> {
+  const matched: Record<string, string> = {};
+  for (const warning of warnings) {
+    if (warning.matched !== undefined) {
+      matched[warning.code] = warning.matched;
+    }
+  }
+  return matched;
+}
+
+/**
+ * Что нашла любая проверка — и провал, и пометка: `{ui_reference: "нажми"}`.
+ *
+ * `warnings_matched` покрывает только пометки, поэтому у провала
+ * (`failures: ["ui_reference"]`) слова не было — а без слова код не
+ * диагностируется.
+ */
+function matchedOfChecks(checks: readonly CompatCheck[]): Record<string, string> {
+  const matched: Record<string, string> = {};
+  for (const check of checks) {
+    if (check.matched !== undefined) {
+      matched[check.code ?? check.rule] = check.matched;
+    }
+  }
+  return matched;
+}
+
+/**
+ * Вердикты проверок одним объектом: `{length: "ok", steps_count: "fail"}`.
+ *
+ * В лог идут все проверки, а не только провалы: иначе «verdict ok при
+ * code format» не различить, и диагностика противоречит сама себе.
+ */
+function verdictsOf(checks: readonly CompatCheck[]): Record<string, string> {
+  const verdicts: Record<string, string> = {};
+  for (const check of checks) {
+    verdicts[check.rule] = check.status;
+  }
+  return verdicts;
+}
+
+/** Пунктов в `steps` — числом для лога: `items: 3`. */
+function countStepsItems(text: string): number {
+  return text.split('\n').filter((line) => line.trim().startsWith('—')).length;
+}
 
 /**
  * Конвейер совместимости.
@@ -424,10 +507,14 @@ export class CompatService {
 
         if (!section.ok) {
           sectionStatus[key] = 'failed';
+          // Отказ по коду, а не по разделу: `reason` уже в логе
+          // `compat_section_dropped`, здесь важно, что именно не дали.
           throw new CompatFailure(section.code);
         }
 
         sectionStatus[key] = section.regenerated ? 'regenerated' : 'ok';
+        // `section.body` — уже финальная строка (`finalizeSection`), её длина
+        // и есть тот `chars`, что в логах. Отдельного «сохраню чуть иначе» нет.
         sections.push({
           key,
           title: COMPAT_SECTION_TITLES[key],
@@ -503,6 +590,7 @@ export class CompatService {
 
     let lastCode: FailureCode = 'format';
     let lastChars = 0;
+    let lastReason: 'empty_response' | 'unparsed' | 'unsafe' = 'empty_response';
 
     /**
      * Попыток на «коротко» — две: второй короткий текст отдаём как есть.
@@ -527,44 +615,60 @@ export class CompatService {
       ];
 
       const response = await this.call(context.budget, messages);
-      const normalized = normalizeCompatSection({ key, bodyMd: response.content });
 
-      let body = normalized.body;
-      const applied = [...normalized.applied];
-      let checked = validateCompatSection({
-        key,
-        bodyMd: body,
-        previous: context.previous,
-      });
-
-      // --- Слишком длинно: обрезаем, а не выбрасываем (итерация 27).
+      // --- Одна строка на всё: нормализация → обрезка → проверка → БД → лог.
       //
-      // Повторный вызов модели здесь бессмысленен: она уже написала больше,
-      // чем просили, и второй раз напишет столько же (в живом прогоне 1 180 →
-      // 1 423, ещё 0,83 ₽). Режем по границе абзаца/предложения.
-      let trimmed: { readonly from: number; readonly to: number } | null = null;
+      // В живом прогоне `46d8b893` лог показал `trimmed to=474`, а следом
+      // `chars=553`: обрезали один текст, проверяли другой (с подписью),
+      // писали в БД третий. Теперь текст фиксируется `finalizeSection` один
+      // раз, и `chars` — это его длина до последнего символа.
+      const normalized = normalizeCompatSection({ key, bodyMd: response.content });
+      const applied = [...normalized.applied];
+
+      let final = finalizeSection({ key, bodyMd: normalized.body });
+      const beforeTrim = final;
+      let checked = validateCompatSection({ key, bodyMd: final.text, previous: context.previous });
+
+      let trimmed: { readonly from: number; readonly to: number; readonly boundary: string } | null =
+        null;
       const trimmedWarnings: CompatWarning[] = [];
+
+      // --- «Слишком длинно» чинится обрезкой, а не отказом (итерация 27).
+      //
+      // Для `steps` это только поштучная обрезка: каждый пункт отдельно,
+      // подпись прикрепляется заново (итерация 28). Общий триммер к списку
+      // не применяется никогда — он режет список поперёк и теряет пункт.
       if (checked.length.verdict === 'too_long') {
-        const cut = trimCompatSection({ key, bodyMd: body, range: { min, max } });
+        const cut = trimCompatSection({ key, bodyMd: final.text, range: { min, max } });
 
         if (cut === null) {
-          // Резать некуда (один абзац длиннее максимума, а короче минимума
-          // уже не текст) — отдаём как есть: раздел не может пропасть из-за
-          // длины.
+          // Резать некуда (например, `steps` пришёл без единого пункта) —
+          // раздел всё равно не выбрасываем из-за длины.
           this.logger.warn('compat_section_trim_failed', {
             compatibility_id: context.compatibilityId,
             section: key,
-            chars: checked.length.chars,
+            chars: final.chars,
+            volume_chars: checked.length.chars,
             min,
             max,
           });
         } else {
-          trimmed = { from: cut.from, to: cut.to };
-          body = cut.body;
+          trimmed = { from: cut.from, to: cut.to, boundary: cut.boundary };
+          final = finalizeSection({ key, bodyMd: cut.body });
           applied.push('trimmed');
-          // `trimmed` — ещё и предупреждение контракта: человек вправе знать,
-          // что текст сокращён, а не оборван на полуслове (код был в перечне,
-          // но до итерации 27 не выставлялся).
+          if (!cut.inRange) {
+            // Для `steps` длина — мягкий ориентир: три действия важнее объёма.
+            // Для остальных разделов сюда не попадаем (`candidate` требует
+            // попадания в границы), но ветка общая и честная.
+            this.logger.warn('compat_section_trim_out_of_range', {
+              compatibility_id: context.compatibilityId,
+              section: key,
+              chars: final.chars,
+              volume_chars: final.volumeChars,
+              min,
+              max,
+            });
+          }
           trimmedWarnings.push({
             code: 'trimmed',
             detail: `${cut.from} → ${cut.to} (${cut.boundary})`,
@@ -575,24 +679,23 @@ export class CompatService {
             from: cut.from,
             to: cut.to,
             boundary: cut.boundary,
+            chars: final.chars,
+            volume_chars: final.volumeChars,
+            items: key === 'steps' ? countStepsItems(final.text) : undefined,
+            in_range: cut.inRange,
             min,
             max,
           });
-          checked = validateCompatSection({
-            key,
-            bodyMd: body,
-            previous: context.previous,
-          });
+          checked = validateCompatSection({ key, bodyMd: final.text, previous: context.previous });
         }
       }
 
-      lastChars = body.trim().length;
-      const empty = lastChars === 0;
+      lastChars = final.chars;
+      const volumeChars = checked.length.chars;
+      const empty = final.text === '';
 
       // Структурные правила, которые могла сломать сама обрезка (абзацев
-      // стало меньше, предложений в последнем — одно), не роняют раздел:
-      // форму мы починили нормализацией, а не отказом. Всё содержательное
-      // (вердикты, запрещённые темы, разметка) остаётся провалом.
+      // стало меньше, предложений в последнем — одно), не роняют раздел.
       const hardFailures = trimmed === null
         ? checked.failures
         : checked.failures.filter(
@@ -608,13 +711,12 @@ export class CompatService {
         const warnings: CompatWarning[] = [...checked.warnings, ...trimmedWarnings];
 
         if (shortAcceptable) {
-          // Второй подряд короткий текст отдаём с предупреждением: раздел
-          // короче нормы — лучше, чем отсутствие раздела.
           this.logger.warn('compat_section_short_accepted', {
             compatibility_id: context.compatibilityId,
             section: key,
             attempt,
             chars: lastChars,
+            volume_chars: volumeChars,
             min,
             max,
           });
@@ -629,18 +731,26 @@ export class CompatService {
           compatibility_id: context.compatibilityId,
           section: key,
           attempt,
+          // `chars` — длина строки, которая уходит в БД и человеку;
+          // `volume_chars` — без подписи, по ней вердикт длины.
           chars: lastChars,
+          volume_chars: volumeChars,
           min,
           max,
           verdict: checked.length.verdict,
           trimmed,
           normalized: applied,
           warnings: codes,
+          warnings_matched: matchedOf(warnings),
+          matched: matchedOfChecks(checked.checks),
+          checks: verdictsOf(checked.checks),
+          was_chars: beforeTrim.chars,
         });
 
         return {
           ok: true,
-          body,
+          body: final.text,
+          chars: final.chars,
           regenerated: attempt > 1,
           normalized: applied,
           warnings,
@@ -651,6 +761,11 @@ export class CompatService {
       // `too_short` владелец ищет проблему с длиной, а не с провайдером.
       const firstRule = empty ? 'empty' : (hardFailures[0]?.rule ?? 'format');
       lastCode = this.codeOf(firstRule);
+      lastReason = empty
+        ? 'empty_response'
+        : hardFailures.some((failure) => failure.rule === 'steps_unparsed')
+          ? 'unparsed'
+          : 'unsafe';
       const codes = checked.warnings.map((warning) => warning.code);
 
       context.validation.push({
@@ -663,10 +778,14 @@ export class CompatService {
             ? hardFailures.map((failure) => `${failure.rule}: ${failure.detail}`)
             : ['empty: модель вернула пустой текст'],
         chars: lastChars,
+        volume_chars: volumeChars,
         min,
         max,
         verdict: checked.length.verdict,
         warnings: codes,
+        warnings_matched: matchedOf(checked.warnings),
+        checks: checked.checks,
+        ...(trimmed === null ? {} : { trimmed }),
         // Сырой ответ — 2 000 знаков: в промпте только факты пары, ПДн нет.
         raw_excerpt: response.content.trim().slice(0, RAW_EXCERPT_LENGTH),
       });
@@ -676,12 +795,18 @@ export class CompatService {
         section: key,
         attempt,
         code: lastCode,
+        reason: lastReason,
         chars: lastChars,
+        volume_chars: volumeChars,
         min,
         max,
         verdict: checked.length.verdict,
         failures: hardFailures.map((failure) => failure.rule),
         warnings: codes,
+        warnings_matched: matchedOf(checked.warnings),
+        matched: matchedOfChecks(checked.checks),
+        checks: verdictsOf(checked.checks),
+        trimmed,
       });
 
       // «Слишком коротко» — единственная причина, по которой повторяем вызов
@@ -695,13 +820,13 @@ export class CompatService {
       compatibility_id: context.compatibilityId,
       section: key,
       code: lastCode,
+      reason: lastReason,
       chars: lastChars,
       min,
       max,
-      reason: lastChars === 0 ? 'empty_response' : 'unrepairable',
     });
 
-    return { ok: false, code: lastCode };
+    return { ok: false, code: lastCode, reason: lastReason };
   }
 
   /** Правило валидатора → код `failure-codes.ts` (контракт не расширяем). */
