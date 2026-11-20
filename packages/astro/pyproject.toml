@@ -11,6 +11,12 @@ dependencies = [
     # HTTP-сайдкар для API (NestJS): POST /chart, /transits, /wheel, GET /health
     "fastapi>=0.115,<1",
     "uvicorn>=0.32,<1",
+    # PDF разбора и карточки шеринга (итерация 32). PDF собирается здесь, а не
+    # в Node: нужен встроенный TTF и набор текста — это reportlab; карточки и
+    # PNG-колесо — Pillow. Обе библиотеки чистые (без системных .so), поэтому
+    # образ сайдкара не получает новых системных зависимостей.
+    "reportlab>=4.2,<6",
+    "pillow>=10,<12",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +40,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["astro*"]
+
+# Шрифты едут вместе с кодом: PDF без встроенного TTF превращает кириллицу в
+# пустые квадраты на любом сервере без `fonts-*`.
+[tool.setuptools.package-data]
+astro = ["fonts/*.ttf", "fonts/LICENSE-DejaVu.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

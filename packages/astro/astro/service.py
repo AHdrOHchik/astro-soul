@@ -13,11 +13,21 @@
     POST /wheel       — SVG-колесо (тема dark|light)
     POST /synastry    — факты совместимости двух карт (`compatibility_facts` v1.0)
     POST /forecast/facts — детерминированные факты дня (итерация 30)
+    POST /wheel/png   — колесо растром (PDF, карточки шеринга; итерация 32)
+    POST /pdf/build   — PDF разбора: обложка, оглавление, главы, колонтитул
+    POST /card/build  — карточка шеринга 9:16 или 1:1, без ПДн
+
+Почему PDF и карточки собираются здесь, а не в Node: PDF — это текст с
+встроенным шрифтом и картинкой, а карточка — растр. В Python это Pillow и
+reportlab, в Node пришлось бы тянуть шрифтовой стек и растеризатор SVG.
+Ни один из этих маршрутов не ходит в сеть и не вызывает модель.
 """
 
 from __future__ import annotations
 
+import base64
 import os
+import time
 from datetime import date as date_type
 from datetime import time as time_type
 from typing import Any, Literal
@@ -25,12 +35,15 @@ from typing import Any, Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .cards import CARD_SIZES, renderCardPng
 from .constants import DEFAULT_ENGINE_MODE, ENGINE_VERSION
 from .daily import ForecastConfigError, day_facts
 from .engine import EngineConfigError, calcChart, transitsFor
+from .pdf import MAX_PDF_BYTES, PdfBuildError, PdfChapter, PdfSpec, buildPdf
 from .synastry import compatFacts
 from .types import BirthInput, Chart, GeoPlace
 from .wheel import WHEEL_THEMES, renderWheel
+from .wheel_png import renderWheelPng
 from .wire import chart_from_wire, chart_to_wire
 
 app = FastAPI(
@@ -102,6 +115,51 @@ class WheelIn(BaseModel):
     data: ChartDataIn
     theme: str = "dark"
     size: int = Field(default=560, ge=320, le=1200)
+
+
+class PdfChapterIn(BaseModel):
+    """Глава разбора. Абзацы приходят уже разбитыми: PDF — не markdown-парсер."""
+
+    title: str = Field(min_length=1, max_length=120)
+    paragraphs: list[str] = Field(default_factory=list, max_length=40)
+
+
+class PdfBuildIn(BaseModel):
+    """Вход сборки PDF.
+
+    Ни одного поля с ПДн здесь нет и быть не может: `subtitle` — это дата
+    сборки, а не дата рождения. Тест проверяет, что в готовом файле нет
+    персональных данных, потому что их просто не из чего собрать.
+    """
+
+    subtitle: str = Field(min_length=1, max_length=120)
+    chapters: list[PdfChapterIn] = Field(min_length=1, max_length=12)
+    actions: list[str] = Field(default_factory=list, max_length=5)
+    link: str | None = Field(default=None, max_length=120)
+    wheel_png_base64: str | None = None
+    title: str = Field(default="Твой разбор", min_length=1, max_length=80)
+    footer: str = Field(
+        default="Разбор — инструмент саморефлексии, не предсказание",
+        min_length=1,
+        max_length=200,
+    )
+    max_bytes: int = Field(default=MAX_PDF_BYTES, ge=64_000, le=64 * 1024 * 1024)
+
+
+class CardBuildIn(BaseModel):
+    """Вход карточки шеринга.
+
+    `lines` — строки, которые API уже проверил: ни даты рождения, ни места, ни
+    имени. Сайдкар не умеет добавлять что-то от себя, кроме подписи-ссылки,
+    поэтому «случайных» ПДн в картинке взяться неоткуда.
+    """
+
+    kind: Literal["day", "wheel", "insight"]
+    title: str = Field(min_length=1, max_length=200)
+    lines: list[str] = Field(default_factory=list, max_length=8)
+    footer: str | None = Field(default=None, max_length=120)
+    wheel_png_base64: str | None = None
+    moon_illumination: float | None = Field(default=None, ge=0, le=1)
 
 
 def _engine_error(error: EngineConfigError) -> HTTPException:
@@ -212,6 +270,101 @@ def wheel(payload: WheelIn) -> dict[str, str]:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     return {"svg": renderWheel(natal, size=payload.size, theme=payload.theme)}
+
+
+@app.post("/wheel/png")
+def wheel_png(payload: WheelIn) -> dict[str, Any]:
+    """Колесо растром: PDF-обложка и карточка `wheel`.
+
+    Отдельный маршрут, а не «SVG плюс растеризатор»: в контейнере сайдкара нет
+    librsvg/cairo, и добавлять системную библиотеку ради картинки — лишняя
+    точка отказа. Колесо рисуется тем же Pillow из тех же чисел движка.
+    """
+    if payload.theme not in WHEEL_THEMES:
+        raise HTTPException(status_code=422, detail=f"неизвестная тема колеса: {payload.theme}")
+
+    try:
+        natal = _chart_of(payload.data)
+        png = renderWheelPng(natal, size=payload.size, theme=payload.theme)
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return {
+        "png_base64": base64.b64encode(png).decode("ascii"),
+        "bytes": len(png),
+        "width": payload.size,
+        "height": payload.size,
+    }
+
+
+@app.post("/pdf/build")
+def pdf_build(payload: PdfBuildIn) -> dict[str, Any]:
+    wheel: bytes | None = None
+    if payload.wheel_png_base64:
+        try:
+            wheel = base64.b64decode(payload.wheel_png_base64, validate=True)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="wheel_png_base64: не base64") from error
+
+    spec = PdfSpec(
+        subtitle=payload.subtitle,
+        chapters=tuple(
+            PdfChapter(title=chapter.title, paragraphs=tuple(chapter.paragraphs))
+            for chapter in payload.chapters
+        ),
+        actions=tuple(payload.actions),
+        link=payload.link,
+        wheel_png=wheel,
+        title=payload.title,
+        footer=payload.footer,
+        max_bytes=payload.max_bytes,
+    )
+
+    started = time.monotonic()
+    try:
+        result = buildPdf(spec)
+    except PdfBuildError as error:
+        raise HTTPException(status_code=422, detail=f"pdf_failed: {error}") from error
+
+    return {
+        "pdf_base64": base64.b64encode(result.pdf).decode("ascii"),
+        "bytes": len(result.pdf),
+        "pages": result.pages,
+        "wheel_scale": result.wheel_scale,
+        "attempts": result.attempts,
+        "build_ms": result.build_ms,
+        "total_ms": round((time.monotonic() - started) * 1000),
+    }
+
+
+@app.post("/card/build")
+def card_build(payload: CardBuildIn) -> dict[str, Any]:
+    wheel: bytes | None = None
+    if payload.wheel_png_base64:
+        try:
+            wheel = base64.b64decode(payload.wheel_png_base64, validate=True)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="wheel_png_base64: не base64") from error
+
+    try:
+        png = renderCardPng(
+            payload.kind,
+            payload.title,
+            list(payload.lines),
+            footer=payload.footer,
+            wheel_png=wheel,
+            moon_illumination=payload.moon_illumination,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    width, height = CARD_SIZES[payload.kind]
+    return {
+        "png_base64": base64.b64encode(png).decode("ascii"),
+        "bytes": len(png),
+        "width": width,
+        "height": height,
+    }
 
 
 def main() -> None:
