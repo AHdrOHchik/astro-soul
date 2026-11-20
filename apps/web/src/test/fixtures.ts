@@ -410,7 +410,7 @@ export function fakeTermsReload(options: { refusedVersion?: string | null; stora
 }
 
 /** Where the app runs; the methods are always spies. */
-type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay'>;
+type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton'>;
 
 /** `invoice`: how Telegram closes every invoice it is asked to open; «paid» unless the test says otherwise. */
 export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | Promise<InvoiceOutcome> } = {}) {

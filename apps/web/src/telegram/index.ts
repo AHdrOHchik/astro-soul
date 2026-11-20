@@ -9,6 +9,7 @@ import {
   isInvoiceSupported,
   isTMA,
   miniApp,
+  mainButton,
   openLink,
   openTelegramLink,
   postEvent,
@@ -51,6 +52,8 @@ export interface Telegram {
    * Mini Apps 6.1. Asked before the server is: an invoice nobody can open is not worth creating.
    */
   readonly canPay: boolean;
+  /** Undefined on browser/basic hosts. Returns cleanup only when the host owns the CTA. */
+  bindMainButton?: (text: string, disabled: boolean, busy: boolean, press: () => void) => (() => void) | undefined;
   /** Opens the invoice behind `link` and tells how Telegram closed it. Never rejects. */
   openInvoice(link: string): Promise<InvoiceOutcome>;
   /** Opens `url` outside the Mini App: a chat for a t.me link, the browser for any other. */
@@ -397,6 +400,11 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
 
   attempt(() => miniApp.mountSync.ifAvailable());
   attempt(() => { bindTheme(true, chromeColor); });
+  // SDK state can be restored on relaunch. A tab/root must never inherit a checkout CTA.
+  attempt(() => {
+    mainButton.mount.ifAvailable();
+    mainButton.setParams.ifAvailable({ isVisible: false, isLoaderVisible: false, isEnabled: false });
+  });
   fitViewport();
   attempt(() => backButton.mount.ifAvailable());
   const hasNativeBackButton = backButton.isMounted();
@@ -432,6 +440,23 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
     },
     close() {
       attempt(() => miniApp.close.ifAvailable());
+    },
+    bindMainButton(text, disabled, busy, press) {
+      if (!mainButton.setParams.isAvailable() || !mainButton.onClick.isAvailable()) return undefined;
+      let off: (() => void) | undefined;
+      const release = () => {
+        off?.();
+        attempt(() => mainButton.setParams.ifAvailable({ isVisible: false, isLoaderVisible: false, isEnabled: false }));
+      };
+      try {
+        off = mainButton.onClick(() => { if (!disabled) press(); });
+        mainButton.setParams({ text, isVisible: true, isEnabled: !disabled, isLoaderVisible: busy });
+        return release;
+      } catch (error) {
+        release();
+        report(error);
+        return undefined;
+      }
     },
     canPay: isInvoiceSupported(),
     openInvoice: openInvoiceByBridge,

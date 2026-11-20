@@ -118,6 +118,22 @@ describe('inside Telegram', () => {
     }
   });
 
+  it('hides the main button at startup and removes the pay handler on release', async () => {
+    launchInTelegram('8.0');
+    const host = await start();
+    const last = () => JSON.parse(posted.mock.calls.filter(([name]) => name === 'web_app_setup_main_button').pop()?.[1] ?? '{}') as { is_visible?: boolean };
+    expect(last().is_visible).toBe(false);
+    const click = vi.fn();
+    const off = host.bindMainButton?.('Pay', false, false, click);
+    expect(last().is_visible).toBe(true);
+    const { emitEvent } = await import('@telegram-apps/sdk');
+    emitEvent('main_button_pressed');
+    off?.();
+    emitEvent('main_button_pressed');
+    expect(click).toHaveBeenCalledOnce();
+    expect(last().is_visible).toBe(false);
+  });
+
   it('shows the native Back button only while a handler is set and routes clicks to it', async () => {
     launchInTelegram('8.0');
     const telegram = await start();

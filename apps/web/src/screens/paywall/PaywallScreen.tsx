@@ -1,5 +1,5 @@
 import { Button, Notice, OptionCard, Screen, ScreenHeading, Skeleton, SkeletonGroup, StarsIcon, StateView, VisuallyHidden, type ScreenProps } from '@astro-soul/ui';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { Track } from '../../analytics';
 import {
   failureCodeOf,
@@ -19,7 +19,7 @@ import {
 } from '../../api';
 import { Reference } from '../../components/Reference';
 import { Stars } from '../../components/Stars';
-import { formatDay, formatMoment } from '../../i18n/format';
+import { formatCount, formatDay, formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import { copy30 } from '../../i18n/round30';
 import { grants, REPORT_PLAN } from '../../lib/plans';
@@ -41,7 +41,7 @@ const isSignalAborted = (signal: AbortSignal): boolean => signal.aborted;
 
 export interface PaywallScreenProps {
   api: Pick<Api, 'getPlans' | 'createInvoice'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'canPay' | 'openInvoice'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'canPay' | 'openInvoice' | 'bindMainButton'>;
   /** Who the user is, by the server's last word. What it grants is all the screen believes about a purchase. */
   me: Me;
   /**
@@ -524,14 +524,7 @@ export function PaywallScreen({
         <>
           {problem && <ProblemNote problem={problem} onRefresh={refreshCatalogue} />}
           {problem?.kind !== 'price_changed' && (
-            <Button
-              disabled={plan === null || busy}
-              onClick={() => {
-                void pay();
-              }}
-            >
-              <PayLabel phase={phase} price={plan === null ? null : priceOf(plan)} />
-            </Button>
+            <PayAction telegram={telegram} phase={phase} price={plan === null ? null : priceOf(plan)} pay={pay} />
           )}
           {plan?.test && <p className={styles.note}>{copy.testPlansNote}</p>}
         </>
@@ -577,6 +570,29 @@ export function PaywallScreen({
       </div>
     </Screen>
   );
+}
+
+/** The same transaction in either host. Never leave a native handler behind on Back. */
+function PayAction({ telegram, phase, price, pay }: {
+  telegram: PaywallScreenProps['telegram']; phase: Phase; price: number | null; pay: () => Promise<void>;
+}) {
+  const [native, setNative] = useState(false);
+  const busy = phase !== 'choosing';
+  const disabled = busy || price === null;
+  const label = phase === 'invoicing' ? copy.creating : phase === 'paying' ? copy.paying : price === null ? copy.choose : `${copy.pay} ${formatCount(price)} ${ru.common.starSign}`;
+  const latest = useRef(pay);
+  const inFlight = useRef(false);
+  useLayoutEffect(() => { latest.current = pay; }, [pay]);
+  useLayoutEffect(() => {
+    const off = telegram.canPay && telegram.bindMainButton?.(label, disabled, busy, () => {
+      if (disabled || inFlight.current) return;
+      inFlight.current = true;
+      void latest.current().finally(() => { inFlight.current = false; });
+    });
+    setNative(Boolean(off));
+    return off || undefined;
+  }, [telegram, label, disabled, busy]);
+  return native ? null : <Button disabled={disabled} onClick={() => { void pay(); }}><PayLabel phase={phase} price={price} /></Button>;
 }
 
 function PayLabel({ phase, price }: { phase: Phase; price: number | null }) {
