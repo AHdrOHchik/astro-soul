@@ -1,7 +1,8 @@
 import { Button, InfoIcon, Screen, StateView } from '@astro-soul/ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { AnalyticsStep, Track } from './analytics';
-import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, Me, OrderablePlanCode, PlanKind, Report } from './api';
+import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, ForecastDay, Me, OrderablePlanCode, PlanKind, Report } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
@@ -9,7 +10,9 @@ import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './
 import type { IdempotencyKeys } from './lib/idempotency';
 import { grants, hasReportFor } from './lib/plans';
 import type { TermsReload } from './lib/termsReload';
-import { AskScreen } from './screens/ask/AskScreen';
+import { BottomTabs, type MainTab } from './components/BottomTabs';
+import { DailyForecastScreen } from './screens/DailyForecastScreen';
+import { QuestionsScreen } from './screens/QuestionsScreen';
 import { BirthDateScreen } from './screens/BirthDateScreen';
 import { BirthPlaceScreen } from './screens/BirthPlaceScreen';
 import { BirthTimeScreen } from './screens/BirthTimeScreen';
@@ -398,6 +401,11 @@ function Screens({
   );
   // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
   const [home, setHome] = useState<Home>(meAtStart.has_chart || typeof meAtStart.chart_id === 'string' ? 'current' : 'welcome');
+  const [mainTab, setMainTab] = useState<MainTab>('map');
+  const [knownDailyForecast, setKnownDailyForecast] = useState<ForecastDay | null>(null);
+  const dailyScroll = useRef(0);
+  const questionScroll = useRef(0);
+  const rememberDailyForecast = useCallback((day: ForecastDay | null) => { setKnownDailyForecast(day); }, []);
   const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? [home, 'consent'] : [home]));
   const [draft, setDraft] = useState<BirthDraft>(EMPTY_DRAFT);
   const [serverErrors, setServerErrors] = useState(NO_SERVER_ERRORS);
@@ -410,7 +418,6 @@ function Screens({
   // The chart the paywall and the report screen were opened from.
   const [openChart, setOpenChart] = useState<OpenChart | null>(null);
   // The zone of that chart's birth place, when the forecast was opened from it: there the server counts the days.
-  const [forecastZone, setForecastZone] = useState<string | null>(null);
   const [paywall, setPaywall] = useState<PaywallEntry>({ preferredKind: null, offersReport: false, reportRequired: false, compatibility: false });
   const [compatibilityId, setCompatibilityId] = useState<string | null>(null);
   const [compatibilityChartId, setCompatibilityChartId] = useState<string | null>(null);
@@ -485,6 +492,9 @@ function Screens({
    */
   const forgetChart = useCallback(() => {
     chartScroll.current = 0;
+    dailyScroll.current = 0;
+    questionScroll.current = 0;
+    setKnownDailyForecast(null);
     keys.forgetAll();
     setShownCharts({ current: null, built: null });
     setOpenChart(null);
@@ -550,6 +560,14 @@ function Screens({
   const openSettings = () => {
     open('settings');
   };
+  const selectMainTab = (tab: MainTab) => {
+    setMainTab(tab);
+    if (tab === 'cabinet') setStack([home]);
+    else if (tab === 'today' && home === 'welcome') setStack(['current']);
+    else if (tab === 'ask' && home === 'welcome') setStack([home, 'ask']);
+    else setStack([home]);
+  };
+  const withTabs = (screen: ReactNode) => <div className="tabbed">{screen}<BottomTabs active={mainTab} onSelect={selectMainTab}/></div>;
   // A subscription is offered where this build sells them and the user has none.
   const canSubscribe = subscriptions && !me.entitlements.is_active;
   const openSubscriptions = () => {
@@ -594,6 +612,7 @@ function Screens({
   const back = canGoBack && !telegram.hasNativeBackButton ? { label: ru.common.back, onClick: goBack } : undefined;
   const request = useMemo(() => toChartRequest(draft, today), [draft, today]);
 
+
   // A chart that came from the server is kept, so the way back to the chart screen costs no request.
   const rememberCurrent = useCallback((result: ChartResult) => {
     chartScroll.current = 0;
@@ -608,9 +627,18 @@ function Screens({
     [request],
   );
 
+  if (route === 'current' && mainTab !== 'map') {
+    const chartId = me.chart_id ?? shownCharts.current?.chart.chart_id ?? shownCharts.built?.result.chart.chart_id ?? null;
+    if (mainTab === 'today') return withTabs(<DailyForecastScreen api={api} chartId={chartId} telegram={telegram} known={knownDailyForecast} onKnown={rememberDailyForecast} onBuildChart={() => { setStack(['welcome']); setHome('welcome'); }} onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll}/>);
+    if (mainTab === 'ask') return withTabs(<QuestionsScreen api={api} telegram={telegram} subscribed={me.entitlements.is_active && chartId !== null} chartAvailable={chartId !== null} onSubscribe={canSubscribe ? openSubscriptions : undefined} onBuildChart={() => { setHome('welcome'); setStack(['welcome']); }} onChartGone={handleChartGone} scroll={questionScroll}/>);
+    return withTabs(<SettingsScreen api={api} telegram={telegram} refreshMe={refreshMeForChart} supportLink={supportLink} track={track} back={back} onOpenDocument={open} onSubscribe={subscriptions ? openSubscriptions : undefined} onOpenCompatibility={openCompatibility} onOpenSavedCompatibility={openSavedCompatibility} onBuyCompatibility={buyCompatibility} onDeleted={onDeleted}/>);
+  }
+
+
   if (route === 'current' || (route === 'chart' && request !== null)) {
     const cached = route === 'current' ? shownCharts.current : shownCharts.built?.request === request ? shownCharts.built.result : null;
     return (
+      <div className={route === 'current' ? 'tabbed' : undefined}>
       <ChartScreen
         // A screen of its own per chart: the one from the server and the one from the form share nothing,
         // and neither does the screen of a chart the server turned out not to have.
@@ -633,16 +661,7 @@ function Screens({
         onLoaded={route === 'current' ? rememberCurrent : rememberBuilt}
         scroll={chartScroll}
         onOpenSettings={openSettings}
-        forecast={{
-          known: knownForecast,
-          onKnown: rememberForecast,
-          now: clock,
-          onOpen: (chart, timeZone) => {
-            setOpenChart(chart);
-            setForecastZone(timeZone);
-            open('forecast');
-          },
-        }}
+        subscriptionPromotion={route === 'current' && canSubscribe ? { onOpen: openSubscriptions } : undefined}
         report={{
           // Paid for or not is asked about the chart on screen, never about the user: `cached` is that chart
           // from the moment the server hands it over (`onLoaded` comes before the screen draws it).
@@ -672,6 +691,8 @@ function Screens({
           },
         }}
       />
+      {route === 'current' && <BottomTabs active={mainTab} onSelect={selectMainTab}/>}
+      </div>
     );
   }
 
@@ -685,7 +706,7 @@ function Screens({
 
   switch (route) {
     case 'welcome':
-      return (
+      return withTabs(
         <WelcomeScreen
           onStart={() => {
             open('consent');
@@ -758,7 +779,7 @@ function Screens({
           api={api}
           telegram={telegram}
           chartId={reportChart.chartId}
-          timeZone={openChart === null ? null : forecastZone}
+          timeZone={null}
           known={knownForecast}
           onKnown={rememberForecast}
           share={reportChart.share}
@@ -766,6 +787,7 @@ function Screens({
           track={track}
           back={back}
           onAsk={() => {
+            setMainTab('ask');
             open('ask');
           }}
           onSubscribe={canSubscribe ? openSubscriptions : undefined}
@@ -776,19 +798,7 @@ function Screens({
         />
       );
     case 'ask':
-      if (reportChart === null) return <BootScreen />;
-      return (
-        <AskScreen
-          api={api}
-          chartId={reportChart.chartId}
-          quota={me.quotas.find((quota) => quota.code === 'ask_daily') ?? null}
-          refreshMe={refreshMeForChart}
-          track={track}
-          back={back}
-          onSubscribe={canSubscribe ? openSubscriptions : undefined}
-          onChartGone={handleChartGone}
-        />
-      );
+      return withTabs(<QuestionsScreen api={api} telegram={telegram} subscribed={reportChart !== null && me.entitlements.is_active} chartAvailable={reportChart !== null} onSubscribe={canSubscribe ? openSubscriptions : undefined} onBuildChart={() => { setHome('welcome'); setStack(['welcome']); }} onChartGone={handleChartGone} scroll={questionScroll}/>);
     case 'report':
       // Not reachable without a chart; if it ever is, the screen under this one is the place to be.
       if (reportChart === null) return <BootScreen />;
@@ -839,6 +849,7 @@ function Screens({
       );
     case 'settings':
       return (
+        <div className="tabbed">
         <SettingsScreen
           api={api}
           telegram={telegram}
@@ -855,6 +866,8 @@ function Screens({
           onBuyCompatibility={buyCompatibility}
           onDeleted={onDeleted}
         />
+        <BottomTabs active={mainTab} onSelect={selectMainTab}/>
+        </div>
       );
     case 'consent':
       return (

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import type { Compatibility } from '../../api';
@@ -6,9 +6,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apiError, cataloguePlans, compatibilityPending, compatibilityReady, fakeApi, fakeAnalytics, fakeKeys, fakeTelegram, meSubscribed, rejection } from '../../test/fixtures';
 import { ru } from '../../i18n/ru';
 import { COMPATIBILITY_POLL_DELAYS_MS, CompatibilityScreen, stepItems } from './CompatibilityScreen';
+import clicksFixture from '../../../tests/fixtures/compat-live-2026-11-20/clicks.txt?raw';
+import frictionFixture from '../../../tests/fixtures/compat-live-2026-11-20/friction.txt?raw';
+import scenarioFixture from '../../../tests/fixtures/compat-live-2026-11-20/scenario.txt?raw';
+import stepsFixture from '../../../tests/fixtures/compat-live-2026-11-20/steps.txt?raw';
 
 const copy = ru.compatibility;
 const chartId = '11111111-1111-4111-8111-111111111111';
+const liveCompatibilityText = {
+  clicks: clicksFixture,
+  friction: frictionFixture,
+  scenario: scenarioFixture,
+  steps: stepsFixture,
+} as const;
+const liveSectionKeys = ['clicks', 'friction', 'scenario', 'steps'] as const;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -132,6 +143,54 @@ describe('CompatibilityScreen', () => {
     expect(screen.getByText(/инструмент саморефлексии, а не предсказание и не замена специалисту/)).toBeInTheDocument();
     expect(document.body.textContent.match(/инструмент саморефлексии/g)).toHaveLength(1);
     expect(screen.getByRole('button', { name: copy.createAnother })).toBeEnabled();
+  });
+
+  it('snapshots the live compatibility text in server order and preserves every line and step', async () => {
+    const api = fakeApi();
+    const sections = liveSectionKeys.map((key, index) => {
+      const template = compatibilityReady.sections.find((section) => section.key === key);
+      if (!template) throw new Error(`Missing compatibility section template: ${key}`);
+      return {
+        ...template,
+        order: index + 1,
+        text: key === 'steps' ? `${liveCompatibilityText.steps}${copy.stepDisclaimer}` : liveCompatibilityText[key],
+      };
+    });
+    const live = { ...compatibilityReady, sections };
+    api.getCompatibility.mockResolvedValue(live);
+    mount(api, live.id);
+
+    const headings = await screen.findAllByRole('heading', { level: 2 });
+    expect(headings.map((heading) => heading.textContent)).toEqual([
+      'Что совпадает', 'Где трёт', 'Как вы разговариваете', 'Что сделать на этой неделе',
+    ]);
+    const rendered: { title: string | null; paragraphs?: string[]; steps?: string[]; disclaimer?: string }[] = [];
+    for (const [index, key] of liveSectionKeys.entries()) {
+      const heading = headings[index];
+      const section = heading?.closest('section');
+      expect(section).not.toBeNull();
+      if (!section) throw new Error(`Missing rendered section: ${key}`);
+      if (key === 'steps') {
+        const steps = within(section).getAllByRole('listitem').map((item) => item.textContent);
+        const expectedSteps = liveCompatibilityText.steps.trimEnd().split('\n').map((line) => line.replace(/^—\s*/, ''));
+        expect(steps).toEqual(expectedSteps);
+        expect(steps).toHaveLength(3);
+        expect(steps[0]).toContain('Договоритесь.');
+        expect(steps[0]).not.toBe('Договоритесь.');
+        expect(steps[2]).toContain('затем коротко назовите.');
+        expect(steps[2]).not.toBe('затем коротко назовите.');
+        const disclaimers = within(section).getAllByText(copy.stepDisclaimer);
+        expect(disclaimers).toHaveLength(1);
+        rendered.push({ title: heading?.textContent ?? null, steps, disclaimer: disclaimers[0]?.textContent ?? '' });
+      } else {
+        const paragraphs = Array.from(section.querySelectorAll('p')).map((paragraph) => paragraph.textContent);
+        const expectedParagraphs = liveCompatibilityText[key].trimEnd().split('\n\n').map((paragraph) => paragraph.split('\n').join(' '));
+        expect(paragraphs).toEqual(expectedParagraphs);
+        rendered.push({ title: heading?.textContent ?? null, paragraphs });
+      }
+    }
+    expect(screen.getAllByText(copy.stepDisclaimer)).toHaveLength(1);
+    expect(rendered).toMatchSnapshot();
   });
 
   it('shows only the trimmed warning from the closed allow-list', async () => {

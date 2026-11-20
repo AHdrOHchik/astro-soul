@@ -1,0 +1,1 @@
+.card{display:grid;gap:var(--space-3);padding:var(--space-4);border:var(--border-width) solid var(--color-border);border-radius:var(--radius-lg);background:var(--color-surface-raised)}.card h2{margin:0;font-size:var(--font-size-lg)}.card p,.card ul{margin:0}.card ul{padding-left:var(--space-5)}.price{font-weight:var(--font-weight-bold);color:var(--color-accent)}

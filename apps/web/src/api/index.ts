@@ -81,6 +81,10 @@ export type ReportRequest = components['schemas']['ReportRequest'];
 export type ReportStatus = ReportEnvelope['status'];
 
 type ForecastEnvelope = components['schemas']['Forecast'];
+export type ForecastDay = components['schemas']['ForecastDay'];
+export type Question = components['schemas']['Question'];
+export type QuestionList = components['schemas']['QuestionList'];
+export type QuestionAccepted = components['schemas']['QuestionAccepted'];
 
 /**
  * What a forecast may be about: the codes of the contract (`Forecast.focus`) this build has a
@@ -198,7 +202,10 @@ const PATHS = {
   compatibility: '/api/v1/compatibility',
   compatibilityById: '/api/v1/compatibility/{compatibility_id}',
   forecast: '/api/v1/engagement/forecast',
+  forecastToday: '/api/v1/forecast/today',
   ask: '/api/v1/engagement/ask',
+  questions: '/api/v1/questions',
+  question: '/api/v1/questions/{question_id}',
   subscriptionCancel: '/api/v1/subscription/cancel',
 } as const satisfies Record<string, keyof paths>;
 
@@ -258,6 +265,10 @@ export interface Api {
    * there is nothing to wait for, so nobody asks twice in a row.
    */
   getForecast(chartId: string, signal?: AbortSignal): Promise<Forecast | null>;
+  getForecastToday(signal?: AbortSignal): Promise<ForecastDay>;
+  listQuestions(limit?: number, signal?: AbortSignal): Promise<QuestionList>;
+  createQuestion(question: string, idempotencyKey: string, signal?: AbortSignal): Promise<QuestionAccepted>;
+  getQuestion(id: string, signal?: AbortSignal): Promise<Question>;
   /**
    * Asks a question about the chart. Sent once: every question that reaches the server may
    * cost one of the day's few, so a repeat is made by the user's tap, never by the client.
@@ -626,6 +637,23 @@ export function createApi(options: HttpClientOptions): Api {
         if (isApiError(error) && error.code === 'NOT_FOUND') return null;
         throw error;
       }
+    },
+
+    async getForecastToday(signal) {
+      return await request<ForecastDay>('GET', PATHS.forecastToday, { signal, cache: 'no-store' });
+    },
+
+    async listQuestions(limit = 20, signal) {
+      return await request<QuestionList>('GET', `${PATHS.questions}?limit=${Math.min(20, Math.max(1, limit))}`, { signal, cache: 'no-store' });
+    },
+
+    async createQuestion(question, idempotencyKey, signal) {
+      const headers = { [IDEMPOTENCY_HEADER]: idempotencyKey };
+      return await request<QuestionAccepted>('POST', PATHS.questions, { body: { question }, headers, signal, retry: false });
+    },
+
+    async getQuestion(id, signal) {
+      return await request<Question>('GET', PATHS.question.replace('{question_id}', encodeURIComponent(id)), { signal, cache: 'no-store' });
     },
 
     async ask(input, signal) {

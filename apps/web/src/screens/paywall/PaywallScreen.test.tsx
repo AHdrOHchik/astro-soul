@@ -3,6 +3,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApi, type Me, type PlanOffer } from '../../api';
 import { ru } from '../../i18n/ru';
+import { copy30 } from '../../i18n/round30';
 import { formatMoment } from '../../i18n/format';
 import type { InvoiceOutcome } from '../../telegram';
 import {
@@ -187,7 +188,9 @@ describe('PaywallScreen', () => {
     expect(analytics.names()).toEqual([]);
     expect(screen.queryByRole('heading', { name: copy.testPlans })).not.toBeInTheDocument();
     expect(screen.getByText(offer('one_149').subtitle)).toBeInTheDocument();
-    expect(screen.getAllByRole('listitem')).toHaveLength(cataloguePlans.reduce((sum, item) => sum + item.includes.length, 0));
+    expect(screen.getAllByRole('listitem')).toHaveLength(cataloguePlans.reduce((sum, item) => sum + item.includes.filter((line) => item.kind !== 'subscription' || !copy30.unapprovedSubscriptionClaim.test(line)).length, 0));
+    const subscriptionOffer = screen.getByRole('radio', { name: /Подписка на год/ }).closest('.offer');
+    expect(subscriptionOffer?.querySelectorAll('li')).toHaveLength(0);
   });
 
   it('shows every server test offer in a separate block and invoices the selected server code', async () => {
