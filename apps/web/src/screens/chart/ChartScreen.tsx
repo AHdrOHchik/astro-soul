@@ -391,20 +391,7 @@ function ChartView({
       )}
 
       {wheelUrl && share ? (
-        <>
-          <Wheel src={wheelUrl} onFailedChange={setWheelFailed} />
-          <Button
-            variant="secondary"
-            icon={<ShareIcon />}
-            disabled={wheelFailed}
-            onClick={() => {
-              track('share_clicked');
-              telegram.share(share.url, share.text);
-            }}
-          >
-            {copy.share}
-          </Button>
-        </>
+        <Wheel src={wheelUrl} onFailedChange={setWheelFailed} />
       ) : (
         <p className={styles.wheelMissing}>{copy.wheelMissing}</p>
       )}
@@ -431,6 +418,26 @@ function ChartView({
           fallback={copy.noPosition}
           detail={houseOf(sun?.house)}
           text={reading.sun}
+        />
+        <ReportTeaser
+          api={api}
+          chartId={chart.chart_id}
+          fullReport={report.fullReport}
+          reportId={report.reportId}
+          known={report.known}
+          onKnown={report.onKnown}
+          onGone={report.onGone}
+          paymentPending={report.paymentPending}
+          onCheckPayment={report.onCheckPayment}
+          onBuy={() => {
+            report.onBuy(open);
+          }}
+          onOrder={() => {
+            report.onOrder(open);
+          }}
+          onOpen={(reportId) => {
+            report.onOpen(open, reportId);
+          }}
         />
         <PointCard
           icon={<MoonIcon />}
@@ -459,28 +466,20 @@ function ChartView({
         )}
       </section>
 
+      {wheelUrl && share && (
+        <Button
+          variant="secondary"
+          icon={<ShareIcon />}
+          disabled={wheelFailed}
+          onClick={() => {
+            track('share_clicked');
+            telegram.share(share.url, share.text);
+          }}
+        >
+          {copy.share}
+        </Button>
+      )}
       {subscriptionPromotion && <SubscriptionPromotion api={api} onOpen={subscriptionPromotion.onOpen}/>}
-
-      <ReportTeaser
-        api={api}
-        chartId={chart.chart_id}
-        fullReport={report.fullReport}
-        reportId={report.reportId}
-        known={report.known}
-        onKnown={report.onKnown}
-        onGone={report.onGone}
-        paymentPending={report.paymentPending}
-        onCheckPayment={report.onCheckPayment}
-        onBuy={() => {
-          report.onBuy(open);
-        }}
-        onOrder={() => {
-          report.onOrder(open);
-        }}
-        onOpen={(reportId) => {
-          report.onOpen(open, reportId);
-        }}
-      />
 
       {offersEdit && (
         <Button variant="ghost" onClick={onEdit}>

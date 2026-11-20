@@ -216,6 +216,16 @@ describe('ChartScreen', () => {
   describe('the full report', () => {
     const teaserBlock = async () => within(await screen.findByRole('region', { name: copy.teaserTitle }));
 
+    it('puts the report action after the first chart point and before sharing', async () => {
+      setup();
+      const action = await (await teaserBlock()).findByRole('button', { name: TEASER_CTA_NAME });
+      const first = screen.getByRole('heading', { name: copy.sun });
+      for (const next of [screen.getByRole('heading', { name: copy.moon }), screen.getByRole('button', { name: copy.share })]) {
+        expect(action.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+      expect(first.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
     it('before a purchase: no report text is revealed, and the teaser leads to the paywall for this chart', async () => {
       const { api, report, user } = setup();
 
