@@ -161,10 +161,31 @@ prompt_version: prompts_v1.5 | structure: compat_structure_v1 | facts: 1.0
   scenario   648 знаков
   steps      541 знаков
   всего     2730 знаков
+Нормализация: clicks: правки —, пометки partner_pronoun
+Предупреждения контракта: нет
 cost_rub (0,5 ₽/1000 токенов, оценка 2.8 знака = 1 токен): 3.3400
 токенов (оценка): вход 5701, выход 976, всего 6677; знаков 18691
 фактов: 51, дошло до текста: 8, семейства в тексте: aspect, luminary, balance, overlay
 ```
+
+Режим `--long` (итерация 27) воспроизводит живой прогон `541d56a4`: модель
+отвечает длиннее верхней границы каждого раздела — 1 085 / 1 217 / 1 433 /
+~950 знаков при максимумах 900 / 900 / 800 / 550:
+
+```
+status: ready
+prompt_version: prompts_v1.5 | structure: compat_structure_v1 | facts: 1.0
+  clicks     867 знаков
+  friction   867 знаков
+  scenario   642 знаков
+  steps      591 знаков
+Нормализация: clicks: правки trimmed, ...; scenario: правки trimmed, ...
+Предупреждения контракта: clicks/trimmed, friction/trimmed, scenario/trimmed, steps/trimmed
+cost_rub (0,5 ₽/1000 токенов, оценка 2.8 знака = 1 токен): 3.7100
+```
+
+Все четыре раздела в границах, четыре вызова модели (без повторов на длину),
+`steps` — 591 знак вместе с подписью-дисклеймером (объём — 501).
 
 **Стоимость считается по токенам, а не по знакам.** В проде цену пишет
 провайдер: `costRubOf(usage, pricePer1kRub)` в `config/llm-models.ts` —
@@ -194,8 +215,12 @@ completionTokens: 500}, 0.5) === 0.75`, и сквозным тестом «в б
   метриками `compat_breaker_open` / `reports_breaker_open`;
 - `MAX_ATTEMPTS = 2` на раздел (одна генерация и одна перегенерация), сырой
   ответ при провале — первые 2 000 знаков в `reports.validation`;
+- повтор модели — **только** по `too_short` и неразобранному ответу (итерация
+  27). `too_long` лечится обрезкой (`trimCompatSection`), пустой ответ —
+  единственная причина выбросить раздел (`compat_section_dropped`);
 - `GET /admin/metrics` добавил `compat_ready_30d`, `compat_failed_30d`,
-  `compat_credits_left`, `compat_validation_streak`, `compat_breaker_open`.
+  `compat_credits_left`, `compat_validation_streak`, `compat_breaker_open`,
+  `compat_sections_trimmed_24h`, `compat_sections_dropped_24h`.
 
 ## 8. Не проверено
 
