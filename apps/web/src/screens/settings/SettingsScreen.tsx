@@ -226,7 +226,7 @@ function Sections({ me, api, support, telegram, supportLink, track, refreshMe, o
         </div>
       </Card>
 
-      {onOpenSavedCompatibility && <CompatibilityHistory api={api} onOpen={onOpenSavedCompatibility} />}
+      {onOpenSavedCompatibility && <CompatibilityHistory api={api} onOpen={onOpenSavedCompatibility} chartId={me.chart_id} onBuy={onBuyCompatibility} />}
 
       {onOpenCompatibility && onBuyCompatibility && (
         <CompatibilityEntry

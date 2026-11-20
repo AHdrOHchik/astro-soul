@@ -640,7 +640,9 @@ export function createApi(options: HttpClientOptions): Api {
     },
 
     async getForecastToday(signal) {
-      return await request<ForecastDay>('GET', PATHS.forecastToday, { signal, cache: 'no-store' });
+      // The server may spend up to 25 seconds preparing the day. Keep this budget local to
+      // this read; the 15-second client default remains in force for every other endpoint.
+      return await request<ForecastDay>('GET', PATHS.forecastToday, { signal, cache: 'no-store', timeoutMs: 30_000 });
     },
 
     async listQuestions(limit = 20, signal) {

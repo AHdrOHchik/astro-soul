@@ -162,6 +162,16 @@ export function ReportScreen({
     );
   }
 
+  if (view.kind === 'gone') {
+    return (
+      <Screen back={back}>
+        <StateView title={copy.goneTitle} text={copy.goneText}>
+          <Button onClick={() => { flow.order({ renew: true }); }}>{copy.goneOrder}</Button>
+        </StateView>
+      </Screen>
+    );
+  }
+
   if (view.kind === 'pending') {
     return (
       <Screen labelledBy={titleId} back={back} busy>

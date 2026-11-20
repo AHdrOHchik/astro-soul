@@ -1,6 +1,6 @@
 import { Button, Screen, ScreenHeading, Skeleton, SkeletonGroup, StateView } from '@astro-soul/ui';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import type { Api, ForecastDay } from '../api';
+import type { Api, ForecastDay, Me } from '../api';
 import { isApiError } from '../api';
 import { config } from '../config';
 import { copy30 } from '../i18n/round30';
@@ -10,24 +10,26 @@ import styles from './DailyForecastScreen.module.css';
 import type { Telegram } from '../telegram';
 
 export interface DailyForecastScreenProps {
-  api: Pick<Api, 'getForecastToday'>;
+  api: Pick<Api, 'getForecastToday' | 'getMe'>;
   chartId: string | null;
   telegram: Pick<Telegram, 'openLink'>;
   known: ForecastDay | null;
   onKnown: (day: ForecastDay | null) => void;
   onBuildChart: () => void;
+  onChartGone?: () => void;
   onSubscribe?: () => void;
   scroll?: { current: number };
 }
 
-export function DailyForecastScreen({ api, chartId, telegram, known, onKnown, onBuildChart, onSubscribe, scroll }: DailyForecastScreenProps) {
+export function DailyForecastScreen({ api, chartId, telegram, known, onKnown, onBuildChart, onChartGone, onSubscribe, scroll }: DailyForecastScreenProps) {
   const titleId = useId();
   const [localDay, setLocalDay] = useState<ForecastDay | null>(null);
   const shownDay = known ?? localDay;
   const [loading, setLoading] = useState(known === null && chartId !== null);
-  const [error, setError] = useState<'offline' | 'service' | 'month' | null>(null);
+  const [error, setError] = useState<'offline' | 'service' | 'month' | 'timeout' | null>(null);
   const [slow, setSlow] = useState(false);
   const [retryAfter, setRetryAfter] = useState(0);
+  const [quota, setQuota] = useState<Me['quotas'][number] | null>(null);
   const [tick, setTick] = useState(0);
   const triedAt = useRef(0);
   const body = useRef<HTMLElement>(null);
@@ -50,13 +52,21 @@ export function DailyForecastScreen({ api, chartId, telegram, known, onKnown, on
       if (!active) return;
       setLoading(false);
       const reasonCode = isApiError(reason) ? reason.details?.reason ?? reason.details?.code : undefined;
-      if (isApiError(reason) && reason.status === 429 && reasonCode === 'forecast_month_cap') setError('month');
+      if (isApiError(reason) && reason.status === 404 && reasonCode === 'chart_not_found') { onChartGone?.(); return; }
+      if (isApiError(reason) && reason.code === 'TIMEOUT') setError('timeout');
+      else if (isApiError(reason) && reason.status === 429 && reasonCode === 'forecast_month_cap') setError('month');
       else if (isApiError(reason) && reason.status === 503) { setError('service'); triedAt.current = Date.now(); setRetryAfter(60); }
       else if (isApiError(reason) && reason.status === 429) setError('service');
       else setError('offline');
+      // A failed generation never spends a forecast credit. Re-read the server-owned quota
+      // instead of inferring it from the request's failure.
+      void api.getMe(controller.signal).then((me) => {
+        if (!active || controller.signal.aborted) return;
+        setQuota(me.quotas.find((item) => item.code === 'forecast_daily') ?? null);
+      }).catch(() => undefined);
     });
     return () => { active = false; controller.abort(); window.clearTimeout(slowTimer); };
-  }, [api, chartId, known, onKnown, tick]);
+  }, [api, chartId, known, onChartGone, onKnown, tick]);
   useEffect(() => {
     if (retryAfter <= 0) return undefined;
     const timer = window.setTimeout(() => { setRetryAfter((n) => Math.max(0, n - 1)); }, 1000);
@@ -64,18 +74,24 @@ export function DailyForecastScreen({ api, chartId, telegram, known, onKnown, on
   }, [retryAfter]);
   const retry = () => {
     if (error === 'service' && Date.now() - triedAt.current < 60_000) return;
-    onKnown(null); setLocalDay(null); setError(null); setRetryAfter(0); setLoading(true); setSlow(false); setTick((value) => value + 1);
+    onKnown(null); setLocalDay(null); setError(null); setQuota(null); setRetryAfter(0); setLoading(true); setSlow(false); setTick((value) => value + 1);
   };
   if (chartId === null) return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={copy30.forecast.missingTitle} text={copy30.forecast.missingText}><Button onClick={onBuildChart}>{copy30.forecast.build}</Button></StateView></div></Screen>;
   if (loading && shownDay === null) return <Screen busy bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><SkeletonGroup label={copy30.forecast.loading}><Skeleton/><Skeleton/><Skeleton/><Skeleton/></SkeletonGroup>{slow && <p className={styles.muted}>{copy30.forecast.slow}</p>}</div></Screen>;
   if (error !== null && shownDay === null) {
-    const message = error === 'service' ? copy30.forecast.serviceText : error === 'month' ? copy30.forecast.monthText : copy30.forecast.offline;
-    return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={error === 'offline' ? copy30.forecast.offline : error === 'service' ? copy30.forecast.serviceTitle : copy30.forecast.monthTitle} text={message}>{error !== 'month' && <Button onClick={retry} disabled={error === 'service' && retryAfter > 0}>{error === 'service' && retryAfter > 0 ? copy30.forecast.retryAfter.replace('{seconds}', String(retryAfter)) : copy30.forecast.retry}</Button>}<SupportButton link={config.supportLink} telegram={telegram}/></StateView></div></Screen>;
+    const message = error === 'service' ? copy30.forecast.serviceText : error === 'month' ? copy30.forecast.monthText : error === 'timeout' ? copy30.forecast.timeoutText : copy30.forecast.offline;
+    const title = error === 'offline' ? copy30.forecast.offline : error === 'service' ? copy30.forecast.serviceTitle : error === 'timeout' ? copy30.forecast.timeoutTitle : copy30.forecast.monthTitle;
+    return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={title} text={message}>{error !== 'month' && <Button onClick={retry} disabled={error === 'service' && retryAfter > 0}>{error === 'service' && retryAfter > 0 ? copy30.forecast.retryAfter.replace('{seconds}', String(retryAfter)) : copy30.forecast.retry}</Button>}<SupportButton link={config.supportLink} telegram={telegram}/></StateView>{quota && <p className={styles.muted}>{copy30.forecast.quota.replace('{used}', String(quota.used)).replace('{limit}', quota.limit === -1 ? copy30.forecast.quotaUnlimited : String(quota.limit))}</p>}</div></Screen>;
   }
   const day = shownDay;
   if (day === null) return null;
   const date = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${day.date}T12:00:00Z`));
   const facts = day.facts;
+  const factRows = facts === undefined || facts === null ? [] : [
+    ...(typeof facts.moon_sign === 'string' && facts.moon_sign !== '' ? [copy30.forecast.moonSign.replace('{value}', facts.moon_sign)] : []),
+    ...(typeof facts.moon_phase === 'string' && facts.moon_phase !== '' ? [copy30.forecast.moonPhase.replace('{value}', facts.moon_phase)] : []),
+    ...(typeof facts.illumination === 'number' && Number.isFinite(facts.illumination) ? [copy30.forecast.illumination.replace('{value}', String(Math.round(facts.illumination * 100)))] : []),
+  ];
   return <Screen bodyRef={body}><div className={styles.content}>
     <ScreenHeading id={titleId} title={copy30.forecast.title} text={date}/>
     {day.status === 'ready' ? <>
@@ -83,7 +99,7 @@ export function DailyForecastScreen({ api, chartId, telegram, known, onKnown, on
       {day.sections.filter((section) => section.key === 'step').map((section) => <section className={styles.step} key={section.key}><h2>{copy30.forecast.oneStep}</h2><p>{section.body}</p></section>)}
       {day.warnings.includes('length_off') && <p className={styles.muted}>{copy30.forecast.warning}</p>}
     </> : <>
-      {facts && <section className={styles.facts}><p>{copy30.forecast.moonSign.replace('{value}', facts.moon_sign ?? '')}</p><p>{copy30.forecast.moonPhase.replace('{value}', facts.moon_phase ?? '')}</p><p>{copy30.forecast.illumination.replace('{value}', String(Math.round((facts.illumination ?? 0) * 100)))}</p></section>}
+      {factRows.length > 0 && <section className={styles.facts}>{factRows.map((fact) => <p key={fact}>{fact}</p>)}</section>}
       {onSubscribe && <Button variant="secondary" onClick={onSubscribe}>{copy30.forecast.subscribe}</Button>}
     </>}
     <p className={styles.muted}>{copy30.forecast.birthplace.replace('{timezone}', day.timezone)}</p>
