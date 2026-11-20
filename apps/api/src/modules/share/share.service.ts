@@ -16,7 +16,15 @@ import { ShareRepository, type ShareCardKind } from './share.repository';
 
 /** Ответ `POST /share/card`. */
 export interface ShareCardView {
+  /** Подписанная ссылка на файл: живёт 24 часа, в шеринг не идёт. */
   readonly url: string;
+  /**
+   * `https://t.me/<bot>?start=sh_<short_id>` — постоянная ссылка в бота
+   * (контракт 1.6.9). В отличие от `url`, сроком не ограничена: подпись на
+   * файл бот выпускает сам, когда человек нажмёт ссылку. `null` — если имя
+   * бота на сервере не настроено (`BOT_USERNAME`): собрать её не из чего.
+   */
+  readonly share_url: string | null;
   readonly expires_at: string;
   readonly caption: string;
 }
@@ -125,12 +133,15 @@ export class ShareService {
 
     const contentHash = createHash('sha256').update(content.fingerprint).digest('hex');
     const shortId = shortIdOf(contentHash);
-    const footer = this.footerOf(shortId);
+    const shareUrl = buildShareCardLink(this.env.BOT_USERNAME, shortId);
+    const footer = this.footerOf(shareUrl);
 
     let row = await this.repo.find(kind, contentHash);
     let created = false;
+    let buildMs = 0;
 
     if (row === null) {
+      const startedAt = Date.now();
       const built = await this.astro.buildCard({
         kind,
         title: content.title,
@@ -139,6 +150,7 @@ export class ShareService {
         wheel_png_base64: content.wheelPng === null ? null : content.wheelPng.toString('base64'),
         moon_illumination: content.moonIllumination,
       });
+      buildMs = Date.now() - startedAt;
 
       const stored = await this.storage.put('card', Buffer.from(built.png_base64, 'base64'));
 
@@ -163,15 +175,35 @@ export class ShareService {
 
     const signed = this.storage.signedUrl(row.storage_key);
 
+    // Контракт 1.6.9: `share_card_created` — «мы отдали картинку», а не
+    // «человек отправил». Отправку видит только клиент и присылает сам
+    // (`share_sent`, клиентское событие). Здесь — только технические поля:
+    // вид, размер и время сборки. Ни получателя, ни текста карточки.
     await this.events.log({
-      name: 'share_card_opened',
+      name: 'share_card_created',
       userId,
-      props: { kind, channel: 'miniapp', cached: !created },
+      props: {
+        kind,
+        bytes: row.bytes,
+        cached: !created,
+        ...(created ? { build_ms: buildMs } : {}),
+      },
     });
 
-    this.logger.info('share_card_opened', { kind, bytes: row.bytes, short_id: shortId });
+    this.logger.info('share_card_created', {
+      kind,
+      bytes: row.bytes,
+      build_ms: created ? buildMs : null,
+      cached: !created,
+      short_id: shortId,
+    });
 
-    return { url: signed.url, expires_at: signed.expires_at, caption: SHARE_CAPTION };
+    return {
+      url: signed.url,
+      share_url: shareUrl,
+      expires_at: signed.expires_at,
+      caption: SHARE_CAPTION,
+    };
   }
 
   /** Содержимое карточки: всё, что можно показать, и ничего лишнего. */
@@ -300,9 +332,14 @@ export class ShareService {
     return { id: chart.id, data: chart.data as AstroChartData };
   }
 
-  private footerOf(shortId: string): string | null {
-    const link = buildShareCardLink(this.env.BOT_USERNAME, shortId);
-
+  /**
+   * Подвал картинки: та же ссылка, что отдаётся в `share_url`, но без схемы.
+   *
+   * Место в подвале карточки дорогое, а `t.me/...` Telegram всё равно делает
+   * ссылкой. Отдельная функция, потому что `share_url` обязан быть полным
+   * `https://…`: его открывают `openTelegramLink`, а не текст на картинке.
+   */
+  private footerOf(link: string | null): string | null {
     // Без имени бота ссылку не собрать: карточка без ссылки всё равно лучше,
     // чем карточка с битой ссылкой, но это видно в логе, а не в тишине.
     if (link === null) {
@@ -310,8 +347,6 @@ export class ShareService {
       return null;
     }
 
-    // На картинке — короткий вид без схемы: место в подвале карточки дорогое,
-    // а `t.me/...` Telegram всё равно делает ссылкой.
     return link.replace(/^https:\/\//u, '');
   }
 }
