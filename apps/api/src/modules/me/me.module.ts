@@ -6,12 +6,16 @@ import { EventsModule } from '../events/events.module';
 import { FilesModule } from '../files/files.module';
 import { PdfModule } from '../pdf/pdf.module';
 import { QuotasService } from '../quotas/quotas.service';
+import { TelegramModule } from '../telegram/telegram.module';
 import { UsersRepository } from '../users/users.repository';
 import { MeController } from './me.controller';
 import { MeService } from './me.service';
 
 @Module({
-  imports: [BillingModule, EventsModule, PlansModule, PdfModule, FilesModule],
+  // `TelegramModule` нужен только за состоянием inline-режима (`share.inline`
+  // в `GET /me`, контракт 1.6.10). Цикла нет: `TelegramModule` про `me` не
+  // знает и не импортирует `BillingModule`.
+  imports: [BillingModule, EventsModule, PlansModule, PdfModule, FilesModule, TelegramModule],
   controllers: [MeController],
   providers: [MeService, UsersRepository, EntitlementsService, QuotasService],
 })

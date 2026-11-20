@@ -11,6 +11,7 @@ import { FileStorageService } from '../files/file-storage.service';
 import { PdfRepository } from '../pdf/pdf.repository';
 import { PaymentsService } from '../billing/payments.service';
 import { SubscriptionCancelService } from '../billing/subscription-cancel.service';
+import { TelegramInlineService } from '../telegram/telegram-inline.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { JsonLogger } from '../../common/logger';
@@ -44,6 +45,7 @@ export class MeService {
     @Inject(FileStorageService) private readonly storage: FileStorageService,
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(SubscriptionCancelService) private readonly subscriptionCancel: SubscriptionCancelService,
+    @Inject(TelegramInlineService) private readonly inline: TelegramInlineService,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -120,6 +122,19 @@ export class MeService {
       limits: {
         geo_min_query_length: this.env.GEO_MIN_QUERY_LENGTH,
         geo_max_query_length: this.env.GEO_MAX_QUERY_LENGTH,
+      },
+      // Что клиент может сделать с шарингом — до создания карточки
+      // (контракт 1.6.10). Без этого поля кнопка «Поделиться» выглядела бы
+      // рабочей, а первый тап не открывал ничего: `share_url` приходит только
+      // в ответе `POST /share/card`, и только там клиент узнавал, что ссылки
+      // нет вовсе.
+      share: {
+        // Тот же признак, что делает `ShareCard.share_url` не-`null`.
+        link: this.env.BOT_USERNAME !== undefined,
+        // Последнее известное `getMe().supports_inline_queries`; `unknown` —
+        // проверки не было. Не «выключено»: `/setinline` мог включить режим
+        // уже после старта API.
+        inline: this.inline.mode(),
       },
     };
   }
