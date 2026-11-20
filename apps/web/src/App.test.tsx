@@ -1278,6 +1278,26 @@ describe('App: round30 main tabs', () => {
     expect(api.createQuestion).not.toHaveBeenCalled();
   });
 
+  it('does not place the question text or answer in product analytics', async () => {
+    const { api, analytics, user } = returning(meSubscribed);
+    await screen.findByRole('heading', { name: ru.chart.title });
+    await user.click(screen.getByRole('button', { name: 'Спросить' }));
+    const privateText = 'Секретный вопрос о моей работе';
+    const privateAnswer = 'Тайный ответ, который не должен попасть в аналитику.';
+    api.createQuestion.mockResolvedValue({ id: 'private-question', status: 'pending', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } });
+    api.getQuestion.mockResolvedValue({
+      id: 'private-question', status: 'ready', question: privateText,
+      sections: [{ key: 'answer', title: 'Ответ', body: privateAnswer }], chars: privateAnswer.length,
+      warnings: [], topic: 'career', created_at: '2026-11-15T10:00:00Z', disclaimer: 'Развлекательный текст.',
+      quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' },
+    });
+    await user.type(screen.getByRole('textbox', { name: 'Напиши вопрос о своей карте' }), privateText);
+    await user.click(within(screen.getByRole('main')).getByRole('button', { name: /^Спросить$/ }));
+    expect(await screen.findByText(privateAnswer, {}, { timeout: 5000 })).toBeInTheDocument();
+    expect(api.createQuestion).toHaveBeenCalledWith(privateText, expect.any(String), expect.any(AbortSignal));
+    expect(JSON.stringify(analytics.events)).not.toContain(privateText);
+    expect(JSON.stringify(analytics.events)).not.toContain(privateAnswer);
+  });
   it('submits a subscriber question through the asynchronous questions endpoint', async () => {
     const { api, user } = returning(meSubscribed);
     await screen.findByRole('heading', { name: ru.chart.title });

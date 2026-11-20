@@ -63,11 +63,55 @@ describe('DailyForecastScreen', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(api.getForecastToday).not.toHaveBeenCalled();
   });
+  it('retries after the 503 cooldown and makes exactly one fresh request', async () => {
+    vi.useFakeTimers();
+    const api = fakeApi();
+    api.getForecastToday.mockRejectedValueOnce(apiError('UPSTREAM_LLM', { status: 503 })).mockResolvedValueOnce(day());
+    render(<DailyForecastScreen api={api} chartId="chart-id" telegram={fakeTelegram()} known={null} onKnown={vi.fn()} onBuildChart={vi.fn()} onSubscribe={vi.fn()}/>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByRole('button', { name: /Попробовать снова через/ })).toBeDisabled();
+    for (let second = 0; second < 61; second += 1) await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    const retry = screen.getByRole('button', { name: 'Попробовать снова' });
+    expect(retry).toBeEnabled();
+    await act(async () => { retry.click(); await Promise.resolve(); await Promise.resolve(); });
+    expect(screen.getByText('Луна в знаке: Лев')).toBeInTheDocument();
+    expect(api.getForecastToday).toHaveBeenCalledTimes(2);
+  });
+  it('recovers from offline and replaces the error with the fresh server response', async () => {
+    const { api } = renderScreen({ answer: apiError('NETWORK') });
+    expect(await screen.findByRole('heading', { name: 'Нет связи' })).toBeInTheDocument();
+    api.getForecastToday.mockResolvedValueOnce(day());
+    screen.getByRole('button', { name: 'Попробовать снова' }).click();
+    expect(await screen.findByText('Луна в знаке: Лев')).toBeInTheDocument();
+    expect(api.getForecastToday).toHaveBeenCalledTimes(2);
+  });
+  it('uses the response date even when it differs from the phone date, and ignores unknown warnings', async () => {
+    renderScreen({ answer: day({ date: '2026-11-19', warnings: ['ungrounded', 'future_internal_code'] as unknown as ForecastDay['warnings'] }) });
+    expect(await screen.findByText('19 ноября 2026 г.')).toBeInTheDocument();
+    expect(screen.getByText(/Europe\/Amsterdam/)).toBeInTheDocument();
+    expect(screen.queryByText('ungrounded')).not.toBeInTheDocument();
+    expect(screen.queryByText('future_internal_code')).not.toBeInTheDocument();
+  });
+  it('shows only length_off as a forecast warning even when other codes are present', async () => {
+    renderScreen({ answer: day({ status: 'ready', access: 'subscription', sections: [{ key: 'summary', title: 'Итог', body: 'Текст' }], warnings: ['length_off', 'ungrounded', 'future_internal_code'] as unknown as ForecastDay['warnings'] }) });
+    expect(await screen.findByText('Текст немного короче обычного')).toBeInTheDocument();
+    expect(screen.queryByText('ungrounded')).not.toBeInTheDocument();
+    expect(screen.queryByText('future_internal_code')).not.toBeInTheDocument();
+  });
+  it('keeps facts_only empty of generated timestamps and windows even when an optional date is present', async () => {
+    renderScreen({ answer: day({ generated_at: '2026-11-15T15:00:00Z', sections: [], chars: 0, facts: { moon_sign: 'Лев', moon_phase: 'убывающая', illumination: 0.72 } }) });
+    expect(await screen.findByText('Освещённость: 72%')).toBeInTheDocument();
+    expect(screen.getByText('Луна в знаке: Лев')).toBeInTheDocument();
+    expect(screen.getByText('Фаза Луны: убывающая')).toBeInTheDocument();
+    expect(screen.getByText('Луна в знаке: Лев').parentElement?.querySelectorAll('p')).toHaveLength(3);
+    expect(screen.queryByText(/generated_at|15:00|0 знаков/i)).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Открыть подписку' })).toHaveLength(1);
+  });
   it('pauses for forecast_month_cap without retrying and keeps the support route', async () => {
     const { api } = renderScreen({ answer: apiError('RATE_LIMITED', { status: 429, details: { reason: 'forecast_month_cap' } }) });
     expect(await screen.findByText('Прогнозы приостановлены до следующего месяца.')).toBeInTheDocument();
     expect(screen.queryByText(/forecast_month_cap|429/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Повторить' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Попробовать снова' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Контакт поддержки ещё не задан' })).toBeDisabled();
     expect(api.getForecastToday).toHaveBeenCalledOnce();
   });
@@ -75,7 +119,9 @@ describe('DailyForecastScreen', () => {
     const { api } = renderScreen({ answer: apiError('UPSTREAM_LLM', { status: 503 }) });
     expect(await screen.findByText('Прогноз временно недоступен.')).toBeInTheDocument();
     expect(screen.queryByText(/UPSTREAM|503|forecast_failed/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Повторить через/ })).toBeDisabled();
+    expect(screen.queryByText(/вчерашний текст|прогноз за вчера/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Сегодня прогноз не собрался' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Попробовать снова через/ })).toBeDisabled();
     expect(api.getForecastToday).toHaveBeenCalledOnce();
   });
 });

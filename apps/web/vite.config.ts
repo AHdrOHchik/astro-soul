@@ -52,7 +52,6 @@ export default defineConfig(({ mode, command }) => {
     // and a browser cannot import CommonJS, so it has to be pre-bundled like an npm dependency.
     optimizeDeps: { include: ['@astro-soul/shared'] },
     server: {
-      allowedHosts: ['.e2b.app'],
       proxy: useMock
         ? undefined
         : { '/api': { target: env.API_PROXY_TARGET ?? 'http://localhost:8080', changeOrigin: true } },
