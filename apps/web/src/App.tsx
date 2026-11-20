@@ -2,7 +2,7 @@ import { Button, InfoIcon, Screen, StateView } from '@astro-soul/ui';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AnalyticsStep, Track } from './analytics';
-import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, ForecastDay, Me, OrderablePlanCode, PlanKind, Report } from './api';
+import type { Api, ChartCreateRequest, ChartResult, FieldError, Forecast, ForecastDay, Me, OrderablePlanCode, PlanKind, Question, Report } from './api';
 import { ErrorState } from './components/ErrorState';
 import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
@@ -13,6 +13,8 @@ import type { TermsReload } from './lib/termsReload';
 import { BottomTabs, type MainTab } from './components/BottomTabs';
 import { DailyForecastScreen } from './screens/DailyForecastScreen';
 import { QuestionsScreen } from './screens/QuestionsScreen';
+import type { CompatibilityHistoryCache } from './screens/compatibility/CompatibilityHistory';
+import type { HistoryPageCache } from './lib/history-pagination';
 import { BirthDateScreen } from './screens/BirthDateScreen';
 import { BirthPlaceScreen } from './screens/BirthPlaceScreen';
 import { BirthTimeScreen } from './screens/BirthTimeScreen';
@@ -35,8 +37,6 @@ export interface AppProps {
   telegram: Telegram;
   /** API origin without a trailing slash; '' = this page's origin. */
   apiBaseUrl: string;
-  /** Username of the bot for the link in a shared message, without `@`; '' = no link. */
-  botUsername?: string;
   /** Where the support button leads; '' = no contact yet, the button says so. */
   supportLink?: string;
   /**
@@ -76,7 +76,6 @@ export function App({
   api,
   telegram,
   apiBaseUrl,
-  botUsername = '',
   supportLink = '',
   subscriptions = false,
   keys,
@@ -168,7 +167,6 @@ export function App({
       api={api}
       telegram={telegram}
       apiBaseUrl={apiBaseUrl}
-      botUsername={botUsername}
       supportLink={supportLink}
       subscriptions={subscriptions}
       keys={keys}
@@ -269,8 +267,7 @@ function routeRejection(errors: readonly FieldError[]): { messages: ServerErrors
   return { messages, routes: FORM_ROUTES.slice(0, earliest + 1) };
 }
 
-interface ScreensProps extends Omit<AppProps, 'termsReload' | 'botUsername' | 'supportLink' | 'subscriptions'> {
-  botUsername: string;
+interface ScreensProps extends Omit<AppProps, 'termsReload' | 'supportLink' | 'subscriptions'> {
   supportLink: string;
   subscriptions: boolean;
   /** Who the user is, as the server said when the app started. */
@@ -329,7 +326,6 @@ function Screens({
   api,
   telegram,
   apiBaseUrl,
-  botUsername,
   supportLink,
   subscriptions,
   keys,
@@ -382,7 +378,7 @@ function Screens({
       if (purchase?.plan === 'compat_249') {
         // A compatibility credit is confirmed only by its own quota endpoint, never by an active subscription in `Me`.
         try {
-          const compatibility = await api.getCompatibilities(signal);
+          const compatibility = await api.getCompatibilities(20, 0, signal);
           if (signal?.aborted !== true && awaited.current === purchase && compatibility.quota.kind === 'purchase' && compatibility.quota.left > 0) {
             awaited.current = null;
             setAwaitedPurchase(null);
@@ -404,6 +400,8 @@ function Screens({
   // Either field says it. Whether the chart is really there is the answer of `GET /charts/current`.
   const [home, setHome] = useState<Home>(meAtStart.has_chart || typeof meAtStart.chart_id === 'string' ? 'current' : 'welcome');
   const [knownDailyForecast, setKnownDailyForecast] = useState<{ context: string; day: ForecastDay } | null>(null);
+  const [questionHistoryCache, setQuestionHistoryCache] = useState<(HistoryPageCache<Question> & { quota: Question['quota'] | null }) | null>(null);
+  const [compatibilityHistoryCache, setCompatibilityHistoryCache] = useState<CompatibilityHistoryCache | null>(null);
   const dailyScroll = useRef(0);
   const questionScroll = useRef(0);
   const [stack, setStack] = useState<readonly Route[]>(() => (termsRenewed ? [home, 'consent'] : [home]));
@@ -414,6 +412,13 @@ function Screens({
   const [shownCharts, setShownCharts] = useState<ShownCharts>({ current: null, built: null });
   // Counts the times the app has dropped a chart: the chart screen of before is not the chart screen of after.
   const tabChartId = me.chart_id ?? shownCharts.current?.chart.chart_id ?? shownCharts.built?.result.chart.chart_id ?? null;
+  const historyChartId = useRef(tabChartId);
+  useEffect(() => {
+    if (historyChartId.current === tabChartId) return;
+    historyChartId.current = tabChartId;
+    setQuestionHistoryCache(null);
+    setCompatibilityHistoryCache(null);
+  }, [tabChartId]);
   const dailyContext = `${tabChartId ?? ''}:${String(me.entitlements.is_active)}`;
   const rememberDailyForecast = useCallback((day: ForecastDay | null) => {
     setKnownDailyForecast(day === null ? null : { context: dailyContext, day });
@@ -642,7 +647,6 @@ function Screens({
         telegram={telegram}
         request={route === 'current' ? null : request}
         apiBaseUrl={apiBaseUrl}
-        botUsername={botUsername}
         track={track}
         back={back}
         onEdit={() => {
@@ -692,7 +696,7 @@ function Screens({
   }
 
   // The chart a report can be about: the one the user came from, else the one `Me` names.
-  const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id, share: null } : null);
+  const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id } : null);
   // The chart the paywall sells the report for; null when the report is not on offer there.
   const paywallChartId = reportChart?.chartId ?? null;
   const offersReport = paywall.offersReport && paywallChartId !== null;
@@ -728,7 +732,7 @@ function Screens({
           offersReport={offersReport}
           reportRequired={paywall.reportRequired && offersReport}
           compatibilityPurchase={paywall.compatibility}
-          refreshCompatibility={(signal) => api.getCompatibilities(signal)}
+          refreshCompatibility={(signal) => api.getCompatibilities(20, 0, signal)}
           onCompatibilityPaid={compatibilityPaid}
           awaiting={awaitedPurchase === null ? null : { planCode: awaitedPurchase.plan, kind: awaitedPurchase.kind, report: awaitedPurchase.report }}
           awaitingChartId={awaitedChartId}
@@ -778,7 +782,6 @@ function Screens({
           timeZone={null}
           known={knownForecast}
           onKnown={rememberForecast}
-          share={reportChart.share}
           now={clock}
           track={track}
           back={back}
@@ -799,9 +802,9 @@ function Screens({
         <DailyForecastScreen key={dailyContext} api={api} chartId={chartId} telegram={telegram}
           known={knownDailyForecast?.context === dailyContext ? knownDailyForecast.day : null}
           now={clock} onKnown={rememberDailyForecast} onBuildChart={handleMissing} onChartGone={handleChartGone}
-          onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll} />
+          onSubscribe={canSubscribe ? openSubscriptions : undefined} scroll={dailyScroll} track={track} />
       );
-      return withTabs(<QuestionsScreen api={api} telegram={telegram} subscribed={me.entitlements.is_active && chartId !== null} chartAvailable={chartId !== null} onSubscribe={canSubscribe ? openSubscriptions : undefined} onBuildChart={handleMissing} onChartGone={handleChartGone} scroll={questionScroll}/>);
+      return withTabs(<QuestionsScreen api={api} telegram={telegram} subscribed={me.entitlements.is_active && chartId !== null} chartAvailable={chartId !== null} onSubscribe={canSubscribe ? openSubscriptions : undefined} onBuildChart={handleMissing} onChartGone={handleChartGone} scroll={questionScroll} cache={questionHistoryCache} onCacheChange={setQuestionHistoryCache}/>);
     }
     case 'report':
       // Not reachable without a chart; if it ever is, the screen under this one is the place to be.
@@ -817,7 +820,6 @@ function Screens({
           justPaid={reportEntry.justPaid}
           apiBaseUrl={apiBaseUrl}
           supportLink={supportLink}
-          share={reportChart.share}
           track={track}
           back={back}
           onPaymentRequired={(explain) => {
@@ -868,7 +870,13 @@ function Screens({
           onOpenCompatibility={openCompatibility}
           onOpenSavedCompatibility={openSavedCompatibility}
           onBuyCompatibility={buyCompatibility}
-          onDeleted={onDeleted}
+          compatibilityCache={compatibilityHistoryCache}
+          onCompatibilityCacheChange={setCompatibilityHistoryCache}
+          onDeleted={(hadSubscription) => {
+            setQuestionHistoryCache(null);
+            setCompatibilityHistoryCache(null);
+            onDeleted(hadSubscription);
+          }}
         />
         <BottomTabs active={mainTab} onSelect={selectMainTab}/>
         </div>

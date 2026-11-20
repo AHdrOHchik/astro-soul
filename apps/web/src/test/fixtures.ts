@@ -305,6 +305,9 @@ export function rejection(...fieldErrors: FieldError[]): ApiError {
 
 export const compatibilityList: CompatibilityList = {
   items: [],
+  total: 0,
+  limit: 20,
+  offset: 0,
   quota: { kind: 'purchase', left: 1, resets_at: null },
 };
 
@@ -341,13 +344,16 @@ export function fakeApi() {
     createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),
     orderReport: vi.fn<Api['orderReport']>().mockResolvedValue(report),
     getReport: vi.fn<Api['getReport']>().mockResolvedValue(report),
+    createReportPdf: vi.fn<Api['createReportPdf']>().mockResolvedValue({ status: 'ready', url: '/api/v1/files/pdf/report.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' }),
+    getReportPdf: vi.fn<Api['getReportPdf']>().mockResolvedValue({ status: 'ready', url: '/api/v1/files/pdf/report.pdf?sig=fresh', expires_at: '2026-11-16T10:00:00Z' }),
+    createShareCard: vi.fn<Api['createShareCard']>().mockResolvedValue({ url: '/api/v1/files/card/card.png?sig=secret', expires_at: '2026-11-16T10:00:00Z', caption: 'Мне тут сделали разбор личности — залипательно' }),
     getCompatibilities: vi.fn<Api['getCompatibilities']>().mockResolvedValue(compatibilityList),
     orderCompatibility: vi.fn<Api['orderCompatibility']>().mockResolvedValue({ compatibility_id: 'compatibility-1', status: 'pending' }),
     getCompatibility: vi.fn<Api['getCompatibility']>().mockResolvedValue(compatibilityPending),
     // The server has prepared no forecast yet: so it is for every chart on its first day.
     getForecast: vi.fn<Api['getForecast']>().mockResolvedValue(null),
     getForecastToday: vi.fn<Api['getForecastToday']>().mockResolvedValue({ date: '2026-11-15', timezone: 'Europe/Amsterdam', status: 'facts_only', access: 'facts_only', sections: [], chars: 0, warnings: [], facts: { moon_sign: 'Овен', moon_phase: 'растущая', illumination: 0.5 }, disclaimer: 'Развлекательный текст.' }),
-    listQuestions: vi.fn<Api['listQuestions']>().mockResolvedValue({ items: [], quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
+    listQuestions: vi.fn<Api['listQuestions']>().mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0, quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
     createQuestion: vi.fn<Api['createQuestion']>().mockResolvedValue({ id: 'question-id', status: 'pending', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
     getQuestion: vi.fn<Api['getQuestion']>().mockResolvedValue({ id: 'question-id', status: 'pending', question: 'Как лучше распределить силы?', sections: [], chars: 0, warnings: [], topic: 'self', created_at: '2026-11-15T10:00:00Z', disclaimer: 'Развлекательный текст.', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }),
     ask: vi.fn<Api['ask']>().mockResolvedValue(askAnswer),
@@ -410,7 +416,7 @@ export function fakeTermsReload(options: { refusedVersion?: string | null; stora
 }
 
 /** Where the app runs; the methods are always spies. */
-type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton'>;
+type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery'>;
 
 /** `invoice`: how Telegram closes every invoice it is asked to open; «paid» unless the test says otherwise. */
 export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | Promise<InvoiceOutcome> } = {}) {
@@ -427,6 +433,8 @@ export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | 
     close: vi.fn<Telegram['close']>(),
     openInvoice: vi.fn<Telegram['openInvoice']>().mockImplementation(() => Promise.resolve(invoice)),
     openLink: vi.fn<Telegram['openLink']>(),
+    canSwitchInlineQuery: where.canSwitchInlineQuery ?? true,
+    switchInlineQuery: vi.fn<Telegram['switchInlineQuery']>().mockReturnValue(true),
   };
 }
 

@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type Question } from '../api';
+import { copy30 } from '../i18n/round30';
 import { fakeApi, fakeTelegram } from '../test/fixtures';
-import { QuestionsScreen } from './QuestionsScreen';
+import { QuestionsScreen, type QuestionsHistoryCache } from './QuestionsScreen';
 
 const result = (overrides: Partial<Question> = {}): Question => ({ id: 'q-1', status: 'pending', question: 'Как мне распределить силы?', sections: [], chars: 0, warnings: [], topic: 'self', created_at: '2026-11-15T10:00:00Z', disclaimer: 'Дисклеймер сервера.', quota: { used: 1, limit: 3, resets_at: '2026-11-16T00:00:00Z' }, ...overrides });
 function setup({ subscribed = true, api = fakeApi() }: { subscribed?: boolean; api?: ReturnType<typeof fakeApi> } = {}) {
@@ -47,7 +48,7 @@ describe('QuestionsScreen', () => {
   it('requests at most twenty history entries and has no per-question delete action', async () => {
     const { api } = setup();
     await screen.findByText('Вопросы удаляются только вместе с аккаунтом.');
-    expect(api.listQuestions).toHaveBeenCalledWith(20, expect.any(AbortSignal));
+    expect(api.listQuestions).toHaveBeenCalledWith(20, 0, expect.any(AbortSignal));
     expect(screen.queryByRole('button', { name: /удалить вопрос/i })).not.toBeInTheDocument();
     expect(screen.getByText('Вопросы удаляются только вместе с аккаунтом.')).toBeInTheDocument();
   });
@@ -241,6 +242,45 @@ describe('QuestionsScreen', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Спросить снова' })); await Promise.resolve(); await Promise.resolve(); });
     expect(api.createQuestion).toHaveBeenCalledOnce();
     expect(api.createQuestion.mock.calls[0]?.[0]).toBe(pending.question);
+  });
+
+  it('loads 20-item history pages at the loaded-item offset, keeps prior rows on error, and retries that page', async () => {
+    const api = fakeApi();
+    const first = Array.from({ length: 20 }, (_, index) => result({ id: `q-${String(index)}`, question: `Вопрос номер ${String(index)}` }));
+    const last = result({ id: 'q-last', question: 'Последний вопрос страницы' });
+    api.listQuestions.mockResolvedValueOnce({ items: first, total: 21, limit: 20, offset: 0, quota: result().quota })
+      .mockRejectedValueOnce(new ApiError('NETWORK'))
+      .mockResolvedValueOnce({ items: [last], total: 21, limit: 20, offset: 20, quota: last.quota });
+    render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed onChartGone={vi.fn()}/>);
+
+    expect(await screen.findByText(copy30.questions.historyCount(21))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: copy30.questions.loadMore }));
+    expect(await screen.findByText(copy30.questions.loadMoreError)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Вопрос номер 0/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: copy30.questions.retryButton }));
+    expect(await screen.findByRole('button', { name: /Последний вопрос страницы/ })).toBeInTheDocument();
+    expect(api.listQuestions.mock.calls.map(([limit, offset]) => [limit, offset])).toEqual([[20, 0], [20, 20], [20, 20]]);
+    expect(screen.getByText(copy30.questions.historyCount(21))).toBeInTheDocument();
+  });
+
+  it('stops after an empty final page with a positive total and reuses cached first-page data on return', async () => {
+    const api = fakeApi();
+    const firstPage = Array.from({ length: 20 }, (_, index) => result({ id: `cache-${String(index)}`, question: `Кэшированный вопрос ${String(index)}` }));
+    const cache = { current: null as QuestionsHistoryCache | null };
+    api.listQuestions.mockResolvedValueOnce({ items: firstPage, total: 25, limit: 20, offset: 0, quota: result().quota })
+      .mockResolvedValueOnce({ items: [], total: 25, limit: 20, offset: 20, quota: result().quota });
+    const initial = render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed onChartGone={vi.fn()} cache={cache.current} onCacheChange={(value) => { cache.current = value; }}/>);
+    expect(await screen.findByRole('button', { name: /Кэшированный вопрос 0/ })).toBeInTheDocument();
+    await waitFor(() => { expect(cache.current).not.toBeNull(); });
+    fireEvent.click(screen.getByRole('button', { name: copy30.questions.loadMore }));
+    await waitFor(() => { expect(cache.current?.hasMore).toBe(false); });
+    expect(api.listQuestions).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(copy30.questions.historyEmpty)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: copy30.questions.loadMore })).not.toBeInTheDocument();
+    initial.unmount();
+    render(<QuestionsScreen api={api} telegram={fakeTelegram()} subscribed onChartGone={vi.fn()} cache={cache.current} onCacheChange={(value) => { cache.current = value; }}/>);
+    expect(screen.getByRole('button', { name: /Кэшированный вопрос 0/ })).toBeInTheDocument();
+    expect(api.listQuestions).toHaveBeenCalledTimes(2);
   });
 
   it('ignores unknown warnings rather than showing a technical code', async () => {

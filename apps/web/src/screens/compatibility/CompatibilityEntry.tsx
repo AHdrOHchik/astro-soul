@@ -31,7 +31,7 @@ export function CompatibilityEntry({ api, chartId, onOpenForm, onBuy, reportEntr
 
   useEffect(() => {
     const controller = new AbortController();
-    void api.getCompatibilities(controller.signal).then(async ({ quota }) => {
+    void api.getCompatibilities(20, 0, controller.signal).then(async ({ quota }) => {
       if (controller.signal.aborted) return;
       if (quota.kind !== 'none' && !forcePurchase) {
         setEntry({ status: 'ready', quota, offer: null, priceUnavailable: false });

@@ -7,7 +7,6 @@ import {
   Progress,
   Screen,
   ScreenHeading,
-  ShareIcon,
   Skeleton,
   SkeletonGroup,
   StarsIcon,
@@ -16,14 +15,15 @@ import {
 } from '@astro-soul/ui';
 import { useEffect, useId, useLayoutEffect, useRef, useState, type Ref } from 'react';
 import type { Track } from '../../analytics';
-import { absoluteApiUrl, isApiError, rejectionTextOf, REPORT_SECTION_KEYS, type Api, type Report, type ReportSection } from '../../api';
+import { absoluteApiUrl, isAbortError, isApiError, rejectionTextOf, REPORT_SECTION_KEYS, type Api, type Report, type ReportSection } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
 import { Markdown } from '../../components/Markdown';
 import { Reference } from '../../components/Reference';
 import { SupportButton } from '../../components/SupportButton';
+import { ShareCardButton } from '../../components/ShareCardButton';
 import { pluralForm } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
-import type { IdempotencyKeys } from '../../lib/idempotency';
+import { newIdempotencyKey, type IdempotencyKeys } from '../../lib/idempotency';
 import type { Telegram } from '../../telegram';
 import styles from './ReportScreen.module.css';
 import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
@@ -33,8 +33,8 @@ const copy = ru.report;
 const SKELETON_LINES = [0, 1, 2, 3];
 
 export interface ReportScreenProps {
-  api: Pick<Api, 'orderReport' | 'getReport' | 'getCompatibilities' | 'getPlans'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
+  api: Pick<Api, 'orderReport' | 'getReport' | 'createReportPdf' | 'getReportPdf' | 'createShareCard' | 'getCompatibilities' | 'getPlans'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery'>;
   keys: IdempotencyKeys;
   /** The chart the report is about. */
   chartId: string;
@@ -48,8 +48,6 @@ export interface ReportScreenProps {
   apiBaseUrl: string;
   /** Where the support button leads; '' while there is no contact. */
   supportLink: string;
-  /** What the share button sends: the picture of the chart and the words with it. Never the text of the report. */
-  share: { url: string; text: string } | null;
   track: Track;
   back?: ScreenProps['back'];
   /** The server will not make the report without a purchase: on to the paywall. */
@@ -83,7 +81,6 @@ export function ReportScreen({
   justPaid,
   apiBaseUrl,
   supportLink,
-  share,
   track,
   back,
   onPaymentRequired,
@@ -318,19 +315,8 @@ export function ReportScreen({
             reportEntry
           />
         )}
-        {done && <Download report={shown} apiBaseUrl={apiBaseUrl} telegram={telegram} refresh={flow.refresh} />}
-        {done && share && (
-          <Button
-            variant="secondary"
-            icon={<ShareIcon />}
-            onClick={() => {
-              track('share_clicked');
-              telegram.share(share.url, share.text);
-            }}
-          >
-            {ru.chart.share}
-          </Button>
-        )}
+        {done && <Download report={shown} api={api} apiBaseUrl={apiBaseUrl} telegram={telegram} />}
+        {done && <ShareCardButton api={api} kind="insight" telegram={telegram} track={track} label={ru.chart.share}/> }
       </div>
     </Screen>
   );
@@ -395,59 +381,99 @@ function Chapters({ sections, contents = false, first }: ChaptersProps) {
 interface DownloadProps {
   report: Report;
   apiBaseUrl: string;
+  api: Pick<Api, 'createReportPdf' | 'getReportPdf'>;
   telegram: Pick<Telegram, 'openLink'>;
-  refresh: ReportFlow['refresh'];
 }
 
-/** True only for a link the server says is gone. A check that could not be made says nothing. */
-async function isGone(url: string): Promise<boolean> {
-  try {
-    return (await fetch(url, { method: 'HEAD' })).status === 404;
-  } catch {
-    return false;
-  }
+function isNotPaid(error: unknown): boolean {
+  return isApiError(error) && error.status === 403 && error.details?.reason === 'report_not_paid';
 }
 
-/**
- * The download button, only when the server gave a link. The link is signed and expires, so it
- * lives in memory and nowhere else; one that has expired while the screen was open is asked
- * for again, once.
- */
-function Download({ report, apiBaseUrl, telegram, refresh }: DownloadProps) {
+function isQueueFailure(error: unknown): boolean {
+  return isApiError(error) && error.status === 503 && error.details?.reason === 'pdf_failed';
+}
+
+function Download({ report, apiBaseUrl, api, telegram }: DownloadProps) {
   const [busy, setBusy] = useState(false);
-  const [unavailable, setUnavailable] = useState(false);
-  if (report.pdf_url === null) return null;
-  const absolute = (path: string) => absoluteApiUrl(path, apiBaseUrl, window.location.origin) ?? path;
+  const [failed, setFailed] = useState(false);
+  const [notPaid, setNotPaid] = useState(false);
+  const [retryAfter, setRetryAfter] = useState(0);
+  const life = useRef<AbortController | null>(null);
+  useEffect(() => () => { life.current?.abort(); }, []);
+  useEffect(() => {
+    if (retryAfter <= 0) return undefined;
+    const timer = window.setTimeout(() => { setRetryAfter((n) => Math.max(0, n - 1)); }, 1000);
+    return () => { window.clearTimeout(timer); };
+  }, [retryAfter]);
 
-  const open = async (path: string) => {
+  if (notPaid) return <Notice tone="info">{copy.pdfNotPaid}</Notice>;
+  if (!report.is_paid || report.status !== 'ready') return null;
+  const absolute = (path: string) => absoluteApiUrl(path, apiBaseUrl, window.location.origin);
+
+  const run = async () => {
+    if (busy || retryAfter > 0) return;
     setBusy(true);
-    setUnavailable(false);
-    let url: string | null = absolute(path);
-    if (await isGone(url)) {
-      const fresh = await refresh();
-      url = fresh?.pdf_url ? absolute(fresh.pdf_url) : null;
+    setFailed(false);
+    const controller = new AbortController();
+    life.current = controller;
+    const started = Date.now();
+    try {
+      // `Report.pdf_url` is only a hint that a PDF exists. It is never opened or cached:
+      // GET must issue a fresh signature on every tap, even after this screen stayed open overnight.
+      let status = report.pdf_url !== null
+        ? await api.getReportPdf(report.report_id, controller.signal)
+        : await api.createReportPdf(report.report_id, newIdempotencyKey(), controller.signal);
+      // A fresh status check may confirm the previous job failed. Retry it with a new
+      // idempotency key rather than repeatedly polling the same terminal failure.
+      if (status.status === 'failed') {
+        status = await api.createReportPdf(report.report_id, newIdempotencyKey(), controller.signal);
+      }
+      let delay = 3000;
+      while (status.status === 'pending' && Date.now() - started < 60_000) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(resolve, Math.min(delay, 60_000 - (Date.now() - started)));
+          controller.signal.addEventListener('abort', () => { window.clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+        });
+        if (controller.signal.aborted) return;
+        status = await api.getReportPdf(report.report_id, controller.signal);
+        delay = Math.min(8000, delay + 2000);
+      }
+      if (status.status === 'failed' || status.status === 'pending') {
+        setFailed(true);
+        return;
+      }
+      if (status.url === undefined) {
+        setFailed(true);
+        return;
+      }
+      const url = absolute(status.url);
+      if (url === null) {
+        setFailed(true);
+        return;
+      }
+      telegram.openLink(url);
+    } catch (error) {
+      if (controller.signal.aborted || isAbortError(error)) return;
+      if (isNotPaid(error)) {
+        setNotPaid(true);
+      } else {
+        setFailed(true);
+        if (isQueueFailure(error)) setRetryAfter(10);
+      }
+    } finally {
+      if (life.current === controller) life.current = null;
+      if (!controller.signal.aborted) setBusy(false);
     }
-    setBusy(false);
-    if (url === null) setUnavailable(true);
-    else telegram.openLink(url);
   };
 
-  const path = report.pdf_url;
-  return (
-    <>
-      <Button
-        variant="secondary"
-        icon={<DownloadIcon />}
-        disabled={busy}
-        onClick={() => {
-          void open(path);
-        }}
-      >
-        {copy.pdf}
-      </Button>
-      {unavailable && <Notice tone="warning">{copy.pdfUnavailable}</Notice>}
-    </>
-  );
+  return <>
+    <Button variant="secondary" icon={<DownloadIcon />} disabled={busy || retryAfter > 0} onClick={() => { void run(); }}>
+      {busy ? copy.pdfPreparing : copy.pdf}
+    </Button>
+    {failed && <div role="status"><Notice tone="warning">{copy.pdfFailed}</Notice></div>}
+    {failed && retryAfter > 0 && <p role="status">{copy.pdfRetryIn(retryAfter)}</p>}
+    {failed && retryAfter === 0 && <Button variant="secondary" onClick={() => { void run(); }}>{copy.pdfRetry}</Button>}
+  </>;
 }
 
 interface FailureProps {

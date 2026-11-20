@@ -89,7 +89,7 @@ export function CompatibilityScreen({
 
   useEffect(() => {
     const controller = new AbortController();
-    void api.getCompatibilities(controller.signal).then(({ quota: freshQuota }) => {
+    void api.getCompatibilities(20, 0, controller.signal).then(({ quota: freshQuota }) => {
       if (!controller.signal.aborted) setQuota(freshQuota);
     }).catch(() => undefined);
     return () => { controller.abort(); };
@@ -109,7 +109,7 @@ export function CompatibilityScreen({
         if (controller.signal.aborted) return;
         setResult(fresh);
         if (fresh.status === 'ready' || fresh.status === 'failed') {
-          void Promise.allSettled([api.getCompatibilities(controller.signal), refreshMe(controller.signal)]).then(([list]) => {
+          void Promise.allSettled([api.getCompatibilities(20, 0, controller.signal), refreshMe(controller.signal)]).then(([list]) => {
             if (!controller.signal.aborted && list.status === 'fulfilled') setQuota(list.value.quota);
           });
         }

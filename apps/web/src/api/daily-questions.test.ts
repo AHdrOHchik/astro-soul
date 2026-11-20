@@ -32,9 +32,9 @@ describe('round30 API routes', () => {
 
   it('lists a maximum of twenty questions and URL-encodes an id when reading one', async () => {
     const { api, fetcher } = setup();
-    fetcher.mockResolvedValue(response({ items: [], quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }));
-    await api.listQuestions(50);
-    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/v1/questions?limit=20');
+    fetcher.mockResolvedValue(response({ items: [], total: 0, limit: 20, offset: 0, quota: { used: 0, limit: 3, resets_at: '2026-11-16T00:00:00Z' } }));
+    await api.listQuestions(50, 40);
+    expect(fetcher.mock.calls[0]?.[0]).toBe('/api/v1/questions?limit=20&offset=40');
     fetcher.mockResolvedValue(response({ id: 'question-id', status: 'pending' }));
     await api.getQuestion('question-id');
     expect(fetcher.mock.calls[1]?.[0]).toBe('/api/v1/questions/question-id');

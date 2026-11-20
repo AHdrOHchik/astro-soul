@@ -7,7 +7,6 @@ import {
   Notice,
   Screen,
   ScreenHeading,
-  ShareIcon,
   Skeleton,
   SkeletonGroup,
   StateView,
@@ -30,10 +29,10 @@ import {
   type Report,
 } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
+import { ShareCardButton } from '../../components/ShareCardButton';
 import { useRequest } from '../../hooks/useRequest';
 import { formatDate, formatPosition } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
-import { botShareLink } from '../../lib/share';
 import type { Telegram } from '../../telegram';
 import { ForecastCard } from '../forecast/ForecastCard';
 import type { KnownForecast } from '../forecast/useForecast';
@@ -49,8 +48,6 @@ const SKELETON_CARDS = [0, 1, 2];
 /** The chart on screen, as the screens that follow it need it: what a purchase, a report, a forecast and a question are about. */
 export interface OpenChart {
   chartId: string;
-  /** What the share button sends: the picture and the words. Null when there is no picture to send. */
-  share: { url: string; text: string } | null;
 }
 
 /** The forecast on the chart screen: the card above the chart, and where its tap leads. */
@@ -96,8 +93,8 @@ export interface ChartReportProps {
 }
 
 export interface ChartScreenProps {
-  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getPlans' | 'getReport' | 'getForecast'>;
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'share' | 'openLink'>;
+  api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
    * Keep the reference stable: a new object is a new request.
@@ -105,8 +102,6 @@ export interface ChartScreenProps {
   request: ChartCreateRequest | null;
   /** API origin that a relative `wheel_url` resolves against; '' = this page's origin. */
   apiBaseUrl: string;
-  /** Username of the bot for the link in a shared message, without `@`; '' = no link. */
-  botUsername: string;
   /** Reports the request, its outcome and the tap on «share»; nothing of the chart itself. */
   track: Track;
   back?: ScreenProps['back'];
@@ -151,7 +146,6 @@ export function ChartScreen({
   telegram,
   request,
   apiBaseUrl,
-  botUsername,
   track,
   back,
   onEdit,
@@ -255,7 +249,6 @@ export function ChartScreen({
             api={api}
             result={result}
             apiBaseUrl={apiBaseUrl}
-            botUsername={botUsername}
             telegram={telegram}
             track={track}
             report={report}
@@ -310,11 +303,10 @@ function ChartSkeleton() {
 }
 
 interface ChartViewProps {
-  api: Pick<Api, 'getPlans' | 'getReport' | 'getForecast'>;
+  api: Pick<Api, 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
   result: ChartResult;
   apiBaseUrl: string;
-  botUsername: string;
-  telegram: Pick<Telegram, 'share'>;
+  telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery'>;
   track: Track;
   report: ChartReportProps;
   forecast?: ChartForecastProps;
@@ -330,7 +322,6 @@ function ChartView({
   api,
   result,
   apiBaseUrl,
-  botUsername,
   telegram,
   track,
   report,
@@ -342,18 +333,9 @@ function ChartView({
   onEdit,
 }: ChartViewProps) {
   const cardsTitleId = useId();
-  const [wheelFailed, setWheelFailed] = useState(false);
-  const { chart, mini_reading: reading, warnings, wheel_url: wheelPath, wheel_png_url: wheelPngPath } = result;
+  const { chart, mini_reading: reading, warnings, wheel_url: wheelPath } = result;
   const wheelUrl = wheelPath ? absoluteApiUrl(wheelPath, apiBaseUrl, window.location.origin) : null;
-  // What goes to a chat: there a PNG is shown as a picture, an SVG as a bare link.
-  // A server older than contract 1.3.0 has only the SVG.
-  const wheelPngUrl = wheelPngPath ? absoluteApiUrl(wheelPngPath, apiBaseUrl, window.location.origin) : null;
-  // The picture stays the address of the message, so the chat previews it; the way to the bot goes with the words.
-  const botLink = botShareLink(botUsername, chart.chart_id);
-  const shareUrl = wheelPngUrl ?? wheelUrl;
-  const share = shareUrl === null ? null : { url: shareUrl, text: botLink === null ? copy.shareText : `${copy.shareText}\n${botLink}` };
-  // What is shared is the picture, from the same server under the same signature: no point in sending one that does not open here.
-  const open: OpenChart = { chartId: chart.chart_id, share: wheelFailed ? null : share };
+  const open: OpenChart = { chartId: chart.chart_id };
   const timeZone = chart.birth.place?.tz ?? null;
   const sun = chart.planets.find((planet) => planet.key === 'sun');
   const moon = chart.planets.find((planet) => planet.key === 'moon');
@@ -390,8 +372,8 @@ function ChartView({
         />
       )}
 
-      {wheelUrl && share ? (
-        <Wheel src={wheelUrl} onFailedChange={setWheelFailed} />
+      {wheelUrl !== null ? (
+        <Wheel src={wheelUrl} />
       ) : (
         <p className={styles.wheelMissing}>{copy.wheelMissing}</p>
       )}
@@ -466,19 +448,7 @@ function ChartView({
         )}
       </section>
 
-      {wheelUrl && share && (
-        <Button
-          variant="secondary"
-          icon={<ShareIcon />}
-          disabled={wheelFailed}
-          onClick={() => {
-            track('share_clicked');
-            telegram.share(share.url, share.text);
-          }}
-        >
-          {copy.share}
-        </Button>
-      )}
+      <ShareCardButton api={api} kind="wheel" telegram={telegram} track={track} label={copy.share}/>
       {subscriptionPromotion && <SubscriptionPromotion api={api} onOpen={subscriptionPromotion.onOpen}/>}
 
       {offersEdit && (

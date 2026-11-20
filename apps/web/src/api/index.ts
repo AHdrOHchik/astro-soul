@@ -85,6 +85,9 @@ export type ForecastDay = components['schemas']['ForecastDay'];
 export type Question = components['schemas']['Question'];
 export type QuestionList = components['schemas']['QuestionList'];
 export type QuestionAccepted = components['schemas']['QuestionAccepted'];
+export type PdfStatus = components['schemas']['PdfStatus'];
+export type ShareCardKind = components['schemas']['ShareCardKind'];
+export type ShareCard = components['schemas']['ShareCard'];
 
 /**
  * What a forecast may be about: the codes of the contract (`Forecast.focus`) this build has a
@@ -199,6 +202,8 @@ const PATHS = {
   plans: '/api/v1/billing/plans',
   reports: '/api/v1/reports',
   report: '/api/v1/reports/{report_id}',
+  reportPdf: '/api/v1/reports/{report_id}/pdf',
+  shareCard: '/api/v1/share/card',
   compatibility: '/api/v1/compatibility',
   compatibilityById: '/api/v1/compatibility/{compatibility_id}',
   forecast: '/api/v1/engagement/forecast',
@@ -253,8 +258,11 @@ export interface Api {
   orderReport(input: ReportRequest, idempotencyKey: string, signal?: AbortSignal): Promise<Report>;
   /** Where the report stands, and as much of it as the server gives out. */
   getReport(reportId: string, signal?: AbortSignal): Promise<Report>;
+  createReportPdf(reportId: string, idempotencyKey: string, signal?: AbortSignal): Promise<PdfStatus>;
+  getReportPdf(reportId: string, signal?: AbortSignal): Promise<PdfStatus>;
+  createShareCard(kind: ShareCardKind, signal?: AbortSignal): Promise<ShareCard>;
   /** Current compatibility history and server-owned remaining quota; never cached between visits. */
-  getCompatibilities(signal?: AbortSignal): Promise<CompatibilityList>;
+  getCompatibilities(limit?: number, offset?: number, signal?: AbortSignal): Promise<CompatibilityList>;
   /** Requests one compatibility analysis. The idempotency key makes retries the same request. */
   orderCompatibility(input: CompatibilityRequest, idempotencyKey: string, signal?: AbortSignal): Promise<components['schemas']['CompatibilityAccepted']>;
   /** The current status and, when ready, sections for one compatibility. */
@@ -266,7 +274,7 @@ export interface Api {
    */
   getForecast(chartId: string, signal?: AbortSignal): Promise<Forecast | null>;
   getForecastToday(signal?: AbortSignal): Promise<ForecastDay>;
-  listQuestions(limit?: number, signal?: AbortSignal): Promise<QuestionList>;
+  listQuestions(limit?: number, offset?: number, signal?: AbortSignal): Promise<QuestionList>;
   createQuestion(question: string, idempotencyKey: string, signal?: AbortSignal): Promise<QuestionAccepted>;
   getQuestion(id: string, signal?: AbortSignal): Promise<Question>;
   /**
@@ -503,6 +511,17 @@ function toAskAnswer(value: unknown): AskAnswer {
   };
 }
 
+function toPdfStatus(value: unknown): PdfStatus {
+  if (!isRecord(value) || !['pending', 'ready', 'failed'].includes(String(value.status))) throw invalid();
+  if (value.status === 'ready' && typeof value.url !== 'string') throw invalid();
+  return value as PdfStatus;
+}
+
+function toShareCard(value: unknown): ShareCard {
+  if (!isRecord(value) || typeof value.url !== 'string' || typeof value.expires_at !== 'string' || typeof value.caption !== 'string') throw invalid();
+  return value as ShareCard;
+}
+
 function isPlanOffer(value: unknown): value is PlanOffer {
   return (
     isRecord(value) &&
@@ -599,8 +618,22 @@ export function createApi(options: HttpClientOptions): Api {
       return toReport(await request<unknown>('GET', PATHS.report.replace('{report_id}', encodeURIComponent(reportId)), { signal }));
     },
 
-    async getCompatibilities(signal) {
-      const value: unknown = await request('GET', PATHS.compatibility, { signal, cache: 'no-store' });
+    async createReportPdf(reportId, idempotencyKey, signal) {
+      const headers = { [IDEMPOTENCY_HEADER]: idempotencyKey };
+      return toPdfStatus(await request<unknown>('POST', PATHS.reportPdf.replace('{report_id}', encodeURIComponent(reportId)), { headers, signal, retry: false }));
+    },
+
+    async getReportPdf(reportId, signal) {
+      return toPdfStatus(await request<unknown>('GET', PATHS.reportPdf.replace('{report_id}', encodeURIComponent(reportId)), { signal, cache: 'no-store' }));
+    },
+
+    async createShareCard(kind, signal) {
+      return toShareCard(await request<unknown>('POST', PATHS.shareCard, { body: { kind }, signal, retry: false }));
+    },
+
+    async getCompatibilities(limit = 20, offset = 0, signal) {
+      const query = `?limit=${Math.min(20, Math.max(1, limit))}&offset=${Math.max(0, offset)}`;
+      const value: unknown = await request('GET', `${PATHS.compatibility}${query}`, { signal, cache: 'no-store' });
       if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.quota)) throw invalid();
       const quota = value.quota;
       if (
@@ -645,8 +678,9 @@ export function createApi(options: HttpClientOptions): Api {
       return await request<ForecastDay>('GET', PATHS.forecastToday, { signal, cache: 'no-store', timeoutMs: 30_000 });
     },
 
-    async listQuestions(limit = 20, signal) {
-      return await request<QuestionList>('GET', `${PATHS.questions}?limit=${Math.min(20, Math.max(1, limit))}`, { signal, cache: 'no-store' });
+    async listQuestions(limit = 20, offset = 0, signal) {
+      const query = `?limit=${Math.min(20, Math.max(1, limit))}&offset=${Math.max(0, offset)}`;
+      return await request<QuestionList>('GET', `${PATHS.questions}${query}`, { signal, cache: 'no-store' });
     },
 
     async createQuestion(question, idempotencyKey, signal) {
