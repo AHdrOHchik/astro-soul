@@ -167,8 +167,20 @@ services:
       # переменные, которые перечислены здесь: без неё флаг из .env не доедет
       # до контейнера (и «ничего не изменилось» — не баг приложения).
       PAYMENTS_TEST_PLANS: ${PAYMENTS_TEST_PLANS:-}
+      # Приватное хранилище PDF и карточек (итерация 32): каталог внутри тома,
+      # наружу не публикуется и статикой не отдаётся — только подписанные ссылки.
+      FILE_STORAGE_DIR: ${FILE_STORAGE_DIR:-/var/lib/astro-soul/files}
+      FILE_SIGNING_SECRET: ${FILE_SIGNING_SECRET:-}
+      FILE_URL_TTL_SECONDS: ${FILE_URL_TTL_SECONDS:-86400}
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+      PDF_MAX_BYTES: ${PDF_MAX_BYTES:-12582912}
+      PDF_BUILD_TIMEOUT_MS: ${PDF_BUILD_TIMEOUT_MS:-60000}
     volumes:
       - ./docker/certs/russian_trusted_root_ca.cer:/etc/astro-soul/certs/russian_trusted_root_ca.cer:ro
+      # Файлы переживают перезапуск контейнера: без тома `docker compose up`
+      # после обновления образа терял все собранные PDF, а строки в
+      # `report_pdfs` оставались с ключами на несуществующие файлы.
+      - files-data:/var/lib/astro-soul/files
     expose:
       - '${PORT:-8080}'
     healthcheck:
@@ -231,3 +243,4 @@ services:
 
 volumes:
   postgres-data:
+  files-data:

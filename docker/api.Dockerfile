@@ -35,10 +35,13 @@ ENV NODE_ENV=production \
     TZ=UTC \
     PORT=8080
 
+# Каталог приватного хранилища создаётся здесь и уже принадлежит appuser:
+# docker инициализирует владельца тома из образа, и без этого шага named volume
+# `files-data` оказался бы root-owned — первая же сборка PDF упала бы на записи.
 RUN groupadd -g 10001 -r appgroup \
  && useradd -u 10001 -g appgroup -r -s /sbin/nologin -d /app appuser \
- && mkdir -p /app /etc/astro-soul/certs \
- && chown 10001:10001 /app
+ && mkdir -p /app /etc/astro-soul/certs /var/lib/astro-soul/files \
+ && chown 10001:10001 /app /var/lib/astro-soul/files
 
 WORKDIR /app
 
