@@ -33,7 +33,10 @@ export type InlineModeState = 'on' | 'off' | 'unknown';
  *   • `checkMode` — на старте спрашивает `getMe` про
  *     `supports_inline_queries` и пишет в лог, включён ли режим. Настройка
  *     живёт в BotFather, кодом её не включить, поэтому единственное, что можно
- *     сделать из кода, — перестать молчать.
+ *     сделать из кода, — перестать молчать;
+ *   • `mode` — последнее известное состояние для `GET /me` (контракт 1.6.10):
+ *     клиент выбирает `switchInlineQuery` или `share_url` + `openTelegramLink`
+ *     ещё до того, как создаст карточку.
  *
  * Событий продукта здесь нет намеренно: ответ на inline-запрос — это показ
  * карточки человеку, а не отправка. Отправку (`share_sent`) видит только
@@ -47,6 +50,23 @@ export class TelegramInlineService {
     @Inject(FileStorageService) private readonly storage: FileStorageService,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
+
+  /**
+   * Последнее известное состояние inline-режима. `null` — проверки ещё не
+   * было (API только поднялся, `checkMode` не вызывался).
+   */
+  private lastState: InlineModeState | null = null;
+
+  /**
+   * Состояние для `GET /me` (контракт 1.6.10).
+   *
+   * `unknown` — не «выключен»: режим мог быть включён после последней
+   * проверки. Кэша дольше жизни процесса нет намеренно: `/setinline` меняет
+   * ответ Bot API в любой момент, и следующий старт API его подхватит.
+   */
+  mode(): InlineModeState {
+    return this.lastState ?? 'unknown';
+  }
 
   /**
    * `inline_query` → `answerInlineQuery`. Возвращает `true`, если апдейт наш:
@@ -99,6 +119,8 @@ export class TelegramInlineService {
     const answer = await this.telegram.getMe();
 
     if (!answer.ok || answer.result === null) {
+      // Состояние не сбрасываем: если раньше проверка удалась, «не ответил»
+      // сейчас — это «не знаем сейчас», а не «выключено».
       this.logger.warn('telegram_inline_mode', {
         state: 'unknown',
         hint: 'Bot API не ответил на getMe: включён ли inline-режим — неизвестно',
@@ -107,6 +129,7 @@ export class TelegramInlineService {
     }
 
     const state: InlineModeState = answer.result.supports_inline_queries === true ? 'on' : 'off';
+    this.lastState = state;
 
     if (state === 'off') {
       this.logger.warn('telegram_inline_mode', {
