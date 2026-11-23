@@ -5,22 +5,28 @@ import type { AppEnv } from '../../config/env';
 import { ApiError, notFound, validationFailed } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import { EntitlementsService } from '../entitlements/entitlements.service';
+import { EventsRepository } from '../events/events.repository';
 import type { LlmMessage, LlmProvider, LlmResponse } from '../llm/llm.client';
 import { LLM_PROVIDER } from '../llm/llm.module';
 import { QuotasService } from '../quotas/quotas.service';
 import { chartFactLabels, serializeChartFacts } from '../reports/chart-facts';
 import { TelegramClient } from '../telegram/telegram.client';
 import { UsersRepository } from '../users/users.repository';
-import { buildMiniAppUrl, buildShareLink } from '../charts/share-link';
+import { AstroClient, type AstroChartData } from '../astro/astro.client';
+import { buildTodayUrl } from '../charts/share-link';
 import { classifyTopic, forbiddenTopicOf, softRefusal } from './ask-topics';
 import { parseAskRequest } from './engagement.dto';
-import {
-  EngagementRepository,
-  type ForecastCandidate,
-  type PushCandidate,
-} from './engagement.repository';
+import { EngagementRepository, type ForecastCandidate, type PushRecipient } from './engagement.repository';
 import { ENGAGEMENT_SYSTEM_PROMPT, askPrompt, forecastPrompt } from './engagement.prompts';
-import { NIGHTLY_HOUR, PUSH_HOUR, WINDOW_MINUTES, localParts } from './local-time';
+import {
+  PUSH_MAX_CHARS,
+  PUSH_OFF_CALLBACK,
+  PUSH_OFF_TEXT,
+  PUSH_OPEN_TEXT,
+  buildPushMessage,
+} from './push-message';
+import type { PushButton } from '../telegram/telegram.client';
+import { NIGHTLY_HOUR, WINDOW_MINUTES, localParts } from './local-time';
 
 /** Фокус дня — закрытый список контракта. Всё остальное от модели — `null`. */
 const FOCUSES = ['career', 'love', 'money', 'health', 'self'] as const;
@@ -37,13 +43,63 @@ export interface NightlyResult {
   readonly failed: number;
 }
 
+/**
+ * Итог одного цикла утреннего пуша.
+ *
+ * `enabled: false` — пуш выключен флагом, и это не ошибка: планировщик в этом
+ * случае не запускается вовсе, а ручной вызов через `?job=forecast_push`
+ * возвращает нули, чтобы `/health` не считал такой прогон «живым».
+ */
 export interface PushRunResult {
+  readonly enabled: boolean;
+  readonly candidates: number;
   readonly sent: number;
-  readonly skippedInactive: number;
+  readonly skippedSeen: number;
+  readonly skippedNoTz: number;
+  readonly duplicatePrevented: number;
   readonly deferred: number;
   readonly failed: number;
   readonly blocked: number;
+  readonly ms: number;
 }
+
+/** Настройки прогона: тесты подменяют паузы, прод берёт значения по умолчанию. */
+export interface PushRunOptions {
+  /** Пауза перед повтором после сетевой ошибки (по умолчанию 60 с). */
+  readonly retryDelayMs?: number;
+  /** Пауза между сообщениями: ~30 сообщений в секунду суммарно. */
+  readonly sendGapMs?: number;
+  /** Ожидание можно подменить в тестах, чтобы не спать минуту. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Часы процесса. Отдельная ручка нужна, чтобы тест «повтор в 08:06» не
+   * зависел от реального времени суток: окно проверяется по ним.
+   */
+  readonly now?: () => Date;
+}
+
+/** Часы и паузы одного прогона: в проде — настоящие, в тестах — подменённые. */
+interface PushTiming {
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly retryDelayMs: number;
+  readonly now: () => Date;
+}
+
+/** Повтор после «прочих» ошибок — ровно один, дальше до следующего дня. */
+export const PUSH_RETRIES = 1;
+/** Сколько раз ждём `429`, прежде чем признать получателя `deferred`. */
+export const PUSH_MAX_THROTTLE_WAITS = 3;
+/** Пауза между сообщениями: 35 мс ≈ 28 сообщений в секунду. */
+export const PUSH_SEND_GAP_MS = 35;
+/** Повтор через минуту — как обещано в задании (окно 5 минут это позволяет). */
+export const PUSH_RETRY_DELAY_MS = 60_000;
+/** Предел одного цикла: дольше окна 08:00–08:04 он идти не должен. */
+export const PUSH_RUN_BUDGET_MS = 5 * 60_000;
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 function stripJsonFence(text: string): string {
   const trimmed = text.trim();
@@ -152,6 +208,8 @@ export class EngagementService {
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
+    @Inject(AstroClient) private readonly astro: AstroClient,
+    @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -464,84 +522,338 @@ export class EngagementService {
   }
 
   /**
-   * Пуш 08:00 по местному времени.
+   * Утренний пуш 08:00 по поясу рождения (итерация 38, контракт 1.6.13).
    *
-   * В итерации 37 (`// round37`) сюда придёт фильтр согласия
-   * (`users.push_enabled`) и запись в `push_log`. Сейчас пуш уходит всем,
-   * кому положен по активности, а
-   * `users.push_enabled` хранится, но не читается: `Me.notifications` и
-   * `POST /me/notifications` (итерация 36) уже пишут согласие, а сама отправка
-   * появится в итерации 37 вместе с журналом `push_log`. Не реализовывать
-   * здесь ничего до этой итерации — иначе переключатель в интерфейсе начнёт
-   * действовать раньше, чем фронт его нарисует.
+   * Правила, которые здесь зашиты и которые нельзя «улучшить» по дороге:
    *
-   * - только тем, кто заходил за последние 7 дней (иначе бот пишет тем, кто
-   *   забыл о нём, и получает блокировки, которые не отменить);
-   * - 403 от Bot API — помечаем карту и больше не пишем;
-   * - 429 — `deferred`: в этом прогоне не ретраим.
+   *   • **окно, а не час**: получатели — те, у кого местное время попало в
+   *     `[08:00, 08:04]`. Пропустили окно (лежал API, шёл деплой) — пуш в этот
+   *     день не догоняется: «доброе утро» в обед хуже, чем его отсутствие;
+   *   • **ровно один пуш в местные сутки**: `push_log` уникален по
+   *     `(user_id, local_date, kind)`, вставка-«заявка» идёт **до** отправки.
+   *     Второй запуск в ту же минуту получает конфликт и уходит в
+   *     `duplicate_prevented`, а не отправляет дубль;
+   *   • **текст без модели**: константы и факты дня, ≤ 200 символов;
+   *   • **не мешать тем, кто уже зашёл**: `last_seen_at` после 07:30 местного —
+   *     пропуск (человек увидит разбор в приложении сам);
+   *   • **ошибки Bot API различаются**: `403`/`chat not found` — согласие
+   *     снимается, повторять нечего; `429` — ждём `retry_after` и продолжаем с
+   *     того же человека; прочее — один повтор через минуту, потом запись в
+   *     `push_log.error` до следующего дня.
+   *
+   * Модель не вызывается ни разу: это не «ленивый прогноз», а напоминание о
+   * том, что прогноз уже есть в приложении.
    */
-  async runPush(at: Date = new Date()): Promise<PushRunResult> {
-    const start = PUSH_HOUR * 60 - WINDOW_MINUTES;
-    const end = PUSH_HOUR * 60 + WINDOW_MINUTES;
-    const candidates = await this.repo.pushCandidates(at, start, end);
-    const skippedInactive = await this.repo.countPushInactive(at, start, end);
+  async runPush(at: Date = new Date(), options: PushRunOptions = {}): Promise<PushRunResult> {
+    const startedAt = Date.now();
+    const empty: PushRunResult = {
+      enabled: false,
+      candidates: 0,
+      sent: 0,
+      skippedSeen: 0,
+      skippedNoTz: 0,
+      duplicatePrevented: 0,
+      deferred: 0,
+      failed: 0,
+      blocked: 0,
+      ms: 0,
+    };
 
+    // Флаг читается в рантайме: включение пуша — рестарт API, а не деплой
+    // кода (`docs/PUSH.md`). Выключенный пуш не трогает БД вовсе.
+    if (this.env.PUSH_ENABLED !== '1') {
+      return empty;
+    }
+
+    const sleep = options.sleep ?? defaultSleep;
+    const now = options.now ?? ((): Date => new Date());
+    const retryDelayMs = options.retryDelayMs ?? PUSH_RETRY_DELAY_MS;
+    const sendGapMs = options.sendGapMs ?? PUSH_SEND_GAP_MS;
+    const windowStart = this.env.PUSH_SEND_HOUR * 60;
+    const windowEnd = windowStart + this.env.PUSH_WINDOW_MINUTES - 1;
+
+    const skippedNoTz = await this.repo.countPushNoTz();
+    const skippedSeen = await this.repo.countPushSeen(at, windowStart, windowEnd);
+
+    let candidates = 0;
     let sent = 0;
+    let duplicatePrevented = 0;
     let deferred = 0;
     let failed = 0;
     let blocked = 0;
+    let cursor: string | null = null;
 
-    for (const candidate of candidates) {
-      const outcome = await this.pushOne(candidate);
+    // Порции по 25: JSON карт тяжёлый, и один `SELECT` на всех получателей
+    // держал бы соединение всё время рассылки.
+    for (;;) {
+      const batch: PushRecipient[] = await this.repo.pushRecipients(
+        at,
+        windowStart,
+        windowEnd,
+        this.env.PUSH_BATCH_SIZE,
+        cursor,
+      );
 
-      if (outcome === 'sent') {
-        sent += 1;
-      } else if (outcome === 'blocked') {
-        blocked += 1;
-      } else if (outcome === 'deferred') {
-        deferred += 1;
-      } else {
-        failed += 1;
+      if (batch.length === 0) {
+        break;
+      }
+
+      for (const recipient of batch) {
+        cursor = recipient.user_id;
+        candidates += 1;
+
+        const outcome = await this.pushMorning(recipient, windowEnd, {
+          sleep,
+          retryDelayMs,
+          now,
+        });
+
+        if (outcome === 'sent') {
+          sent += 1;
+        } else if (outcome === 'duplicate') {
+          duplicatePrevented += 1;
+        } else if (outcome === 'blocked') {
+          blocked += 1;
+        } else if (outcome === 'deferred') {
+          deferred += 1;
+        } else {
+          failed += 1;
+        }
+
+        // ~28 сообщений в секунду суммарно: лимит Bot API — 30.
+        await sleep(sendGapMs);
+
+        if (Date.now() - startedAt > PUSH_RUN_BUDGET_MS) {
+          this.logger.warn('push_run_budget_exceeded', { candidates, sent });
+          break;
+        }
       }
     }
 
-    if (candidates.length > 0) {
-      this.logger.info('forecast_push', { found: candidates.length, sent, blocked, deferred, failed });
-    }
+    const ms = Date.now() - startedAt;
 
-    return { sent, skippedInactive, deferred, failed, blocked };
+    await this.repo.insertPushRun({
+      candidates,
+      sent,
+      skippedSeen,
+      skippedNoTz,
+      duplicatePrevented,
+      blocked,
+      deferred,
+      failed,
+      ms,
+    });
+
+    this.logger.info('push_run', {
+      candidates,
+      sent,
+      skipped: skippedSeen + skippedNoTz + duplicatePrevented,
+      failed: failed + blocked,
+      ms,
+    });
+
+    return {
+      enabled: true,
+      candidates,
+      sent,
+      skippedSeen,
+      skippedNoTz,
+      duplicatePrevented,
+      deferred,
+      failed,
+      blocked,
+      ms,
+    };
   }
 
-  private async pushOne(candidate: PushCandidate): Promise<'sent' | 'blocked' | 'deferred' | 'failed'> {
-    if (candidate.telegram_id === null || candidate.text === null || candidate.text.trim() === '') {
-      return 'failed';
+  /**
+   * Один получатель: факты дня → текст → заявка в `push_log` → отправка.
+   *
+   * Порядок именно такой. Если сначала отправить, а потом писать журнал, два
+   * процесса в одну минуту отправят два сообщения и только потом обнаружат
+   * конфликт. «Заявка» до отправки делает дубль невозможным: проигравший
+   * просто ничего не присылает.
+   */
+  private async pushMorning(
+    recipient: PushRecipient,
+    windowEnd: number,
+    options: PushTiming,
+  ): Promise<'sent' | 'duplicate' | 'blocked' | 'deferred' | 'failed'> {
+    const claimed = await this.repo.claimPush(recipient.user_id, recipient.local_date);
+
+    if (!claimed) {
+      return 'duplicate';
     }
 
-    const hook = pushHook(candidate.text);
-    const button = this.openButton(candidate.chart_id);
-    const outcome = await this.telegram.sendPush(
-      Number(candidate.telegram_id),
-      `${hook}\n\nПолный прогноз — в приложении.`,
-      button === null ? {} : { button },
+    const fail = async (error: string): Promise<'failed'> => {
+      await this.repo.finishPush(recipient.user_id, recipient.local_date, 'daily_forecast', error);
+      return 'failed';
+    };
+
+    let text: string;
+    let buttons: PushButton[][];
+
+    try {
+      const facts = await this.astro.forecastFacts(
+        recipient.local_date,
+        recipient.tz,
+        recipient.data as AstroChartData,
+      );
+      const message = buildPushMessage({ sign: facts.moon.sign, phase: facts.moon.phase });
+
+      if (message.visibleLength > PUSH_MAX_CHARS) {
+        // Такого быть не должно (тест перебирает все 96 комбинаций), но лучше
+        // не отправить, чем отправить обрезанное на середине.
+        this.logger.error('push_text_too_long', { length: message.visibleLength });
+        return fail('text_too_long');
+      }
+
+      text = message.text;
+      buttons = this.pushButtons();
+    } catch (error) {
+      this.logger.warn('push_facts_failed', {
+        reason: error instanceof Error ? error.name : 'unknown',
+      });
+      return fail('facts_unavailable');
+    }
+
+    const outcome = await this.sendWithPolicy(
+      recipient,
+      text,
+      buttons,
+      windowEnd,
+      options,
     );
 
     if (outcome === 'sent') {
-      await this.repo.markPushSent(candidate.forecast_id);
-    } else if (outcome === 'blocked') {
-      await this.repo.markPushBlocked(candidate.chart_id);
+      await this.repo.finishPush(recipient.user_id, recipient.local_date, 'daily_forecast', null);
+      return 'sent';
     }
 
-    // 429 — «в этом прогоне не ретраим», это и есть `deferred`.
-    const mapped = outcome === 'rate_limited' ? 'deferred' : outcome;
-    this.logger.info('push_attempt', { chart_id: candidate.chart_id, outcome: mapped });
-    return mapped;
+    if (outcome === 'blocked' || outcome === 'not_found') {
+      // Чат мёртв: снимаем согласие, чтобы за него не платили ошибками каждый
+      // день. Включить обратно можно в кабинете — там `POST /me/notifications`.
+      await this.repo.disablePush(recipient.user_id);
+      await this.events.log({
+        userId: recipient.user_id,
+        name: 'push_disabled',
+        props: { reason: outcome === 'blocked' ? 'blocked' : 'chat_not_found' },
+      });
+      await this.repo.finishPush(
+        recipient.user_id,
+        recipient.local_date,
+        'daily_forecast',
+        outcome === 'blocked' ? 'blocked' : 'chat_not_found',
+      );
+      return 'blocked';
+    }
+
+    if (outcome === 'deferred') {
+      await this.repo.finishPush(
+        recipient.user_id,
+        recipient.local_date,
+        'daily_forecast',
+        'rate_limited',
+      );
+      return 'deferred';
+    }
+
+    return fail(outcome === 'failed' ? 'telegram_failed' : outcome);
   }
 
-  /** Кнопка «Открыть»: мини-апп на нужной карте, иначе ссылка на бота. */
-  private openButton(chartId: string): { text: string; webAppUrl: string } | null {
-    const url =
-      buildMiniAppUrl(this.env.MINI_APP_URL, chartId) ?? buildShareLink(this.env.BOT_USERNAME, chartId);
-    return url === null ? null : { text: 'Открыть', webAppUrl: url };
+  /**
+   * Отправка с политикой повторов.
+   *
+   * `429` — ждём `retry_after` и **продолжаем с того же человека**: пропустить
+   * его и вернуться позже значило бы потерять место в очереди. Прочие ошибки —
+   * одна повторная попытка через `retryDelayMs`, и только если окно ещё не
+   * закрылось: пуш, который придёт в 08:06, уже не «утренний».
+   */
+  private async sendWithPolicy(
+    recipient: PushRecipient,
+    text: string,
+    buttons: PushButton[][],
+    windowEnd: number,
+    options: PushTiming,
+  ): Promise<'sent' | 'blocked' | 'not_found' | 'deferred' | 'failed'> {
+    let throttleWaits = 0;
+    let retries = 0;
+
+    for (;;) {
+      const result = await this.telegram.sendPush(Number(recipient.telegram_id), text, { buttons });
+
+      if (result.status === 'sent') {
+        return 'sent';
+      }
+
+      if (result.status === 'blocked' || result.status === 'not_found') {
+        return result.status;
+      }
+
+      if (result.status === 'rate_limited') {
+        throttleWaits += 1;
+        this.logger.warn('push_throttled', {
+          retry_after: result.retryAfterSeconds,
+          attempt: throttleWaits,
+        });
+
+        if (
+          throttleWaits > PUSH_MAX_THROTTLE_WAITS ||
+          this.windowClosed(recipient.tz, windowEnd, options.now())
+        ) {
+          return 'deferred';
+        }
+
+        await options.sleep((result.retryAfterSeconds ?? 1) * 1_000);
+        continue;
+      }
+
+      retries += 1;
+
+      if (retries > PUSH_RETRIES || this.windowClosed(recipient.tz, windowEnd, options.now())) {
+        return 'failed';
+      }
+
+      this.logger.warn('push_retry', {
+        attempt: retries,
+        error: result.error === null ? null : 'telegram_failed',
+      });
+      await options.sleep(options.retryDelayMs);
+    }
+  }
+
+  /**
+   * Окно закрылось — «повторять» нечего.
+   *
+   * Считаем по реальным часам, а не по `at`: повтор идёт через минуту, и за это
+   * время местное время получателя могло выйти из окна.
+   */
+  private windowClosed(timeZone: string, windowEnd: number, at: Date): boolean {
+    const local = localParts(at, timeZone);
+    return local === null || local.minutesOfDay > windowEnd;
+  }
+
+  /**
+   * Кнопки пуша: «Открыть разбор дня» (мини-апп на экране «Сегодня») и
+   * «Отключить» (`callback_data: push_off`).
+   *
+   * Вторая кнопка — не ссылка на кабинет: человек читает пуш на экране
+   * блокировки, и «зайди в настройки» — это три тапа. Отказ должен стоить
+   * одного нажатия, а сообщать о нём будет всплывающая подсказка, не новое
+   * сообщение в чате.
+   */
+  private pushButtons(): PushButton[][] {
+    const url = this.openUrl();
+    const off: PushButton = { text: PUSH_OFF_TEXT, callbackData: PUSH_OFF_CALLBACK };
+
+    return url === null
+      ? [[off]]
+      : [[{ text: PUSH_OPEN_TEXT, webAppUrl: url }], [off]];
+  }
+
+  /** Адрес мини-аппа без параметра карты: кнопка ведёт на «Сегодня». */
+  private openUrl(): string | null {
+    return buildTodayUrl(this.env.MINI_APP_URL);
   }
 
   /** Сколько стоит удержание за месяц — для логов и метрик. */

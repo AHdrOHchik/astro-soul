@@ -9,6 +9,7 @@ import { AlertsService } from './alerts.service';
 import { JobsController } from './jobs.controller';
 import { JobsService } from './jobs.service';
 import { ProdGuardService } from './prod-guard.service';
+import { PushSchedulerService } from './push-scheduler.service';
 
 /**
  * Служебные маршруты: метрики для владельца и джобы для крона.
@@ -17,7 +18,7 @@ import { ProdGuardService } from './prod-guard.service';
 @Module({
   imports: [BillingModule, EngagementModule, EventsModule, TelegramModule],
   controllers: [AdminController, JobsController],
-  providers: [AdminMetricsService, AlertsService, JobsService, ProdGuardService],
+  providers: [AdminMetricsService, AlertsService, JobsService, ProdGuardService, PushSchedulerService],
   // Прод-гард нужен `main.ts` до `listen`: он спрашивает провайдер у корневого
   // инжектора, а не создаёт его руками.
   exports: [ProdGuardService],

@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { EventsModule } from '../events/events.module';
+import { UsersRepository } from '../users/users.repository';
 import { FilesModule } from '../files/files.module';
 import { ShareModule } from '../share/share.module';
 import { TelegramClient } from './telegram.client';
 import { TelegramInlineService } from './telegram-inline.service';
 import { TelegramStartService } from './telegram-start.service';
 import { TelegramWebhookService } from './telegram-webhook.service';
+import { PushCallbackService } from './push-callback.service';
 
 /**
  * Telegram Bot API и обработчики апдейтов.
@@ -24,12 +26,17 @@ import { TelegramWebhookService } from './telegram-webhook.service';
     TelegramStartService,
     TelegramInlineService,
     TelegramWebhookService,
+    // `UsersRepository` — только ради псевдонима: отказ по кнопке пишет в то
+    // же поле `users.push_enabled`, что кабинет.
+    UsersRepository,
+    PushCallbackService,
   ],
   exports: [
     TelegramClient,
     TelegramStartService,
     TelegramInlineService,
     TelegramWebhookService,
+    PushCallbackService,
   ],
 })
 export class TelegramModule {}

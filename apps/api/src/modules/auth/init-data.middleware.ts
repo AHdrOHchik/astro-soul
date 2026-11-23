@@ -5,6 +5,7 @@ import type { AppEnv } from '../../config/env';
 import { JsonLogger } from '../../common/logger';
 import { currentRequestId, requestPath } from '../../common/request-context';
 import { sendProblemResponse } from '../../common/problem-response';
+import { PresenceService } from '../users/presence.service';
 import { INIT_DATA_HEADER, verifyInitData, type VerifiedInitData } from './init-data';
 import { isPublicPath } from './public-routes';
 
@@ -23,6 +24,7 @@ export class InitDataMiddleware implements NestMiddleware {
   constructor(
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
+    @Inject(PresenceService) private readonly presence: PresenceService,
   ) {}
 
   use(req: Request, res: Response, next: NextFunction): void {
@@ -36,6 +38,12 @@ export class InitDataMiddleware implements NestMiddleware {
     try {
       const verified = verifyInitData(req.header(INIT_DATA_HEADER), this.env.TELEGRAM_BOT_TOKEN);
       (req as AuthenticatedRequest).initData = verified;
+
+      // Присутствие (итерация 38): утренний пуш не приходит тому, кто уже
+      // открывал приложение после 07:30 по своему поясу. Запись не ждём —
+      // авторизация не должна зависеть от необязательного UPDATE.
+      this.presence.touch(verified.telegramUserId);
+
       next();
     } catch (error) {
       const requestId = currentRequestId();

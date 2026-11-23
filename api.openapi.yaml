@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.12
+  version: 1.6.13
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -579,6 +579,38 @@ info:
         карточек;
       • `/admin/metrics`: `share_cards_created_24h` по видам.
 
+    1.6.13 — утренний пуш в чат бота (итерация 38). Аддитивно, `required`
+    нигде не тронут, существующие значения не переименованы:
+      • сам пуш — не маршрут, а поведение: раз в местные сутки в 08:00–08:04 по
+        поясу рождения бот присылает в чат короткое сообщение (≤ 200 символов,
+        `parse_mode: HTML`) с кнопками «Открыть разбор дня» (`web_app`, экран
+        «Сегодня») и «Отключить» (`callback_data: push_off`). Текст собирается
+        из констант и фактов дня — модель не вызывается, чисел и обещаний в
+        тексте нет;
+      • `GET /health` — `flags.push: {enabled, last_run_at, last_sent_count}`.
+        `enabled` — рантайм-флаг `PUSH_ENABLED`, `last_run_at` — время последнего
+        цикла. Включённый пуш без запусков дольше двух часов делает
+        `status: degraded`: тихая поломка рассылки иначе видна только тем, кто
+        перестал получать сообщения;
+      • `GET /admin/metrics` — `push_sent_24h`, `push_failed_24h`,
+        `push_skipped_no_tz_24h`, `push_duplicate_prevented_24h`.
+        `push_skipped_no_tz_24h` — состояние, а не поток: сколько людей сейчас
+        недостижимы из-за отсутствия пояса в карте (иначе счётчик рос бы на
+        1440 в сутки и ничего не значил);
+      • `GET /admin/alerts` — седьмое правило `push_failed` (warning,
+        `push_failed_24h > 20`). `blocked` и `chat not found` в него не входят:
+        это отказ человека, а не поломка;
+      • `JobRunResult` — `pushes_skipped_seen`, `pushes_skipped_no_tz`,
+        `pushes_duplicate_prevented`, `pushes_blocked`. `pushes_skipped_inactive`
+        осталось для совместимости и теперь всегда 0: правило «писать только
+        тем, кто заходил за 7 дней» заменено правилом «не писать тому, кто уже
+        открывал приложение после 07:30 по своему поясу»;
+      • `Me.notifications` и `POST /me/notifications` **не менялись**. Кнопка
+        «Отключить» пишет в то же поле `daily_forecast`, что и кабинет, —
+        второго источника правды о согласии нет;
+      • события: серверное `push_disabled` с `{reason: "button"}`. Текста пуша,
+        `telegram_id` и любых ПДн в событиях и журнале нет.
+
     1.6.11 — наблюдаемость и эксплуатационная готовность (итерация 36).
     Аддитивно, `required` нигде не тронут; версия поднята потому, что появились
     новые маршруты, а не только поля:
@@ -867,7 +899,7 @@ components:
           type: string
           enum:
             [payment_not_arriving, telegram_webhook, subscription_cancel_blocked,
-             llm_spend, generations_failing, backup_stale]
+             llm_spend, generations_failing, backup_stale, push_failed]
           description: |
             Идентификатор правила — по нему настраивается мониторинг. Новый
             алерт добавляется здесь и в `AlertsService` одним PR.
@@ -1485,8 +1517,32 @@ components:
         forecasts_skipped: { type: integer }
         forecasts_failed: { type: integer }
         pushes_sent: { type: integer }
-        pushes_skipped_inactive: { type: integer }
+        pushes_skipped_inactive:
+          type: integer
+          description: |-
+            Оставлено для совместимости и теперь всегда `0`: правило «писать
+            только тем, кто заходил за 7 дней» заменено правилом «не писать
+            тому, кто уже открывал приложение после 07:30 по своему поясу»
+            (счётчик — `pushes_skipped_seen`, 1.6.13).
+        pushes_skipped_seen:
+          type: integer
+          description: >-
+            Пропущены: человек уже открывал приложение после 07:30 по своему
+            поясу (1.6.13).
+        pushes_skipped_no_tz:
+          type: integer
+          description: >-
+            Пропущены: у карты нет валидного пояса — 08:00 по местному не
+            вычислить (1.6.13).
+        pushes_duplicate_prevented:
+          type: integer
+          description: >-
+            Второй запуск в те же местные сутки: сработал уникальный ключ
+            `push_log` (1.6.13).
         pushes_deferred: { type: integer }
+        pushes_blocked:
+          type: integer
+          description: '`403` и `chat not found`: согласие снято, повторять нечего (1.6.13).'
         pushes_failed: { type: integer }
         telegram_cancel_retried: { type: integer }
         telegram_cancel_cancelled: { type: integer }
@@ -1505,7 +1561,11 @@ components:
         forecasts_failed: 0
         pushes_sent: 0
         pushes_skipped_inactive: 0
+        pushes_skipped_seen: 0
+        pushes_skipped_no_tz: 0
+        pushes_duplicate_prevented: 0
         pushes_deferred: 0
+        pushes_blocked: 0
         pushes_failed: 0
         telegram_cancel_retried: 0
         telegram_cancel_cancelled: 0
@@ -2050,6 +2110,21 @@ paths:
                     properties:
                       test_plans: { type: boolean }
                       report_breaker: { type: boolean }
+                      push:
+                        type: object
+                        description: |-
+                          Утренний пуш (1.6.13). `enabled` — `PUSH_ENABLED` в
+                          рантайме: включение функции — рестарт API, а не
+                          деплой кода. `last_run_at` — время последнего цикла
+                          рассылки; `last_sent_count` — сколько сообщений ушло
+                          в нём. Включённый пуш без запусков дольше двух часов
+                          переводит `status` в `degraded`: иначе смерть
+                          планировщика не видна никому — люди просто перестают
+                          получать «доброе утро» и не жалуются.
+                        properties:
+                          enabled: { type: boolean }
+                          last_run_at: { type: [string, 'null'], format: date-time }
+                          last_sent_count: { type: integer }
                   checked_at:
                     type: string
                     format: date-time
@@ -3778,6 +3853,34 @@ paths:
                       кэш-попадание новую строку не создаёт.
                     additionalProperties: { type: integer }
                     example: { day: 12, wheel: 3, insight: 2, identity: 5, moon: 21 }
+                  push_sent_24h:
+                    type: integer
+                    description: |-
+                      Сколько утренних пушей ушло за 24 часа (1.6.13). Считается
+                      по `push_log`, а не по «согласиям»: это доставленные
+                      сообщения.
+                  push_failed_24h:
+                    type: integer
+                    description: |-
+                      Отправки, которые Bot API отверг за 24 часа. `blocked` и
+                      `chat not found` не считаются: человек заблокировал бота —
+                      это отказ, а не поломка, и такие чаты отключаются сами.
+                  push_skipped_no_tz_24h:
+                    type: integer
+                    description: |-
+                      Люди, которых пуш не достаёт из-за отсутствия валидного
+                      пояса в карте. Это **состояние**, а не поток за сутки:
+                      один и тот же человек считается и завтра, иначе счётчик
+                      рос бы на 1440 в сутки (минута × сутки) и не значил бы
+                      ничего.
+                  push_duplicate_prevented_24h:
+                    type: integer
+                    description: |-
+                      Сколько раз уникальный ключ `push_log`
+                      `(user_id, local_date, kind)` предотвратил второй пуш за
+                      те же местные сутки: повторный тик, второй инстанс или
+                      ретрай после падения.
+
         '403': { description: FORBIDDEN }
 
   /api/v1/admin/alerts:
@@ -3801,6 +3904,7 @@ paths:
         | `llm_spend` | warning | `forecast_cost_rub_24h + questions_cost_rub_24h + compat_cost_rub_24h > 500` ₽ — бюджет GigaChat неизвестен |
         | `generations_failing` | warning | `compat_failed_24h + forecast_failed_24h + questions_failed_24h + pdf_failed_24h > 5` — модель или промпт сломались |
         | `backup_stale` | warning | последний успешный дамп старше 36 часов (или маркера нет вовсе — «не знаем» тоже плохо) |
+        | `push_failed` | warning | `push_failed_24h > 20` — утренняя рассылка сломалась (Bot API, текст). `blocked` и `chat not found` не считаются: это отказ человека |
 
         Единицы `value`: штуки (`payment_not_arriving`,
         `subscription_cancel_blocked`, `generations_failing`), минуты

@@ -2,10 +2,14 @@ import type {
   BotApiAnswer,
   InlineQueryPhotoResult,
   InvoiceLinkParams,
+  PushButton,
+  PushSendResult,
+  PushSendStatus,
   StarSubscriptionCancelResult,
 } from '../src/modules/telegram/telegram.client';
 
-export type PushOutcome = 'sent' | 'blocked' | 'rate_limited' | 'failed';
+/** Статус, которым «Bot API» отвечает на пуш: старые имена сохранены. */
+export type PushOutcome = PushSendStatus | 'rate_limited';
 
 /**
  * Подмена Bot API: тесты не ходят в сеть и не тратят звёзды.
@@ -33,14 +37,24 @@ export interface FakeTelegram {
   readonly pushes: {
     chatId: number | string;
     text: string;
-    button?: { text: string; webAppUrl: string };
+    /** Ряды кнопок как их увидит Telegram: `web_app` и `callback_data` (1.6.13). */
+    buttons?: readonly (readonly PushButton[])[];
     outcome: PushOutcome;
   }[];
+  /** Ответы на нажатия кнопок: `answerCallbackQuery` (кнопка «Отключить»). */
+  readonly callbackAnswers: { id: string; text: string }[];
   /**
    * Чем отвечать на `sendMessage`-пуш: `blocked` — 403, `rate_limited` — 429.
    * По умолчанию `sent`.
    */
   pushOutcome: PushOutcome;
+  /** `429`: сколько секунд просит подождать Bot API (`parameters.retry_after`). */
+  pushRetryAfter: number | null;
+  /**
+   * Очередь статусов на ближайшие отправки: `['rate_limited', 'sent']` —
+   * первый вызов получит `429`, второй пройдёт. Пусто — действует `pushOutcome`.
+   */
+  pushQueue: PushOutcome[];
   /**
    * Чем отвечает «Bot API» на `sendMessage`: `null` — успешно (по умолчанию).
    * Итерация 25: сбой сообщения после выдачи доступа не должен отменять платёж.
@@ -62,11 +76,12 @@ export interface FakeTelegram {
   sendPush(
     chatId: number | string,
     text: string,
-    options?: { button?: { text: string; webAppUrl: string } },
-  ): Promise<PushOutcome>;
+    options?: { buttons?: readonly (readonly PushButton[])[] },
+  ): Promise<PushSendResult>;
   createInvoiceLink(params: InvoiceLinkParams): Promise<string>;
   answerPreCheckoutQuery(queryId: string, ok: boolean, errorMessage?: string): Promise<void>;
   sendMessage(chatId: number | string, text: string): Promise<void>;
+  answerCallbackQuery(callbackQueryId: string, text: string): Promise<void>;
   sendPhoto(chatId: number | string, photo: string, caption: string): Promise<void>;
   answerInlineQuery(
     inlineQueryId: string,
@@ -89,6 +104,7 @@ export function makeFakeTelegram(): FakeTelegram {
   const photos: FakeTelegram['photos'] = [];
   const inlineAnswers: FakeTelegram['inlineAnswers'] = [];
   const starSubscriptionCancels: FakeTelegram['starSubscriptionCancels'] = [];
+  const callbackAnswers: FakeTelegram['callbackAnswers'] = [];
 
   const fake: FakeTelegram = {
     invoiceCalls,
@@ -99,16 +115,45 @@ export function makeFakeTelegram(): FakeTelegram {
     photos,
     inlineAnswers,
     starSubscriptionCancels,
+    callbackAnswers,
     inlineMode: true,
     getMeError: false,
     pushOutcome: 'sent',
+    pushRetryAfter: 1,
+    pushQueue: [],
     sendMessageError: null,
     invoiceError: null,
     starCancelOutcome: 'cancelled',
     sendPush(chatId, text, options) {
-      const outcome = fake.pushOutcome;
-      pushes.push({ chatId, text, outcome, ...(options?.button === undefined ? {} : { button: options.button }) });
-      return Promise.resolve(outcome);
+      const outcome = fake.pushQueue.length > 0 ? (fake.pushQueue.shift() ?? 'sent') : fake.pushOutcome;
+      pushes.push({
+        chatId,
+        text,
+        outcome,
+        ...(options?.buttons === undefined ? {} : { buttons: options.buttons }),
+      });
+
+      if (outcome === 'sent') {
+        return Promise.resolve({ status: 'sent', retryAfterSeconds: null, error: null });
+      }
+
+      if (outcome === 'rate_limited') {
+        return Promise.resolve({
+          status: 'rate_limited',
+          retryAfterSeconds: fake.pushRetryAfter,
+          error: 'rate_limited',
+        });
+      }
+
+      return Promise.resolve({
+        status: outcome,
+        retryAfterSeconds: null,
+        error: outcome === 'blocked' ? 'blocked' : 'telegram_500',
+      });
+    },
+    answerCallbackQuery(callbackQueryId, text) {
+      callbackAnswers.push({ id: callbackQueryId, text });
+      return Promise.resolve();
     },
     createInvoiceLink(params) {
       invoiceCalls.push(params);

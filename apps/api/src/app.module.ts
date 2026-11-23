@@ -21,6 +21,8 @@ import { OpsModule } from './modules/ops/ops.module';
 import { PdfModule } from './modules/pdf/pdf.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { ShareModule } from './modules/share/share.module';
+import { UsersRepository } from './modules/users/users.repository';
+import { PresenceService } from './modules/users/presence.service';
 
 @Module({
   imports: [
@@ -43,6 +45,10 @@ import { ShareModule } from './modules/share/share.module';
     FilesModule,
   ],
   providers: [
+    // Присутствие (итерация 38) — провайдер корневого модуля: его спрашивает
+    // middleware авторизации, а не какой-то один домен.
+    UsersRepository,
+    PresenceService,
     RequestIdMiddleware,
     InitDataMiddleware,
     RateLimitMiddleware,

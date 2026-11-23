@@ -187,6 +187,8 @@ describe('алерты: пороги в одном месте', () => {
       llm_spend: 500,
       generations_failing: 5,
       backup_stale: 36,
+      // Седьмое правило (1.6.13): провалы утреннего пуша за сутки.
+      push_failed: 20,
     });
   });
 });
@@ -269,7 +271,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
     return signInitData({ botToken: TEST_BOT_TOKEN, user: { ...FICTIONAL_USER, id } });
   }
 
-  it('отдаёт все шесть алертов с уровнями и порогами', async () => {
+  it('отдаёт все семь алертов с уровнями и порогами', async () => {
     const response = await request(ctx.app.getHttpServer())
       .get('/api/v1/admin/alerts')
       .set(INIT_DATA_HEADER, initDataFor(FICTIONAL_USER.id))
@@ -282,6 +284,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
       'subscription_cancel_blocked',
       'llm_spend',
       'generations_failing',
+      'push_failed',
       'backup_stale',
     ]);
     expect(body.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
@@ -289,6 +292,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
       'critical',
       'critical',
       'critical',
+      'warning',
       'warning',
       'warning',
       'warning',

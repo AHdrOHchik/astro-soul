@@ -130,6 +130,19 @@ async function bootstrap(): Promise<void> {
   // Выключенный брейкер — не «мелочь в .env»: без него массовый провал
   // валидации снова жжёт бюджет на каждом заказе. Один WARN на старте, чтобы
   // это было видно в логах того же дня, а не выяснялось по счёту.
+  // Пуш по умолчанию выключен — это нормальное состояние продукта, а не
+  // ошибка. Но включённый пуш — единственная рассылка, которая пишет людям от
+  // нашего имени, поэтому в лог старта попадает и «включён»: при разборе
+  // «почему пришло сообщение» первым делом смотрят именно это.
+  if (env.PUSH_ENABLED === '1') {
+    logger.info('push_enabled', {
+      flag: 'PUSH_ENABLED',
+      send_hour: env.PUSH_SEND_HOUR,
+      window_minutes: env.PUSH_WINDOW_MINUTES,
+      batch_size: env.PUSH_BATCH_SIZE,
+    });
+  }
+
   if (env.REPORT_BREAKER_ENABLED === '0') {
     logger.warn('report_breaker_disabled', {
       flag: 'REPORT_BREAKER_ENABLED',

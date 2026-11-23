@@ -78,10 +78,20 @@ export interface JobRunResult {
   readonly forecasts_generated: number;
   readonly forecasts_skipped: number;
   readonly forecasts_failed: number;
-  /** Удержание: пуш 08:00 по месту рождения. */
+  /** Удержание: утренний пуш 08:00 по месту рождения (итерация 38). */
   readonly pushes_sent: number;
+  /** Оставлено для совместимости: правило «7 дней активности» заменено, всегда 0. */
   readonly pushes_skipped_inactive: number;
+  /** Пропущены: человек уже открывал приложение после 07:30 по своему поясу. */
+  readonly pushes_skipped_seen: number;
+  /** Пропущены навсегда: у карты нет валидного пояса. */
+  readonly pushes_skipped_no_tz: number;
+  /** Второй запуск в те же местные сутки: сработал уникальный ключ `push_log`. */
+  readonly pushes_duplicate_prevented: number;
+  /** Telegram держал `429` дольше, чем цикл готов ждать. */
   readonly pushes_deferred: number;
+  /** `403` и `chat not found`: согласие снято, повторять нечего. */
+  readonly pushes_blocked: number;
   readonly pushes_failed: number;
 }
 
@@ -136,7 +146,11 @@ export class JobsService {
       forecasts_failed: 0,
       pushes_sent: 0,
       pushes_skipped_inactive: 0,
+      pushes_skipped_seen: 0,
+      pushes_skipped_no_tz: 0,
+      pushes_duplicate_prevented: 0,
       pushes_deferred: 0,
+      pushes_blocked: 0,
       pushes_failed: 0,
     };
 
@@ -183,8 +197,14 @@ export class JobsService {
         this.logger.warn('forecast_push_locked', { reason: 'another_run' });
       } else {
         result.pushes_sent = push.sent;
-        result.pushes_skipped_inactive = push.skippedInactive;
+        // Поле осталось в контракте ради совместимости; нового смысла у него
+        // нет: фильтр «заходил за 7 дней» снят в итерации 38.
+        result.pushes_skipped_inactive = 0;
+        result.pushes_skipped_seen = push.skippedSeen;
+        result.pushes_skipped_no_tz = push.skippedNoTz;
+        result.pushes_duplicate_prevented = push.duplicatePrevented;
         result.pushes_deferred = push.deferred;
+        result.pushes_blocked = push.blocked;
         result.pushes_failed = push.failed;
       }
     }
