@@ -227,9 +227,9 @@ describe('dev-мокер', () => {
       body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
     });
 
-    const reply = await get('/api/v1/admin/plans', { headers: { cookie: login.headers.getSetCookie()[0] ?? '' } });
+    const reply = await get('/api/v1/admin/what/ever', { headers: { cookie: login.headers.getSetCookie()[0] ?? '' } });
     expect(reply.status).toBe(404);
-    expect(await reply.text()).toContain('/api/v1/admin/plans');
+    expect(await reply.text()).toContain('/api/v1/admin/what/ever');
   });
 
   it('не /api/* мокер не трогает — отдаёт next()', async () => {
@@ -271,5 +271,131 @@ describe('dev-мокер рядом с живым API', () => {
       await live.close();
       await upstream.close();
     }
+  });
+});
+
+// Отдельный describe со СВОИМ экземпляром мокера: правки тарифов, бан и возврат
+// меняют состояние замыкания, и делить его с тестами выше — значит сделать
+// прогон зависимым от порядка.
+describe('dev-мокер: тарифы и пользователи', () => {
+  let mock: Handles;
+  let cookie = '';
+
+  const get = (path: string, init?: RequestInit) => fetch(mock.origin + path, init);
+  const send = (method: 'PATCH' | 'POST', path: string, body: unknown, withCsrf = true) =>
+    get(path, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+        ...(withCsrf ? { 'X-Admin-CSRF': DEMO_CSRF } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+  const patchPlan = (body: unknown, withCsrf = true) => send('PATCH', '/api/v1/admin/plans/month_399', body, withCsrf);
+
+  beforeAll(async () => {
+    mock = await serveMock(null);
+    const login = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+    });
+    cookie = login.headers.getSetCookie()[0] ?? '';
+  });
+
+  afterAll(async () => {
+    await mock.close();
+  });
+
+  it('каталог тарифов отдаётся и включает запертый founder_month', async () => {
+    const reply = await get('/api/v1/admin/plans', { headers: { cookie } });
+    const body = (await reply.json()) as { items: { code: string; founder_only: boolean }[] };
+
+    expect(reply.status).toBe(200);
+    expect(body.items.map((item) => item.code)).toContain('month_399');
+    expect(body.items.find((item) => item.code === 'founder_month')?.founder_only).toBe(true);
+  });
+
+  it('PATCH: без CSRF 403, без comment 422, с чужой версией 409 price_changed', async () => {
+    const noCsrf = await patchPlan({ price_stars: 349, comment: 'акция', base_version: 7 }, false);
+    expect(noCsrf.status).toBe(403);
+
+    const noComment = await patchPlan({ price_stars: 349, base_version: 7 });
+    expect(noComment.status).toBe(422);
+    expect(JSON.stringify(await noComment.json())).toContain('comment');
+
+    const conflict = await patchPlan({ price_stars: 349, comment: 'акция', base_version: 6 });
+    expect(conflict.status).toBe(409);
+    const problem = (await conflict.json()) as { details?: { reason?: string } };
+    expect(problem.details?.reason).toBe('price_changed');
+  });
+
+  it('PATCH с правильной версией меняет цену и пишет историю со снимком имени', async () => {
+    const okReply = await patchPlan({ price_stars: 349, comment: 'акция выходного дня', base_version: 7 });
+    expect(okReply.status).toBe(200);
+    const result = (await okReply.json()) as { plan: { version: number; updated_by_name: string | null } };
+    expect(result.plan.version).toBe(8);
+    expect(result.plan.updated_by_name).toContain('ДЕМО');
+
+    const history = await get('/api/v1/admin/plans/month_399/history', { headers: { cookie } });
+    const rows = (await history.json()) as { items: { from_price: number | null; to_price: number; actor_name: string; comment: string }[] };
+    expect(rows.items[0]?.from_price).toBe(399);
+    expect(rows.items[0]?.to_price).toBe(349);
+    // Снимок имени на момент действия — колонка «кто менял» не ходит в `users`.
+    expect(rows.items[0]?.actor_name).toContain('ДЕМО');
+    expect(rows.items[0]?.comment).toBe('акция выходного дня');
+  });
+
+  it('founder_month не редактируется даже с корректным телом', async () => {
+    const reply = await send('PATCH', '/api/v1/admin/plans/founder_month', { price_stars: 250, comment: 'по просьбе', base_version: 2 });
+    expect(reply.status).toBe(403);
+    expect(JSON.stringify(await reply.json())).toContain('founder_plan_locked');
+  });
+
+  it('поиск принимает ровно один параметр; два — 422, как на сервере', async () => {
+    const two = await get(`/api/v1/admin/users?telegram_id=777003&alias=anna_chart`, { headers: { cookie } });
+    expect(two.status).toBe(422);
+
+    const none = await get('/api/v1/admin/users', { headers: { cookie } });
+    expect(none.status).toBe(422);
+
+    const byAlias = await get('/api/v1/admin/users?alias=%40anna_chart', { headers: { cookie } });
+    const rows = (await byAlias.json()) as { items: { tg_id: string }[] };
+    expect(byAlias.status).toBe(200);
+    expect(rows.items.map((item) => item.tg_id)).toEqual(['777003']);
+  });
+
+  it('возврат только полный: без основания 422; сумма серверная; повтор — 409', async () => {
+    const cardReply = await get(`/api/v1/admin/users/${DEMO_USER_ID}`, { headers: { cookie } });
+    const card = (await cardReply.json()) as { refundable: { amount_stars: number } | null };
+    expect(card.refundable?.amount_stars).toBe(399);
+
+    const noReason = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, {});
+    expect(noReason.status).toBe(422);
+
+    const okReply = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { reason: 'возврат по обращению 4211' });
+    const result = (await okReply.json()) as { amount_stars: number; currency: string; status: string };
+    expect(okReply.status).toBe(200);
+    // Тела ответа без поля суммы на вход — сервер сам решает, сколько: здесь это 399 ⭐ XTR.
+    expect(result).toMatchObject({ amount_stars: 399, currency: 'XTR', status: 'refunded' });
+
+    const again = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { reason: 'ещё раз' });
+    expect(again.status).toBe(409);
+    expect(JSON.stringify(await again.json())).toContain('nothing_to_refund');
+  });
+
+  it('бан переключается с обязательным основанием; пуш — флажем', async () => {
+    const banned = await send('POST', `/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003/ban`, { reason: 'спам в промптах' });
+    expect((await banned.json())).toMatchObject({ banned: true });
+
+    const card = (await (await get('/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003', { headers: { cookie } })).json()) as { ban_reason: string | null };
+    expect(card.ban_reason).toBe('спам в промптах');
+
+    const noReason = await send('POST', `/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003/ban`, {});
+    expect(noReason.status).toBe(422);
+
+    const push = await send('POST', `/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003/push`, { enabled: false });
+    expect((await push.json())).toMatchObject({ push_enabled: false });
   });
 });

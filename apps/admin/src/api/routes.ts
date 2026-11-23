@@ -127,7 +127,7 @@ const USERS: readonly AdminRoute[] = [
     path: `${API_PREFIX}/admin/users`,
     inContract: false,
     needsSession: true,
-    why: 'Поиск человека по telegram_id, @username или коду активации (`?query=`) — без него карточку открыть нечем.',
+    why: 'Поиск человека — ровно одним параметром: `?telegram_id=`, `?alias=` или `?q=`. Без него карточку открыть нечем; два сразу сервер не принимает.',
     screens: ['users'],
   },
   {
@@ -146,6 +146,15 @@ const USERS: readonly AdminRoute[] = [
     inContract: false,
     needsSession: true,
     why: 'Возврат звёзд (refundStarPayment) с суммой, посчитанной на сервере.',
+    screens: ['users'],
+  },
+  {
+    key: 'userBan',
+    method: 'POST',
+    path: `${API_PREFIX}/admin/users/{id}/ban`,
+    inContract: false,
+    needsSession: true,
+    why: 'Заблокировать и разблокировать человека с обязательным основанием в аудит.',
     screens: ['users'],
   },
   {

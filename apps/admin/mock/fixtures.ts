@@ -14,6 +14,7 @@
  */
 
 import type { components, paths } from '../src/api/schema.gen';
+import type { AdminPlanHistoryRow, AdminPlanRow, AdminUserCard, AdminUserRow } from '../src/api/types.ts';
 
 /** Маркер для стража: если строка попала в `dist` — мок уехал в прод. */
 export const MOCK_MARKER = 'ADMIN_MOCK_FIXTURE_v1';
@@ -245,3 +246,190 @@ export const mockGrants: MockGrant[] = [
     created_at: nowIso(-60 * DAY),
   },
 ];
+
+
+/* ------------------------------------------------------------------------- *
+ * «Тарифы» и «Пользователи» — данные для экранов итерации 2.
+ *
+ * Формы взяты из ответов владельца (`answers/admin-pr1-review.md`), и мокер
+ * намеренно ведёт себя как сервер, а не как «удобная заглушка»:
+ *   • `PATCH /admin/plans/{code}` требует `comment` и сверяет `base_version`
+ *     (на расхождении — 409 `price_changed` с текущим значением);
+ *   • `founder_month` не редактируется вовсе (403 `founder_plan_locked`);
+ *   • возврат только полный: сумма живёт в `refundable`, отдельного ввода нет,
+ *     после возврата `refundable` становится `null`.
+ * ------------------------------------------------------------------------- */
+
+export const mockPlans: AdminPlanRow[] = [
+  {
+    code: 'week_149',
+    title: 'Неделя',
+    price_stars: 149,
+    discount_price_stars: null,
+    is_active: true,
+    test_only: false,
+    founder_only: false,
+    price_change_scope: 'only_new_purchases',
+    version: 3,
+    updated_at: nowIso(-9 * DAY),
+    updated_by_name: 'Владелец',
+    updated_by_tg_id: '777001',
+  },
+  {
+    code: 'month_399',
+    title: 'Месяц',
+    price_stars: 399,
+    discount_price_stars: null,
+    is_active: true,
+    test_only: false,
+    founder_only: false,
+    price_change_scope: 'only_new_purchases',
+    version: 7,
+    updated_at: nowIso(-2 * DAY),
+    updated_by_name: 'Владелец',
+    updated_by_tg_id: '777001',
+  },
+  {
+    code: 'year_2990',
+    title: 'Год',
+    price_stars: 2990,
+    discount_price_stars: 2490,
+    is_active: true,
+    test_only: false,
+    founder_only: false,
+    price_change_scope: 'only_new_purchases',
+    version: 11,
+    updated_at: nowIso(-30 * MINUTE),
+    updated_by_name: 'Поддержка',
+    updated_by_tg_id: '777002',
+  },
+  {
+    code: 'one_149',
+    title: 'Один разбор',
+    price_stars: 149,
+    discount_price_stars: null,
+    is_active: true,
+    test_only: false,
+    founder_only: false,
+    price_change_scope: 'only_new_purchases',
+    version: 1,
+    updated_at: nowIso(-40 * DAY),
+    updated_by_name: null,
+    updated_by_tg_id: null,
+  },
+  {
+    // Право проверяет сервер по таблице `founders`; в витрине тарифа нет —
+    // и `price_change_scope` у него пустой: панель обязана сказать
+    // «сервер не назвал правило», а не придумать формулировку.
+    code: 'founder_month',
+    title: 'Основательский',
+    price_stars: 250,
+    discount_price_stars: null,
+    is_active: true,
+    test_only: false,
+    founder_only: true,
+    price_change_scope: '',
+    version: 2,
+    updated_at: nowIso(-60 * DAY),
+    updated_by_name: 'Владелец',
+    updated_by_tg_id: '777001',
+  },
+  {
+    code: 'test_1',
+    title: 'Тестовый',
+    price_stars: 1,
+    discount_price_stars: null,
+    is_active: false,
+    test_only: true,
+    founder_only: false,
+    price_change_scope: 'only_new_purchases',
+    version: 1,
+    updated_at: nowIso(-3 * DAY),
+    updated_by_name: 'Поддержка',
+    updated_by_tg_id: '777002',
+  },
+];
+
+export const mockPlanHistory: readonly (AdminPlanHistoryRow & { code: string })[] = [
+  {
+    code: 'month_399',
+    at: nowIso(-2 * DAY),
+    actor_tg_id: '777001',
+    // Снимок имени на момент действия — не ссылка на `users`.
+    actor_name: 'Владелец',
+    from_price: 449,
+    to_price: 399,
+    comment: 'прайс перед новогодним пушем',
+  },
+  {
+    code: 'month_399',
+    at: nowIso(-45 * DAY),
+    actor_tg_id: '777002',
+    actor_name: 'Поддержка',
+    from_price: null,
+    to_price: 449,
+    comment: 'создание тарифа',
+  },
+];
+
+/** Полная карточка: строка поиска выводится из неё, а не живёт отдельно. */
+export const mockUsers: AdminUserCard[] = [
+  {
+    user_id: DEMO_USER_ID,
+    tg_id: '777003',
+    alias: 'anna_chart',
+    name: 'Анна (вымышленная)',
+    created_at: nowIso(-120 * DAY),
+    last_seen_at: nowIso(-3 * HOUR),
+    push_enabled: true,
+    banned_at: null,
+    ban_reason: null,
+    subscription: { plan_code: 'month_399', until: nowIso(21 * DAY), source: 'payment' },
+    payments: [
+      { id: 'pay-1', charge_id: 'chg_9001', kind: 'payment', stars: 399, at: nowIso(-9 * DAY), refunded: false },
+      { id: 'pay-2', charge_id: 'chg_8100', kind: 'payment', stars: 399, at: nowIso(-39 * DAY), refunded: true },
+      { id: 'pay-3', charge_id: 'chg_8100r', kind: 'refund', stars: 399, at: nowIso(-38 * DAY), refunded: false },
+    ],
+    refundable: { charge_id: 'chg_9001', amount_stars: 399, currency: 'XTR' },
+  },
+  {
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000002',
+    tg_id: '777004',
+    alias: 'banned_ivan',
+    name: 'Иван (вымышленный)',
+    created_at: nowIso(-300 * DAY),
+    last_seen_at: nowIso(-40 * DAY),
+    push_enabled: false,
+    banned_at: nowIso(-10 * DAY),
+    ban_reason: 'массовые промпты-спамы в генерации',
+    subscription: null,
+    payments: [],
+    refundable: null,
+  },
+  {
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000003',
+    tg_id: '777005',
+    alias: null,
+    name: 'Мария (вымышленная)',
+    created_at: nowIso(-14 * DAY),
+    last_seen_at: null,
+    push_enabled: true,
+    banned_at: null,
+    ban_reason: null,
+    subscription: null,
+    payments: [{ id: 'pay-9', charge_id: 'chg_9500', kind: 'payment', stars: 149, at: nowIso(-13 * DAY), refunded: false }],
+    refundable: { charge_id: 'chg_9500', amount_stars: 149, currency: 'XTR' },
+  },
+];
+
+export function userRow(card: AdminUserCard): AdminUserRow {
+  return {
+    user_id: card.user_id,
+    tg_id: card.tg_id,
+    alias: card.alias,
+    name: card.name,
+    plan_code: card.subscription?.plan_code ?? null,
+    access_until: card.subscription?.until ?? null,
+    banned: card.banned_at !== null,
+  };
+}

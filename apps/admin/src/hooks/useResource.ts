@@ -29,6 +29,13 @@ export interface UseResourceOptions {
   /** Ключ маршрута из реестра: по нему решается, есть ли он в контракте. */
   readonly routeKey?: string;
   readonly enabled?: boolean;
+  /**
+   * Разрешить загрузку с маршрута, которого нет в контракте. Ставится экраном
+   * только в ДЕМО-режиме (`demo`), и ровно там же транспорт пропускает такой
+   * запрос (`allowUnknownRoutes` в `http`). В проде флаг `false` — и блок
+   * остаётся «недоступно», без таблицы с выдуманными строками.
+   */
+  readonly allowMissing?: boolean;
 }
 
 export interface UseResourceResult<T> {
@@ -45,12 +52,12 @@ interface Snapshot<T> {
 }
 
 export function useResource<T>(load: Loader<T>, options: UseResourceOptions = {}): UseResourceResult<T> {
-  const { routeKey, enabled = true } = options;
+  const { routeKey, enabled = true, allowMissing = false } = options;
   const [nonce, setNonce] = useState(0);
   const [snapshot, setSnapshot] = useState<Snapshot<T> | null>(null);
 
   const item = routeKey === undefined ? null : lookupRoute(routeKey);
-  const callable = item === null || item.inContract;
+  const callable = item === null || item.inContract || allowMissing;
 
   useEffect(() => {
     if (!enabled || !callable) return;
