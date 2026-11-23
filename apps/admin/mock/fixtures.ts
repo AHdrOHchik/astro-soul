@@ -1,0 +1,247 @@
+/*
+ * Данные dev-мокера. Это НЕ часть продукта: файл импортирует только
+ * `vite.config.ts` (узел сборки), в клиентский бандл он не попадает физически, а
+ * `scripts/check-no-mock.mjs` проверяет это по артефакту сборки, а не на слово.
+ *
+ * Три правила:
+ *   1. Всё типизировано сгенерированными из контракта типами: мок не может
+ *      разойтись с `api.openapi.yaml` — `pnpm typecheck` не даст.
+ *   2. Данные вымышленные и **неудобные** намеренно: `degraded`, исчерпанный
+ *      бюджет, молчащий планировщик, просроченные и отозванные права. Тревожные
+ *      состояния — те, ради которых панель и делается, и их надо видеть.
+ *   3. Ни одного реального идентификатора: `user_id` — uuid из воздуха, telegram
+ *      id — `777001`.
+ */
+
+import type { components, paths } from '../src/api/schema.gen';
+
+/** Маркер для стража: если строка попала в `dist` — мок уехал в прод. */
+export const MOCK_MARKER = 'ADMIN_MOCK_FIXTURE_v1';
+
+type Schemas = components['schemas'];
+export type MockAccessCode = Schemas['AccessCode'];
+export type MockAlerts = paths['/api/v1/admin/alerts']['get']['responses'][200]['content']['application/json'];
+export type MockMetrics = paths['/api/v1/admin/metrics']['get']['responses'][200]['content']['application/json'];
+export type MockGrant = paths['/api/v1/admin/grants']['get']['responses'][200]['content']['application/json']['items'][number];
+
+const MINUTE = 60_000;
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
+
+/** Всё считается от «сейчас», чтобы «молчит N часов» и «истёк» не протухали. */
+export function nowIso(offsetMs: number): string {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
+/** Тот самый человек, ради которого и заведена панель. */
+export const DEMO_USER_ID = '2b1f7a04-9d3c-4e21-8a55-000000000001';
+export const DEMO_CSRF = 'demo-csrf-token-1';
+export const DEMO_COOKIE = 'admin_session=mock';
+
+export const mockMe = {
+  tg_id: '777001',
+  name: 'ДЕМО · данные вымышлены',
+  // Ровно 12 часов: столько живёт боевая сессия (ТЗ §3), и в ДЕМО-режиме
+  // панель должна вести себя так же — в том числе у границы срока.
+  expires_at: nowIso(12 * HOUR),
+  csrf_token: DEMO_CSRF,
+};
+
+/**
+ * Алерты: четыре сработавших, один нет — на нём видно, что панель фильтрует, а
+ * не рисует всё подряд.
+ */
+export const mockAlerts: MockAlerts = {
+  checked_at: nowIso(-4 * MINUTE),
+  alerts: [
+    {
+      id: 'payment_not_arriving',
+      level: 'critical',
+      value: 3,
+      threshold: 0,
+      since: nowIso(-5 * HOUR),
+      fired: true,
+    },
+    { id: 'telegram_webhook', level: 'critical', value: 47, threshold: 10, since: nowIso(-47 * MINUTE), fired: true },
+    { id: 'backup_stale', level: 'warning', value: 92, threshold: 36, since: nowIso(-56 * HOUR), fired: true },
+    { id: 'llm_spend', level: 'warning', value: 780, threshold: 500, since: nowIso(-9 * HOUR), fired: true },
+    { id: 'generations_failing', level: 'warning', value: 2, threshold: 5, since: null, fired: false },
+  ],
+};
+
+/**
+ * Метрики: картинка «вечер пятницы, всё немного сломалось». Бюджет бесплатно
+ * доступа выбран на 94%, планировщик молчит сутки, провалы генераций идут
+ * серией, которая держит брейкер открытым.
+ */
+export const mockMetrics: MockMetrics = {
+  mau: 412,
+  paying: 9,
+  conversion_to_paid: 0.022,
+  churn_30d: 0.111,
+  stars_received_30d: 1840,
+  llm_cost_rub_30d: 142.85,
+  reports_failed_30d: 17,
+  reports_validation_streak: 4,
+  reports_breaker_open: true,
+  reports_breaker_last_failed_at: nowIso(-40 * MINUTE),
+  payments_rejected_30d: 3,
+  amount_mismatch_30d: 2,
+  refunded_30d: 5,
+  pending_payments_now: 1,
+  pre_checkout_total_24h: 12,
+  pre_checkout_rejected_24h: 3,
+  pre_checkout_timeout_24h: 1,
+  successful_payment_total_24h: 9,
+  payment_failed_24h: 3,
+  telegram_webhook_ok: false,
+  telegram_webhook_checked_at: nowIso(-47 * MINUTE),
+  test_plans_active: false,
+  test_payments_30d: 0,
+  subscription_cancel_failed_30d: 1,
+  subscriptions_cancelled_pending_telegram: 0,
+  subscription_cancel_total_24h: 2,
+  subscription_cancel_failed_24h: 0,
+  subscription_cancel_no_charge_id_24h: 0,
+  subscriptions_auto_renew_off: 4,
+  events_30d: { app_open: 1840, chart_created: 512, payment_succeeded: 21 },
+  funnel_30d: { app_open: 402, consent_accepted: 361, chart_created: 288, checkout_opened: 41, payment_succeeded: 9 },
+  forecast_ready_24h: 96,
+  forecast_failed_24h: 2,
+  forecast_facts_only_24h: 44,
+  forecast_cache_hits_24h: 18,
+  forecast_cost_rub_24h: 41.2,
+  compat_failed_24h: 3,
+  compat_cost_rub_24h: 9.1,
+  questions_ready_24h: 22,
+  questions_failed_24h: 1,
+  questions_refused_24h: 4,
+  questions_refused_by_reason: { off_topic: 3, no_chart: 1 },
+  questions_cost_rub_24h: 12.6,
+  question_p95_ms: 4210,
+  share_cards_created_24h: { day: 4, wheel: 0, insight: 1, identity: 2, moon: 0 },
+  push_sent_24h: 0,
+  push_failed_24h: 31,
+  push_skipped_no_tz_24h: 17,
+  push_duplicate_prevented_24h: 2,
+  push_claimed_not_sent_24h: 7,
+  grants_active: 23,
+  grants_issued_24h: { partner: 2, founder: 1 },
+  grants_revenue_lost_rub_24h: 233.33,
+  codes_activated_24h: 2,
+  referrals_joined_24h: 0,
+  referrals_rewarded_24h: 0,
+  founders_taken: 47,
+  bonus_budget_spent_rub: 9400,
+  bonus_budget_limit_rub: 10000,
+};
+
+export const mockCodes: MockAccessCode[] = [
+  {
+    id: '0d0e3b6f-1c2d-4a5b-8c9d-000000000001',
+    code: 'K7M2P9X4',
+    kind: 'all_access',
+    days: 30,
+    max_activations: 10,
+    activations: 3,
+    partner_name: 'ДЕМО · подкаст «Небо»',
+    is_active: true,
+    expires_at: nowIso(14 * DAY),
+    created_at: nowIso(-3 * DAY),
+  },
+  {
+    id: '0d0e3b6f-1c2d-4a5b-8c9d-000000000002',
+    code: 'QWERTY23',
+    kind: 'all_access',
+    days: 7,
+    max_activations: 5,
+    activations: 5,
+    partner_name: 'ДЕМО · рассылка',
+    is_active: true,
+    expires_at: nowIso(4 * DAY),
+    created_at: nowIso(-9 * DAY),
+  },
+  {
+    id: '0d0e3b6f-1c2d-4a5b-8c9d-000000000003',
+    code: 'ZXCVBN12',
+    kind: 'single_report',
+    days: null,
+    max_activations: 1,
+    activations: 0,
+    partner_name: null,
+    is_active: false,
+    expires_at: nowIso(-2 * DAY),
+    created_at: nowIso(-20 * DAY),
+  },
+  {
+    id: '0d0e3b6f-1c2d-4a5b-8c9d-000000000004',
+    code: 'AAAA1111',
+    kind: 'single_compat',
+    days: null,
+    max_activations: 100,
+    activations: 12,
+    partner_name: 'ДЕМО · партнёр с истёкшим сроком',
+    is_active: true,
+    expires_at: nowIso(-1 * DAY),
+    created_at: nowIso(-40 * DAY),
+  },
+];
+
+export const mockGrants: MockGrant[] = [
+  {
+    id: '5a1b2c3d-0000-4000-8000-000000000001',
+    user_id: DEMO_USER_ID,
+    kind: 'all_access',
+    source: 'founder',
+    code_id: null,
+    days: 30,
+    starts_at: nowIso(-5 * DAY),
+    expires_at: nowIso(25 * DAY),
+    consumed_at: null,
+    revoked_at: null,
+    revoked: false,
+    created_at: nowIso(-5 * DAY),
+  },
+  {
+    id: '5a1b2c3d-0000-4000-8000-000000000002',
+    user_id: DEMO_USER_ID,
+    kind: 'all_access',
+    source: 'partner',
+    code_id: '0d0e3b6f-1c2d-4a5b-8c9d-000000000001',
+    days: 7,
+    starts_at: nowIso(-30 * DAY),
+    expires_at: nowIso(-23 * DAY),
+    consumed_at: null,
+    revoked_at: null,
+    revoked: false,
+    created_at: nowIso(-30 * DAY),
+  },
+  {
+    id: '5a1b2c3d-0000-4000-8000-000000000003',
+    user_id: DEMO_USER_ID,
+    kind: 'single_report',
+    source: 'purchase',
+    code_id: null,
+    days: null,
+    starts_at: nowIso(-2 * DAY),
+    expires_at: null,
+    consumed_at: nowIso(-1 * DAY),
+    revoked_at: null,
+    revoked: false,
+    created_at: nowIso(-2 * DAY),
+  },
+  {
+    id: '5a1b2c3d-0000-4000-8000-000000000004',
+    user_id: DEMO_USER_ID,
+    kind: 'all_access',
+    source: 'admin',
+    code_id: null,
+    days: 14,
+    starts_at: nowIso(-60 * DAY),
+    expires_at: nowIso(-46 * DAY),
+    consumed_at: null,
+    revoked_at: nowIso(-50 * DAY),
+    revoked: true,
+    created_at: nowIso(-60 * DAY),
+  },
+];

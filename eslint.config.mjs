@@ -1,6 +1,7 @@
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 import { frontendLayer } from './packages/ui/eslint.frontend.mjs';
+import { adminLayer } from './apps/admin/eslint.admin.mjs';
 
 export default tseslint.config(
   {
@@ -22,6 +23,10 @@ export default tseslint.config(
       'scripts/qa/**',
       // Генератор корпуса примеров: та же история — .mjs вне tsconfig.
       'scripts/reports/**',
+      // Админ-панель: свой eslint-слой и node-скрипт сборки — оба вне tsconfig
+      // пакета (правила с типами для них не работают, как и для конфига выше).
+      'apps/admin/eslint.admin.mjs',
+      'apps/admin/scripts/**',
       // Сборщик справочника городов: node-скрипт с чтением файлов, вне tsconfig
       // пакета (allowJs в сборку shared не тащим).
       'packages/shared/scripts/**',
@@ -75,4 +80,7 @@ export default tseslint.config(
   },
   // apps/web и packages/ui: слой FRONTEND поверх общих правил (strict + react-hooks).
   ...frontendLayer(tseslint),
+  // apps/admin: тот же набор правил, но свои глобы — `packages/ui` не правим
+  // (чужая директория, AGENTS.md §0), а линтить админку слабее нельзя.
+  ...adminLayer(tseslint),
 );

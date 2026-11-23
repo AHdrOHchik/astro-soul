@@ -1,0 +1,456 @@
+/*
+ * Стили админ-панели. Один файл, без CSS-модулей и без дизайн-системы
+ * мини-аппа: панель — внутренний инструмент, её задача — читаемая таблица и
+ * честный статус, а не витрина.
+ *
+ * Размеры сознательно крупные (15px база): экран поддержки — это монитор,
+ * а не телефон, и цифры здесь читают в спешке.
+ */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --line: #d8dbe0;
+  --text: #16181d;
+  --text-soft: #5b6270;
+  --crit: #c0262c;
+  --crit-bg: #fdeced;
+  --warn: #8a5b00;
+  --warn-bg: #fff5e0;
+  --ok: #14663a;
+  --ok-bg: #e8f6ec;
+  --info: #14508a;
+  --info-bg: #e9f1fb;
+  --demo: #b3261e;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --bg-soft: #1e2127;
+    --line: #333842;
+    --text: #eceef2;
+    --text-soft: #a3abb9;
+    --crit: #ff8f95;
+    --crit-bg: #3a1c1f;
+    --warn: #f0c674;
+    --warn-bg: #332a15;
+    --ok: #7fd39b;
+    --ok-bg: #1a2e21;
+    --info: #9ec6f5;
+    --info-bg: #1a2739;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+a {
+  color: inherit;
+}
+
+.shell {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr;
+  min-height: 100vh;
+}
+
+/* Шапка: кто вошёл, до чего сессия, выход. */
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+
+.top__brand {
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.top__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.top__actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Меню на все восемь разделов: шесть ведут на «экран не реализован». */
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.nav__link {
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.nav__link:hover {
+  background: var(--bg-soft);
+}
+
+.nav__link[aria-current='page'] {
+  border-color: var(--line);
+  background: var(--bg-soft);
+  font-weight: 600;
+}
+
+.nav__mark {
+  margin-left: 6px;
+  color: var(--text-soft);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+main {
+  padding: 16px 20px 64px;
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.lead {
+  margin: 0 0 16px;
+  color: var(--text-soft);
+  max-width: 80ch;
+}
+
+.grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.panel__head {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-soft);
+  border-radius: 8px 8px 0 0;
+}
+
+.panel__body {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.banner {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left-width: 4px;
+  border-radius: 6px;
+}
+
+.banner--crit {
+  color: var(--crit);
+  background: var(--crit-bg);
+  border-color: var(--crit);
+}
+
+.banner--warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.banner--ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok);
+}
+
+.banner--info {
+  color: var(--info);
+  background: var(--info-bg);
+  border-color: var(--info);
+}
+
+/* Плашка ДЕМО: прилипает к верху и не закрывается. Её нельзя не заметить. */
+.demo {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 10px 20px;
+  background: var(--demo);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 3px solid #7d1a14;
+}
+
+.demo small {
+  display: block;
+  margin-top: 2px;
+  color: #ffe9e7;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pill--ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: var(--ok);
+}
+
+.pill--crit {
+  color: var(--crit);
+  background: var(--crit-bg);
+  border-color: var(--crit);
+}
+
+.pill--warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn);
+}
+
+.pill--muted {
+  color: var(--text-soft);
+}
+
+.stats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.stat {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.stat__label {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.stat__value {
+  font-variant-numeric: tabular-nums;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.stat__hint {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+td.num,
+th.num {
+  text-align: right;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.muted {
+  color: var(--text-soft);
+}
+
+ul.tight {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+
+button {
+  font: inherit;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-soft);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button.danger {
+  color: #fff;
+  background: var(--demo);
+  border-color: #7d1a14;
+}
+
+button.primary {
+  color: var(--text);
+  border-color: var(--text-soft);
+}
+
+form.flow,
+.fieldset {
+  display: grid;
+  gap: 10px;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: end;
+}
+
+label.field {
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+input,
+select {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  min-width: 120px;
+}
+
+input[aria-invalid='true'] {
+  border-color: var(--crit);
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+legend {
+  padding: 0 6px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.confirm {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px dashed var(--crit);
+  border-radius: 8px;
+  background: var(--crit-bg);
+  display: grid;
+  gap: 8px;
+}
+
+.confirm__delta {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.codes {
+  display: grid;
+  gap: 6px;
+}
+
+.code {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-soft);
+}
+
+.notice {
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--text-soft);
+}
