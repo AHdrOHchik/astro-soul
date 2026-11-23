@@ -231,3 +231,208 @@ def test_service_card_build_rejects_unknown_kind() -> None:
     response = client.post("/card/build", json={"kind": "compat", "title": "Пара", "lines": []})
 
     assert response.status_code == 422
+
+
+# ── Шаблон сторис (итерация 37) ────────────────────────────────────────────
+#
+# Проверки шаблона — по числам и по пикселям, а не «на глаз»: безопасная зона
+# сторис (250…1670) — это не пожелание, а то, что видит зритель. Если текст
+# вылез, его съест интерфейс Instagram, и человек увидит обрезанную фразу.
+
+from astro.cards import (  # noqa: E402
+    SAFE_BOTTOM,
+    SAFE_TOP,
+    STORIES_KINDS,
+    TEMPLATE_VERSION,
+    _gradient,
+    storiesLayout,
+)
+from astro.service import app  # noqa: E402
+
+BRAND = "Разбор личности"
+HINT = "ищи в Telegram: разбор личности"
+DISCLAIMER = "Разбор — инструмент саморефлексии, а не предсказание и не замена специалисту."
+FOOTER = "t.me/astro_soul_test_bot?start=sh_k7m2p9"
+
+
+def _stories(kind: str = "day", **overrides):
+    params = {
+        "brand_name": BRAND,
+        "brand_hint": HINT,
+        "disclaimer": DISCLAIMER,
+        "footer": FOOTER,
+        "moon_illumination": 0.68,
+    }
+    params.update(overrides)
+    return storiesLayout(
+        kind,
+        "Луна в Рыбах",
+        [
+            "Растущая Луна, освещённость 68%",
+            "Сегодня хорошо для тихих разговоров.",
+            "20 ноября 2026",
+        ],
+        **params,
+    )
+
+
+@pytest.mark.parametrize("kind", STORIES_KINDS)
+def test_stories_layout_stays_inside_safe_zone(kind: str) -> None:
+    layout = _stories(kind)
+
+    assert layout.outsideSafeZone() == ()
+
+    for block in layout.blocks:
+        assert block.y >= SAFE_TOP, (block.role, block.y)
+        assert block.bottom <= SAFE_BOTTOM, (block.role, block.bottom)
+        # И по горизонтали текст не выходит за поля карточки.
+        assert block.x >= 0
+        assert block.x + block.width <= layout.width
+
+
+@pytest.mark.parametrize("kind", ["day", "identity", "moon"])
+def test_stories_template_has_all_mandatory_elements(kind: str) -> None:
+    roles = {block.role for block in _stories(kind).blocks}
+
+    # Имя продукта, дисклеймер и подсказка для поиска — обязательные элементы:
+    # карточка уходит из приложения, и подпись должна быть внутри.
+    assert {"brand", "disclaimer", "hint"} <= roles
+
+
+def test_identity_card_draws_prompt_inside_safe_zone() -> None:
+    layout = _stories("identity", prompt="Узнал себя? Спроси, что про тебя", moon_illumination=None)
+
+    prompt = [block for block in layout.blocks if block.role == "prompt"]
+    assert prompt, "приглашение не нарисовано"
+    assert all(block.bottom <= SAFE_BOTTOM for block in prompt)
+
+
+def test_stories_layout_is_deterministic() -> None:
+    assert _stories() == _stories()
+
+
+def test_stories_layout_rejects_foreign_kind() -> None:
+    with pytest.raises(ValueError):
+        storiesLayout("wheel", "Колесо", [])
+
+
+def _row_pixels(image: Image.Image, y: int) -> list[tuple[int, int, int]]:
+    return [image.getpixel((x, y)) for x in range(0, image.width, 7)]
+
+
+@pytest.mark.parametrize("kind", ["day", "identity", "moon"])
+def test_nothing_is_drawn_outside_safe_zone(kind: str) -> None:
+    """Выше 250 и ниже 1670 — только фон.
+
+    Проверка по пикселям: если завтра кто-то передвинет подвал или имя
+    продукта, тест это увидит, а не зритель в сторис.
+    """
+    png = renderCardPng(
+        kind,
+        "Луна в Рыбах",
+        ["Растущая Луна, освещённость 68%", "Сегодня хорошо для тихих разговоров."],
+        footer=FOOTER,
+        brand_name=BRAND,
+        brand_hint=HINT,
+        disclaimer=DISCLAIMER,
+        prompt="Узнал себя? Спроси, что про тебя" if kind == "identity" else None,
+        moon_illumination=0.68 if kind != "identity" else None,
+    )
+    image = _open(png).convert("RGB")
+    background = _gradient(image.size)
+
+    for y in list(range(0, SAFE_TOP, 37)) + list(range(SAFE_BOTTOM + 1, image.height, 37)):
+        assert _row_pixels(image, y) == _row_pixels(
+            background, y
+        ), f"что-то нарисовано в строке {y}"
+
+
+def test_template_version_is_part_of_the_contract() -> None:
+    # Версия участвует в ключе кэша (share_cards.template_version): её смена —
+    # это новая вёрстка, а не «та же карточка».
+    assert TEMPLATE_VERSION == "stories-1"
+
+
+def test_service_card_build_new_kinds() -> None:
+    for kind in ("identity", "moon"):
+        response = client.post(
+            "/card/build",
+            json={
+                "kind": kind,
+                "title": "Три вещи, которые правда про меня",
+                "lines": ["Ты держишь темп, когда вокруг шумно."],
+                "footer": FOOTER,
+                "brand_name": BRAND,
+                "brand_hint": HINT,
+                "disclaimer": DISCLAIMER,
+                "prompt": "Узнал себя? Спроси, что про тебя",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["width"], body["height"]) == (1080, 1920)
+
+
+def test_service_moon_facts_without_chart() -> None:
+    """Луна без карты: единственный вход, которому не нужны натальные данные."""
+    response = client.post("/moon/facts", json={"date": "2026-11-20", "timezone": "Europe/Moscow"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["date"] == "2026-11-20"
+    assert body["timezone"] == "Europe/Moscow"
+    assert body["moon"]["sign"] in {
+        "Овен",
+        "Телец",
+        "Близнецы",
+        "Рак",
+        "Лев",
+        "Дева",
+        "Весы",
+        "Скорпион",
+        "Стрелец",
+        "Козерог",
+        "Водолей",
+        "Рыбы",
+    }
+    assert 0 <= body["moon"]["illumination"] <= 1
+    # Карты в ответе нет вовсе: маршрут её и не принимает.
+    assert "transits" not in body
+    assert "windows" not in body
+
+
+def test_service_moon_facts_rejects_unknown_timezone() -> None:
+    response = client.post("/moon/facts", json={"date": "2026-11-20", "timezone": "Mars/Olympus"})
+
+    assert response.status_code == 422
+
+
+def test_service_moon_facts_matches_forecast_facts(known_birth: BirthInput) -> None:
+    """Знак и фаза совпадают с персональными фактами дня на ту же дату.
+
+    Иначе «фаза Луны» для человека без профиля и для человека с профилем
+    разошлись бы, и карточка противоречила бы прогнозу.
+    """
+    chart_response = client.post("/chart", json=BIRTH)
+    assert chart_response.status_code == 200
+    chart = chart_response.json()
+
+    personal = client.post(
+        "/forecast/facts",
+        json={
+            "date": "2026-11-20",
+            "timezone": "Europe/Moscow",
+            "data": {
+                "chart": chart["chart"],
+                "internal": chart["internal"],
+                "omitted_planets": chart["omitted_planets"],
+            },
+        },
+    )
+    anonymous = client.post("/moon/facts", json={"date": "2026-11-20", "timezone": "Europe/Moscow"})
+
+    assert personal.status_code == 200, personal.text
+    assert anonymous.status_code == 200, anonymous.text
+    assert anonymous.json()["moon"] == personal.json()["moon"]
+    assert anonymous.json()["noon_utc"] == personal.json()["noon_utc"]

@@ -33,7 +33,7 @@ from math import cos, radians
 from typing import Any, Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .constants import ASPECT_PLANETS, ENGINE_VERSION, PLANETS, TRANSIT_ORBS
+from .constants import ASPECT_PLANETS, DEFAULT_ENGINE_MODE, ENGINE_VERSION, PLANETS, TRANSIT_ORBS
 from .engine import (
     _SWE_IDS,
     _aspect_between,
@@ -330,6 +330,51 @@ def _hours_of(window: dict[str, Any]) -> float:
     start = datetime.fromisoformat(window["from"])
     end = datetime.fromisoformat(window["to"])
     return (end - start).total_seconds() / 3600
+
+
+def moon_facts(on_date: date_type, timezone: str) -> dict[str, Any]:
+    """Луна на полдень дня: знак, градус, фаза, освещённость — без карты.
+
+    Зачем отдельный путь (итерация 37). Карточку «фаза Луны» получает и человек
+    без профиля: у него нет ни карты, ни подписки, а натальные данные для
+    транзитов нужны только для персональных строк. Считать их ради знака Луны
+    значило бы гонять тяжёлый расчёт (транзиты, окна, управитель) впустую и
+    требовать от человека данные, которых мы не собираемся показывать.
+
+    Что здесь есть: только положения Солнца и Луны на тот же момент, что и у
+    `day_facts` — полдень местного дня. Поэтому знак и фаза совпадают с
+    `POST /forecast/facts` на ту же дату и пояс: это проверяется тестом.
+
+    Чего здесь нет намеренно: транзитов, окон, ретро-списка и управителя дня —
+    всё это требует натальной карты.
+    """
+    mode = _resolve_mode(DEFAULT_ENGINE_MODE)
+    _configure_ephemeris(mode)
+
+    noon = _noon_utc(on_date, timezone)
+    positions = _positions_at(noon, mode)
+
+    if "moon" not in positions or "sun" not in positions:
+        raise ForecastConfigError("движок не отдал положения Солнца и Луны")
+
+    moon_longitude = positions["moon"][0] % 360
+    sun_longitude = positions["sun"][0] % 360
+    phase_name, illumination = phase_of(moon_longitude - sun_longitude)
+
+    return {
+        "date": on_date.isoformat(),
+        "timezone": timezone,
+        "engine_version": ENGINE_VERSION,
+        "noon_utc": noon.isoformat().replace("+00:00", "Z"),
+        "moon": {
+            "sign": sign_of(moon_longitude),
+            "degree": degree_of(moon_longitude),
+            "minute": minute_of(moon_longitude),
+            "phase": phase_name,
+            "illumination": illumination,
+            "retrograde": positions["moon"][1] < 0,
+        },
+    }
 
 
 def day_facts(on_date: date_type, timezone: str, chart: Chart) -> dict[str, Any]:

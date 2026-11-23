@@ -42,7 +42,7 @@ describe('product events against the contract', () => {
   });
 
   it('contains all 38 client event names from contract 1.6.9', () => {
-    expect(Object.keys(EVENT_NAMES)).toHaveLength(38);
+    expect(Object.keys(EVENT_NAMES)).toHaveLength(39);
     expect(EVENT_NAMES).toHaveProperty('share_sent', true);
   });
 

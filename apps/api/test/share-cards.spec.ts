@@ -368,7 +368,15 @@ describe('аналитика карточек', () => {
     );
 
     expect(row?.name).toBe('share_card_created');
-    expect(Object.keys(row?.props ?? {}).sort()).toEqual(['build_ms', 'bytes', 'cached', 'kind']);
+    // `template_version` (1.6.12) — часть события с тех пор, как версия вёрстки
+    // вошла в ключ кэша: без неё «cached» ничего не объясняет.
+    expect(Object.keys(row?.props ?? {}).sort()).toEqual([
+      'build_ms',
+      'bytes',
+      'cached',
+      'kind',
+      'template_version',
+    ]);
     expect(row?.props).toMatchObject({ kind: 'day', cached: false });
     expect(typeof row?.props['bytes']).toBe('number');
     expect(typeof row?.props['build_ms']).toBe('number');

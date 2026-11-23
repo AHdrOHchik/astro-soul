@@ -1,12 +1,23 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DbService } from '../../db/db.service';
 
-export type ShareCardKind = 'day' | 'wheel' | 'insight';
+export type ShareCardKind = 'day' | 'wheel' | 'insight' | 'identity' | 'moon';
+
+/**
+ * Виды, которые inline-режим умеет отдавать (`sh_<short_id>`).
+ *
+ * Список закрытый и совпадает с `ShareCardKind`: это не «все карточки вообще», а
+ * «все, что бот согласен показать в чужом чате». Вид вне списка — пустой ответ,
+ * а не картинка: лучше ничего не показать, чем показать непонятное.
+ */
+export const INLINE_KINDS: readonly ShareCardKind[] = ['day', 'wheel', 'insight', 'identity', 'moon'];
 
 export interface ShareCardRow {
   readonly id: string;
   readonly kind: ShareCardKind;
   readonly content_hash: string;
+  /** Версия шаблона: смена вёрстки — это другая карточка, а не та же. */
+  readonly template_version: string;
   readonly short_id: string;
   readonly storage_key: string;
   readonly bytes: number;
@@ -18,6 +29,7 @@ export interface ShareCardRow {
 export interface ShareCardInput {
   readonly kind: ShareCardKind;
   readonly contentHash: string;
+  readonly templateVersion: string;
   readonly shortId: string;
   readonly storageKey: string;
   readonly bytes: number;
@@ -25,24 +37,32 @@ export interface ShareCardInput {
   readonly height: number;
 }
 
-const COLUMNS = `id, kind, content_hash, short_id, storage_key, bytes, width, height, created_at`;
+const COLUMNS = `id, kind, content_hash, template_version, short_id, storage_key, bytes, width, height, created_at`;
 
 /**
  * Кэш карточек по содержимому.
  *
- * Ключ — `(kind, content_hash)`, а не `user_id`: карточка не принадлежит
- * человеку. Это и есть смысл кэша — «один и тот же день не генерируется сотне
- * людей» — и одновременно защита приватности: в схеме нет связи между
- * карточкой и тем, кто её попросил.
+ * Ключ — `(kind, content_hash, template_version)`, а не `user_id`: карточка не
+ * принадлежит человеку. Это и есть смысл кэша — «один и тот же день не
+ * генерируется сотне людей» — и одновременно защита приватности: в схеме нет
+ * связи между карточкой и тем, кто её попросил.
+ *
+ * `template_version` в ключе появился в 1.6.12: после смены вёрстки старые
+ * строки остаются историей, а не отдаются как «та же карточка» с новым кодом.
  */
 @Injectable()
 export class ShareRepository {
   constructor(@Inject(DbService) private readonly db: DbService) {}
 
-  async find(kind: ShareCardKind, contentHash: string): Promise<ShareCardRow | null> {
+  async find(
+    kind: ShareCardKind,
+    contentHash: string,
+    templateVersion: string,
+  ): Promise<ShareCardRow | null> {
     return this.db.queryOne<ShareCardRow>(
-      `SELECT ${COLUMNS} FROM share_cards WHERE kind = $1 AND content_hash = $2`,
-      [kind, contentHash],
+      `SELECT ${COLUMNS} FROM share_cards
+        WHERE kind = $1 AND content_hash = $2 AND template_version = $3`,
+      [kind, contentHash, templateVersion],
     );
   }
 
@@ -113,13 +133,15 @@ export class ShareRepository {
    */
   async insert(input: ShareCardInput): Promise<ShareCardRow | null> {
     return this.db.queryOne<ShareCardRow>(
-      `INSERT INTO share_cards (kind, content_hash, short_id, storage_key, bytes, width, height)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO share_cards
+         (kind, content_hash, template_version, short_id, storage_key, bytes, width, height)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT DO NOTHING
        RETURNING ${COLUMNS}`,
       [
         input.kind,
         input.contentHash,
+        input.templateVersion,
         input.shortId,
         input.storageKey,
         input.bytes,

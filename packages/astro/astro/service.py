@@ -13,6 +13,7 @@
     POST /wheel       — SVG-колесо (тема dark|light)
     POST /synastry    — факты совместимости двух карт (`compatibility_facts` v1.0)
     POST /forecast/facts — детерминированные факты дня (итерация 30)
+    POST /moon/facts   — Луна на полдень без карты (карточка «фаза Луны», итерация 37)
     POST /wheel/png   — колесо растром (PDF, карточки шеринга; итерация 32)
     POST /pdf/build   — PDF разбора: обложка, оглавление, главы, колонтитул
     POST /card/build  — карточка шеринга 9:16 или 1:1, без ПДн
@@ -37,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from .cards import CARD_SIZES, renderCardPng
 from .constants import DEFAULT_ENGINE_MODE, ENGINE_VERSION
-from .daily import ForecastConfigError, day_facts
+from .daily import ForecastConfigError, day_facts, moon_facts
 from .engine import EngineConfigError, calcChart, transitsFor
 from .pdf import MAX_PDF_BYTES, PdfBuildError, PdfChapter, PdfSpec, buildPdf
 from .synastry import compatFacts
@@ -111,6 +112,17 @@ class ForecastFactsIn(BaseModel):
     data: ChartDataIn
 
 
+class MoonFactsIn(BaseModel):
+    """Луна на полдень дня: дата и часовой пояс, без карты.
+
+    Это единственный маршрут фактов, которому не нужны натальные данные:
+    карточка «фаза Луны» — вход в воронку для человека без профиля.
+    """
+
+    date: date_type
+    timezone: str = Field(min_length=1, max_length=64)
+
+
 class WheelIn(BaseModel):
     data: ChartDataIn
     theme: str = "dark"
@@ -152,14 +164,23 @@ class CardBuildIn(BaseModel):
     `lines` — строки, которые API уже проверил: ни даты рождения, ни места, ни
     имени. Сайдкар не умеет добавлять что-то от себя, кроме подписи-ссылки,
     поэтому «случайных» ПДн в картинке взяться неоткуда.
+
+    `brand_name`, `brand_hint`, `disclaimer`, `prompt` — элементы шаблона сторис
+    (итерация 37). Имя продукта приходит из конфига API: у сайдкара нет и не
+    должно быть своего «названия по умолчанию» — карточка без имени продукта
+    не собирается вовсе (проверка на стороне API).
     """
 
-    kind: Literal["day", "wheel", "insight"]
+    kind: Literal["day", "wheel", "insight", "identity", "moon"]
     title: str = Field(min_length=1, max_length=200)
     lines: list[str] = Field(default_factory=list, max_length=8)
     footer: str | None = Field(default=None, max_length=120)
     wheel_png_base64: str | None = None
     moon_illumination: float | None = Field(default=None, ge=0, le=1)
+    brand_name: str | None = Field(default=None, min_length=1, max_length=60)
+    brand_hint: str | None = Field(default=None, min_length=1, max_length=80)
+    disclaimer: str | None = Field(default=None, min_length=1, max_length=200)
+    prompt: str | None = Field(default=None, min_length=1, max_length=120)
 
 
 def _engine_error(error: EngineConfigError) -> HTTPException:
@@ -245,6 +266,25 @@ def forecast_facts(payload: ForecastFactsIn) -> dict[str, Any]:
     """
     try:
         facts = day_facts(payload.date, payload.timezone, _chart_of(payload.data))
+    except ForecastConfigError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except (KeyError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    return facts
+
+
+@app.post("/moon/facts")
+def moon_facts_route(payload: MoonFactsIn) -> dict[str, Any]:
+    """Знак, фаза и освещённость Луны на полдень — без карты и без модели.
+
+    Тот же момент, что у `POST /forecast/facts` (полдень местного дня), поэтому
+    знак и фаза совпадают с персональным прогнозом на ту же дату. Отдельный
+    маршрут, а не «факты дня без карты»: у фактов дня половина полей требует
+    натальных данных, и молча отдавать их пустыми значило бы врать формой.
+    """
+    try:
+        facts = moon_facts(payload.date, payload.timezone)
     except ForecastConfigError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except (KeyError, ValueError) as error:
@@ -354,6 +394,10 @@ def card_build(payload: CardBuildIn) -> dict[str, Any]:
             footer=payload.footer,
             wheel_png=wheel,
             moon_illumination=payload.moon_illumination,
+            brand_name=payload.brand_name,
+            brand_hint=payload.brand_hint,
+            disclaimer=payload.disclaimer,
+            prompt=payload.prompt,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

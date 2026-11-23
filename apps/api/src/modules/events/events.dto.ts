@@ -51,6 +51,10 @@ export const ANALYTICS_EVENTS = [
   // только генерацию. Теперь отправку сообщает клиент (он один её видит),
   // а генерацию считает `share_card_created`.
   'share_sent',
+  // Контракт 1.6.12 (итерация 37): карточка сохранилась в галерею или ушла в
+  // Telegram-сторис. Без этого события не видно, дошла ли карточка до
+  // Instagram: отправку в чужую ленту сервер не видит вообще.
+  'share_saved',
 ] as const;
 
 /**
@@ -126,16 +130,29 @@ const propValueSchema = z.union([z.string().max(64), z.number(), z.boolean()]);
  * Разрешать произвольные имена и свойства клиенту по-прежнему нельзя: список
  * событий остаётся закрытым.
  */
+const SHARE_KINDS = ['day', 'wheel', 'insight', 'identity', 'moon'] as const;
+
 const STRICT_PROPS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
   share_sent: {
-    kind: ['day', 'wheel', 'insight'],
+    // Контракт 1.6.12: два новых вида карточек в закрытом списке. Без этого
+    // клиент получал бы `422` на отправку `identity`/`moon` — то есть на самые
+    // «вирусные» карточки.
+    kind: SHARE_KINDS,
     channel: ['inline', 'link'],
+  },
+  // Куда именно сохранилась карточка: галерея устройства или Telegram-сторис.
+  // Свободный `props` здесь означал бы «сохранили куда-то», и метрика «дошло
+  // до Instagram» снова стала бы непроверяемой.
+  share_saved: {
+    kind: SHARE_KINDS,
+    target: ['gallery', 'telegram_story'],
   },
 };
 
 const STRICT_PROP_MESSAGES: Readonly<Record<string, string>> = {
-  kind: 'Вид карточки — day, wheel или insight',
+  kind: 'Вид карточки — day, wheel, insight, identity или moon',
   channel: 'Канал отправки — inline или link',
+  target: 'Куда сохранили — gallery или telegram_story',
 };
 
 type PropValue = string | number | boolean;
