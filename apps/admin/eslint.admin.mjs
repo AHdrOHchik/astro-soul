@@ -1,6 +1,6 @@
 // Rules for the admin panel: the same strict layer `apps/web` gets from
 // packages/ui/eslint.frontend.mjs, but with its own globs. The shared layer is
-// not edited (packages/* belongs to FRONTEND, AGENTS.md §0), and admin cannot
+// not edited (packages/* belongs to another role in the repo role map), and admin cannot
 // be linted weaker: it is the app that changes prices and revokes access.
 //
 // The factory takes the `tseslint` instance the root config imports, exactly

@@ -7,6 +7,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CSRF_HEADER, createHttp } from './http';
+import { createAdminApi } from './admin';
 import { ADMIN_ROUTES } from './routes';
 import type { ProbeResult } from './http';
 import { createFetchLog, header, jsonResponse, only } from '../testing/fetchLog';
@@ -81,6 +82,35 @@ describe('http-слой админки', () => {
 
     await expect(http.call('metrics')).rejects.toMatchObject({ status: 401, code: 'UNAUTHORIZED' });
     expect(onUnauthorized).toHaveBeenCalledOnce();
+  });
+
+  it('`treatAsOk: [503]` живёт только у /health: 503 от /admin/metrics — ошибка, а не пустые метрики', async () => {
+    const { fetchImpl, calls } = recorder(() =>
+      jsonResponse({ code: 'INTERNAL', message: 'метрики нечитаемы', request_id: 'req-503' }, { status: 503 }),
+    );
+    const api = createAdminApi(createHttp({ fetchImpl, retries: 0, retryDelayMs: () => 0 }));
+
+    await expect(api.metrics()).rejects.toMatchObject({ status: 503, code: 'INTERNAL' });
+    // Ровно один запрос: `retries: 0` в тесте, и никаких «прочитали Problem как метрики».
+    expect(calls.length).toBe(1);
+  });
+
+  it('а /health через AdminApi отвечает телом и на 503: статус «degraded» видно, исключения нет', async () => {
+    const { fetchImpl } = recorder(() =>
+      jsonResponse({ status: 'degraded', db: 'down', flags: { bonus_budget: { exhausted: true } } }, { status: 503 }),
+    );
+    const api = createAdminApi(createHttp({ fetchImpl, retries: 0, retryDelayMs: () => 0 }));
+
+    const result = await api.health();
+    expect(result.status).toBe(503);
+    expect(result.data).toMatchObject({ status: 'degraded', db: 'down' });
+  });
+
+  it('пустой ответ алертов — это список нулевой длины, а не ошибка', async () => {
+    const { fetchImpl } = recorder(() => jsonResponse({ alerts: [], checked_at: null }));
+    const api = createAdminApi(createHttp({ fetchImpl }));
+
+    await expect(api.alerts()).resolves.toMatchObject({ data: { alerts: [] } });
   });
 
   it('читает тело /health и на 503: мониторинг обязан понять, что именно упало', async () => {

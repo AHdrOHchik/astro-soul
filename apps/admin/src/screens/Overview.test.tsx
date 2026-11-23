@@ -169,6 +169,35 @@ describe('Обзор', () => {
     expect(urls.filter((url) => url.includes('/api/v1/health'))).toHaveLength(1);
   });
 
+  it('503 от /admin/metrics — красная ошибка, а не «нет данных»: чисел нет вовсе', async () => {
+    const log = createFetchLog((url) => {
+      if (url.includes('/api/v1/health')) return response(healthy);
+      if (url.includes('/admin/alerts')) return response(alerts);
+      return response({ code: 'INTERNAL', message: 'метрики нечитаемы', request_id: 'req-503' }, 503);
+    });
+    const api = createAdminApi(createHttp({ fetchImpl: log.fetchImpl, retries: 0, retryDelayMs: () => 0, csrfToken: () => 'токен' }));
+    render(<Overview api={api} sessionLive now={NOW} />);
+
+    // Приватных блоков на `/admin/metrics` несколько, и каждый обязан сказать,
+    // почему он пуст, — общая причина видна в каждом, а не только в первом.
+    expect((await screen.findAllByText(/метрики нечитаемы/)).length).toBeGreaterThan(1);
+    expect(screen.getAllByText(/INTERNAL/).length).toBeGreaterThan(1);
+
+    // Ни одного числа, которое отдаёт `/admin/metrics`: если бы `treatAsOk: [503]`
+    // доехал до метрик, Problem прочитался бы как данные, и экран показал бы
+    // прочерки вместо цифр — ровно это и запрещено.
+    const shown = document.body.textContent
+      .replaceAll('\u00a0', ' ')
+      .replaceAll('\u202f', ' ');
+    expect(shown).not.toContain('412');
+    expect(shown).not.toContain('142,85');
+    expect(shown).not.toContain('288');
+    // Публичное при этом на месте: `/health` отвечает и на 503, и на 200, а
+    // бюджет бесплатного доступа пришёл с /health, а не с метрик.
+    expect(shown).toContain('1.6.14');
+    expect(shown).toContain('1 000');
+  });
+
   it('топ-5 провалов: «недоступно», список маршрутов и ни одной строки данных', async () => {
     renderOverview();
 
