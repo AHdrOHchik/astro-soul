@@ -277,6 +277,28 @@ describe('getMe', () => {
   });
 });
 
+describe('updateNotifications', () => {
+  it('posts the requested preference and returns the server response', async () => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockResolvedValue(json(200, { daily_forecast: false }));
+
+    await expect(api.updateNotifications(false)).resolves.toEqual({ daily_forecast: false });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('/api/v1/me/notifications');
+    expect(init?.method).toBe('POST');
+    expect(init?.body).toBe(JSON.stringify({ daily_forecast: false }));
+    expect(init?.headers).toMatchObject({ 'X-Telegram-Init-Data': 'init' });
+  });
+
+  it('does not retry and rejects a malformed notification response', async () => {
+    const { api, fetchMock } = setup({ retries: 3 });
+    fetchMock.mockResolvedValue(json(200, { daily_forecast: 'false' }));
+
+    await expect(api.updateNotifications(false)).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
 describe('cancelSubscription', () => {
   it('posts without a body, sends the idempotency key, and validates the server confirmation', async () => {
     const { api, fetchMock } = setup({ retries: 2 });

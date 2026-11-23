@@ -339,6 +339,7 @@ export function fakeApi() {
     getCurrentChart: vi.fn<Api['getCurrentChart']>().mockResolvedValue(null),
     sendEvents: vi.fn<Api['sendEvents']>().mockResolvedValue(undefined),
     deleteMe: vi.fn<Api['deleteMe']>().mockResolvedValue(undefined),
+    updateNotifications: vi.fn<Api['updateNotifications']>().mockImplementation((dailyForecast) => Promise.resolve({ daily_forecast: dailyForecast })),
     cancelSubscription: vi.fn<Api['cancelSubscription']>().mockResolvedValue({ status: 'cancelled', auto_renew: false, current_period_end: meSubscribed.subscription.expires_at ?? '2026-12-10T09:00:00Z' }),
     getPlans: vi.fn<Api['getPlans']>().mockResolvedValue(cataloguePlans),
     createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),

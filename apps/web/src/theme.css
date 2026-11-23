@@ -71,6 +71,11 @@
   --size-content-max: 480px;
   --size-progress: 4px;
   --size-meter: 8px;
+  --size-switch-width: 48px;
+  --size-switch-height: 28px;
+  --size-switch-padding: 3px;
+  --size-switch-thumb: 22px;
+  --size-switch-thumb-shift: 20px;
   --size-skeleton-line: 0.9em;
   --size-hidden: 1px;
   --border-width: 1px;

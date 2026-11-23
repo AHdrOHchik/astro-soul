@@ -686,6 +686,12 @@ export const ru = {
       resets: (when: string) => `Обновится ${when}`,
       empty: 'Лимитов пока нет.',
     },
+    notifications: {
+      title: 'Уведомления',
+      dailyForecast: 'Прогноз дня в 08:00',
+      note: 'Приходит раз в день, по времени места рождения. Отключить можно в любой момент',
+      saveFailed: 'Не сохранилось, попробуй ещё раз',
+    },
     documents: 'Документы',
     support: 'Поддержка',
     deletion: {
