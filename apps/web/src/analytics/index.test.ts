@@ -71,12 +71,22 @@ describe('createAnalytics', () => {
     expect(sendEvents).toHaveBeenCalledOnce();
   });
 
-  it('sends share_sent with only kind and channel', () => {
+  it('sends share_sent with only kind and channel, including generated card kinds', () => {
     const { analytics, sendEvents } = setup();
-    analytics.track('share_sent', { kind: 'wheel', channel: 'inline' });
+    analytics.track('share_sent', { kind: 'identity', channel: 'inline' });
     analytics.flush();
     expect(sendEvents).toHaveBeenCalledWith([
-      { name: 'share_sent', occurred_at: NOW.toISOString(), props: { kind: 'wheel', channel: 'inline' } },
+      { name: 'share_sent', occurred_at: NOW.toISOString(), props: { kind: 'identity', channel: 'inline' } },
+    ], { keepalive: false });
+  });
+
+  it('sends share_saved with only kind and target: a signed URL is never an event property', () => {
+    const { analytics, sendEvents } = setup();
+    const props = { kind: 'moon' as const, target: 'gallery' as const, url: 'https://files.test/card.png?sig=secret' };
+    analytics.track('share_saved', props);
+    analytics.flush();
+    expect(sendEvents).toHaveBeenCalledWith([
+      { name: 'share_saved', occurred_at: NOW.toISOString(), props: { kind: 'moon', target: 'gallery' } },
     ], { keepalive: false });
   });
 

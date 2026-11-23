@@ -30,15 +30,15 @@ describe('report PDF and share-card API contracts', () => {
     expect([init?.method, init?.cache]).toEqual(['GET', 'no-store']);
   });
 
-  it('creates a server card using only its permitted kind and never retries creation automatically', async () => {
+  it('creates a server card with kind and timezone, without extra request fields or retries', async () => {
     const { api, fetcher } = setup();
     const card = { url: '/private/signed.png?sig=secret', share_url: 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz', expires_at: '2026-11-16T10:00:00Z', caption: 'Exact server caption' };
     fetcher.mockResolvedValue(response(card));
-    await expect(api.createShareCard('day')).resolves.toEqual(card);
+    await expect(api.createShareCard('day', 'Europe/Amsterdam')).resolves.toEqual(card);
     const [url, init] = fetcher.mock.calls[0] ?? [];
     expect(url).toBe('/api/v1/share/card');
     expect(init?.method).toBe('POST');
-    expect(init?.body).toBe(JSON.stringify({ kind: 'day' }));
+    expect(init?.body).toBe(JSON.stringify({ kind: 'day', tz: 'Europe/Amsterdam' }));
     expect(fetcher).toHaveBeenCalledOnce();
   });
 });

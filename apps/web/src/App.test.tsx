@@ -1025,6 +1025,7 @@ describe('App: product events', () => {
 
     await fillIn(user);
     await user.click(await screen.findByRole('button', { name: ru.chart.share }));
+    await user.click(await screen.findByRole('button', { name: ru.shareCard.inline }));
 
     expect(analytics.events).toEqual([
       { name: 'app_open' },
@@ -1307,8 +1308,9 @@ describe('App: round30 main tabs', () => {
     await user.click(screen.getByRole('button', { name: 'Карта' }));
     await screen.findByRole('heading', { name: ru.chart.title });
     await user.click(screen.getByRole('button', { name: ru.chart.share }));
+    await user.click(await screen.findByRole('button', { name: ru.shareCard.inline }));
 
-    expect(api.createShareCard).toHaveBeenCalledWith('wheel');
+    expect(api.createShareCard).toHaveBeenCalledWith('wheel', expect.any(String));
     expect(telegram.openTelegramLink).not.toHaveBeenCalled();
     expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
   });

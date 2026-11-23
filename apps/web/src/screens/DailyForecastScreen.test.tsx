@@ -1,20 +1,22 @@
 import { act, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ForecastDay } from '../api';
+import type { ForecastDay, Me } from '../api';
 import { apiError, fakeApi, fakeTelegram, meWithChart } from '../test/fixtures';
 import { DailyForecastScreen } from './DailyForecastScreen';
 
 const noon = () => new Date('2026-11-20T12:00:00Z');
 const day = (overrides: Partial<ForecastDay> = {}): ForecastDay => ({ date: '2026-11-20', timezone: 'Europe/Amsterdam', status: 'facts_only', access: 'facts_only', sections: [], chars: 0, warnings: [], facts: { moon_sign: 'Лев', moon_phase: 'убывающая', illumination: 0.536 }, disclaimer: 'Серверный дисклеймер.', ...overrides });
-function renderScreen({ chartId = 'chart-id', known = null, answer = day() }: { chartId?: string | null; known?: ForecastDay | null; answer?: ForecastDay | Error | Promise<ForecastDay> } = {}) {
+function renderScreen({ chartId = 'chart-id', known = null, answer = day(), share }: { chartId?: string | null; known?: ForecastDay | null; answer?: ForecastDay | Error | Promise<ForecastDay>; share?: Me['share'] } = {}) {
   const api = fakeApi();
   api.getForecastToday.mockImplementation(() => answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer));
   const onKnown = vi.fn();
   const onBuildChart = vi.fn();
   const onSubscribe = vi.fn();
   const telegram = fakeTelegram({ canSwitchInlineQuery: true });
-  const view = render(<DailyForecastScreen now={noon} api={api} chartId={chartId} telegram={telegram} known={known} onKnown={onKnown} onBuildChart={onBuildChart} onSubscribe={onSubscribe}/>);
-  return { ...view, api, telegram, onKnown, onBuildChart, onSubscribe };
+  const user = userEvent.setup();
+  const view = render(<DailyForecastScreen now={noon} api={api} chartId={chartId} telegram={telegram} share={share} known={known} onKnown={onKnown} onBuildChart={onBuildChart} onSubscribe={onSubscribe}/>);
+  return { ...view, api, telegram, user, onKnown, onBuildChart, onSubscribe };
 }
 afterEach(() => vi.useRealTimers());
 
@@ -23,9 +25,31 @@ describe('DailyForecastScreen', () => {
     const { api, onBuildChart } = renderScreen({ chartId: null });
     expect(screen.getByText('Сначала построй карту')).toBeInTheDocument();
     expect(api.getForecastToday).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Поделиться фазой Луны' })).toBeInTheDocument();
     screen.getByRole('button', { name: 'Построить карту' }).click();
     expect(onBuildChart).toHaveBeenCalledOnce();
   });
+  it('offers the moon card without a chart, requests it with a timezone, and opens its fresh image', async () => {
+    const { api, telegram, user } = renderScreen({ chartId: null, share: { link: true, inline: 'off' } });
+    await user.click(screen.getByRole('button', { name: 'Поделиться фазой Луны' }));
+    await user.click(screen.getByRole('button', { name: 'Сохранить картинку' }));
+    expect(api.createShareCard).toHaveBeenCalledWith('moon', expect.any(String));
+    expect(telegram.openLink).toHaveBeenCalledWith(expect.stringContaining('/api/v1/files/card/card.png?sig=secret'));
+  });
+
+  it('shows no sharing buttons at all when Me.share.link is false, including the moon card', async () => {
+    const { api } = renderScreen({ chartId: 'chart-id', share: { link: false, inline: 'on' } });
+    await screen.findByText('Освещённость: 54%');
+    expect(screen.queryByRole('button', { name: 'Поделиться фазой Луны' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Поделиться днём' })).not.toBeInTheDocument();
+    expect(api.createShareCard).not.toHaveBeenCalled();
+  });
+
+  it('also hides the no-chart moon entry when Me.share.link is false', () => {
+    renderScreen({ chartId: null, share: { link: false, inline: 'on' } });
+    expect(screen.queryByRole('button', { name: 'Поделиться фазой Луны' })).not.toBeInTheDocument();
+  });
+
   it('shows only the three facts and the subscription way under facts, with no generated time or character count', async () => {
     const { api, onKnown, onSubscribe } = renderScreen();
     expect(await screen.findByText('Освещённость: 54%')).toBeInTheDocument();
@@ -39,12 +63,12 @@ describe('DailyForecastScreen', () => {
     expect(onSubscribe).toHaveBeenCalledOnce();
   });
   it('offers a free day-card on facts_only and sends only the server caption through inline sharing', async () => {
-    const { api, telegram } = renderScreen();
+    const { api, telegram, user } = renderScreen();
     expect(await screen.findByText('Освещённость: 54%')).toBeInTheDocument();
-    const button = screen.getByRole('button', { name: 'Поделиться' });
-    button.click();
+    await user.click(screen.getByRole('button', { name: 'Поделиться днём' }));
+    await user.click(screen.getByRole('button', { name: 'В Telegram' }));
     await vi.waitFor(() => { expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно'); });
-    expect(api.createShareCard).toHaveBeenCalledWith('day');
+    expect(api.createShareCard).toHaveBeenCalledWith('day', expect.any(String));
     expect(JSON.stringify(telegram.switchInlineQuery.mock.calls)).not.toContain('signed.png');
   });
 

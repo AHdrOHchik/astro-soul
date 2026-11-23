@@ -16,7 +16,7 @@ const SKELETON_LINES = [0, 1, 2];
 export interface ForecastScreenProps {
   api: Pick<Api, 'getForecast' | 'createShareCard'>;
   share?: Me['share'];
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenLink' | 'canOpenTelegramLink' | 'openTelegramLink' | 'canShareToStory' | 'shareToStory' | 'openLink'>;
   /** The chart the forecast is for. */
   chartId: string;
   /** IANA zone of the birth place: «today» is its calendar day, not the device's. Null when the chart names none. */
@@ -153,7 +153,7 @@ export function ForecastScreen({
         <p className={styles.text}>{forecast.text}</p>
         {/* Under the short text, never over it and never instead of it. */}
         {!forecast.is_paid && onSubscribe && <SubscriptionHint text={copy.subscriptionOnly} onOpen={onSubscribe} />}
-        <ShareCardButton api={api} kind="day" telegram={telegram} track={track} label={copy.share} share={share}/>
+        <ShareCardButton api={api} kind="day" telegram={telegram} track={track} label={ru.shareCard.day} share={share}/>
       </div>
     </Screen>
   );

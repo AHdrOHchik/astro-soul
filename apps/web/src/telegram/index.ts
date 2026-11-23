@@ -52,10 +52,16 @@ export interface Telegram {
   readonly canSwitchInlineQuery: boolean;
   /** Inserts the exact server caption into Telegram's inline-share flow; false if the bridge is unavailable. */
   switchInlineQuery(caption: string): boolean;
+  /** Whether this Telegram client exposes its general link opener. */
+  readonly canOpenLink: boolean;
   /** Whether this Telegram client exposes the direct t.me-link bridge. */
   readonly canOpenTelegramLink: boolean;
-  /** Opens a server-provided t.me URL through Telegram's bridge; true only when invoked. */
+  /** Opens a URL through Telegram's link bridge; true only when invoked. */
   openTelegramLink(url: string): boolean;
+  /** Whether the host supports opening the native story editor (Mini Apps 7.8+). */
+  readonly canShareToStory: boolean;
+  /** Opens the native story editor with the signed image; false when unsupported or rejected. */
+  shareToStory(url: string, text: string): boolean;
   /** Closes the Mini App. Does nothing in a plain browser. */
   close(): void;
   /**
@@ -179,8 +185,11 @@ function browserHost(initData: string, devInvoice?: DevInvoice): Telegram {
     share: openShareLink,
     canSwitchInlineQuery: false,
     switchInlineQuery: () => false,
+    canOpenLink: true,
     canOpenTelegramLink: false,
     openTelegramLink: () => false,
+    canShareToStory: false,
+    shareToStory: () => false,
     close: () => undefined,
     canPay: devInvoice !== undefined,
     async openInvoice(link) {
@@ -213,6 +222,24 @@ function versionOpensInvoices(version: string): boolean {
   }
 }
 
+function versionSharesToStory(version: string): boolean {
+  try {
+    return /^\d+(\.\d+)*$/.test(version) && supports('web_app_share_to_story', version);
+  } catch {
+    return false;
+  }
+}
+
+function openStory(mediaUrl: string, text: string): boolean {
+  try {
+    postEvent('web_app_share_to_story', { media_url: mediaUrl, text });
+    return true;
+  } catch (error) {
+    report(error);
+    return false;
+  }
+}
+
 /**
  * Inside Telegram, but without the SDK. The SDK checks launch parameters
  * against a strict schema (init data lacking `signature` or `auth_date` fails
@@ -238,7 +265,10 @@ function basicHost(initData: string, version: string): Telegram {
     share: openShareLink,
     canSwitchInlineQuery: false,
     switchInlineQuery: () => false,
+    canOpenLink: true,
     canOpenTelegramLink: true,
+    canShareToStory: versionSharesToStory(version),
+    shareToStory: openStory,
     openTelegramLink(url) {
       try {
         postEvent('web_app_open_link', { url });
@@ -490,7 +520,10 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
         return false;
       }
     },
+    canOpenLink: openLink.isAvailable(),
     canOpenTelegramLink: openTelegramLinkApi.isAvailable(),
+    canShareToStory: versionSharesToStory(launch?.version ?? ''),
+    shareToStory: openStory,
     openTelegramLink(url) {
       try {
         return openTelegramLinkApi.ifAvailable(url)[0];

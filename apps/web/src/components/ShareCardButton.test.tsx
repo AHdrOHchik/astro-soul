@@ -1,94 +1,149 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import type { Me } from '../api';
+import { ApiError, type Me, type ShareCardKind } from '../api';
+import { ru } from '../i18n/ru';
 import { fakeAnalytics, fakeApi, fakeTelegram } from '../test/fixtures';
 import { ShareCardButton } from './ShareCardButton';
 
-const label = 'Поделиться';
-const shareLink = 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz';
+const card = {
+  url: '/api/v1/files/card/card.png?sig=fresh',
+  share_url: 'https://t.me/astro_soul_bot?start=sh_k7m2p9x4qz',
+  expires_at: '2026-11-16T10:00:00Z',
+  caption: 'Exact server caption',
+};
 
-type Capability = NonNullable<Me['share']>;
-
-function setup(share?: Capability, { canSwitchInlineQuery = true, canOpenTelegramLink = true } = {}) {
+function setup({
+  kind = 'day',
+  share = { link: true, inline: 'off' as const },
+  story = false,
+  canOpenLink = true,
+}: {
+  kind?: ShareCardKind;
+  share?: Me['share'];
+  story?: boolean;
+  canOpenLink?: boolean;
+} = {}) {
   const api = fakeApi();
-  const telegram = fakeTelegram({ canSwitchInlineQuery, canOpenTelegramLink });
+  api.createShareCard.mockResolvedValue(card);
+  const telegram = fakeTelegram({ canShareToStory: story, canOpenLink });
   const analytics = fakeAnalytics();
   const user = userEvent.setup();
-  const element = (capability?: Capability) => (
+  const label = kind === 'moon' ? ru.shareCard.moon : kind === 'identity' ? ru.shareCard.identity : ru.shareCard.day;
+  const view = render(
     <ShareCardButton
       api={api}
-      kind="wheel"
+      kind={kind}
       telegram={telegram}
       track={analytics.track}
       label={label}
-      share={capability}
-    />
+      share={share}
+    />,
   );
-  const view = render(element(share));
-  return { ...view, api, telegram, analytics, user, element };
+  return { ...view, api, telegram, analytics, user };
 }
 
-describe('ShareCardButton: GET /me share capability', () => {
-  it('does not render or request a card when the server has no share link', () => {
-    const { api } = setup({ link: false, inline: 'on' });
-    expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument();
+async function openSheet(user: ReturnType<typeof userEvent.setup>, label: string = ru.shareCard.day) {
+  await user.click(screen.getByRole('button', { name: label }));
+  return screen.findByRole('region', { name: ru.shareCard.sheetTitle });
+}
+
+describe('ShareCardButton: cards for stories and the gallery', () => {
+  it('renders no share controls or sheet when GET /me says there is no share link', () => {
+    const { api } = setup({ share: { link: false, inline: 'on' } });
+    expect(screen.queryByRole('button', { name: ru.shareCard.day })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: ru.shareCard.sheetTitle })).not.toBeInTheDocument();
     expect(api.createShareCard).not.toHaveBeenCalled();
   });
 
-  it('does not offer a link-only share mode when Telegram cannot open links', () => {
-    const { api } = setup({ link: true, inline: 'unknown' }, { canOpenTelegramLink: false });
-    expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument();
-    expect(api.createShareCard).not.toHaveBeenCalled();
-  });
+  it('puts inline first when Me.share.inline is on and sends only the generated identity kind', async () => {
+    const { api, telegram, analytics, user } = setup({ kind: 'identity', share: { link: true, inline: 'on' }, story: true });
+    const sheet = await openSheet(user, ru.shareCard.identity);
+    const buttons = within(sheet).getAllByRole('button');
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      ru.shareCard.close,
+      ru.shareCard.inline,
+      ru.shareCard.otherOptions,
+    ]);
+    expect(buttons.slice(1)).toHaveLength(2);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.otherOptions }));
+    const otherDestinations = await screen.findByRole('region', { name: ru.shareCard.sheetTitle });
+    expect(within(otherDestinations).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      ru.shareCard.back,
+      ru.shareCard.telegramStory,
+      ru.shareCard.saveImage,
+    ]);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.back }));
 
-  it('uses inline when the server says it is on', async () => {
-    const { api, telegram, analytics, user } = setup({ link: true, inline: 'on' });
-    await user.click(screen.getByRole('button', { name: label }));
-    expect(api.createShareCard).toHaveBeenCalledOnce();
-    expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
-    expect(telegram.openTelegramLink).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: ru.shareCard.inline }));
+
+    expect(api.createShareCard).toHaveBeenCalledWith('identity', expect.any(String));
+    expect(telegram.switchInlineQuery).toHaveBeenCalledWith(card.caption);
     expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([
-      { name: 'share_sent', props: { kind: 'wheel', channel: 'inline' } },
+      { name: 'share_sent', props: { kind: 'identity', channel: 'inline' } },
     ]);
   });
 
-  it.each(['off', 'unknown'] as const)('uses only the server link when inline is %s', async (inline) => {
-    const { api, telegram, analytics, user } = setup({ link: true, inline });
-    await user.click(screen.getByRole('button', { name: label }));
-    expect(api.createShareCard).toHaveBeenCalledOnce();
-    expect(telegram.switchInlineQuery).not.toHaveBeenCalled();
-    expect(telegram.openTelegramLink).toHaveBeenCalledWith(shareLink);
-    expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([
-      { name: 'share_sent', props: { kind: 'wheel', channel: 'link' } },
-    ]);
-  });
+  it('requests a fresh signed URL on every save and opens the image, not a download link', async () => {
+    const { api, telegram, analytics, user } = setup({ kind: 'moon' });
+    api.createShareCard
+      .mockResolvedValueOnce(card)
+      .mockResolvedValueOnce({ ...card, url: '/api/v1/files/card/card.png?sig=next' });
 
-  it('keeps the 1.6.9 behavior when the optional capability is absent', async () => {
-    const inline = setup(undefined);
-    await inline.user.click(screen.getByRole('button', { name: label }));
-    expect(inline.telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
-    inline.unmount();
+    await openSheet(user, ru.shareCard.moon);
+    expect(screen.getByText(ru.shareCard.saveInstruction)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: ru.shareCard.saveImage }));
+    expect(api.createShareCard).toHaveBeenCalledWith('moon', expect.any(String));
+    expect(telegram.openLink).toHaveBeenCalledWith('http://localhost:3000/api/v1/files/card/card.png?sig=fresh');
 
-    const link = setup(undefined, { canSwitchInlineQuery: false });
-    await link.user.click(screen.getByRole('button', { name: label }));
-    expect(link.telegram.switchInlineQuery).not.toHaveBeenCalled();
-    expect(link.telegram.openTelegramLink).toHaveBeenCalledWith(shareLink);
-  });
-
-  it('uses an updated inline value on the same mounted button', async () => {
-    const { api, telegram, analytics, user, rerender, element } = setup({ link: true, inline: 'off' });
-    await user.click(screen.getByRole('button', { name: label }));
-    expect(telegram.openTelegramLink).toHaveBeenCalledWith(shareLink);
-    expect(telegram.switchInlineQuery).not.toHaveBeenCalled();
-
-    rerender(element({ link: true, inline: 'on' }));
-    await user.click(screen.getByRole('button', { name: label }));
+    await openSheet(user, ru.shareCard.moon);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.saveImage }));
     expect(api.createShareCard).toHaveBeenCalledTimes(2);
-    expect(telegram.switchInlineQuery).toHaveBeenCalledWith('Мне тут сделали разбор личности — залипательно');
-    expect(analytics.events.filter(({ name }) => name === 'share_sent')).toEqual([
-      { name: 'share_sent', props: { kind: 'wheel', channel: 'link' } },
-      { name: 'share_sent', props: { kind: 'wheel', channel: 'inline' } },
+    expect(telegram.openLink).toHaveBeenLastCalledWith('http://localhost:3000/api/v1/files/card/card.png?sig=next');
+    expect(analytics.events.filter(({ name }) => name === 'share_saved')).toEqual([
+      { name: 'share_saved', props: { kind: 'moon', target: 'gallery' } },
+      { name: 'share_saved', props: { kind: 'moon', target: 'gallery' } },
     ]);
+    expect(JSON.stringify(analytics.events)).not.toContain('sig=');
+  });
+
+  it('uses openTelegramLink for the signed image when the general openLink bridge is unavailable', async () => {
+    const { telegram, analytics, user } = setup({ canOpenLink: false });
+    await openSheet(user);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.saveImage }));
+    expect(telegram.openTelegramLink).toHaveBeenCalledWith('http://localhost:3000/api/v1/files/card/card.png?sig=fresh');
+    expect(telegram.openLink).not.toHaveBeenCalled();
+    expect(analytics.events).toContainEqual({ name: 'share_saved', props: { kind: 'day', target: 'gallery' } });
+  });
+
+  it('uses native story sharing when available and records the story target', async () => {
+    const { telegram, analytics, user } = setup({ story: true });
+    await openSheet(user);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.telegramStory }));
+    expect(telegram.shareToStory).toHaveBeenCalledWith('http://localhost:3000/api/v1/files/card/card.png?sig=fresh', card.caption);
+    expect(telegram.openLink).not.toHaveBeenCalled();
+    expect(analytics.events).toContainEqual({ name: 'share_saved', props: { kind: 'day', target: 'telegram_story' } });
+  });
+
+  it('does not offer Telegram stories when unsupported, and still offers image saving', async () => {
+    const { telegram, analytics, user } = setup({ story: false });
+    const sheet = await openSheet(user);
+    expect(within(sheet).queryByRole('button', { name: ru.shareCard.telegramStory })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: ru.shareCard.saveImage }));
+    expect(telegram.shareToStory).not.toHaveBeenCalled();
+    expect(telegram.openLink).toHaveBeenCalledWith('http://localhost:3000/api/v1/files/card/card.png?sig=fresh');
+    expect(analytics.events).toContainEqual({ name: 'share_saved', props: { kind: 'day', target: 'gallery' } });
+  });
+
+  it('shows the identity empty-state text without showing a generic error for 422', async () => {
+    const { api, user } = setup({ kind: 'identity' });
+    api.createShareCard.mockRejectedValue(new ApiError('VALIDATION_FAILED', {
+      status: 422,
+      details: { reason: 'not_enough_identity_lines' },
+    }));
+    await openSheet(user, ru.shareCard.identity);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.saveImage }));
+    expect(await screen.findByRole('status')).toHaveTextContent(ru.shareCard.notEnoughIdentityLines);
+    expect(screen.queryByText(ru.report.shareFailed)).not.toBeInTheDocument();
   });
 });
