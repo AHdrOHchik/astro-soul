@@ -436,3 +436,122 @@ def test_service_moon_facts_matches_forecast_facts(known_birth: BirthInput) -> N
     assert anonymous.status_code == 200, anonymous.text
     assert anonymous.json()["moon"] == personal.json()["moon"]
     assert anonymous.json()["noon_utc"] == personal.json()["noon_utc"]
+
+
+# ── Тексты карточек против того же списка, что и главы разбора ─────────────
+#
+# Строки «чего сегодня лучше не начинать» — наши константы в API
+# (`MOON_ADVICE` в `apps/api/src/modules/share/share.service.ts`). Константа не
+# значит «проверенная»: это совет, то есть ровно тот класс текста, который мы
+# запрещаем модели, и он уходит наружу под нашим именем. Валидатор разбора его
+# не видел, потому что список запрещённых тем живёт в `validators.ts` и
+# применяется к главам.
+#
+# Поэтому тест читает **тот же** список из `validators.ts` (единственный
+# источник: второй список в Python разошёлся бы с первым молча) и прогоняет по
+# нему каждую фразу, параметризуясь по файлу с фразами: девятая фраза попадает
+# под проверку сама.
+
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SHARE_SERVICE = _REPO_ROOT / "apps" / "api" / "src" / "modules" / "share" / "share.service.ts"
+_VALIDATORS = _REPO_ROOT / "apps" / "api" / "src" / "modules" / "reports" / "validators.ts"
+
+
+def _source(path: Path) -> str:
+    assert path.exists(), f"нет файла {path}"
+    return path.read_text(encoding="utf8")
+
+
+def _forbidden_patterns() -> list[re.Pattern[str]]:
+    """`FORBIDDEN_TOPICS` из `validators.ts`, скомпилированный в Python.
+
+    Шаблоны там — обычные JS-регэкспы с флагом `i`; `\\p{L}` переводится в
+    «любая буква», остальное совпадает с Python дословно. Если кто-то добавит в
+    список конструкцию, которую нельзя перевести, тест упадёт на компиляции, а
+    не промолчит.
+    """
+    block = re.search(
+        r"const FORBIDDEN_TOPICS[^=]*=\s*\[(.*?)\n\];",
+        _source(_VALIDATORS),
+        re.S,
+    )
+    assert block is not None, "в validators.ts не найден FORBIDDEN_TOPICS"
+
+    # Внутри шаблонов нет `/` (это не URL-регэкспы), поэтому границу берём по
+    # нему: иначе жадный хвост склеивает соседние записи и часть правил теряется.
+    found = re.findall(r"pattern:\s*/([^/\n]+)/([a-z]*)", block.group(1))
+    assert found, "в FORBIDDEN_TOPICS не нашлось ни одного шаблона"
+
+    compiled: list[re.Pattern[str]] = []
+    for body, flags in found:
+        assert "i" in flags, f"шаблон без флага i: {body}"
+        translated = body.replace(r"\p{L}", r"[^\W\d_]").replace(r"\p{N}", r"\d")
+        compiled.append(re.compile(translated, re.IGNORECASE))
+
+    return compiled
+
+
+def _moon_advice() -> tuple[dict[str, str], str]:
+    """Фразы по фазам и запасная строка — прямо из исходника API."""
+    source = _source(_SHARE_SERVICE)
+
+    block = re.search(
+        r"export const MOON_ADVICE: Readonly<Record<MoonPhaseLabel, string>> = \{(.*?)\n\};",
+        source,
+        re.S,
+    )
+    assert block is not None, "в share.service.ts не найден MOON_ADVICE"
+
+    pairs = re.findall(r"^\s+'?([^:'\n]+)'?:\s*'([^']+)',\s*$", block.group(1), re.M)
+    assert pairs, "в MOON_ADVICE не нашлось ни одной пары «фаза — фраза»"
+
+    fallback = re.search(r"export const MOON_ADVICE_FALLBACK = '([^']+)';", source)
+    assert fallback is not None, "в share.service.ts не найден MOON_ADVICE_FALLBACK"
+
+    return {phase: phrase for phase, phrase in pairs}, fallback.group(1)
+
+
+MOON_ADVICE_TS, MOON_ADVICE_FALLBACK_TS = _moon_advice()
+
+
+def test_forbidden_terms_are_really_read_from_the_validator() -> None:
+    patterns = _forbidden_patterns()
+
+    # Не пустая проверка: список читается и действительно ловит запрещённое.
+    assert len(patterns) >= 8
+    for sample in (
+        "Не начинай лечение без врача.",
+        "Гарантированный доход обеспечен.",
+        "Это кармический долг.",
+        "Вернётся к концу года.",
+    ):
+        assert any(pattern.search(sample) for pattern in patterns), sample
+
+
+def test_moon_advice_covers_every_phase_from_the_sidecar() -> None:
+    from astro.daily import PHASES
+
+    phases = [name for _, name in PHASES]
+    unique = list(dict.fromkeys(phases))
+
+    # Паритет с сайдкаром: фаз столько же, подписи те же, порядок тот же.
+    assert list(MOON_ADVICE_TS) == unique
+    assert len(MOON_ADVICE_TS) == len(unique)
+
+
+@pytest.mark.parametrize(
+    ("phase", "phrase"),
+    [*MOON_ADVICE_TS.items(), ("<запасная>", MOON_ADVICE_FALLBACK_TS)],
+)
+def test_moon_advice_passes_the_report_forbidden_terms(phase: str, phrase: str) -> None:
+    for pattern in _forbidden_patterns():
+        assert pattern.search(phrase) is None, (phase, phrase, pattern.pattern)
+
+    # Структура совета: «Не начинай …», без чисел и процентов — число в такой
+    # фразе читается как обещание («на 80 %», «через месяц»).
+    assert phrase.startswith("Не начинай ")
+    assert not re.search(r"\d|%", phrase), phrase
+    assert len(phrase) <= 140, phrase

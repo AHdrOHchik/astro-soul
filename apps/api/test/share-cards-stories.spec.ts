@@ -14,6 +14,7 @@ import {
   prepositional,
   phaseWord,
   MOON_ADVICE,
+  type MoonPhaseLabel,
   IDENTITY_INVITE,
   IDENTITY_TITLE,
   SHARE_CAPTION,
@@ -413,10 +414,11 @@ describe('карточка `moon` — вход в воронку без проф
     const call = cardCalls[0];
     expect(call?.title).toMatch(/^Луна в /u);
     expect(call?.lines).toHaveLength(3);
-    expect(call?.lines[1]).toBe(
-      MOON_ADVICE[(call?.lines[0] ?? '').split(',')[0]?.toLowerCase() ?? ''] ??
-        'Не начинай того, что можно отложить на завтра.',
-    );
+    // Строка совета — ровно та, что положена фазе из первой строки. Фаза на
+    // карточке всегда из восьми: запасная строка здесь означала бы, что список
+    // фаз разъехался с сайдкаром.
+    const phase = (call?.lines[0] ?? '').split(',')[0]?.toLowerCase() ?? '';
+    expect(call?.lines[1]).toBe(MOON_ADVICE[phase as MoonPhaseLabel]);
     expect(call?.lines.at(-1)).toMatch(/^\d{1,2} [а-я]+ \d{4}$/u);
     expect(call?.prompt).toBeNull();
   });
@@ -445,6 +447,28 @@ describe('карточка `moon` — вход в воронку без проф
 
     const call = cardCalls[0];
     expect(call?.lines.at(-1)).toBe(formatRuDay(localDateIn(zone, new Date())));
+  });
+
+  it('без `tz` и без карты дата считается по UTC — так и зафиксировано', async () => {
+    await shareCard('moon', { userId: 777_000_333 }).expect(200);
+
+    const today = new Date();
+
+    // Правило: `tz` → пояс последней карты → UTC. Карты нет, значит UTC, и это
+    // не «угадывание»: угаданный пояс ошибся бы незаметно. Для аудитории
+    // UTC+3…UTC+12 такое умолчание даёт вчерашнюю дату до 3–7 утра, поэтому
+    // клиент обязан присылать `tz` всегда, а сервер — не менять правило молча.
+    expect(cardCalls[0]?.lines.at(-1)).toBe(formatRuDay(today.toISOString().slice(0, 10)));
+    expect(cardCalls[0]?.lines.at(-1)).toBe(formatRuDay(localDateIn('UTC', today)));
+  });
+
+  it('без `tz`, но с картой — пояс карты: правило не менялось', async () => {
+    // Карта из `BIRTH` — `Europe/Moscow`.
+    await userWithChart();
+
+    await shareCard('moon').expect(200);
+
+    expect(cardCalls[0]?.lines.at(-1)).toBe(formatRuDay(localDateIn('Europe/Moscow', new Date())));
   });
 
   it('неизвестный пояс → 422 share_tz_unknown с полем tz', async () => {

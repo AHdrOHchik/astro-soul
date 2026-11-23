@@ -157,6 +157,25 @@ const FORBIDDEN_TOPICS: readonly { readonly rule: string; readonly pattern: RegE
 const HOUSE_REF_HARD =
   /(?:(?:в|во|по|из|у)\s+(?:[1-9]|1[0-2])(?:-?(?:й|м|го|ой))?\s+дом[\p{L}]*)|(?:(?:[1-9]|1[0-2])(?:-?(?:й|м|го|ой))\s+дом[\p{L}]*)|(?:дом[\p{L}]*\s*(?:№\s*)?(?:[1-9]|1[0-2])(?!\d))|(?:(?:перв|втор|трет|четв[её]рт|пят|шест|седьм|восьм|девят|десят|одиннадцат|двенадцат)[\p{L}]*\s+дом[\p{L}]*)|(?:по\s+домам)|(?:дом[\p{L}]*\s+(?:карты|гороскопа))|(?:куспид[\p{L}]*)|(?:асцендент[\p{L}]*)|(?:asc)|(?:mc)|(?:середин[\p{L}]*\s+неба)|(?:зенит[\p{L}]*)/iu;
 
+/**
+ * Первое запрещённое правило в готовом тексте — тот же список, что у глав
+ * разбора, но без требований к длине, абзацам и дисклеймеру.
+ *
+ * Нужен коротким текстам, которые мы пишем сами и показываем под своим именем:
+ * строки карточек (`MOON_ADVICE`) — совет, то есть ровно то, что модели
+ * запрещено. Константа не значит «проверенная»: список живёт здесь, поэтому
+ * проверка живёт здесь же, а не в копии в другом языке.
+ */
+export function forbiddenTopicIn(text: string): string | null {
+  for (const topic of FORBIDDEN_TOPICS) {
+    if (topic.pattern.test(text)) {
+      return topic.rule;
+    }
+  }
+
+  return null;
+}
+
 /** Soft warning — «в доме» без числа: сигнал, но не провал. */
 const HOUSE_REF_SOFT = /(?<![\p{L}\p{N}])в\s+доме(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])дом(?!ой|а(?![\p{L}\p{N}])|ашн|инир|ен)/iu;
 
@@ -419,7 +438,7 @@ export function validateSection(input: ValidationInput): ValidationResult {
     failures.push({ rule: 'ui_reference', detail: 'отсылка к интерфейсу' });
   }
 
-  // 5. Запрещённые темы.
+  // 5. Запрещённые темы — тот же список, что проверяется в `forbiddenTopicIn`.
   for (const topic of FORBIDDEN_TOPICS) {
     if (topic.pattern.test(body)) {
       failures.push({ rule: `forbidden_${topic.rule}`, detail: topic.pattern.source.slice(0, 40) });
