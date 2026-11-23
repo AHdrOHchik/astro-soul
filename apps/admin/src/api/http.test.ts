@@ -183,4 +183,21 @@ describe('http-слой админки', () => {
     expect((error as { fieldErrors: readonly { field: string }[] }).fieldErrors[0]?.field).toBe('user_id');
     expect((error as { message: string }).message).toBe('Проверь поля');
   });
+
+  it('параметры пути подставляются в шаблон и экранируются; незаполненный шаблон — ошибка вызова', async () => {
+    // Карточка человека живёт на `/admin/users/{id}` (маршрут вне контракта —
+    // идём ДЕМО-веткой `allowUnknownRoutes`). `77/x` в id обязан остаться
+    // частью пути, а не «выйти» из него; а вызов без параметра — упасть до
+    // сети: 404 на литеральный `{id}` выглядел бы как «нет человека», и это
+    // была бы ложь.
+    const log = createFetchLog(() => jsonResponse({ user_id: 'x' }));
+    const demo = createHttp({ fetchImpl: log.fetchImpl, retries: 0, allowUnknownRoutes: true });
+
+    await demo.call('userCard', { params: { id: '77/x' } });
+    expect(log.calls[0]?.url).toBe('/api/v1/admin/users/77%2Fx');
+
+    await expect(demo.call('userCard', {})).rejects.toThrow(/без параметра пути/);
+    expect(log.calls).toHaveLength(1);
+  });
+
 });
