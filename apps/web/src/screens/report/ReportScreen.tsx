@@ -35,7 +35,7 @@ const SKELETON_LINES = [0, 1, 2, 3];
 export interface ReportScreenProps {
   api: Pick<Api, 'orderReport' | 'getReport' | 'createReportPdf' | 'getReportPdf' | 'createShareCard' | 'getCompatibilities' | 'getPlans'>;
   share?: Me['share'];
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink' | 'canOpenLink' | 'canOpenTelegramLink' | 'openTelegramLink' | 'canShareToStory' | 'shareToStory' | 'canSwitchInlineQuery' | 'switchInlineQuery'>;
   keys: IdempotencyKeys;
   /** The chart the report is about. */
   chartId: string;
@@ -318,6 +318,7 @@ export function ReportScreen({
           />
         )}
         {done && <Download report={shown} api={api} apiBaseUrl={apiBaseUrl} telegram={telegram} />}
+        {done && <ShareCardButton api={api} kind="identity" telegram={telegram} track={track} label={ru.shareCard.identity} share={share}/>}
         {done && <ShareCardButton api={api} kind="insight" telegram={telegram} track={track} label={ru.chart.share} share={share}/> }
       </div>
     </Screen>

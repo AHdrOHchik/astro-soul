@@ -4,6 +4,11 @@
   gap: var(--space-5);
 }
 
+.shareActions {
+  display: grid;
+  gap: var(--space-3);
+}
+
 .skeleton {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

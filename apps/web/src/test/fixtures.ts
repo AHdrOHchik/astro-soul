@@ -417,7 +417,7 @@ export function fakeTermsReload(options: { refusedVersion?: string | null; stora
 }
 
 /** Where the app runs; the methods are always spies. */
-type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery' | 'canOpenTelegramLink'>;
+type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery' | 'canOpenLink' | 'canOpenTelegramLink' | 'canShareToStory'>;
 
 /** `invoice`: how Telegram closes every invoice it is asked to open; «paid» unless the test says otherwise. */
 export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | Promise<InvoiceOutcome> } = {}) {
@@ -436,8 +436,11 @@ export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | 
     openLink: vi.fn<Telegram['openLink']>(),
     canSwitchInlineQuery: where.canSwitchInlineQuery ?? true,
     switchInlineQuery: vi.fn<Telegram['switchInlineQuery']>().mockReturnValue(true),
+    canOpenLink: where.canOpenLink ?? true,
     canOpenTelegramLink: where.canOpenTelegramLink ?? true,
     openTelegramLink: vi.fn<Telegram['openTelegramLink']>().mockReturnValue(true),
+    canShareToStory: where.canShareToStory ?? false,
+    shareToStory: vi.fn<Telegram['shareToStory']>().mockReturnValue(true),
   };
 }
 

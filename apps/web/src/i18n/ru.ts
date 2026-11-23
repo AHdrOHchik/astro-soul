@@ -437,6 +437,21 @@ export const ru = {
     nothingOnSale: 'Сейчас здесь нечего оплачивать',
   },
 
+  shareCard: {
+    sheetTitle: 'Поделиться карточкой',
+    close: 'Закрыть',
+    back: 'Назад',
+    otherOptions: 'Другие способы',
+    inline: 'В Telegram',
+    telegramStory: 'В Telegram-сторис',
+    saveImage: 'Сохранить картинку',
+    saveInstruction: 'Откроется картинка — нажми и удерживай, чтобы сохранить',
+    day: 'Поделиться днём',
+    moon: 'Поделиться фазой Луны',
+    identity: 'Поделиться карточкой о себе',
+    notEnoughIdentityLines: 'Пока не из чего собрать карточку',
+  },
+
   /** Screen 6. */
   report: {
     title: 'Полный разбор',

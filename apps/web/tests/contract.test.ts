@@ -33,17 +33,32 @@ function topLevelList(key: string): string[] {
 }
 
 
+function eventNamesMatch(clientNames: readonly string[], contractNames: readonly string[]): boolean {
+  const clientSet = new Set(clientNames);
+  const contractSet = new Set(contractNames);
+  return clientSet.size === clientNames.length &&
+    contractSet.size === contractNames.length &&
+    clientSet.size === contractSet.size &&
+    [...clientSet].every((name) => contractSet.has(name));
+}
+
 describe('product events against the contract', () => {
-  it('have the same names in the app and in the contract: none missing, none of the app\'s own', () => {
+  it('have the same names in the app and in the contract: none missing, none extra, none duplicated', () => {
     const contract = topLevelList('x-analytics-events');
+    const client = Object.keys(EVENT_NAMES);
     // The list was really read: an empty one would agree with nothing, a wrong one would lack these.
     expect(contract).toEqual(expect.arrayContaining(['app_open', 'consent_accepted', 'chart_created']));
-    expect(Object.keys(EVENT_NAMES).sort()).toEqual([...contract].sort());
+    expect(eventNamesMatch(client, contract)).toBe(true);
+    expect(EVENT_NAMES).toHaveProperty('share_sent', true);
   });
 
-  it('contains all 38 client event names from contract 1.6.9', () => {
-    expect(Object.keys(EVENT_NAMES)).toHaveLength(39);
-    expect(EVENT_NAMES).toHaveProperty('share_sent', true);
+  it('rejects an extra name, a missing name, and a duplicate in either list', () => {
+    const contract = topLevelList('x-analytics-events');
+    const client = Object.keys(EVENT_NAMES);
+    expect(eventNamesMatch([...client, 'fixture_extra_event'], contract)).toBe(false);
+    expect(eventNamesMatch(client.slice(1), contract)).toBe(false);
+    expect(eventNamesMatch([...client, client[0] ?? ''], contract)).toBe(false);
+    expect(eventNamesMatch(client, [...contract, contract[0] ?? ''])).toBe(false);
   });
 
   it('use none of the prop keys the contract forbids as personal data', () => {

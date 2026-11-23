@@ -5,6 +5,7 @@ import { isApiError } from '../api';
 import { localDayIn } from '../lib/localDay';
 import { config } from '../config';
 import { copy30 } from '../i18n/round30';
+import { ru } from '../i18n/ru';
 import { SupportButton } from '../components/SupportButton';
 import { Disclaimer } from '../components/Disclaimer';
 import { ShareCardButton } from '../components/ShareCardButton';
@@ -16,7 +17,7 @@ export interface DailyForecastScreenProps {
   api: Pick<Api, 'getForecastToday' | 'getMe' | 'createShareCard'>;
   chartId: string | null;
   share?: Me['share'];
-  telegram: Pick<Telegram, 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
+  telegram: Pick<Telegram, 'openLink' | 'canOpenLink' | 'canOpenTelegramLink' | 'openTelegramLink' | 'canShareToStory' | 'shareToStory' | 'canSwitchInlineQuery' | 'switchInlineQuery'>;
   now?: () => Date;
   known: ForecastDay | null;
   onKnown: (day: ForecastDay | null) => void;
@@ -102,12 +103,13 @@ export function DailyForecastScreen({ api, chartId, share, telegram, known, now 
     if (error === 'service' && Date.now() - triedAt.current < 60_000) return;
     onKnown(null); setLocalDay(null); setError(null); setQuota(null); setRetryAfter(0); setSlow(false); setTick((value) => value + 1);
   };
-  if (chartId === null) return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={copy30.forecast.missingTitle} text={copy30.forecast.missingText}><Button onClick={onBuildChart}>{copy30.forecast.build}</Button></StateView></div></Screen>;
-  if (error === null && shownDay === null) return <Screen busy bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><SkeletonGroup label={copy30.forecast.loading}><Skeleton/><Skeleton/><Skeleton/><Skeleton/></SkeletonGroup>{slow && <p className={styles.muted}>{copy30.forecast.slow}</p>}</div></Screen>;
+  const moonShare = <ShareCardButton api={api} kind="moon" telegram={telegram} track={track ?? noopTrack} label={ru.shareCard.moon} share={share}/>;
+  if (chartId === null) return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={copy30.forecast.missingTitle} text={copy30.forecast.missingText}><Button onClick={onBuildChart}>{copy30.forecast.build}</Button></StateView>{moonShare}</div></Screen>;
+  if (error === null && shownDay === null) return <Screen busy bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><SkeletonGroup label={copy30.forecast.loading}><Skeleton/><Skeleton/><Skeleton/><Skeleton/></SkeletonGroup>{slow && <p className={styles.muted}>{copy30.forecast.slow}</p>}{moonShare}</div></Screen>;
   if (error !== null && shownDay === null) {
     const message = error === 'service' ? copy30.forecast.serviceText : error === 'month' ? copy30.forecast.monthText : error === 'timeout' ? copy30.forecast.timeoutText : copy30.forecast.offline;
     const title = error === 'offline' ? copy30.forecast.offline : error === 'service' ? copy30.forecast.serviceTitle : error === 'timeout' ? copy30.forecast.timeoutTitle : copy30.forecast.monthTitle;
-    return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={title} text={message}>{error !== 'month' && <Button onClick={retry} disabled={error === 'service' && retryAfter > 0}>{error === 'service' && retryAfter > 0 ? copy30.forecast.retryAfter.replace('{seconds}', String(retryAfter)) : copy30.forecast.retry}</Button>}<SupportButton link={config.supportLink} telegram={telegram}/></StateView>{quota && <p className={styles.muted}>{copy30.forecast.quota.replace('{used}', String(quota.used)).replace('{limit}', quota.limit === -1 ? copy30.forecast.quotaUnlimited : String(quota.limit))}</p>}</div></Screen>;
+    return <Screen bodyRef={body}><div className={styles.content}><ScreenHeading id={titleId} title={copy30.forecast.title}/><StateView title={title} text={message}>{error !== 'month' && <Button onClick={retry} disabled={error === 'service' && retryAfter > 0}>{error === 'service' && retryAfter > 0 ? copy30.forecast.retryAfter.replace('{seconds}', String(retryAfter)) : copy30.forecast.retry}</Button>}<SupportButton link={config.supportLink} telegram={telegram}/></StateView>{quota && <p className={styles.muted}>{copy30.forecast.quota.replace('{used}', String(quota.used)).replace('{limit}', quota.limit === -1 ? copy30.forecast.quotaUnlimited : String(quota.limit))}</p>}{moonShare}</div></Screen>;
   }
   const day = shownDay;
   if (day === null) return null;
@@ -129,7 +131,10 @@ export function DailyForecastScreen({ api, chartId, share, telegram, known, now 
       {factRows.length > 0 && <section className={styles.facts}>{factRows.map((fact) => <p key={fact}>{fact}</p>)}</section>}
       {onSubscribe && <Button variant="secondary" onClick={onSubscribe}>{copy30.forecast.subscribe}</Button>}
     </>}
-    <ShareCardButton api={api} kind="day" telegram={telegram} track={track ?? noopTrack} label={copy30.forecast.share} share={share}/>
+    <div className={styles.shareActions}>
+      <ShareCardButton api={api} kind="day" telegram={telegram} track={track ?? noopTrack} label={ru.shareCard.day} share={share}/>
+      {moonShare}
+    </div>
     <p className={styles.muted}>{copy30.forecast.update}</p>
     <Disclaimer text={day.disclaimer}/>
   </div></Screen>;

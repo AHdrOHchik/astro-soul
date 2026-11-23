@@ -264,7 +264,7 @@ export interface Api {
   getReport(reportId: string, signal?: AbortSignal): Promise<Report>;
   createReportPdf(reportId: string, idempotencyKey: string, signal?: AbortSignal): Promise<PdfStatus>;
   getReportPdf(reportId: string, signal?: AbortSignal): Promise<PdfStatus>;
-  createShareCard(kind: ShareCardKind, signal?: AbortSignal): Promise<ShareCard>;
+  createShareCard(kind: ShareCardKind, tz: string, signal?: AbortSignal): Promise<ShareCard>;
   /** Current compatibility history and server-owned remaining quota; never cached between visits. */
   getCompatibilities(limit?: number, offset?: number, signal?: AbortSignal): Promise<CompatibilityList>;
   /** Requests one compatibility analysis. The idempotency key makes retries the same request. */
@@ -641,8 +641,8 @@ export function createApi(options: HttpClientOptions): Api {
       return toPdfStatus(await request<unknown>('GET', PATHS.reportPdf.replace('{report_id}', encodeURIComponent(reportId)), { signal, cache: 'no-store' }));
     },
 
-    async createShareCard(kind, signal) {
-      return toShareCard(await request<unknown>('POST', PATHS.shareCard, { body: { kind }, signal, retry: false }));
+    async createShareCard(kind, tz, signal) {
+      return toShareCard(await request<unknown>('POST', PATHS.shareCard, { body: { kind, tz }, signal, retry: false }));
     },
 
     async getCompatibilities(limit = 20, offset = 0, signal) {

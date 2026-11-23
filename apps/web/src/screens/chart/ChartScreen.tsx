@@ -97,7 +97,7 @@ export interface ChartReportProps {
 export interface ChartScreenProps {
   api: Pick<Api, 'createChart' | 'getCurrentChart' | 'getPlans' | 'getReport' | 'getForecast' | 'createShareCard'>;
   share?: Me['share'];
-  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink' | 'openLink'>;
+  telegram: Pick<Telegram, 'isTelegram' | 'close' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenLink' | 'canOpenTelegramLink' | 'openTelegramLink' | 'canShareToStory' | 'shareToStory' | 'openLink'>;
   /**
    * Body of `POST /charts`; null to open the chart the user already has (`GET /charts/current`).
    * Keep the reference stable: a new object is a new request.
@@ -314,7 +314,7 @@ interface ChartViewProps {
   result: ChartResult;
   share?: Me['share'];
   apiBaseUrl: string;
-  telegram: Pick<Telegram, 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenTelegramLink' | 'openTelegramLink'>;
+  telegram: Pick<Telegram, 'openLink' | 'canSwitchInlineQuery' | 'switchInlineQuery' | 'canOpenLink' | 'canOpenTelegramLink' | 'openTelegramLink' | 'canShareToStory' | 'shareToStory'>;
   track: Track;
   report: ChartReportProps;
   forecast?: ChartForecastProps;

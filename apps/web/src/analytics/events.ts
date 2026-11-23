@@ -1,5 +1,7 @@
 import type { components } from '../api/schema.gen';
 
+type ShareCardKind = components['schemas']['ShareCardKind'];
+
 /** A product event as `POST /events` takes it. */
 export type ClientEvent = components['schemas']['ClientEvent'];
 export type EventName = ClientEvent['name'];
@@ -139,7 +141,9 @@ export interface EventProps {
    */
   error_shown: { screen: AnalyticsStep; code: string };
   /** A generated card was actually handed to Telegram, never merely created on the server. */
-  share_sent: { kind: 'day' | 'wheel' | 'insight' | 'identity' | 'moon'; channel: 'inline' | 'link' };
+  share_sent: { kind: ShareCardKind; channel: 'inline' | 'link' };
+  /** The app opened a fresh signed card image for the gallery or the Telegram story editor. */
+  share_saved: { kind: ShareCardKind; target: 'gallery' | 'telegram_story' };
 }
 
 /** Reports one event. Events outside `EventProps` take no props at all. */
@@ -152,7 +156,7 @@ export type Track = <Name extends EventName>(
  * The only keys an event of this app may carry. The check is repeated at run time, when an
  * event is queued: the types above do not stop a value that was cast on its way here.
  */
-export const PROP_KEYS = ['step', 'code', 'field', 'version', 'screen', 'plan_code', 'report_id', 'kind', 'channel'] as const;
+export const PROP_KEYS = ['step', 'code', 'field', 'version', 'screen', 'plan_code', 'report_id', 'kind', 'channel', 'target'] as const;
 
 /** The contract's limit for a string value; a longer one makes the server refuse the whole batch. */
 export const MAX_PROP_LENGTH = 64;

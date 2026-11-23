@@ -179,6 +179,17 @@ describe('ReportScreen: a report in work', () => {
 });
 
 describe('ReportScreen: a report that is over', () => {
+  it('offers the identity story card beside PDF only for a paid report', async () => {
+    const { api, user } = setup({ answer: ready, props: { share: { link: true, inline: 'off' } } });
+    const identity = await screen.findByRole('button', { name: ru.shareCard.identity });
+    expect(screen.getByRole('button', { name: copy.pdf })).toBeInTheDocument();
+    expect(api.createShareCard).not.toHaveBeenCalled();
+
+    await user.click(identity);
+    await user.click(screen.getByRole('button', { name: ru.shareCard.saveImage }));
+    expect(api.createShareCard).toHaveBeenCalledWith('identity', expect.any(String));
+  });
+
   it('places the compatibility entry after the completed chapters and opens it for this chart', async () => {
     const onOpenCompatibility = vi.fn();
     const { user } = setup({ answer: ready, props: { onOpenCompatibility, onBuyCompatibility: vi.fn() } });
@@ -233,6 +244,7 @@ describe('ReportScreen: a report that is over', () => {
     const { container, onPaymentRequired, user } = setup({ answer: { ...ready, is_paid: false, teaser: 'Начало первой главы.' } });
 
     expect(await screen.findByText('Начало первой главы.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: ru.shareCard.identity })).not.toBeInTheDocument();
     for (const section of sections) {
       expect(container.innerHTML).not.toContain(section.body_md);
       expect(container.innerHTML).not.toContain(section.title);
