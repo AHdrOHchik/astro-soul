@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.13
+  version: 1.6.14
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -579,6 +579,46 @@ info:
         карточек;
       • `/admin/metrics`: `share_cards_created_24h` по видам.
 
+    1.6.14 — бесплатный доступ по праву (итерация 39). Аддитивно: `required`
+    нигде не тронут, цены, планы и платежи не менялись. Бесплатный доступ — это
+    строка в `grants` с обязательным `expires_at`, а не план за 0 ⭐ и не
+    подписка: у гранта нет `charge_id` и автопродления, поэтому
+    `subscription_cancel_no_charge_id_24h` его не видит.
+
+      • `Me.entitlements` — шесть необязательных полей: `all_access_until`,
+        `source`, `single_reports`, `single_compat`, `is_founder`,
+        `founder_place`. Клиент обязан пережить их отсутствие и не решает
+        доступ сам: сервер проверяет всё через одну функцию `hasAccess`;
+      • `POST /me/activate-code` — активация кода: `404 code_not_found`,
+        `409 code_exhausted`, `409 already_activated`, `410 code_expired`,
+        `422` (формат), `401`, `503 bonus_budget_exhausted`. Срок права
+        начинается **с построения карты**: до неё право ждёт и дни не течёт;
+      • `POST /me/founder-claim` — «первые 50»: место выдаётся атомарно на
+        сервере, 51-й получает `409 founders_exhausted`. Подарок — один разбор,
+        14 дней «всё включено» и постоянная цена `founder_month` (250 ⭐,
+        `is_active = false`, доступна только основателю);
+      • `GET /founders/count` — публичный счётчик `{taken, total: 50}`, без ПДн;
+      • `GET /me/referral` и `Me.referral_link` — ссылка `start=ref_<short_id>`;
+        награда пригласившему 30 дней **после карты приглашённого**, потолок
+        90 дней на человека из этого источника, один уровень, без самоприглашения;
+      • `GET /health` — `flags.bonus_budget {spent_rub, limit_rub, exhausted}`;
+        исчерпанный бюджет переводит `status` в `degraded`;
+      • `GET /admin/metrics` — `grants_active`, `grants_issued_24h` по
+        источникам, `grants_revenue_lost_rub_24h`, `codes_activated_24h`,
+        `referrals_joined_24h`, `referrals_rewarded_24h`, `founders_taken`,
+        `bonus_budget_spent_rub`, `bonus_budget_limit_rub`,
+        `push_claimed_not_sent_24h` (долг 8.5);
+      • `GET /admin/alerts` — восьмое правило `bonus_budget_exhausted`
+        (warning: бюджет выбран, действующие права продолжают работать);
+      • `GET /admin/grants` — история прав человека (включая отозванные),
+        `POST /admin/grants`, `POST /admin/codes`, `GET /admin/codes` — ручная
+        выдача и коды; отзыв ставит `revoked_at`, строка не удаляется;
+      • схема `AccessCode`; новые коды ошибок `GONE` (410) и
+        `BONUS_BUDGET_EXHAUSTED` (503);
+      • `JobRunResult` — `push_runs_purged`, `share_cards_purged`; новый джоб
+        `push_share_retention` чистит агрегаты пушей и карточки старше 30 дней,
+        кроме открытых по `sh_`-ссылке.
+
     1.6.13 — утренний пуш в чат бота (итерация 38). Аддитивно, `required`
     нигде не тронут, существующие значения не переименованы:
       • сам пуш — не маршрут, а поведение: раз в местные сутки в 08:00–08:04 по
@@ -720,7 +760,7 @@ components:
       properties:
         code:
           type: string
-          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND]
+          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND, GONE, BONUS_BUDGET_EXHAUSTED]
         message: { type: string, description: Готовый текст для показа пользователю (ru, на «ты») }
         request_id: { type: string, description: Для поиска в логах }
         details:
@@ -856,6 +896,14 @@ components:
           $ref: '#/components/schemas/ShareCapability'
         notifications:
           $ref: '#/components/schemas/Notifications'
+        referral_link:
+          type: [string, 'null']
+          format: uri
+          description: |-
+            Ссылка приглашения друга (1.6.14): `https://t.me/<bot>?start=ref_<short_id>`.
+            Необязательное поле: `null` — `BOT_USERNAME` не настроен (как у
+            `share.link = false`), и приглашать пока нечем. В `short_id` нет ни
+            `telegram_id`, ни `user_id`: ссылка не ПДн и её можно пересылать.
 
     Notifications:
       type: object
@@ -1010,6 +1058,59 @@ components:
             рассчитывать на его присутствие (1.5.4).
         compat_per_month: { type: integer }
         solar_included: { type: boolean }
+        # ── Бесплатный доступ по праву (1.6.14) ────────────────────────────
+        # Все шесть полей **необязательные**: клиент обязан пережить их
+        # отсутствие (старый сервер) и не решать доступ по ним — доступ всегда
+        # проверяется на сервере (`hasAccess`).
+        all_access_until:
+          type: [string, 'null']
+          format: date-time
+          description: |-
+            До какого момента действует право «всё включено» (1.6.14).
+            `null` — такого права нет. Срок **начинается с построения карты**:
+            код, активированный до онбординга, ждёт и дни не сжигает.
+        source:
+          type: [string, 'null']
+          enum: [partner, founder, referral, admin, null]
+          description: |-
+            Источник последнего действующего права: `partner` — партнёрский
+            код, `founder` — «первые 50», `referral` — приглашённый друг,
+            `admin` — ручная выдача. `null` — прав нет.
+        single_reports:
+          type: integer
+          description: Неизрасходованных бесплатных разборов.
+        single_compat:
+          type: integer
+          description: Неизрасходованных бесплатных совместимостей.
+        is_founder:
+          type: boolean
+          description: Человек в списке первых 50.
+        founder_place:
+          type: [integer, 'null']
+          minimum: 1
+          maximum: 50
+          description: |-
+            Номер места основателя (1..50); `null` — не основатель. Только для
+            показа: право купить `founder_month` проверяется на сервере.
+
+    AccessCode:
+      type: object
+      description: Код доступа (1.6.14) — право на выдачу, а не право само по себе.
+      required: [id, code, kind, max_activations, activations, is_active, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        code:
+          type: string
+          example: K7M2P9X4
+          description: '8 знаков из алфавита ABCDEFGHJKLMNPQRSTUVWXYZ23456789.'
+        kind: { type: string, enum: [all_access, single_report, single_compat] }
+        days: { type: [integer, 'null'], description: Только для `all_access`. }
+        max_activations: { type: integer }
+        activations: { type: integer }
+        partner_name: { type: [string, 'null'] }
+        is_active: { type: boolean }
+        expires_at: { type: [string, 'null'], format: date-time }
+        created_at: { type: string, format: date-time }
 
     GeoPlace:
       type: object
@@ -2110,6 +2211,19 @@ paths:
                     properties:
                       test_plans: { type: boolean }
                       report_breaker: { type: boolean }
+                      bonus_budget:
+                        type: object
+                        description: |-
+                          Бюджет бесплатного доступа (1.6.14): сколько уже
+                          выдано в этом календарном месяце, каков лимит и
+                          исчерпан ли он. `exhausted = true` переводит
+                          `status` в `degraded`: продукт работает, но новые
+                          коды и подарки отвечают `503 bonus_budget_exhausted`,
+                          и об этом надо знать до жалоб.
+                        properties:
+                          spent_rub: { type: number }
+                          limit_rub: { type: number }
+                          exhausted: { type: boolean }
                       push:
                         type: object
                         description: |-
@@ -2259,6 +2373,341 @@ paths:
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/me/activate-code:
+    post:
+      tags: [profile]
+      summary: Активировать код доступа
+      description: |-
+        Код — право на выдачу, а не право само по себе: активация создаёт строку
+        в `grants` и **не создаёт** подписку. Ни `subscriptions`, ни `charge_id`,
+        ни автопродления: грант нечего отменять, и алерт
+        `subscription_cancel_no_charge_id_24h` его не увидит.
+
+        **Срок начинается с карты.** Код можно активировать до онбординга, но
+        дни начинают течь после построения карты: иначе человек сжигает
+        подаренный месяц, глядя на экран ввода даты рождения. До карты право
+        лежит в `pending` и видно в `Me.entitlements.all_access_until = null`.
+
+        Один код — одна активация на человека (уникальный ключ
+        `(code_id, user_id)`), счётчик активаций увеличивается атомарно
+        (`UPDATE … WHERE activations < max_activations`). Повторная активация
+        другого кода того же вида **продлевает** срок, а не создаёт второе
+        право.
+
+        Ответ — полный блок `Me.entitlements`, чтобы клиенту не нужен был
+        второй запрос и он не показывал «активировано» без подтверждения
+        сервера.
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  example: K7M2P9X4
+                  description: |-
+                    8 знаков из алфавита `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`
+                    (без `0`, `O`, `1`, `I`). Регистр и пробелы не важны:
+                    сервер нормализует значение.
+      responses:
+        '200':
+          description: Право активировано (или продлено); тело — новые права
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entitlements]
+                properties:
+                  entitlements: { $ref: '#/components/schemas/Entitlements' }
+        '401': { description: UNAUTHORIZED }
+        '404':
+          description: '`code_not_found` — кода нет или он выключен'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: |-
+            `code_exhausted` — все активации кода использованы;
+            `already_activated` — этот человек уже активировал этот код
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '410':
+          description: '`code_expired` — срок действия кода закончился'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: '`field_errors[{field: "code"}]` — пусто или формат не тот'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: |-
+            `bonus_budget_exhausted` — месячный бюджет бесплатного доступа
+            исчерпан. Действующие права продолжают работать: отказ только в
+            новых.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/me/founder-claim:
+    post:
+      tags: [profile]
+      summary: Занять место в «первых 50»
+      description: |-
+        Атомарная серверная выдача места: два одновременных нажатия не могут
+        получить одно место, а номер места уникален в схеме (`place BETWEEN 1
+        AND 50`). Счётчик в приложении здесь не работает по определению.
+
+        Что получает основатель: один бесплатный полный разбор (расходуется на
+        первом заказе), 14 дней «всё включено» (срок снова начинается с карты) и
+        постоянную цену `founder_month` — 250 ⭐ вместо каталожных. Цена — не
+        грант, а строка `plans` с `is_active = false`, к которой сервер пускает
+        только основателя.
+
+        Повторный вызов идемпотентен: возвращает то же место и `200`, ничего
+        второго не выдавая. 51-й получает `409 founders_exhausted` — акция
+        конечна по определению, а не «попробуйте позже».
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: Место занято (или уже было)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [founder_place, entitlements]
+                properties:
+                  founder_place:
+                    type: integer
+                    minimum: 1
+                    maximum: 50
+                  entitlements: { $ref: '#/components/schemas/Entitlements' }
+        '401': { description: UNAUTHORIZED }
+        '409':
+          description: '`founders_exhausted` — все 50 мест заняты'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: '`bonus_budget_exhausted` — права выдать нечем'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/me/referral:
+    get:
+      tags: [profile]
+      summary: Ссылка приглашения и счётчики
+      description: |-
+        Ссылка `https://t.me/<bot>?start=ref_<short_id>`. `short_id` — 8 знаков
+        без `telegram_id` и `user_id`: ссылка не ПДн, её можно пересылать.
+
+        `link = null` без `BOT_USERNAME` — как `share.link`: битая ссылка хуже
+        отсутствующей.
+
+        Награда пригласившему — 30 дней «всё включено» и только после того, как
+        приглашённый построил карту. Потолок — 90 дней на человека из этого
+        источника; проверяется **до** начисления. Работает один уровень: за
+        приглашённых приглашённого награды нет.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [short_id, link, joined, rewarded]
+                properties:
+                  short_id: { type: string, example: k7m2p9x4 }
+                  link:
+                    type: [string, 'null']
+                    format: uri
+                  joined:
+                    type: integer
+                    description: Сколько людей пришло по ссылке.
+                  rewarded:
+                    type: integer
+                    description: По скольким из них награда уже начислена.
+        '401': { description: UNAUTHORIZED }
+
+  /api/v1/founders/count:
+    get:
+      tags: [system]
+      summary: Сколько мест «первых 50» занято
+      security: []
+      description: |-
+        Публичный маршрут без initData: витрина показывает «осталось N мест» до
+        входа в мини-апп. ПДн нет — только два числа, ни мест, ни имён.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [taken, total]
+                properties:
+                  taken: { type: integer, example: 7 }
+                  total: { type: integer, example: 50 }
+
+  /api/v1/admin/grants:
+    get:
+      tags: [internal]
+      summary: История прав человека (для поддержки)
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`).
+
+        `user_id` обязателен: «все права всех людей» — это выгрузка базы, а не
+        экран поддержки, поэтому без параметра — `422`. Отозванные права
+        **входят** в список (`revoked: true`): вопрос «почему у человека
+        отобрали доступ» отвечается историей, а не логами.
+      security: [{ TelegramInitData: [] }]
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, user_id, kind, source, revoked, created_at]
+                      properties:
+                        id: { type: string, format: uuid }
+                        user_id: { type: string, format: uuid }
+                        kind: { type: string, enum: [all_access, single_report, single_compat] }
+                        source: { type: string, enum: [admin, partner, founder, referral, purchase] }
+                        code_id: { type: [string, 'null'], format: uuid }
+                        days: { type: [integer, 'null'] }
+                        starts_at: { type: [string, 'null'], format: date-time }
+                        expires_at: { type: [string, 'null'], format: date-time }
+                        consumed_at: { type: [string, 'null'], format: date-time }
+                        revoked_at: { type: [string, 'null'], format: date-time }
+                        revoked: { type: boolean }
+                        created_at: { type: string, format: date-time }
+        '403': { description: FORBIDDEN }
+        '422': { description: VALIDATION_FAILED }
+    post:
+      tags: [internal]
+      summary: Выдать или отозвать право вручную
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`), как у `/admin/metrics`.
+
+        Тело: `{user_id, kind, days?, action?, grant_id?}`. `action: "issue"`
+        (по умолчанию) выдаёт право, `action: "revoke"` отзывает по `grant_id`.
+        **Отзыв не удаляет строку**: `revoked_at` — это история выдачи, и
+        «почему у человека отобрали доступ» должно отвечаться запросом.
+
+        Тело `POST /admin/codes`: `{kind, days?, max_activations,
+        partner_name?, expires_at?}`. `max_activations` обязателен: код без
+        счётчика — это и есть бесконтрольная раздача.
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, kind]
+              properties:
+                user_id: { type: string, format: uuid }
+                kind:
+                  type: string
+                  enum: [all_access, single_report, single_compat]
+                days:
+                  type: integer
+                  description: 'Только для `all_access`: 1..3650.'
+                action: { type: string, enum: [issue, revoke] }
+                grant_id: { type: string, format: uuid, description: Обязателен для `revoke`. }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [grant_id, kind, source, expires_at]
+                properties:
+                  grant_id: { type: string, format: uuid }
+                  kind: { type: string }
+                  source: { type: string }
+                  expires_at: { type: [string, 'null'], format: date-time }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`grant_not_found` — отзывать нечего (или право уже отозвано)'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { description: VALIDATION_FAILED }
+        '503':
+          description: '`bonus_budget_exhausted`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/codes:
+    post:
+      tags: [internal]
+      summary: Создать код доступа
+      description: Доступ только для `ADMIN_TG_ID` (иначе `403`).
+      security: [{ TelegramInitData: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, max_activations]
+              properties:
+                kind: { type: string, enum: [all_access, single_report, single_compat] }
+                days: { type: integer, description: Обязателен для `all_access`. }
+                max_activations: { type: integer, minimum: 1 }
+                partner_name: { type: [string, 'null'], description: Метка партнёра, не ПДн. }
+                expires_at: { type: [string, 'null'], format: date-time }
+      responses:
+        '201':
+          description: Код создан
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessCode' }
+        '403': { description: FORBIDDEN }
+        '422': { description: VALIDATION_FAILED }
+    get:
+      tags: [internal]
+      summary: Последние коды с остатком активаций
+      description: Доступ только для `ADMIN_TG_ID` (иначе `403`). Порядок — новые сначала.
+      security: [{ TelegramInitData: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AccessCode' }
+        '403': { description: FORBIDDEN }
 
   /api/v1/geo/resolve:
     post:
@@ -3880,6 +4329,45 @@ paths:
                       `(user_id, local_date, kind)` предотвратил второй пуш за
                       те же местные сутки: повторный тик, второй инстанс или
                       ретрай после падения.
+                  push_claimed_not_sent_24h:
+                    type: integer
+                    description: |-
+                      Заявка в `push_log` была, отправки не было (1.6.14):
+                      строка создана до вызова Bot API, `error` пуст, но
+                      `sent = false` — процесс умер между заявкой и отправкой.
+                      Тихая потеря пушей, которую иначе видно только по
+                      жалобам «мне не пришло».
+                  grants_active:
+                    type: integer
+                    description: |-
+                      Действующих прав доступа сейчас (1.6.14): неотозванные
+                      `all_access` с неистёкшим сроком и нерасходованные
+                      одноразовые права.
+                  grants_issued_24h:
+                    type: object
+                    description: |-
+                      Выдано прав за 24 часа — по источникам: `partner`,
+                      `founder`, `referral`, `admin`. Ключа нет, если из этого
+                      источника за сутки ничего не выдавали.
+                    additionalProperties: { type: integer }
+                    example: { partner: 4, founder: 11, referral: 2 }
+                  grants_revenue_lost_rub_24h:
+                    type: number
+                    description: |-
+                      Оценка упущенной выручки за сутки, рубли. Считается по
+                      каталогу: подаренные дни «всё включено» × месячная цена /
+                      30 плюс выданные одноразовые права по их цене, звёзды
+                      пересчитаны по `STAR_RATE_RUB`. Это управленческая
+                      оценка, а не бухгалтерия; сравнивать её надо с
+                      `BONUS_BUDGET_RUB`.
+                  codes_activated_24h: { type: integer }
+                  referrals_joined_24h: { type: integer }
+                  referrals_rewarded_24h: { type: integer }
+                  founders_taken:
+                    type: integer
+                    description: Сколько мест «первых 50» занято (из 50).
+                  bonus_budget_spent_rub: { type: number }
+                  bonus_budget_limit_rub: { type: number }
 
         '403': { description: FORBIDDEN }
 

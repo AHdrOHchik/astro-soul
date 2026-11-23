@@ -6,6 +6,7 @@ import { JsonLogger } from '../../common/logger';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import type { VerifiedInitData } from '../auth/init-data';
+import { AccessService } from '../entitlements/access.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { LLM_PROVIDER } from '../llm/llm.module';
 import { LlmError, type LlmMessage, type LlmProvider, type LlmResponse } from '../llm/llm.client';
@@ -250,6 +251,7 @@ export class ReportsService {
   constructor(
     @Inject(ReportsRepository) private readonly repo: ReportsRepository,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(FileStorageService) private readonly storage: FileStorageService,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
@@ -289,9 +291,17 @@ export class ReportsService {
       return this.view(latest, entitlement.fullReport);
     }
 
-    // Проверка доступа — по карте, а не по флагу `fullReport`: одна покупка
-    // не должна открывать разборы по другим картам (деньги).
-    const owned = await this.repo.hasReportEntitlement(userId, chart.id);
+    // Проверка доступа — через единственную дверь `hasAccess` (1.6.14).
+    //   • оплаченный разбор этой карты — как раньше, по карте, а не по флагу
+    //     `fullReport`: одна покупка не открывает разборы по другим картам;
+    //   • одноразовое право (`single_report` из кода партнёра или «первых 50»)
+    //     списывается здесь же — атомарно, в одной транзакции. Поэтому двойной
+    //     тап не даёт двух бесплатных разборов, а отказ в правах не оставляет
+    //     «сгоревшее» право.
+    const owned = await this.access.hasAccess(userId, 'report', {
+      chartId: chart.id,
+      consume: true,
+    });
     if (!owned) {
       throw new ApiError('PAYMENT_REQUIRED', 402, {
         message: 'Полный разбор — отдельная покупка. Оформи её на экране разбора',
@@ -350,7 +360,11 @@ export class ReportsService {
       });
     });
 
-    return this.view(report, entitlement.fullReport);
+    // `owned` — не «оплачено», а «текст доступен»: после расхода
+    // одноразового права строка `entitlements` уже создана выше, но блок прав
+    // прочитан раньше неё. Отдавать `is_paid: false` на только что выданный
+    // бесплатный разбор значило бы соврать клиенту.
+    return this.view(report, owned);
   }
 
   async get(auth: VerifiedInitData, reportId: string): Promise<ReportView> {

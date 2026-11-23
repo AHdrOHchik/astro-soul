@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ChartsModule } from '../charts/charts.module';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsModule } from '../events/events.module';
+import { GrantsDataModule } from '../grants/grants-data.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { UsersRepository } from '../users/users.repository';
 import { BillingController } from './billing.controller';
@@ -14,7 +15,7 @@ import { SubscriptionController } from './subscription.controller';
 import { TelegramWebhookController } from './webhook.controller';
 
 @Module({
-  imports: [ChartsModule, TelegramModule, EventsModule, PlansModule],
+  imports: [ChartsModule, TelegramModule, EventsModule, PlansModule, GrantsDataModule],
   controllers: [BillingController, SubscriptionController, TelegramWebhookController],
   providers: [
     BillingService,

@@ -40,6 +40,12 @@ export interface PlanSeedRow {
   readonly grants: PlanGrants;
   readonly sort: number;
   readonly testOnly: boolean;
+  /**
+   * Тариф «только для основателя» (итерация 39): строка есть в `plans` всегда,
+   * но `is_active = false` — в каталог не попадает и без места в первых 50 не
+   * продаётся. Не тестовый: он настоящий и продаётся всю жизнь основателя.
+   */
+  readonly founderOnly?: boolean;
 }
 
 /**
@@ -187,6 +193,32 @@ export const PLAN_SEED: readonly PlanSeedRow[] = [
     grants: { grant: 'report' },
     sort: 91,
     testOnly: true,
+  },
+  /**
+   * Цена основателя (контракт 1.6.14, итерация 39). 250 ⭐ за 30 дней доступа —
+   * постоянная цена для первых 50, права как у месячной подписки.
+   *
+   * `is_active = false`: витрина `GET /billing/plans` её не отдаёт, а
+   * `POST /billing/invoice` пускает к ней только того, у кого есть место в
+   * `founders` (сервер проверяет сам, не клиент). Цена ниже каталога намеренно
+   * — это благодарность, а не скидка, которую можно «подождать».
+   */
+  {
+    code: 'founder_month',
+    kind: 'subscription',
+    subscriptionPlan: 'month',
+    stars: 250,
+    periodSeconds: 2_592_000,
+    title: 'Разбор личности: основатель',
+    invoiceTitle: 'Подписка основателя',
+    description: '30 дней доступа по цене основателя: прогнозы, вопросы, разбор пары',
+    priceLabel: 'Основатель',
+    paywallTitle: 'Подписка основателя',
+    paywallSubtitle: 'Цена для первых 50. Права как у месячной подписки, продления и списания — как обычно.',
+    grants: { fullForecast: true, askPerDay: 5, compatPerMonth: 1, solarIncluded: false },
+    sort: 35,
+    testOnly: false,
+    founderOnly: true,
   },
 ];
 

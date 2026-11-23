@@ -23,6 +23,17 @@ const BATCH = 50;
  */
 export const FORECAST_LOCK = 91_004_002;
 export const PUSH_LOCK = 91_004_003;
+/** Чистка журналов пуша и карточек шеринга (итерация 39, долг 8.5). */
+export const RETENTION_LOCK = 91_004_004;
+
+/**
+ * Сколько дней храним `push_runs` и `share_cards` (1.6.14).
+ *
+ * 30 дней — ровно окно, за которое владелец смотрит метрики и разбирает
+ * инцидент. Всё старше не читает ни один маршрут: `/health` берёт последнюю
+ * строку `push_runs`, `/admin/metrics` — сутки.
+ */
+export const PUSH_AND_SHARE_RETENTION_DAYS = 30;
 
 /**
  * Сколько дней после `DELETE /me` храним `payments.telegram_id`.
@@ -45,7 +56,8 @@ export type JobName =
   | 'report_refund'
   | 'pdn_retention_cleanup'
   | 'forecast_nightly'
-  | 'forecast_push';
+  | 'forecast_push'
+  | 'push_share_retention';
 
 export const JOB_NAMES: readonly JobName[] = [
   'subscriptions_downgrade',
@@ -55,6 +67,7 @@ export const JOB_NAMES: readonly JobName[] = [
   'pdn_retention_cleanup',
   'forecast_nightly',
   'forecast_push',
+  'push_share_retention',
 ];
 
 export type MutableJobRunResult = { -readonly [K in keyof JobRunResult]: JobRunResult[K] };
@@ -93,6 +106,10 @@ export interface JobRunResult {
   /** `403` и `chat not found`: согласие снято, повторять нечего. */
   readonly pushes_blocked: number;
   readonly pushes_failed: number;
+  /** Удалено агрегатов циклов пуша старше 30 дней (1.6.14). */
+  readonly push_runs_purged: number;
+  /** Удалено карточек шеринга старше 30 дней, которые никто не открывал. */
+  readonly share_cards_purged: number;
 }
 
 /**
@@ -152,6 +169,8 @@ export class JobsService {
       pushes_deferred: 0,
       pushes_blocked: 0,
       pushes_failed: 0,
+      push_runs_purged: 0,
+      share_cards_purged: 0,
     };
 
     if (pick('subscriptions_downgrade')) {
@@ -207,6 +226,12 @@ export class JobsService {
         result.pushes_blocked = push.blocked;
         result.pushes_failed = push.failed;
       }
+    }
+
+    if (pick('push_share_retention')) {
+      const purged = await this.cleanupPushAndShare();
+      result.push_runs_purged = purged.pushRuns;
+      result.share_cards_purged = purged.shareCards;
     }
 
     if (pick('pdn_retention_cleanup')) {
@@ -347,6 +372,55 @@ export class JobsService {
    *
    * Повторный запуск идемпотентен: удалённых пользователей он уже не находит.
    */
+  /**
+   * Чистка журналов рассылки и карточек шеринга (1.6.14, долг 8.5).
+   *
+   * Почему отдельная работа, а не часть `pdn_retention_cleanup`: у ПДн-чистки
+   * есть юридический смысл и свой отчёт «сколько аккаунтов удалено». Смешивать
+   * с ней удаление агрегатов значило бы потерять оба числа в одном.
+   *
+   * Что удаляется:
+   *   • `push_runs` старше 30 дней — 1440 строк в сутки, и ни один маршрут их
+   *     не читает (последняя строка нужна `/health`, сутки — метрикам);
+   *   • `share_cards` старше 30 дней **без** `last_opened_at`: карточку, которую
+   *     хоть раз открыли по ссылке `sh_`, не удаляем никогда — она живёт в
+   *     чужой переписке, и «почистить по возрасту» значит сломать чужой пост.
+   *     Файл карточки удаляет обычная чистка хранилища по `storage_key`.
+   *
+   * Идемпотентно: повторный запуск удаляет только то, что успело состариться.
+   */
+  private async cleanupPushAndShare(): Promise<{ pushRuns: number; shareCards: number }> {
+    return this.db.withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock($1)', [RETENTION_LOCK]);
+
+      const runs = await client.query(
+        `DELETE FROM push_runs
+          WHERE started_at < now() - make_interval(days => $1::int)`,
+        [PUSH_AND_SHARE_RETENTION_DAYS],
+      );
+
+      const cards = await client.query(
+        `DELETE FROM share_cards
+          WHERE created_at < now() - make_interval(days => $1::int)
+            AND last_opened_at IS NULL`,
+        [PUSH_AND_SHARE_RETENTION_DAYS],
+      );
+
+      const pushRuns = runs.rowCount ?? 0;
+      const shareCards = cards.rowCount ?? 0;
+
+      if (pushRuns > 0 || shareCards > 0) {
+        this.logger.info('push_share_retention', {
+          push_runs_purged: pushRuns,
+          share_cards_purged: shareCards,
+          retention_days: PUSH_AND_SHARE_RETENTION_DAYS,
+        });
+      }
+
+      return { pushRuns, shareCards };
+    });
+  }
+
   private async cleanupPdn(): Promise<{ users: number; compatPartners: number }> {
     const deleted = await this.db.withTransaction(async (client) => {
       // Ключ блокировки — произвольная константа: важно, что она одна на джоб.

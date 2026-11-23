@@ -11,6 +11,7 @@ import { AstroClient, type AstroChartData } from '../astro/astro.client';
 import { LLM_PROVIDER } from '../llm/llm.module';
 import { LlmError, type LlmMessage, type LlmProvider, type LlmResponse } from '../llm/llm.client';
 import { UsersRepository } from '../users/users.repository';
+import { AccessService } from '../entitlements/access.service';
 import { breakerState, BREAKER_THRESHOLD, type BreakerState } from '../reports/breaker';
 import type { FailureCode } from '../reports/failure-codes';
 import { MAX_ATTEMPTS, RAW_EXCERPT_LENGTH } from '../reports/reports.service';
@@ -267,6 +268,7 @@ export class CompatService {
   constructor(
     @Inject(CompatRepository) private readonly repo: CompatRepository,
     @Inject(DbService) private readonly db: DbService,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(AstroClient) private readonly astro: AstroClient,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
@@ -310,7 +312,9 @@ export class CompatService {
     }
 
     const partner = this.partnerInput(input);
-    const subscription = await this.repo.subscription(userId);
+    // Период доступа — из `hasAccess`-слоя (1.6.14), а не из `subscriptions`
+    // напрямую: совместимость открывает и подписка, и право «всё включено».
+    const accessPeriod = await this.access.accessPeriod(userId);
     const lastReadyAt = await this.repo.lastReadyAt(userId);
 
     // Проверка квоты и создание заказа — в одной транзакции. Иначе два
@@ -328,35 +332,37 @@ export class CompatService {
         });
       }
 
-      if (credit === null) {
-        const quota = quotaOf({
-          purchaseCredit: false,
-          subscription:
-            subscription === null
-              ? null
-              : { startedAt: subscription.created_at, expiresAt: subscription.expires_at },
-          lastReadyAt,
-        });
+      // Окно подписки и покупка считаются здесь, а подаренное право — только
+      // если окно закрыто: иначе подписчик с подарком терял бы подарок на
+      // первом же заказе по подписке. Право гасится в этой же транзакции, что
+      // и создание заказа, — двойной тап не даёт двух совместимостей.
+      const quota = quotaOf({
+        purchaseCredit: credit !== null,
+        subscription: accessPeriod,
+        lastReadyAt,
+      });
 
-        if (quota.kind === 'none') {
-          throw new ApiError('PAYMENT_REQUIRED', 402, {
-            message: 'Совместимость — отдельная покупка или подписка',
+      const grantCredit =
+        quota.left === 0 ? await this.access.consumeSingleCompat(userId) : false;
+
+      if (quota.kind === 'none' && !grantCredit) {
+        throw new ApiError('PAYMENT_REQUIRED', 402, {
+          message: 'Совместимость — отдельная покупка или подписка',
+          reason: 'compat_not_paid',
+          details: {
             reason: 'compat_not_paid',
-            details: {
-              reason: 'compat_not_paid',
-              field_errors: [{ field: 'chart_id', message: 'Нет права на совместимость' }],
-            },
-          });
-        }
+            field_errors: [{ field: 'chart_id', message: 'Нет права на совместимость' }],
+          },
+        });
+      }
 
-        if (quota.left === 0) {
-          throw compatRefused({
-            reason: 'compat_quota_exhausted',
-            message: 'Совместимость по подписке уже собрана — следующая после сброса окна',
-            field: 'chart_id',
-            resetsAt: quota.resets_at,
-          });
-        }
+      if (quota.left === 0 && !grantCredit) {
+        throw compatRefused({
+          reason: 'compat_quota_exhausted',
+          message: 'Совместимость по подписке уже собрана — следующая после сброса окна',
+          field: 'chart_id',
+          resetsAt: quota.resets_at,
+        });
       }
 
       const partnerId = await this.repo.createPartner(client, userId, partner);
@@ -411,18 +417,20 @@ export class CompatService {
     const rows = await this.repo.listForUser(userId, size, skip);
     const total = await this.repo.countForUser(userId);
 
-    const [credit, subscription, lastReadyAt] = await Promise.all([
+    const [credit, accessPeriod, lastReadyAt, singleCompat] = await Promise.all([
       this.repo.hasActivePurchase(userId),
-      this.repo.subscription(userId),
+      this.access.accessPeriod(userId),
       this.repo.lastReadyAt(userId),
+      this.access.singleCompatLeft(userId),
     ]);
 
     const quota = quotaOf({
-      purchaseCredit: credit,
-      subscription:
-        subscription === null
-          ? null
-          : { startedAt: subscription.created_at, expiresAt: subscription.expires_at },
+      // Разовая покупка и подаренное право — один и тот же «кредит» для
+      // экрана: оба не сгорают. Подписка/право «всё включено» идут отдельной
+      // веткой окна, иначе подписчик видел бы `kind: purchase` и «сброса» не
+      // было бы видно.
+      purchaseCredit: credit || singleCompat > 0,
+      subscription: accessPeriod,
       lastReadyAt,
     });
 

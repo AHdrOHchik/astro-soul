@@ -89,4 +89,9 @@ export const PROBLEM_CODES = [
   'INTERNAL',
   'UPSTREAM_LLM',
   'GEO_NOT_FOUND',
+  // 1.6.14: код доступа просрочен (410) и месячный бюджет бесплатного доступа
+  // исчерпан (503). Оба — новые коды, поэтому в `PROBLEM_CODES` они нужны:
+  // тест полноты словаря текстов иначе не увидит их вовсе.
+  'GONE',
+  'BONUS_BUDGET_EXHAUSTED',
 ] as const satisfies readonly ProblemCode[];

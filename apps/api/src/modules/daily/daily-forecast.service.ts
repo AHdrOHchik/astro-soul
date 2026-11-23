@@ -6,6 +6,7 @@ import { ApiError, conflict, notFound, validationFailed } from '../../common/api
 import { JsonLogger } from '../../common/logger';
 import { AstroClient, type AstroDayFacts } from '../astro/astro.client';
 import { ChartsRepository } from '../charts/charts.repository';
+import { AccessService } from '../entitlements/access.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
 import { LLM_PROVIDER } from '../llm/llm.module';
@@ -71,6 +72,7 @@ export class DailyForecastService {
     @Inject(AstroClient) private readonly astro: AstroClient,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -137,10 +139,14 @@ export class DailyForecastService {
       return 'subscription';
     }
 
-    // Доступ решает entitlements, а не поле `plan` в этом сервисе: гейт стоит
-    // на «подписка действует», а что именно она даёт — вопрос каталога планов.
-    const entitlements = await this.entitlements.getEntitlements(userId);
-    return entitlements.isActive ? 'subscription' : 'facts_only';
+    // Доступ решает `hasAccess` (1.6.14), а не поле `plan` в этом сервисе: гейт
+    // стоит на «полный прогноз доступен», и источник доступа — подписка,
+    // разовая покупка или грант — этому сервису знать не нужно. Значение
+    // `'subscription'` в контракте означает «полный прогноз открыт», а не
+    // «человек платит»: иначе бесплатный доступ по праву показывал бы
+    // бесплатную версию человеку, у которого открыто всё.
+    const allowed = await this.access.hasAccess(userId, 'full_forecast');
+    return allowed ? 'subscription' : 'facts_only';
   }
 
   /**

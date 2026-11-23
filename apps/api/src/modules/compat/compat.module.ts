@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
 import { AstroModule } from '../astro/astro.module';
+import { AccessService } from '../entitlements/access.service';
+import { EntitlementsService } from '../entitlements/entitlements.service';
+import { GrantsDataModule } from '../grants/grants-data.module';
+import { PlansModule } from '../billing/plans.module';
 import { LlmModule } from '../llm/llm.module';
 import { UsersRepository } from '../users/users.repository';
 import { CompatController } from './compat.controller';
@@ -16,9 +20,16 @@ import { CompatService } from './compat.service';
  * сайдкара.
  */
 @Module({
-  imports: [LlmModule, AstroModule],
+  // `PlansModule` — ради `EntitlementsService`: он читает права плана из `plans`.
+  imports: [LlmModule, AstroModule, GrantsDataModule, PlansModule],
   controllers: [CompatController],
-  providers: [CompatService, CompatRepository, UsersRepository],
+  providers: [
+    CompatService,
+    CompatRepository,
+    UsersRepository,
+    EntitlementsService,
+    AccessService,
+  ],
   exports: [CompatService, CompatRepository],
 })
 export class CompatModule {}

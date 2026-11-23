@@ -5,6 +5,7 @@ import type { AppEnv } from '../../config/env';
 import { breakerState, validationStreak, type ReportHistoryRow } from '../reports/breaker';
 import { TelegramWebhookService } from '../telegram/telegram-webhook.service';
 import { EngagementRepository } from '../engagement/engagement.repository';
+import { BonusBudgetService } from '../grants/bonus-budget.service';
 
 /**
  * Метрики продукта (`GET /admin/metrics`, контракт 1.4.0).
@@ -245,6 +246,41 @@ export interface ProductMetrics {
   readonly push_skipped_no_tz_24h: number;
   /** Сколько раз уникальный ключ `push_log` предотвратил второй пуш за сутки. */
   readonly push_duplicate_prevented_24h: number;
+  /**
+   * Заявка в `push_log` была, отправки не было (1.6.14, долг 8.5).
+   *
+   * Строка создана до отправки (чтобы не отправить дважды), `error` пуст, но
+   * `sent = false` — процесс умер между заявкой и вызовом Bot API. Ни
+   * исключения, ни ошибки в журнале: без этого счётчика тихая потеря пушей
+   * видна только по жалобам «а мне не пришло».
+   */
+  readonly push_claimed_not_sent_24h: number;
+  /** Действующих прав доступа сейчас (подписка-грант, одноразовые — все). */
+  readonly grants_active: number;
+  /** Выдано прав за сутки — по источникам (`partner`, `founder`, `referral`, `admin`). */
+  readonly grants_issued_24h: Readonly<Record<string, number>>;
+  /**
+   * Оценка упущенной выручки за сутки, рубли.
+   *
+   * Считается по каталогу: подаренные дни «всё включено» × месячная цена / 30,
+   * выданные одноразовые права × их цена. Это **не** бухгалтерия: звёзды
+   * пересчитаны в рубли по курсу из окружения (`STAR_RATE_RUB`), а не по
+   * фактической выручке. Число нужно для одного вопроса: «сколько стоит акция
+   * в месяц» — и оно должно быть сопоставимо с `BONUS_BUDGET_RUB`.
+   */
+  readonly grants_revenue_lost_rub_24h: number;
+  /** Активаций кодов за сутки. */
+  readonly codes_activated_24h: number;
+  /** Пришло по приглашениям за сутки. */
+  readonly referrals_joined_24h: number;
+  /** Наград за приглашения начислено за сутки. */
+  readonly referrals_rewarded_24h: number;
+  /** Сколько мест основателей занято (из 50). */
+  readonly founders_taken: number;
+  /** Потрачено бюджета бесплатного доступа в этом месяце, рубли (1.6.14). */
+  readonly bonus_budget_spent_rub: number;
+  /** Лимит того же бюджета, рубли — из окружения (`BONUS_BUDGET_RUB`). */
+  readonly bonus_budget_limit_rub: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -277,7 +313,102 @@ export class AdminMetricsService {
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(TelegramWebhookService) private readonly webhook: TelegramWebhookService,
     @Inject(EngagementRepository) private readonly engagement: EngagementRepository,
+    @Inject(BonusBudgetService) private readonly bonusBudget: BonusBudgetService,
   ) {}
+
+  /**
+   * Метрики бесплатного доступа (1.6.14) — одним запросом.
+   *
+   * `revenue_lost` считается здесь, а не в SQL: формула зависит от
+   * `STAR_RATE_RUB` из окружения, и держать её в одном месте с остальными
+   * метриками честнее, чем в подзапросе, который никто не найдёт.
+   */
+  private async grantMetrics(): Promise<{
+    readonly active: number;
+    readonly issuedBySource: Readonly<Record<string, number>>;
+    readonly revenueLost: number;
+    readonly codesActivated: number;
+    readonly referralsJoined: number;
+    readonly referralsRewarded: number;
+    readonly foundersTaken: number;
+    readonly daysGranted: number;
+    readonly reportsGranted: number;
+    readonly compatsGranted: number;
+  }> {
+    const row = await this.db.queryOne<{
+      active: number;
+      by_source: Record<string, number> | null;
+      days_granted: number;
+      reports_granted: number;
+      compats_granted: number;
+      codes_activated: number;
+      referrals_joined: number;
+      referrals_rewarded: number;
+      founders_taken: number;
+    }>(
+      `SELECT
+         (SELECT count(*)::int FROM grants
+           WHERE revoked_at IS NULL
+             AND ((kind = 'all_access' AND expires_at > now())
+               OR (kind <> 'all_access' AND consumed_at IS NULL))) AS active,
+         (SELECT COALESCE(jsonb_object_agg(source, total), '{}'::jsonb)
+            FROM (SELECT source, count(*)::int AS total
+                    FROM grants
+                   WHERE created_at >= now() - interval '24 hours'
+                   GROUP BY source) AS by_source) AS by_source,
+         (SELECT COALESCE(SUM(days), 0)::int FROM grants
+           WHERE kind = 'all_access' AND revoked_at IS NULL
+             AND created_at >= now() - interval '24 hours') AS days_granted,
+         (SELECT count(*)::int FROM grants
+           WHERE kind = 'single_report' AND revoked_at IS NULL
+             AND created_at >= now() - interval '24 hours') AS reports_granted,
+         (SELECT count(*)::int FROM grants
+           WHERE kind = 'single_compat' AND revoked_at IS NULL
+             AND created_at >= now() - interval '24 hours') AS compats_granted,
+         (SELECT count(*)::int FROM access_code_activations
+           WHERE activated_at >= now() - interval '24 hours') AS codes_activated,
+         (SELECT count(*)::int FROM referrals
+           WHERE joined_at >= now() - interval '24 hours') AS referrals_joined,
+         (SELECT count(*)::int FROM referrals
+           WHERE rewarded_at >= now() - interval '24 hours') AS referrals_rewarded,
+         (SELECT count(*)::int FROM founders) AS founders_taken`,
+    );
+
+    const daysGranted = row?.days_granted ?? 0;
+    const reportsGranted = row?.reports_granted ?? 0;
+    const compatsGranted = row?.compats_granted ?? 0;
+
+    // Цены берём из каталога, а не из констант: метрика обязана меняться вместе
+    // с ценой, иначе «потеряли 7 500 ₽» переживёт правку прайса.
+    const prices = await this.db.queryOne<{ month: string | null; report: string | null; compat: string | null }>(
+      `SELECT (SELECT stars::text FROM plans WHERE code = 'month_399') AS month,
+              (SELECT stars::text FROM plans WHERE code = 'one_149') AS report,
+              (SELECT stars::text FROM plans WHERE code = 'compat_249') AS compat`,
+    );
+
+    const rate = this.env.STAR_RATE_RUB;
+    const monthStars = Number(prices?.month ?? '0');
+    const reportStars = Number(prices?.report ?? '0');
+    const compatStars = Number(prices?.compat ?? '0');
+
+    // День «всё включено» по цене каталога: месяц / 30. Одноразовые права —
+    // поштучно по своей цене. Всё умножается на курс звезды.
+    const lostStars =
+      (daysGranted * monthStars) / 30 + reportsGranted * reportStars + compatsGranted * compatStars;
+
+    return {
+      active: row?.active ?? 0,
+      issuedBySource: row?.by_source ?? {},
+      revenueLost: Math.round(lostStars * rate * 100) / 100,
+      codesActivated: row?.codes_activated ?? 0,
+      referralsJoined: row?.referrals_joined ?? 0,
+      referralsRewarded: row?.referrals_rewarded ?? 0,
+      foundersTaken: row?.founders_taken ?? 0,
+      daysGranted,
+      reportsGranted,
+      compatsGranted,
+    };
+  }
 
   async getMetrics(): Promise<ProductMetrics> {
     const [
@@ -299,6 +430,7 @@ export class AdminMetricsService {
       pushLog,
       pushRuns,
       pushNoTz,
+      grants,
     ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -608,6 +740,10 @@ export class AdminMetricsService {
         this.engagement.pushLogTotals24h(),
         this.engagement.pushRunTotals24h(),
         this.engagement.countPushNoTz(),
+        // Бесплатный доступ по праву (итерация 39). Один запрос на все семь
+        // чисел: они читают одни и те же таблицы, а семь запросов в
+        // `/admin/metrics` — это семь шансов на медленный ответ.
+        this.grantMetrics(),
       ]);
 
     const eventsByName: Record<string, number> = {};
@@ -635,6 +771,11 @@ export class AdminMetricsService {
     // Вебхук — не из БД, а из последней проверки при старте API: в промис-пул
     // не кладём, чтобы не смешивать запросы и состояние процесса.
     const webhook = this.webhook.health();
+
+    // Бюджет бесплатного доступа (1.6.14) — отдельный вызов, потому что его же
+    // читают `/health` и `AlertsService`: расчёт живёт в `BonusBudgetService`, а
+    // не в трёх SQL-копиях.
+    const budget = await this.bonusBudget.state();
 
     const compatSeries = validationStreak(compatHistory);
     const compatBreaker = breakerState(compatSeries.streak, compatSeries.lastFailedAt);
@@ -709,6 +850,19 @@ export class AdminMetricsService {
       push_failed_24h: pushLog.failed,
       push_skipped_no_tz_24h: pushNoTz,
       push_duplicate_prevented_24h: pushRuns.duplicatePrevented,
+      push_claimed_not_sent_24h: pushLog.claimedNotSent,
+      grants_active: grants.active,
+      grants_issued_24h: grants.issuedBySource,
+      grants_revenue_lost_rub_24h: grants.revenueLost,
+      codes_activated_24h: grants.codesActivated,
+      referrals_joined_24h: grants.referralsJoined,
+      referrals_rewarded_24h: grants.referralsRewarded,
+      founders_taken: grants.foundersTaken,
+      // Бюджет бесплатного доступа — тем же числом, что в `/health` и в алерте:
+      // один расчёт на три места, иначе «исчерпан» в `/health` и в алерте
+      // разойдётся на границе месяца.
+      bonus_budget_spent_rub: budget.spent_rub,
+      bonus_budget_limit_rub: budget.limit_rub,
       share_cards_created_24h: SHARE_CARD_KINDS.reduce<Record<string, number>>(
         (totals, kind) => {
           totals[kind] = shareCards.find((row) => row.kind === kind)?.total ?? 0;

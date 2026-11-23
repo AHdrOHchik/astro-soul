@@ -1,6 +1,6 @@
 import {
-  MOON_ADVICE,
-  MOON_ADVICE_FALLBACK,
+  MOON_GOOD_FOR,
+  MOON_GOOD_FOR_FALLBACK,
   MOON_PHASES,
   type MoonPhaseLabel,
 } from '../share/share.service';
@@ -137,9 +137,14 @@ export function pushLine(sign: string, phase: string): string {
 }
 
 function adviceFor(phase: string): string {
-  // Та же запасная строка, что у карточки `moon`: незнакомая фаза не должна
-  // появляться в пуше выдумкой.
-  return (MOON_ADVICE as Readonly<Record<string, string>>)[phase] ?? MOON_ADVICE_FALLBACK;
+  // 1.6.14 (долг 8.5): в пуше — **позитивная** фраза, а не «не начинай».
+  // `MOON_ADVICE` остаётся карточке `moon`: там человек сам открыл текст и ждёт
+  // предостережения. Позитивная фраза выбирается каждый день (открытый вопрос
+  // владельца закрыт по умолчанию в пользу «каждый день»), а не по чётности
+  // даты: чередование делает текст непредсказуемым.
+  return (
+    (MOON_GOOD_FOR as Readonly<Record<string, string>>)[phase] ?? MOON_GOOD_FOR_FALLBACK
+  );
 }
 
 function firstSentenceOf(text: string): string {
@@ -172,3 +177,37 @@ export function buildPushMessage(input: PushTextInput): PushMessage {
 
 /** Фазы, для которых есть эмодзи и короткая подпись: ровно список сайдкара. */
 export const PUSH_PHASES: readonly MoonPhaseLabel[] = MOON_PHASES;
+
+/**
+ * Кэш текста на один прогон рассылки (1.6.14, долг 8.5).
+ *
+ * Пуш собирается из констант, но повторяется у десятков людей с одинаковой
+ * парой «знак + фаза» в один день: экранирование и обрезка строки считаются
+ * заново для каждого. Кэш живёт **ровно один прогон** и создаётся в `runPush`:
+ * между прогонами текст может измениться (правка констант, деплой), и
+ * переживать прогон он не должен.
+ *
+ * Ключ — `local_date | знак | фаза`: сутки в ключе не для «сегодня», а чтобы
+ * забытый кэш не отдал вчерашний текст вчерашней даты.
+ */
+export class PushTextCache {
+  private readonly cache = new Map<string, PushMessage>();
+
+  build(localDate: string, input: PushTextInput): PushMessage {
+    const key = `${localDate}|${input.sign}|${input.phase}`;
+    const cached = this.cache.get(key);
+
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const built = buildPushMessage(input);
+    this.cache.set(key, built);
+    return built;
+  }
+
+  /** Размер кэша — для теста и лога прогона. */
+  get size(): number {
+    return this.cache.size;
+  }
+}

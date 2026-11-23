@@ -23,7 +23,7 @@ import {
   PUSH_OFF_CALLBACK,
   PUSH_OFF_TEXT,
   PUSH_OPEN_TEXT,
-  buildPushMessage,
+  PushTextCache,
 } from './push-message';
 import type { PushButton } from '../telegram/telegram.client';
 import { NIGHTLY_HOUR, WINDOW_MINUTES, localParts } from './local-time';
@@ -83,6 +83,12 @@ interface PushTiming {
   readonly sleep: (ms: number) => Promise<void>;
   readonly retryDelayMs: number;
   readonly now: () => Date;
+  /**
+   * Кэш текста на прогон (1.6.14, долг 8.5): одинаковые «знак + фаза» в один
+   * день дают одинаковый текст, и собирать его заново для каждого человека
+   * незачем. Живёт ровно один прогон.
+   */
+  readonly textCache: PushTextCache;
 }
 
 /** Повтор после «прочих» ошибок — ровно один, дальше до следующего дня. */
@@ -572,6 +578,11 @@ export class EngagementService {
     const windowStart = this.env.PUSH_SEND_HOUR * 60;
     const windowEnd = windowStart + this.env.PUSH_WINDOW_MINUTES - 1;
 
+    // Кэш текста создаётся здесь, а не в поле сервиса: между прогонами текст
+    // может измениться (правка констант, деплой), и переживать прогон он не
+    // должен.
+    const textCache = new PushTextCache();
+
     const skippedNoTz = await this.repo.countPushNoTz();
     const skippedSeen = await this.repo.countPushSeen(at, windowStart, windowEnd);
 
@@ -606,6 +617,7 @@ export class EngagementService {
           sleep,
           retryDelayMs,
           now,
+          textCache,
         });
 
         if (outcome === 'sent') {
@@ -699,7 +711,10 @@ export class EngagementService {
         recipient.tz,
         recipient.data as AstroChartData,
       );
-      const message = buildPushMessage({ sign: facts.moon.sign, phase: facts.moon.phase });
+      const message = options.textCache.build(recipient.local_date, {
+        sign: facts.moon.sign,
+        phase: facts.moon.phase,
+      });
 
       if (message.visibleLength > PUSH_MAX_CHARS) {
         // Такого быть не должно (тест перебирает все 96 комбинаций), но лучше

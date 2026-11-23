@@ -50,12 +50,6 @@ export interface CompatPartnerRow extends CompatPartnerInput {
   readonly created_at: Date;
 }
 
-export interface SubscriptionRow {
-  readonly plan: 'trial' | 'week' | 'month' | 'year';
-  readonly created_at: Date;
-  readonly expires_at: Date;
-}
-
 const COLUMNS = `r.id, r.chart_id, r.user_id, r.status::text AS status, r.chapters AS sections,
   r.error_code, r.llm_cost_rub, r.model, r.prompt_version, r.created_at, r.updated_at,
   r.finished_at, p.relationship, r.compat_facts, r.validation, r.normalization,
@@ -168,13 +162,10 @@ export class CompatRepository {
     return row !== null;
   }
 
-  async subscription(userId: string): Promise<SubscriptionRow | null> {
-    return this.db.queryOne<SubscriptionRow>(
-      `SELECT plan, created_at, expires_at FROM subscriptions
-        WHERE user_id = $1 AND status = 'active' AND expires_at > now()`,
-      [userId],
-    );
-  }
+  // `subscription(userId)` удалён в 1.6.14: период доступа теперь спрашивают у
+  // `AccessService.accessPeriod()`, потому что совместимость открывает не только
+  // подписка, но и право «всё включено». Прямой `SELECT FROM subscriptions` в
+  // этом модуле запрещён стражем `grants-access-guard.spec.ts`.
 
   /** Когда последняя готовая совместимость закончилась: вход скользящего окна. */
   async lastReadyAt(userId: string): Promise<Date | null> {
@@ -476,6 +467,23 @@ export class CompatRepository {
       [now],
     );
 
-    return Number(purchases?.count ?? '0') + Number(subscriptions?.count ?? '0');
+    // Итерация 39: право «всё включено» даёт ту же «одну в 30 дней», что и
+    // подписка, а подаренное одноразовое право — ту же покупку. Без этих двух
+    // строк метрика `compat_credits_left` занижала бы предложение: человек с
+    // правом видит открытую кнопку, а метрика — ноль.
+    const grants = await this.db.queryOne<{ count: string }>(
+      `SELECT count(*)::text AS count FROM grants
+        WHERE revoked_at IS NULL
+          AND (
+            (kind = 'all_access' AND starts_at IS NOT NULL AND expires_at > now())
+            OR (kind = 'single_compat' AND consumed_at IS NULL)
+          )`,
+    );
+
+    return (
+      Number(purchases?.count ?? '0') +
+      Number(subscriptions?.count ?? '0') +
+      Number(grants?.count ?? '0')
+    );
   }
 }

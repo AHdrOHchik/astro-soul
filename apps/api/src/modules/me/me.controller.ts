@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Inject, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Inject, Post, Query } from '@nestjs/common';
 import type { Me, Notifications } from '@astro-soul/shared';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { VerifiedInitData } from '../auth/init-data';
@@ -8,9 +8,17 @@ import { MeService } from './me.service';
 export class MeController {
   constructor(@Inject(MeService) private readonly meService: MeService) {}
 
+  /**
+   * `GET /me` (контракт 1.6.14) — параметр `start` несёт `pt_<code>` или
+   * `ref_<short>`: Telegram отдаёт его мини-аппу, а бот — текстом. Всё
+   * остальное игнорируется, поэтому незнакомый `start` не роняет `/me`.
+   */
   @Get()
-  async getMe(@CurrentUser() auth: VerifiedInitData): Promise<Me> {
-    return this.meService.getMe(auth);
+  async getMe(
+    @CurrentUser() auth: VerifiedInitData,
+    @Query('start') start?: string,
+  ): Promise<Me> {
+    return this.meService.getMe(auth, start === undefined ? {} : { start });
   }
 
   /**
