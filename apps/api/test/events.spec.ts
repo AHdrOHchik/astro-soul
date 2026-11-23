@@ -135,9 +135,9 @@ describe('POST /api/v1/events', () => {
       .expect(401);
   });
 
-  it('список событий в коде совпадает с контрактом 1.6.9: 38 штук без дублей', () => {
-    expect(ANALYTICS_EVENTS).toHaveLength(38);
-    expect(new Set(ANALYTICS_EVENTS).size).toBe(38);
+  it('список событий в коде совпадает с контрактом 1.6.12: 39 штук без дублей', () => {
+    expect(ANALYTICS_EVENTS).toHaveLength(39);
+    expect(new Set(ANALYTICS_EVENTS).size).toBe(39);
     // QA: `validation_failed_client` теперь в контракте, и сервер его принимает.
     expect(ANALYTICS_EVENTS).toContain('validation_failed_client');
     // 1.6.9: `share_sent` — клиентское событие («человек отправил»), а
@@ -173,7 +173,7 @@ describe('POST /api/v1/events', () => {
 
     expect(response.body.code).toBe('VALIDATION_FAILED');
     expect(response.body.details.field_errors).toEqual([
-      { field: 'events.props.kind', message: 'Вид карточки — day, wheel или insight' },
+      { field: 'events.props.kind', message: 'Вид карточки — day, wheel, insight, identity или moon' },
     ]);
 
     const rows = await ctx.db.query('SELECT 1 FROM events');

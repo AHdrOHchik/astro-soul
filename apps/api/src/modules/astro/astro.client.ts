@@ -68,12 +68,42 @@ export interface PdfBuildResponse {
 
 /** Вход `POST /card/build`: строки уже проверены API. */
 export interface CardBuildRequest {
-  readonly kind: 'day' | 'wheel' | 'insight';
+  readonly kind: 'day' | 'wheel' | 'insight' | 'identity' | 'moon';
   readonly title: string;
   readonly lines: readonly string[];
   readonly footer: string | null;
   readonly wheel_png_base64: string | null;
   readonly moon_illumination: number | null;
+  /** Имя продукта — элемент шаблона сторис (итерация 37). Для `wheel`/`insight` — `null`. */
+  readonly brand_name?: string | null;
+  /** Подсказка для поиска в нижней безопасной зоне. */
+  readonly brand_hint?: string | null;
+  /** Дисклеймер: тот же текст, что у прогноза, но внутри картинки. */
+  readonly disclaimer?: string | null;
+  /** Приглашение внизу карточки `identity` («Узнал себя? …»). */
+  readonly prompt?: string | null;
+}
+
+/**
+ * `POST /moon/facts` (итерация 37): Луна на полдень дня без натальной карты.
+ *
+ * Отдельный тип, а не `AstroDayFacts`: у этого ответа нет ни транзитов, ни
+ * окон, и делать вид, что они «могут быть», значит скрыть разницу между
+ * персональным расчётом и вирусным входом.
+ */
+export interface AstroMoonFacts {
+  readonly date: string;
+  readonly timezone: string;
+  readonly engine_version: string;
+  readonly noon_utc: string;
+  readonly moon: {
+    readonly sign: string;
+    readonly degree: number;
+    readonly minute: number;
+    readonly phase: string;
+    readonly illumination: number;
+    readonly retrograde: boolean;
+  };
 }
 
 export interface CardBuildResponse {
@@ -167,6 +197,17 @@ export class AstroClient {
       timezone,
       data: { chart: data.chart, internal: data.internal, omitted_planets: data.omitted_planets },
     });
+  }
+
+  /**
+   * `POST /moon/facts` — знак, фаза и освещённость Луны на полдень дня.
+   *
+   * Лёгкий путь: карты нет вовсе, поэтому он годится для человека без профиля.
+   * Тяжёлый `POST /forecast/facts` здесь не переиспользуется — он требует
+   * натальных данных ради транзитов, которых на карточке «фаза Луны» нет.
+   */
+  async moonFacts(date: string, timezone: string): Promise<AstroMoonFacts> {
+    return this.post<AstroMoonFacts>('/moon/facts', { date, timezone });
   }
 
   async wheelSvg(data: AstroChartData, theme: WheelTheme, size = 560): Promise<string> {

@@ -701,11 +701,15 @@ export interface paths {
          *     * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
          *       рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
          *       события отбрасываются на сервере и в БД не попадают;
-         *     * у `share_sent` (1.6.9) `props` закрыты: `{kind, channel}` со
-         *       значениями из `x-event-strict-props`. Неизвестное значение или
-         *       отсутствующее поле — `422` с `field_errors[{field:
-         *       "events.props.<ключ>"}]`, лишние ключи вырезаются. Остальные события
-         *       принимают свободные `props`;
+         *     * у `share_sent` (1.6.9) `props` закрыты: `{kind, channel}`, у
+         *       `share_saved` (1.6.12) — `{kind, target}`; значения — из
+         *       `x-event-strict-props`. Неизвестное значение или отсутствующее поле —
+         *       `422` с `field_errors[{field: "events.props.<ключ>"}]`, лишние ключи
+         *       вырезаются. Остальные события принимают свободные `props`;
+         *     * `share_saved` — «карточка сохранилась»: `target: "gallery"` (в
+         *       галерею устройства) или `"telegram_story"` (в Telegram-сторис). Без
+         *       этого события не видно, дошла ли карточка до Instagram вообще:
+         *       отправку в чужую ленту сервер не видит;
          *     * имя события — только из `x-analytics-events`: произвольное имя не
          *       принимается (`422`, весь батч), иначе аналитика стала бы свалкой;
          *     * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
@@ -1096,14 +1100,33 @@ export interface paths {
          * @description Отдаёт готовую картинку для чата: `{url, share_url, expires_at, caption}`.
          *
          *     Виды (`ShareCardKind`):
-         *       • `day` — 1080×1920: знак Луны, фаза, освещённость, строка «сегодня
-         *         хорошо для…» из `summary` прогноза, дата. Доступен **всем**, у кого
-         *         есть карта, включая бесплатный режим: это вирусный вход;
-         *       • `wheel` — 1080×1920: колесо карты. Ни даты, ни времени, ни места
-         *         рождения — ни на картинке, ни в метаданных PNG;
-         *       • `insight` — 1080×1080: 2–3 предложения из главы «Ядро» **оплаченного**
-         *         разбора, без астрономических терминов. Нет оплаченного разбора —
-         *         `403 report_not_paid`.
+         *       • `day` — 1080×1920, шаблон сторис: знак Луны, фаза, освещённость,
+         *         строка «сегодня хорошо для…» из `summary` прогноза, дата. Нужна
+         *         карта, подписка не нужна;
+         *       • `identity` — 1080×1920, шаблон сторис: три фразы о поведении из
+         *         главы «Ядро» **оплаченного** разбора и приглашение внизу. Меньше
+         *         трёх подходящих фраз — `422 not_enough_identity_lines` (это
+         *         нормальный ответ, а не сбой); нет оплаченного разбора —
+         *         `403 report_not_paid`;
+         *       • `moon` — 1080×1920, шаблон сторис: знак, фаза, освещённость, дата,
+         *         строка «чего лучше не начинать» по фазе. **Карта и подписка не
+         *         нужны**: знак и фаза считаются на полдень дня в поясе из `tz`
+         *         (или в поясе последней карты, иначе UTC) — без натальных транзитов,
+         *         поэтому карточка доступна человеку без профиля;
+         *       • `wheel` — 1080×1920, старая вёрстка: колесо карты. Ни даты, ни
+         *         времени, ни места рождения — ни на картинке, ни в метаданных PNG;
+         *       • `insight` — 1080×1080, старая вёрстка: 2–3 предложения из главы
+         *         «Ядро» **оплаченного** разбора, без астрономических терминов.
+         *
+         *     **Шаблон сторис (1.6.12).** У `day`, `identity` и `moon` контент живёт
+         *     только в центральной полосе `y = 250…1670`: сверху и снизу интерфейс
+         *     Instagram перекрывает карточку. Внутри карточки всегда есть имя продукта
+         *     (`BRAND_NAME` сервера — не username бота), дисклеймер тем же текстом, что
+         *     у прогноза, и подсказка для поиска внизу. **Имя продукта не задано —
+         *     карточка не создаётся**: `503 brand_name_missing`, а не «Astro Soul по
+         *     умолчанию»: безымянная карточка в чужой ленте не находится.
+         *     Вёрстка версионируется: версия входит в ключ кэша, поэтому после смены
+         *     шаблона старые карточки из кэша не отдаются.
          *
          *     `caption` — одна готовая строка для `switchInlineQuery`; слова
          *     «астрология», «гороскоп», «предсказание» в ней не встречаются.
@@ -1138,6 +1161,14 @@ export interface paths {
                 content: {
                     "application/json": {
                         kind: components["schemas"]["ShareCardKind"];
+                        /**
+                         * @description Часовой пояс только для `moon` (1.6.12): «сегодня» считается
+                         *     по нему. Неизвестный пояс — `422` с
+                         *     `field_errors[{field: "tz"}]`. Не передан — берётся пояс
+                         *     последней карты человека, а если карты нет — UTC. Для
+                         *     остальных видов поле игнорируется.
+                         */
+                        tz?: string;
                     };
                 };
             };
@@ -1154,7 +1185,7 @@ export interface paths {
                 /**
                  * @description `details.reason`:
                  *       • `chart_required` — нет карты (`day`, `wheel`);
-                 *       • `report_not_paid` — `insight` без оплаченного разбора;
+                 *       • `report_not_paid` — `insight` или `identity` без оплаченного разбора;
                  *       • `insight_unavailable` — в разборе нет фразы без терминов.
                  */
                 403: {
@@ -1174,7 +1205,15 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description `kind` не из `ShareCardKind` */
+                /**
+                 * @description `details.reason`:
+                 *       • `share_kind_unknown` — `kind` не из `ShareCardKind`
+                 *         (`field_errors[{field: "kind"}]`);
+                 *       • `not_enough_identity_lines` — в «Ядре» меньше трёх коротких фраз
+                 *         о поведении, поэтому карточка `identity` не собирается;
+                 *       • `share_tz_unknown` — неизвестный `tz`
+                 *         (`field_errors[{field: "tz"}]`)
+                 */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -1183,7 +1222,12 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description Сайдкар не смог нарисовать карточку (`UPSTREAM`), повтори позже */
+                /**
+                 * @description `details.reason`:
+                 *       • `brand_name_missing` — на сервере не задано `BRAND_NAME`, и
+                 *         карточку-сторис нельзя подписать именем продукта;
+                 *       • `astro_unavailable` — сайдкар не ответил (`UPSTREAM`), повтори позже
+                 */
                 503: {
                     headers: {
                         [name: string]: unknown;
@@ -2618,6 +2662,24 @@ export interface paths {
                              *     `202`, — включая вызов модели.
                              */
                             question_p95_ms?: number;
+                            /**
+                             * @description Сколько карточек шеринга собрано за 24 часа — по видам
+                             *     (1.6.12): `day`, `wheel`, `insight`, `identity`, `moon`.
+                             *     Ключи есть всегда: ноль значит «не создавали», и это
+                             *     осмысленнее пропущенного ключа. Считается по
+                             *     `share_cards.created_at`, то есть по реальным сборкам:
+                             *     кэш-попадание новую строку не создаёт.
+                             * @example {
+                             *       "day": 12,
+                             *       "wheel": 3,
+                             *       "insight": 2,
+                             *       "identity": 5,
+                             *       "moon": 21
+                             *     }
+                             */
+                            share_cards_created_24h?: {
+                                [key: string]: number;
+                            };
                         };
                     };
                 };
@@ -3360,7 +3422,7 @@ export interface components {
              * @description Имя события из `x-analytics-events`
              * @enum {string}
              */
-            name: "app_open" | "onboarding_start" | "onboarding_birth_date_set" | "onboarding_time_set" | "onboarding_place_set" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "mini_reading_view" | "wheel_shared" | "validation_failed" | "validation_failed_client" | "paywall_view" | "checkout_started" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "report_requested" | "report_ready_view" | "forecast_view" | "ask_used" | "quota_exhausted" | "subscription_expired_seen" | "data_deleted" | "error_shown" | "screen_view" | "share_clicked" | "share_sent";
+            name: "app_open" | "onboarding_start" | "onboarding_birth_date_set" | "onboarding_time_set" | "onboarding_place_set" | "consent_view" | "consent_accepted" | "birth_date_done" | "birth_time_done" | "birth_place_done" | "step_back" | "place_search" | "place_search_empty" | "place_search_failed" | "chart_requested" | "chart_created" | "chart_failed" | "chart_restored" | "mini_reading_view" | "wheel_shared" | "validation_failed" | "validation_failed_client" | "paywall_view" | "checkout_started" | "checkout_opened" | "payment_succeeded" | "payment_cancelled" | "report_requested" | "report_ready_view" | "forecast_view" | "ask_used" | "quota_exhausted" | "subscription_expired_seen" | "data_deleted" | "error_shown" | "screen_view" | "share_clicked" | "share_sent" | "share_saved";
             /**
              * Format: date-time
              * @description Время события на устройстве (ISO 8601 с часовым поясом). Так поле
@@ -3379,8 +3441,10 @@ export interface components {
             chart_id?: string | null;
             /**
              * @description Идентификаторы, шаг, код ошибки. Строки до 64 символов.
-             *     У `share_sent` набор закрыт (`x-event-strict-props`):
-             *     `kind` (`day | wheel | insight`) и `channel` (`inline | link`).
+             *     У `share_sent` и `share_saved` набор закрыт
+             *     (`x-event-strict-props`): у первого `kind` (`day | wheel |
+             *     insight | identity | moon`) и `channel` (`inline | link`), у
+             *     второго `kind` и `target` (`gallery | telegram_story`).
              *     Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
              *     `city`, `query`, `date`, `time`, `lat`, `lon`, `tz`, `first_name`,
              *     `username`, `phone`, `email`) запрещены — такое событие отбрасывается.
@@ -3690,14 +3754,31 @@ export interface components {
             error?: string;
         };
         /**
-         * @description Вид карточки шеринга. `day` — карточка дня (знак Луны, фаза,
-         *     освещённость, строка «хорошо для…», дата), доступна всем; `wheel` —
-         *     колесо карты (нужна карта); `insight` — цитата из «Ядра» (нужен
-         *     оплаченный разбор). Общих карточек (`compat`) нет: данные партнёра без
-         *     его согласия не публикуются — такой `kind` даёт `404`.
+         * @description Вид карточки шеринга.
+         *
+         *     «Сторис» (1080×1920, общий шаблон с именем продукта, дисклеймером и
+         *     подсказкой для поиска в безопасной зоне `250…1670`):
+         *       • `day` — карточка дня: знак Луны, фаза, освещённость, строка
+         *         «сегодня хорошо для…», дата. Нужна карта, подписка не нужна;
+         *       • `identity` — «три вещи, которые правда про меня» (1.6.12): три
+         *         короткие фразы о поведении из главы «Ядро» **оплаченного** разбора и
+         *         приглашение «Узнал себя? Спроси, что про тебя». Модель не
+         *         вызывается: текст режется из готового разбора по правилам, поэтому
+         *         один и тот же разбор даёт одну и ту же карточку;
+         *       • `moon` — «фаза Луны» (1.6.12): знак, фаза, освещённость, дата и
+         *         строка «чего сегодня лучше не начинать» из констант по фазе.
+         *         **Карта и подписка не нужны** — это вирусный вход; авторизация
+         *         нужна (анонимного маршрута в интернет нет).
+         *
+         *     Старая вёрстка (в 1.6.12 не менялась):
+         *       • `wheel` — 1080×1920: колесо карты (нужна карта);
+         *       • `insight` — 1080×1080: цитата из «Ядра» (нужен оплаченный разбор).
+         *
+         *     Общих карточек (`compat`) нет: данные партнёра без его согласия не
+         *     публикуются — такой `kind` даёт `404`.
          * @enum {string}
          */
-        ShareCardKind: "day" | "wheel" | "insight";
+        ShareCardKind: "day" | "wheel" | "insight" | "identity" | "moon";
         /**
          * @description Готовая карточка: картинка по подписанной ссылке, постоянная ссылка в
          *     бота и подпись к ней.

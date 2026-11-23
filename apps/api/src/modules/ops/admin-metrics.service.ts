@@ -222,9 +222,24 @@ export interface ProductMetrics {
   readonly pdf_failed_24h: number;
   readonly pdf_cost_rub_24h: number;
   readonly pdf_build_p95_ms: number;
+  /**
+   * Сколько карточек шеринга собрано за сутки — по видам (итерация 37).
+   *
+   * По видам, а не одной цифрой: `day` и `wheel` — удержание (человек уже в
+   * приложении), `identity` — повод показать себя после оплаты, `moon` — вход в
+   * воронку без профиля. Одно число смешало бы три разных вопроса, и «карточек
+   * стало больше» читалось бы как успех, даже если весь рост — `moon`.
+   */
+  readonly share_cards_created_24h: Readonly<Record<string, number>>;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
+/**
+ * Виды карточек шеринга в порядке контракта. Список нужен метрике, чтобы
+ * «ноль по виду» был явным нулём, а не отсутствующим ключом.
+ */
+export const SHARE_CARD_KINDS = ['day', 'wheel', 'insight', 'identity', 'moon'] as const;
+
 export const FUNNEL_STEPS = [
   'app_open',
   'consent_accepted',
@@ -265,6 +280,7 @@ export class AdminMetricsService {
       telegramCancel,
       paymentHealth,
       daily,
+      shareCards,
     ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -557,6 +573,15 @@ export class AdminMetricsService {
                WHERE status = 'ready' AND build_ms IS NOT NULL
                  AND updated_at >= now() - interval '24 hours') AS "pdfBuildP95"`,
         ),
+        // Карточки шеринга по видам (итерация 37). Считаются по `share_cards`:
+        // строка там появляется только при реальной сборке, а кэш-попадание
+        // свою строку не создаёт — значит «собрано», а не «запрошено».
+        this.db.query<{ kind: string; total: number }>(
+          `SELECT kind, count(*)::int AS total
+             FROM share_cards
+            WHERE created_at >= now() - interval '24 hours'
+            GROUP BY kind`,
+        ),
       ]);
 
     const eventsByName: Record<string, number> = {};
@@ -652,6 +677,15 @@ export class AdminMetricsService {
       // Ноль — не «не посчитали», а факт: сборка PDF не тратит токенов.
       pdf_cost_rub_24h: 0,
       pdf_build_p95_ms: daily?.pdfBuildP95 ?? 0,
+      // Все пять видов в ответе всегда: ноль — это «не создавали», и он
+      // осмысленнее пропущенного ключа, по которому нельзя построить график.
+      share_cards_created_24h: SHARE_CARD_KINDS.reduce<Record<string, number>>(
+        (totals, kind) => {
+          totals[kind] = shareCards.find((row) => row.kind === kind)?.total ?? 0;
+          return totals;
+        },
+        {},
+      ),
     };
   }
 }

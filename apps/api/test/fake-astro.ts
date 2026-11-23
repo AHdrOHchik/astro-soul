@@ -3,6 +3,7 @@ import { ApiError } from '../src/common/api-error';
 import type {
   AstroChartData,
   AstroDayFacts,
+  AstroMoonFacts,
   CardBuildRequest,
   CardBuildResponse,
   PdfBuildRequest,
@@ -27,6 +28,51 @@ export interface FakeAstro {
   buildCard(input: CardBuildRequest): Promise<CardBuildResponse>;
   health(): Promise<'ok' | 'down'>;
   forecastFacts(date: string, timezone: string, data: AstroChartData): Promise<AstroDayFacts>;
+  moonFacts(date: string, timezone: string): Promise<AstroMoonFacts>;
+}
+
+/** Виды карточек на общем шаблоне сторис (1.6.12). */
+const STORIES_KINDS: readonly CardBuildRequest['kind'][] = ['day', 'identity', 'moon'];
+
+/** Знаки и фазы — те же подписи, что отдаёт `packages/astro` (`daily.PHASES`). */
+const FAKE_SIGNS = [
+  'Овен',
+  'Телец',
+  'Близнецы',
+  'Рак',
+  'Лев',
+  'Дева',
+  'Весы',
+  'Скорпион',
+  'Стрелец',
+  'Козерог',
+  'Водолей',
+  'Рыбы',
+] as const;
+
+const FAKE_PHASES = [
+  'новолуние',
+  'растущий серп',
+  'первая четверть',
+  'растущая Луна',
+  'полнолуние',
+  'убывающая Луна',
+  'последняя четверть',
+  'убывающий серп',
+] as const;
+
+/** Луна зависит от дня месяца — чтобы разные даты давали разные карточки. */
+function fakeMoon(date: string): AstroMoonFacts['moon'] {
+  const dayNumber = Number(date.slice(8, 10));
+
+  return {
+    sign: FAKE_SIGNS[dayNumber % 12] ?? 'Овен',
+    degree: dayNumber % 30,
+    minute: 44,
+    phase: FAKE_PHASES[dayNumber % 8] ?? 'новолуние',
+    illumination: 0.777,
+    retrograde: false,
+  };
 }
 
 export function makeFakeAstro(
@@ -140,6 +186,13 @@ export function makeFakeAstro(
         return Promise.reject(new ApiError('INTERNAL', 503, { reason: 'astro_unavailable' }));
       }
 
+      // Карточка-сторис обязана нести имя продукта: без него сервер до
+      // сайдкара не доходит, а подмена повторяет это правило, чтобы тест
+      // «пустой BRAND_NAME ⇒ 503» не проходил случайно.
+      if (STORIES_KINDS.includes(input.kind) && (input.brand_name ?? '') === '') {
+        return Promise.reject(new ApiError('INTERNAL', 400, { reason: 'brand_name_missing' }));
+      }
+
       const width = 1080;
       const height = input.kind === 'insight' ? 1080 : 1920;
       const png = Buffer.concat([
@@ -164,24 +217,13 @@ export function makeFakeAstro(
         return Promise.reject(new ApiError('INTERNAL', 503, { reason: 'astro_unavailable' }));
       }
 
-      const dayNumber = Number(date.slice(8, 10));
-      const signs = ['Овен', 'Телец', 'Близнецы', 'Рак', 'Лев', 'Дева', 'Весы', 'Скорпион', 'Стрелец', 'Козерог', 'Водолей', 'Рыбы'];
-      const phases = ['растущая', 'полная', 'убывающая', 'новолуние'];
-
       return Promise.resolve({
         date,
         timezone,
         timezone_note: 'часовой пояс места рождения',
         engine_version: '1.1.0',
         noon_utc: `${date}T09:00:00Z`,
-        moon: {
-          sign: signs[dayNumber % 12] ?? 'Овен',
-          degree: dayNumber % 30,
-          minute: 44,
-          phase: phases[dayNumber % 4] ?? 'растущая',
-          illumination: 0.777,
-          retrograde: false,
-        },
+        moon: fakeMoon(date),
         retrograde: [{ key: 'saturn', name: 'Сатурн' }],
         ruler: { key: 'venus', name: 'Венера', weekday: 5 },
         transits: [
@@ -196,6 +238,25 @@ export function makeFakeAstro(
           { from: `${date}T00:00:00`, to: `${date}T06:00:00`, label: 'транзит Луны к Венере' },
           { from: `${date}T06:00:00`, to: `${date}T12:00:00`, label: 'транзит Луны к Меркурию' },
         ],
+      });
+    },
+    /**
+     * `POST /moon/facts`: тот же расчёт Луны, что у `forecastFacts`, но без
+     * транзитов и окон — карточке `moon` не нужна карта. Значения совпадают с
+     * `forecastFacts` для той же даты намеренно: тест «фаза и знак те же, что у
+     * прогноза» иначе проверял бы расхождение двух выдумок.
+     */
+    moonFacts(date: string, timezone: string): Promise<AstroMoonFacts> {
+      if (options.down === true) {
+        return Promise.reject(new ApiError('INTERNAL', 503, { reason: 'astro_unavailable' }));
+      }
+
+      return Promise.resolve({
+        date,
+        timezone,
+        engine_version: '1.1.0',
+        noon_utc: `${date}T09:00:00Z`,
+        moon: fakeMoon(date),
       });
     },
     health(): Promise<'ok' | 'down'> {

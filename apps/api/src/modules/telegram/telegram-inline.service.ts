@@ -3,7 +3,7 @@ import { JsonLogger } from '../../common/logger';
 import { parseInlineQueryShortId } from '../charts/share-link';
 import { FileStorageService } from '../files/file-storage.service';
 import { SHARE_CAPTION } from '../share/share.service';
-import { ShareRepository } from '../share/share.repository';
+import { INLINE_KINDS, ShareRepository } from '../share/share.repository';
 import { TelegramClient } from './telegram.client';
 
 /** `inline_query` из апдейта Telegram: что человек набрал после `@bot`. */
@@ -88,6 +88,14 @@ export class TelegramInlineService {
       // ошибка: человек увидит «ничего не найдено» и вернётся в приложение.
       await this.telegram.answerInlineQuery(query.id, []);
       this.logger.warn('share_inline_missing', { short_id: shortId });
+      return true;
+    }
+
+    if (!INLINE_KINDS.includes(card.kind)) {
+      // Вид, которого inline не знает: строку могла оставить будущая версия
+      // сервера. Пустой ответ и предупреждение — карточку никто не увидит.
+      await this.telegram.answerInlineQuery(query.id, []);
+      this.logger.warn('share_inline_unsupported_kind', { kind: card.kind, short_id: shortId });
       return true;
     }
 

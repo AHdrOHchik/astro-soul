@@ -49,6 +49,7 @@ export const EVENT_NAMES: Record<EventName, true> = {
   share_clicked: true,
   screen_view: true,
   share_sent: true,
+  share_saved: true,
 };
 
 /**
@@ -138,7 +139,7 @@ export interface EventProps {
    */
   error_shown: { screen: AnalyticsStep; code: string };
   /** A generated card was actually handed to Telegram, never merely created on the server. */
-  share_sent: { kind: 'day' | 'wheel' | 'insight'; channel: 'inline' | 'link' };
+  share_sent: { kind: 'day' | 'wheel' | 'insight' | 'identity' | 'moon'; channel: 'inline' | 'link' };
 }
 
 /** Reports one event. Events outside `EventProps` take no props at all. */

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.11
+  version: 1.6.12
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -517,7 +517,8 @@ info:
         `limit` (1…20) и `offset` и **обязательное** поле `total` — количество
         после фильтра и до `LIMIT`. Это аддитивное поле: старые клиенты его
         игнорируют;
-      • `GET /admin/metrics`: `pdf_generated_24h`, `pdf_downloaded_24h`,
+      • `GET /admin/metrics`: `share_cards_created_24h` по видам карточек
+        (1.6.12); `pdf_generated_24h`, `pdf_downloaded_24h`,
         `pdf_failed_24h`, `pdf_cost_rub_24h`, `pdf_build_p95_ms`;
       • `x-analytics-server-events`: `pdf_ready`, `pdf_failed`,
         `pdf_downloaded`, `share_card_opened`, `share_sent`. В событиях нет
@@ -554,6 +555,29 @@ info:
         `getMe().supports_inline_queries` и пишется в лог
         `telegram_inline_mode`). Событий продукта на inline нет: это показ
         карточки, а не отправка.
+
+    1.6.12 — три карточки сторис для соцсетей (итерация 37). Аддитивно;
+    `wheel` и `insight` не менялись:
+      • `ShareCardKind` += `identity`, `moon`; `day` переехал на общий шаблон
+        сторис (безопасная зона `250…1670`, имя продукта `BRAND_NAME`,
+        дисклеймер и подсказка для поиска внутри картинки). Нет `BRAND_NAME` —
+        `503 brand_name_missing`: имя продукта не подставляется по умолчанию;
+      • `identity` — три фразы о поведении из «Ядра» оплаченного разбора и
+        приглашение «Узнал себя? Спроси, что про тебя». Текст режется из
+        готового разбора по правилам, без модели: один разбор — одна карточка.
+        Меньше трёх фраз — `422 not_enough_identity_lines`;
+      • `moon` — знак, фаза, освещённость, дата и строка «чего лучше не
+        начинать» по фазе (константы). Карта и подписка не нужны: факты
+        считаются на полдень дня в поясе из `tz` (или поясе карты, иначе UTC)
+        без натальных транзитов. Неизвестный `tz` — `422 share_tz_unknown`;
+      • версия вёрстки входит в ключ кэша карточек: после смены шаблона старые
+        карточки не отдаются;
+      • `share_card_created` получил `template_version`;
+      • клиентское событие `share_saved` (`{kind, target}`,
+        `target: gallery | telegram_story`), `share_sent.kind` расширен на
+        `identity` и `moon` — иначе клиент получал бы `422` на шаринг новых
+        карточек;
+      • `/admin/metrics`: `share_cards_created_24h` по видам.
 
     1.6.11 — наблюдаемость и эксплуатационная готовность (итерация 36).
     Аддитивно, `required` нигде не тронут; версия поднята потому, что появились
@@ -1371,7 +1395,7 @@ components:
         name:
           type: string
           description: Имя события из `x-analytics-events`
-          enum: [app_open, onboarding_start, onboarding_birth_date_set, onboarding_time_set, onboarding_place_set, consent_view, consent_accepted, birth_date_done, birth_time_done, birth_place_done, step_back, place_search, place_search_empty, place_search_failed, chart_requested, chart_created, chart_failed, chart_restored, mini_reading_view, wheel_shared, validation_failed, validation_failed_client, paywall_view, checkout_started, checkout_opened, payment_succeeded, payment_cancelled, report_requested, report_ready_view, forecast_view, ask_used, quota_exhausted, subscription_expired_seen, data_deleted, error_shown, screen_view, share_clicked, share_sent]
+          enum: [app_open, onboarding_start, onboarding_birth_date_set, onboarding_time_set, onboarding_place_set, consent_view, consent_accepted, birth_date_done, birth_time_done, birth_place_done, step_back, place_search, place_search_empty, place_search_failed, chart_requested, chart_created, chart_failed, chart_restored, mini_reading_view, wheel_shared, validation_failed, validation_failed_client, paywall_view, checkout_started, checkout_opened, payment_succeeded, payment_cancelled, report_requested, report_ready_view, forecast_view, ask_used, quota_exhausted, subscription_expired_seen, data_deleted, error_shown, screen_view, share_clicked, share_sent, share_saved]
         occurred_at:
           type: string
           format: date-time
@@ -1394,8 +1418,10 @@ components:
             type: [string, number, boolean]
           description: |
             Идентификаторы, шаг, код ошибки. Строки до 64 символов.
-            У `share_sent` набор закрыт (`x-event-strict-props`):
-            `kind` (`day | wheel | insight`) и `channel` (`inline | link`).
+            У `share_sent` и `share_saved` набор закрыт
+            (`x-event-strict-props`): у первого `kind` (`day | wheel |
+            insight | identity | moon`) и `channel` (`inline | link`), у
+            второго `kind` и `target` (`gallery | telegram_story`).
             Ключи с ПДн (`birth_date`, `birth_time`, `birth_place`, `place`,
             `city`, `query`, `date`, `time`, `lat`, `lon`, `tz`, `first_name`,
             `username`, `phone`, `email`) запрещены — такое событие отбрасывается.
@@ -1780,12 +1806,29 @@ components:
     ShareCardKind:
       type: string
       description: |-
-        Вид карточки шеринга. `day` — карточка дня (знак Луны, фаза,
-        освещённость, строка «хорошо для…», дата), доступна всем; `wheel` —
-        колесо карты (нужна карта); `insight` — цитата из «Ядра» (нужен
-        оплаченный разбор). Общих карточек (`compat`) нет: данные партнёра без
-        его согласия не публикуются — такой `kind` даёт `404`.
-      enum: [day, wheel, insight]
+        Вид карточки шеринга.
+
+        «Сторис» (1080×1920, общий шаблон с именем продукта, дисклеймером и
+        подсказкой для поиска в безопасной зоне `250…1670`):
+          • `day` — карточка дня: знак Луны, фаза, освещённость, строка
+            «сегодня хорошо для…», дата. Нужна карта, подписка не нужна;
+          • `identity` — «три вещи, которые правда про меня» (1.6.12): три
+            короткие фразы о поведении из главы «Ядро» **оплаченного** разбора и
+            приглашение «Узнал себя? Спроси, что про тебя». Модель не
+            вызывается: текст режется из готового разбора по правилам, поэтому
+            один и тот же разбор даёт одну и ту же карточку;
+          • `moon` — «фаза Луны» (1.6.12): знак, фаза, освещённость, дата и
+            строка «чего сегодня лучше не начинать» из констант по фазе.
+            **Карта и подписка не нужны** — это вирусный вход; авторизация
+            нужна (анонимного маршрута в интернет нет).
+
+        Старая вёрстка (в 1.6.12 не менялась):
+          • `wheel` — 1080×1920: колесо карты (нужна карта);
+          • `insight` — 1080×1080: цитата из «Ядра» (нужен оплаченный разбор).
+
+        Общих карточек (`compat`) нет: данные партнёра без его согласия не
+        публикуются — такой `kind` даёт `404`.
+      enum: [day, wheel, insight, identity, moon]
 
     ShareCard:
       type: object
@@ -2372,11 +2415,15 @@ paths:
         * `props` — идентификаторы, шаг, код ошибки. ПДн (дата/время/место
           рождения, город, имя, телефон, e-mail) в `events` запрещены: такие
           события отбрасываются на сервере и в БД не попадают;
-        * у `share_sent` (1.6.9) `props` закрыты: `{kind, channel}` со
-          значениями из `x-event-strict-props`. Неизвестное значение или
-          отсутствующее поле — `422` с `field_errors[{field:
-          "events.props.<ключ>"}]`, лишние ключи вырезаются. Остальные события
-          принимают свободные `props`;
+        * у `share_sent` (1.6.9) `props` закрыты: `{kind, channel}`, у
+          `share_saved` (1.6.12) — `{kind, target}`; значения — из
+          `x-event-strict-props`. Неизвестное значение или отсутствующее поле —
+          `422` с `field_errors[{field: "events.props.<ключ>"}]`, лишние ключи
+          вырезаются. Остальные события принимают свободные `props`;
+        * `share_saved` — «карточка сохранилась»: `target: "gallery"` (в
+          галерею устройства) или `"telegram_story"` (в Telegram-сторис). Без
+          этого события не видно, дошла ли карточка до Instagram вообще:
+          отправку в чужую ленту сервер не видит;
         * имя события — только из `x-analytics-events`: произвольное имя не
           принимается (`422`, весь батч), иначе аналитика стала бы свалкой;
         * `occurred_at` — время на устройстве, ISO 8601 с часовым поясом. Старше суток
@@ -2608,14 +2655,33 @@ paths:
         Отдаёт готовую картинку для чата: `{url, share_url, expires_at, caption}`.
 
         Виды (`ShareCardKind`):
-          • `day` — 1080×1920: знак Луны, фаза, освещённость, строка «сегодня
-            хорошо для…» из `summary` прогноза, дата. Доступен **всем**, у кого
-            есть карта, включая бесплатный режим: это вирусный вход;
-          • `wheel` — 1080×1920: колесо карты. Ни даты, ни времени, ни места
-            рождения — ни на картинке, ни в метаданных PNG;
-          • `insight` — 1080×1080: 2–3 предложения из главы «Ядро» **оплаченного**
-            разбора, без астрономических терминов. Нет оплаченного разбора —
-            `403 report_not_paid`.
+          • `day` — 1080×1920, шаблон сторис: знак Луны, фаза, освещённость,
+            строка «сегодня хорошо для…» из `summary` прогноза, дата. Нужна
+            карта, подписка не нужна;
+          • `identity` — 1080×1920, шаблон сторис: три фразы о поведении из
+            главы «Ядро» **оплаченного** разбора и приглашение внизу. Меньше
+            трёх подходящих фраз — `422 not_enough_identity_lines` (это
+            нормальный ответ, а не сбой); нет оплаченного разбора —
+            `403 report_not_paid`;
+          • `moon` — 1080×1920, шаблон сторис: знак, фаза, освещённость, дата,
+            строка «чего лучше не начинать» по фазе. **Карта и подписка не
+            нужны**: знак и фаза считаются на полдень дня в поясе из `tz`
+            (или в поясе последней карты, иначе UTC) — без натальных транзитов,
+            поэтому карточка доступна человеку без профиля;
+          • `wheel` — 1080×1920, старая вёрстка: колесо карты. Ни даты, ни
+            времени, ни места рождения — ни на картинке, ни в метаданных PNG;
+          • `insight` — 1080×1080, старая вёрстка: 2–3 предложения из главы
+            «Ядро» **оплаченного** разбора, без астрономических терминов.
+
+        **Шаблон сторис (1.6.12).** У `day`, `identity` и `moon` контент живёт
+        только в центральной полосе `y = 250…1670`: сверху и снизу интерфейс
+        Instagram перекрывает карточку. Внутри карточки всегда есть имя продукта
+        (`BRAND_NAME` сервера — не username бота), дисклеймер тем же текстом, что
+        у прогноза, и подсказка для поиска внизу. **Имя продукта не задано —
+        карточка не создаётся**: `503 brand_name_missing`, а не «Astro Soul по
+        умолчанию»: безымянная карточка в чужой ленте не находится.
+        Вёрстка версионируется: версия входит в ключ кэша, поэтому после смены
+        шаблона старые карточки из кэша не отдаются.
 
         `caption` — одна готовая строка для `switchInlineQuery`; слова
         «астрология», «гороскоп», «предсказание» в ней не встречаются.
@@ -2648,6 +2714,14 @@ paths:
               required: [kind]
               properties:
                 kind: { $ref: '#/components/schemas/ShareCardKind' }
+                tz:
+                  type: string
+                  description: |-
+                    Часовой пояс только для `moon` (1.6.12): «сегодня» считается
+                    по нему. Неизвестный пояс — `422` с
+                    `field_errors[{field: "tz"}]`. Не передан — берётся пояс
+                    последней карты человека, а если карты нет — UTC. Для
+                    остальных видов поле игнорируется.
       responses:
         '200':
           description: Карточка готова
@@ -2658,7 +2732,7 @@ paths:
           description: |-
             `details.reason`:
               • `chart_required` — нет карты (`day`, `wheel`);
-              • `report_not_paid` — `insight` без оплаченного разбора;
+              • `report_not_paid` — `insight` или `identity` без оплаченного разбора;
               • `insight_unavailable` — в разборе нет фразы без терминов.
           content:
             application/problem+json:
@@ -2669,12 +2743,23 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '422':
-          description: '`kind` не из `ShareCardKind`'
+          description: |-
+            `details.reason`:
+              • `share_kind_unknown` — `kind` не из `ShareCardKind`
+                (`field_errors[{field: "kind"}]`);
+              • `not_enough_identity_lines` — в «Ядре» меньше трёх коротких фраз
+                о поведении, поэтому карточка `identity` не собирается;
+              • `share_tz_unknown` — неизвестный `tz`
+                (`field_errors[{field: "tz"}]`)
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '503':
-          description: Сайдкар не смог нарисовать карточку (`UPSTREAM`), повтори позже
+          description: |-
+            `details.reason`:
+              • `brand_name_missing` — на сервере не задано `BRAND_NAME`, и
+                карточку-сторис нельзя подписать именем продукта;
+              • `astro_unavailable` — сайдкар не ответил (`UPSTREAM`), повтори позже
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -3663,6 +3748,17 @@ paths:
                       p95 времени от вставки вопроса до готового текста, мс.
                       Это время, которое человек проводит в ожидании после
                       `202`, — включая вызов модели.
+                  share_cards_created_24h:
+                    type: object
+                    description: |
+                      Сколько карточек шеринга собрано за 24 часа — по видам
+                      (1.6.12): `day`, `wheel`, `insight`, `identity`, `moon`.
+                      Ключи есть всегда: ноль значит «не создавали», и это
+                      осмысленнее пропущенного ключа. Считается по
+                      `share_cards.created_at`, то есть по реальным сборкам:
+                      кэш-попадание новую строку не создаёт.
+                    additionalProperties: { type: integer }
+                    example: { day: 12, wheel: 3, insight: 2, identity: 5, moon: 21 }
         '403': { description: FORBIDDEN }
 
   /api/v1/admin/alerts:
@@ -3712,8 +3808,8 @@ paths:
 # будет удалён — это отдельный PR, после того как фронт подтвердит фактические
 # имена в отчёте.
 # События, которые присылает клиент (`POST /events`). Список закрытый: имя вне
-# него — `422` на весь батч. `share_sent` (1.6.9) — единственное событие с
-# закрытыми `props` (см. `x-event-strict-props`).
+# него — `422` на весь батч. Закрытые `props` у двух событий — `share_sent`
+# (1.6.9) и `share_saved` (1.6.12); см. `x-event-strict-props`.
 #
 # Комментарии внутри списка не ставить: тесты фронта читают его построчно и
 # останавливаются на первой строке, которая не `  - имя`.
@@ -3756,6 +3852,7 @@ x-analytics-events:
   - screen_view
   - share_clicked
   - share_sent
+  - share_saved
 
 # Пары «одно и то же событие под двумя именами»: слева — имя, справа — синоним.
 # Живут только до 1.6.0. Считать воронку по объединению пар, а не выборочно.
@@ -3841,8 +3938,10 @@ x-analytics-server-events:
 #                    из приложения — заполнен. Повтор идёт в
 #                    `pdn_retention_cleanup`; после 5 неудач —
 #                    `subscriptions.telegram_cancel_state = 'gave_up'`.
-# share_card_created — props: kind, bytes, cached, build_ms (есть, когда карточка
-#                    реально нарисована; у кэш-попадания его нет).
+# share_card_created — props: kind, bytes, cached, template_version, build_ms
+#                    (есть, когда карточка реально нарисована; у кэш-попадания
+#                    его нет). `template_version` (1.6.12) — версия вёрстки,
+#                    которая лежит в ключе кэша.
 #                    «Мы отдали картинку»: `POST /share/card` отдал файл. Это
 #                    НЕ отправка в чат — отправку сообщает клиент (`share_sent`),
 #                    иначе метрика «поделились» считала бы генерации, как было
@@ -3882,8 +3981,11 @@ x-events-forbidden-prop-keys:
 # ключей ПДн) — но не свободные имена: список `x-analytics-events` закрыт.
 x-event-strict-props:
   share_sent:
-    kind: [day, wheel, insight]
+    kind: [day, wheel, insight, identity, moon]
     channel: [inline, link]
+  share_saved:
+    kind: [day, wheel, insight, identity, moon]
+    target: [gallery, telegram_story]
 
 # Шаблон ссылки шаринга на конкретную карту. `{username}` — имя бота из
 # `BOT_USERNAME` сервера (без `@`), `{chart_id}` — `Chart.chart_id`.
