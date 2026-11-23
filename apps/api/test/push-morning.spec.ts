@@ -144,8 +144,24 @@ async function userWithChart(tz = 'Europe/Moscow', telegramId?: number): Promise
   const user = await ctx.db.queryOne<{ id: string }>(`SELECT id FROM users WHERE telegram_id = $1`, [
     BigInt(id),
   ]);
+  const userId = user?.id ?? '';
 
-  return { chartId: response.body.chart.chart_id as string, userId: user?.id ?? '', telegramId: id };
+  // `POST /charts` — авторизованный запрос, а значит `last_seen_at` отмечается
+  // middleware'ом («человек сейчас в приложении»). Для тестов рассылки это
+  // состояние должно быть управляемым: ждём, пока «визит» доедет до базы, и
+  // обнуляем его. Иначе тест «пушить в 08:00» зависел бы от того, успел ли
+  // фоновый UPDATE выполниться раньше `runPush`.
+  await waitFor(async () => {
+    const row = await ctx.db.queryOne<{ last_seen_at: Date | null }>(
+      `SELECT last_seen_at FROM users WHERE id = $1`,
+      [userId],
+    );
+    return row?.last_seen_at ?? null;
+  });
+  await ctx.db.query(`UPDATE users SET last_seen_at = NULL WHERE id = $1`, [userId]);
+  ctx.app.get(PresenceService).reset();
+
+  return { chartId: response.body.chart.chart_id as string, userId, telegramId: id };
 }
 
 /**
@@ -806,14 +822,19 @@ describe('присутствие (last_seen_at)', () => {
   });
 });
 
-async function waitFor<T>(probe: () => Promise<T | null>, attempts = 20): Promise<T | null> {
+/**
+ * Ждём результат фоновой записи. Бюджет — 3 секунды: на нагруженном CI-раннере
+ * UPDATE в `last_seen_at` может доехать заметно позже, чем на ноутбуке, а тест
+ * не должен зависеть от загрузки машины.
+ */
+async function waitFor<T>(probe: () => Promise<T | null>, attempts = 60): Promise<T | null> {
   for (let i = 0; i < attempts; i += 1) {
     const value = await probe();
     if (value !== null) {
       return value;
     }
     await new Promise((resolve) => {
-      setTimeout(resolve, 10);
+      setTimeout(resolve, 50);
     });
   }
   return null;
