@@ -37,6 +37,13 @@ export type QueryValue = string | number | boolean | null | undefined;
 
 export interface CallOptions {
   readonly query?: Readonly<Record<string, QueryValue>>;
+  /**
+   * Подстановки в шаблон пути: `{ id: '42' }` превращает `/admin/users/{id}`
+   * в `/admin/users/42`. Значения экранируются — `id` приходит из строки
+   * поиска или из буфера обмена, и `../etc` в нём обязан остаться текстом,
+   * а не маршрутом.
+   */
+  readonly params?: Readonly<Record<string, string | number>>;
   readonly body?: unknown;
   /** Статусы, которые не считаются ошибкой: у `/health` 503 — это валидный ответ с телом. */
   readonly treatAsOk?: readonly number[];
@@ -79,8 +86,18 @@ export interface HttpOptions {
   readonly allowUnknownRoutes?: boolean;
 }
 
-function buildUrl(item: AdminRoute, query?: CallOptions['query']): string {
-  const base = config.apiBaseUrl + item.path;
+function buildUrl(item: AdminRoute, query?: CallOptions['query'], params?: CallOptions['params']): string {
+  let path = item.path;
+  if (params) {
+    for (const [key, value] of Object.entries(params)) {
+      path = path.replace(`{${key}}`, encodeURIComponent(String(value)));
+    }
+  }
+  // Незаполненный `{placeholder}` уехал бы в сеть как есть — и это был бы
+  // 404, который выглядит как «нет строки». Шаблон без подстановки — ошибка
+  // вызова, она видна сразу и только в тестах.
+  if (path.includes('{')) throw new Error(`Маршрут ${item.path} вызван без параметра пути`);
+  const base = config.apiBaseUrl + path;
   if (!query) return base;
   // Значения подрезаются, пустые уходят вовсе: uuid вставляют из буфера обмена
   // вместе с пробелом, и «u-1 » сервер прочтёт как другой идентификатор и
@@ -190,7 +207,7 @@ export function createHttp(options: HttpOptions = {}): Http {
       };
 
       try {
-        const response = await doFetch(buildUrl(item, callOptions.query), init);
+        const response = await doFetch(buildUrl(item, callOptions.query, callOptions.params), init);
         const retryable = item.method === 'GET' && (callOptions.retry ?? true) && response.status >= 500 && attempt < retries;
         if (!retryable) return response;
         response.body?.cancel().catch(() => undefined);

@@ -15,7 +15,16 @@
 import type { Http, HttpResult, ProbeResult } from './http';
 import type {
   AccessCode,
+  AdminBanResult,
   AdminMe,
+  AdminPlanHistoryResponse,
+  AdminPlanPatchBody,
+  AdminPlanPatchResult,
+  AdminPlansResponse,
+  AdminPushResult,
+  AdminRefundResult,
+  AdminUserCard,
+  AdminUserSearchResponse,
   AlertsResponse,
   CodeCreateBody,
   FoundersCount,
@@ -26,6 +35,7 @@ import type {
   Health,
   Metrics,
   TelegramAuthPayload,
+  UsersSearchParams,
 } from './types';
 
 export const GRANT_KINDS: readonly GrantKind[] = ['all_access', 'single_report', 'single_compat'];
@@ -43,6 +53,17 @@ export interface AdminApi {
   createCode(body: CodeCreateBody): Promise<HttpResult<AccessCode>>;
   grants(userId: string, signal?: AbortSignal): Promise<HttpResult<readonly GrantRow[]>>;
   grantWrite(body: GrantsWriteBody): Promise<HttpResult<GrantWriteResult>>;
+  /** «Тарифы»: каталог с ценой и историей правок. Маршрутов нет в контракте — в проде блок «недоступно». */
+  plans(signal?: AbortSignal): Promise<HttpResult<AdminPlansResponse>>;
+  plansPatch(code: string, body: AdminPlanPatchBody): Promise<HttpResult<AdminPlanPatchResult>>;
+  plansHistory(code: string, signal?: AbortSignal): Promise<HttpResult<AdminPlanHistoryResponse>>;
+  /** «Пользователи»: поиск ровно одним параметром, карточка, действия с основанием. */
+  usersSearch(params: UsersSearchParams, signal?: AbortSignal): Promise<HttpResult<AdminUserSearchResponse>>;
+  userCard(id: string, signal?: AbortSignal): Promise<HttpResult<AdminUserCard>>;
+  /** Возврат звёзд — только полный: тела запроса без суммы нет, сумму вернёт сервер. */
+  userRefund(id: string, body: { reason: string }): Promise<HttpResult<AdminRefundResult>>;
+  userBan(id: string, body: { reason: string }): Promise<HttpResult<AdminBanResult>>;
+  userPush(id: string, body: { enabled: boolean }): Promise<HttpResult<AdminPushResult>>;
   /** Вход: `probe`, потому что маршрута нет в контракте и 404 — это ответ, а не авария. */
   me(): Promise<ProbeResult<AdminMe>>;
   login(payload: TelegramAuthPayload): Promise<HttpResult<unknown>>;
@@ -71,6 +92,22 @@ export function createAdminApi(http: Http): AdminApi {
     },
 
     grantWrite: (body) => http.call<GrantWriteResult>('grantsWrite', { body }),
+
+    plans: (signal) => http.call<AdminPlansResponse>('plansList', { signal }),
+
+    plansPatch: (code, body) => http.call<AdminPlanPatchResult>('plansPatch', { params: { code }, body: { ...body } }),
+
+    plansHistory: (code, signal) => http.call<AdminPlanHistoryResponse>('plansAudit', { params: { code }, signal }),
+
+    usersSearch: (params, signal) => http.call<AdminUserSearchResponse>('usersSearch', { query: { ...params }, signal }),
+
+    userCard: (id, signal) => http.call<AdminUserCard>('userCard', { params: { id }, signal }),
+
+    userRefund: (id, body) => http.call<AdminRefundResult>('userRefund', { params: { id }, body: { ...body } }),
+
+    userBan: (id, body) => http.call<AdminBanResult>('userBan', { params: { id }, body: { ...body } }),
+
+    userPush: (id, body) => http.call<AdminPushResult>('userPush', { params: { id }, body: { ...body } }),
 
     me: () => http.probe<AdminMe>('authMe'),
 

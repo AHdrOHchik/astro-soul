@@ -6,8 +6,8 @@
  * `api.openapi.yaml`, то не запрашивается и не рисуется, а выносится отдельным
  * запросом к контракту; за экран на придуманном адресе PR отклоняется.
  *
- * Единственное исключение — `AdminMe` и `TelegramAuthPayload` в конце файла:
- * они помечены как «не в контракте» и существуют только для dev-мокера.
+ * Исключения — блоки «НЕ В КОНТРАКТЕ» в конце файла: они помечены как
+ * отсутствующие в контракте и существуют только для dev-мокера.
  */
 
 import type { components, paths } from './schema.gen';
@@ -65,3 +65,154 @@ export interface AdminMe {
 
 /** То, что виджет возвращает подписанным набором полей; сервер проверяет подпись. */
 export type TelegramAuthPayload = Readonly<Record<string, string>>;
+
+/**
+ * Формы «Тарифов» и «Пользователей» — тоже «НЕ В КОНТРАКТЕ»: маршрутов
+ * `/admin/plans*` и `/admin/users*` в 1.6.14 нет. Формы взяты из ответов
+ * владельца на запрос к контракту (`answers/admin-pr1-review.md`) — это и есть
+ * причина каждой формы, а не удобная выдумка панели:
+ *
+ *   • у `AdminPlanPatchBody` обязателен `comment`, а `base_version` нужен для
+ *     честного `409 price_changed` — панель не имеет права писать поверх
+ *     изменённого значения;
+ *   • `AdminRefundBody` НЕ содержит суммы: возврат только полный, сумму
+ *     считает сервер (`AdminUserCard.refundable`) и её же возвращает;
+ *   • `AdminPlanHistoryRow.actor_name` — снимок имени на момент действия,
+ *     поэтому колонка «кто менял» не требует запроса к `users`.
+ *
+ * В день, когда маршруты появятся в `api.openapi.yaml`, блоки ниже удаляются,
+ * а их место берут типы, выведенные из `paths`.
+ */
+
+export interface AdminPlanRow {
+  readonly code: string;
+  readonly title: string;
+  /** Цена в звёздах — только со сервера, панель не конвертирует и не пересчитывает. */
+  readonly price_stars: number;
+  readonly discount_price_stars: number | null;
+  readonly is_active: boolean;
+  readonly test_only: boolean;
+  /** `founder_month`: право проверяется по таблице `founders`, в витрине его нет. */
+  readonly founder_only: boolean;
+  /** Код из ответа сервера: кого касается новая цена (`only_new_purchases`). */
+  readonly price_change_scope: string;
+  /** Версия строки: уходит в `base_version`, на расхождении сервер ответит 409. */
+  readonly version: number;
+  readonly updated_at: string;
+  /** Снимок имени из аудита на момент последней правки. */
+  readonly updated_by_name: string | null;
+  readonly updated_by_tg_id: string | null;
+}
+
+export interface AdminPlansResponse {
+  readonly items: readonly AdminPlanRow[];
+}
+
+export interface AdminPlanPatchBody {
+  readonly price_stars: number;
+  readonly discount_price_stars: number | null;
+  /** Обязателен: без основания цену менять нельзя (ответ владельца, §4). */
+  readonly comment: string;
+  readonly base_version: number;
+}
+
+export interface AdminPlanAuditLine {
+  readonly at: string;
+  readonly actor_name: string;
+  readonly actor_tg_id: string;
+  readonly request_id: string | null;
+}
+
+export interface AdminPlanPatchResult {
+  readonly plan: AdminPlanRow;
+  readonly audit: AdminPlanAuditLine;
+  readonly price_change_scope: string;
+}
+
+export interface AdminPlanHistoryRow {
+  readonly at: string;
+  readonly actor_tg_id: string;
+  readonly actor_name: string;
+  readonly from_price: number | null;
+  readonly to_price: number;
+  readonly comment: string;
+}
+
+export interface AdminPlanHistoryResponse {
+  readonly items: readonly AdminPlanHistoryRow[];
+}
+
+/**
+ * Ровно один параметр поиска: union не даёт собрать запрос с двумя, а сервер
+ * на двух отвечает 422 — панель предпочитает не создавать этот ответ самим
+ * своим типом.
+ */
+export type UsersSearchParams =
+  | { readonly telegram_id: string; readonly alias?: never; readonly q?: never }
+  | { readonly alias: string; readonly telegram_id?: never; readonly q?: never }
+  | { readonly q: string; readonly telegram_id?: never; readonly alias?: never };
+
+export interface AdminUserRow {
+  readonly user_id: string;
+  readonly tg_id: string;
+  readonly alias: string | null;
+  readonly name: string | null;
+  readonly plan_code: string | null;
+  readonly access_until: string | null;
+  readonly banned: boolean;
+}
+
+export interface AdminUserSearchResponse {
+  readonly items: readonly AdminUserRow[];
+}
+
+export interface AdminUserPaymentRow {
+  readonly id: string;
+  readonly charge_id: string;
+  readonly kind: 'payment' | 'refund';
+  readonly stars: number;
+  readonly at: string;
+  readonly refunded: boolean;
+}
+
+/** Сумма возврата, посчитанная сервером: панель её только показывает и ни в чём не пересчитывает. */
+export interface AdminRefundQuote {
+  readonly charge_id: string;
+  readonly amount_stars: number;
+  readonly currency: string;
+}
+
+export interface AdminUserCard {
+  readonly user_id: string;
+  readonly tg_id: string;
+  readonly alias: string | null;
+  readonly name: string | null;
+  readonly created_at: string;
+  readonly last_seen_at: string | null;
+  readonly push_enabled: boolean;
+  readonly banned_at: string | null;
+  readonly ban_reason: string | null;
+  readonly subscription: { readonly plan_code: string; readonly until: string; readonly source: string } | null;
+  readonly payments: readonly AdminUserPaymentRow[];
+  /** `null` — возвращать нечего. Сумма здесь же: ввод «сколько вернуть» на экране запрещён. */
+  readonly refundable: AdminRefundQuote | null;
+}
+
+export interface AdminRefundResult {
+  readonly charge_id: string;
+  readonly amount_stars: number;
+  readonly currency: string;
+  readonly status: string;
+}
+
+export interface AdminBanResult {
+  readonly user_id: string;
+  readonly banned: boolean;
+  readonly reason: string;
+  readonly at: string;
+}
+
+export interface AdminPushResult {
+  readonly user_id: string;
+  readonly push_enabled: boolean;
+}

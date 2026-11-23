@@ -21,6 +21,8 @@ import { Banner } from './ui/primitives';
 import { Codes } from './screens/Codes';
 import { NotImplemented } from './screens/NotImplemented';
 import { Overview } from './screens/Overview';
+import { Plans } from './screens/Plans';
+import { Users } from './screens/Users';
 
 const TITLES: Record<string, string> = {
   overview: ru.nav.overview,
@@ -127,6 +129,10 @@ function Screen({ location, view, api, session, demo, now, sessionLive, publicMo
       <Overview api={api} sessionLive={sessionLive} now={now} />
     ) : screen === 'codes' ? (
       <Codes api={api} sessionLive={sessionLive} now={now} />
+    ) : screen === 'plans' ? (
+      <Plans api={api} sessionLive={sessionLive} demo={demo} now={now} />
+    ) : screen === 'users' ? (
+      <Users api={api} sessionLive={sessionLive} demo={demo} />
     ) : (
       <NotImplemented screen={screen} title={TITLES[screen] ?? screen} />
     );

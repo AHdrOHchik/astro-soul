@@ -30,11 +30,16 @@ import {
   mockGrants,
   mockMe,
   mockMetrics,
+  mockPlanHistory,
+  mockPlans,
+  mockUsers,
   MOCK_MARKER,
   nowIso,
+  userRow,
   type MockAccessCode,
   type MockGrant,
 } from './fixtures.ts';
+import type { AdminPlanHistoryRow, AdminPlanRow, AdminUserCard } from '../src/api/types.ts';
 
 export interface MockOptions {
   /** Куда проксируются живые запросы: `API_PROXY_TARGET` или `http://localhost:8080`. */
@@ -109,6 +114,13 @@ export function adminMockApi(options: MockOptions): PluginOption {
   let mode: Mode = 'unknown';
   let codes: readonly MockAccessCode[] = mockCodes;
   let grants: readonly MockGrant[] = mockGrants;
+  let plans: readonly AdminPlanRow[] = mockPlans.map((item) => ({ ...item }));
+  let planHistory: readonly (AdminPlanHistoryRow & { code: string })[] = mockPlanHistory.map((item) => ({ ...item }));
+  let users: readonly AdminUserCard[] = mockUsers.map((card) => ({
+    ...card,
+    payments: card.payments.map((payment) => ({ ...payment })),
+    refundable: card.refundable === null ? null : { ...card.refundable },
+  }));
   let issued = 0;
 
   async function resolveMode(): Promise<Mode> {
@@ -305,6 +317,196 @@ export function adminMockApi(options: MockOptions): PluginOption {
       grants = [created, ...grants];
       json(res, 200, { grant_id: created.id, kind: created.kind, source: created.source, expires_at: created.expires_at }, demo);
       return;
+    }
+
+    // ---- «Тарифы»: каталог, правка цены с версией и историей, история ----
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/plans') {
+      json(res, 200, { items: plans, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    const planMatch = /^\/api\/v1\/admin\/plans\/([^/]+)$/.exec(pathname);
+    if (planMatch !== null && ctx.method === 'PATCH') {
+      if (ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'DEV-мокер требует X-Admin-CSRF на PATCH.', demo, { reason: 'csrf_missing' });
+        return;
+      }
+      const code = decodeURIComponent(planMatch[1] ?? '');
+      const plan = plans.find((item) => item.code === code);
+      if (plan === undefined) {
+        problem(res, 404, 'NOT_FOUND', `Плана ${code} нет.`, demo, { reason: 'plan_not_found' });
+        return;
+      }
+      if (plan.founder_only) {
+        // Ответ владельца §5: `founder_month` не редактируется даже через PATCH.
+        problem(res, 403, 'FORBIDDEN', 'Право на этот план проверяет сервер по таблице founders — цена не правится.', demo, {
+          reason: 'founder_plan_locked',
+        });
+        return;
+      }
+      const body = asRecord(ctx.body);
+      const errors: { field: string; message: string }[] = [];
+      const price = body.price_stars;
+      if (typeof price !== 'number' || !Number.isInteger(price) || price < 1) {
+        errors.push({ field: 'price_stars', message: 'Нужно целое число ≥ 1' });
+      }
+      if (typeof body.comment !== 'string' || body.comment.trim() === '') {
+        // Основание обязательно (ответ владельца §4) — без него мокер не меняет цену.
+        errors.push({ field: 'comment', message: 'Комментарий обязателен: правка цены без основания не записывается' });
+      }
+      if (errors.length > 0) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Цена не изменена.', demo, { field_errors: errors });
+        return;
+      }
+      if (body.base_version !== plan.version) {
+        // 409 price_changed: панель обязана перечитать, а не перезаписать.
+        problem(res, 409, 'CONFLICT', 'Тариф изменён другой сессией — показываем текущее значение.', demo, {
+          reason: 'price_changed',
+          current: plan,
+        });
+        return;
+      }
+      const discount = typeof body.discount_price_stars === 'number' ? body.discount_price_stars : null;
+      const updated: AdminPlanRow = {
+        ...plan,
+        price_stars: price as number,
+        discount_price_stars: discount,
+        version: plan.version + 1,
+        updated_at: nowIso(0),
+        updated_by_name: typeof mockMe.name === 'string' ? mockMe.name : 'ДЕМО',
+        updated_by_tg_id: typeof mockMe.tg_id === 'string' ? mockMe.tg_id : '0',
+      };
+      plans = plans.map((item) => (item.code === code ? updated : item));
+      planHistory = [
+        {
+          code,
+          at: nowIso(0),
+          actor_tg_id: updated.updated_by_tg_id ?? '0',
+          // Снимок имени на момент действия — не ссылка на `users`.
+          actor_name: updated.updated_by_name ?? 'ДЕМО',
+          from_price: plan.price_stars,
+          to_price: updated.price_stars,
+          comment: String(body.comment).trim(),
+        },
+        ...planHistory,
+      ];
+      json(res, 200, {
+        plan: updated,
+        audit: { at: updated.updated_at, actor_name: updated.updated_by_name, actor_tg_id: updated.updated_by_tg_id, request_id: 'mock' },
+        price_change_scope: updated.price_change_scope,
+        note: MOCK_MARKER,
+      }, demo);
+      return;
+    }
+
+    const historyMatch = /^\/api\/v1\/admin\/plans\/([^/]+)\/history$/.exec(pathname);
+    if (historyMatch !== null && ctx.method === 'GET') {
+      const code = decodeURIComponent(historyMatch[1] ?? '');
+      json(res, 200, { items: planHistory.filter((item) => item.code === code), note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    // ---- «Пользователи»: поиск одним параметром, карточка, три действия ----
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/users') {
+      const telegramId = ctx.url.searchParams.get('telegram_id')?.trim() ?? '';
+      const alias = ctx.url.searchParams.get('alias')?.trim().replace(/^@+/, '') ?? '';
+      const text = ctx.url.searchParams.get('q')?.trim() ?? '';
+      const given = [telegramId !== '', alias !== '', text !== ''].filter(Boolean).length;
+      if (given !== 1) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Поиск принимает ровно один параметр: telegram_id, alias или q.', demo, {
+          field_errors: [{ field: 'query', message: 'Ровно один непустой параметр' }],
+        });
+        return;
+      }
+      const items = users
+        .filter((card) =>
+          telegramId !== ''
+            ? card.tg_id === telegramId
+            : alias !== ''
+              ? card.alias?.toLowerCase() === alias.toLowerCase()
+              : [card.name, card.alias, card.tg_id, card.user_id].some((value) => value !== null && value.toLowerCase().includes(text.toLowerCase())))
+        .map(userRow);
+      json(res, 200, { items, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    const userMatch = /^\/api\/v1\/admin\/users\/([^/]+)(?:\/(refund|ban|push))?$/.exec(pathname);
+    if (userMatch !== null) {
+      const id = decodeURIComponent(userMatch[1] ?? '');
+      const action = userMatch[2];
+      const card = users.find((item) => item.user_id === id);
+      if (card === undefined) {
+        problem(res, 404, 'NOT_FOUND', 'Человека с таким user_id нет.', demo, { reason: 'user_not_found' });
+        return;
+      }
+
+      if (action === undefined && ctx.method === 'GET') {
+        json(res, 200, { ...card, note: MOCK_MARKER }, demo);
+        return;
+      }
+
+      if (ctx.method !== 'POST') {
+        problem(res, 405, 'VALIDATION_FAILED', `Метод ${ctx.method} здесь не работает.`, demo);
+        return;
+      }
+      if (ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'DEV-мокер требует X-Admin-CSRF на изменяющий запрос.', demo, { reason: 'csrf_missing' });
+        return;
+      }
+      const body = asRecord(ctx.body);
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (action === 'refund') {
+        if (reason === '') {
+          problem(res, 422, 'VALIDATION_FAILED', 'Возврат без основания не проводится.', demo, {
+            field_errors: [{ field: 'reason', message: 'Обязательно' }],
+          });
+          return;
+        }
+        if (card.refundable === null) {
+          problem(res, 409, 'CONFLICT', 'Возвращать нечего: оплаченного платежа без возврата нет.', demo, { reason: 'nothing_to_refund' });
+          return;
+        }
+        // Возврат только полный: сумма — сумма исходного платежа, поле «сколько»
+        // в теле отсутствует как класс.
+        const quote = card.refundable;
+        users = users.map((item) =>
+          item.user_id === id
+            ? {
+                ...item,
+                refundable: null,
+                payments: [
+                  { id: `refund-${quote.charge_id}`, charge_id: `${quote.charge_id}r`, kind: 'refund' as const, stars: quote.amount_stars, at: nowIso(0), refunded: false },
+                  ...item.payments.map((payment) => (payment.charge_id === quote.charge_id ? { ...payment, refunded: true } : payment)),
+                ],
+              }
+            : item);
+        json(res, 200, { charge_id: quote.charge_id, amount_stars: quote.amount_stars, currency: quote.currency, status: 'refunded', note: MOCK_MARKER }, demo);
+        return;
+      }
+      if (action === 'ban') {
+        if (reason === '') {
+          problem(res, 422, 'VALIDATION_FAILED', 'Блокировка без основания не проводится.', demo, {
+            field_errors: [{ field: 'reason', message: 'Обязательно' }],
+          });
+          return;
+        }
+        const banned = card.banned_at === null;
+        users = users.map((item) =>
+          item.user_id === id ? { ...item, banned_at: banned ? nowIso(0) : null, ban_reason: banned ? reason : null } : item);
+        json(res, 200, { user_id: id, banned, reason, at: nowIso(0), note: MOCK_MARKER }, demo);
+        return;
+      }
+      if (action === 'push') {
+        if (typeof body.enabled !== 'boolean') {
+          problem(res, 422, 'VALIDATION_FAILED', 'Нужен флаг enabled.', demo, {
+            field_errors: [{ field: 'enabled', message: 'Только true/false' }],
+          });
+          return;
+        }
+        users = users.map((item) => (item.user_id === id ? { ...item, push_enabled: body.enabled as boolean } : item));
+        json(res, 200, { user_id: id, push_enabled: body.enabled, note: MOCK_MARKER }, demo);
+        return;
+      }
     }
 
     problem(res, 404, 'NOT_FOUND', `Мокер не знает маршрута ${ctx.method} ${pathname}.`, demo);
