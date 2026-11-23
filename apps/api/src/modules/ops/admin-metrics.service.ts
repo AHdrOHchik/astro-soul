@@ -5,6 +5,7 @@ import type { AppEnv } from '../../config/env';
 import { breakerState, validationStreak, type ReportHistoryRow } from '../reports/breaker';
 import { TelegramWebhookService } from '../telegram/telegram-webhook.service';
 import { EngagementRepository } from '../engagement/engagement.repository';
+import { AdminAuditRepository } from '../admin-audit/admin-audit.repository';
 import { BonusBudgetService } from '../grants/bonus-budget.service';
 
 /**
@@ -281,6 +282,20 @@ export interface ProductMetrics {
   readonly bonus_budget_spent_rub: number;
   /** Лимит того же бюджета, рубли — из окружения (`BONUS_BUDGET_RUB`). */
   readonly bonus_budget_limit_rub: number;
+  /**
+   * Админка (1.6.15): входы за сутки, записи журнала за сутки и сколько
+   * просроченных сессий убрал джоб.
+   *
+   * Три цифры отвечают на три разных вопроса дежурства:
+   * `admin_logins_24h` — «кто-то входил» (ноль при живом дежурстве подозрителен,
+   * рост — повод посмотреть на IP-хэши в логе); `admin_audit_writes_24h` —
+   * «журнал жив» (ноль при действиях значит, что аудит сломан);
+   * `admin_sessions_purged_24h` — «джоб уборки запускается» (ноль неделями —
+   * таблица растёт, и это видно только здесь).
+   */
+  readonly admin_logins_24h: number;
+  readonly admin_audit_writes_24h: number;
+  readonly admin_sessions_purged_24h: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -314,6 +329,7 @@ export class AdminMetricsService {
     @Inject(TelegramWebhookService) private readonly webhook: TelegramWebhookService,
     @Inject(EngagementRepository) private readonly engagement: EngagementRepository,
     @Inject(BonusBudgetService) private readonly bonusBudget: BonusBudgetService,
+    @Inject(AdminAuditRepository) private readonly adminAudit: AdminAuditRepository,
   ) {}
 
   /**
@@ -411,6 +427,14 @@ export class AdminMetricsService {
   }
 
   async getMetrics(): Promise<ProductMetrics> {
+    // Считаем отдельным запросом, а не десятым подзапросом в общем `Promise.all`:
+    // журнал аудита — единственная таблица, которая может отсутствовать на
+    // старом стенде, и её отказ не должен ронять все метрики продукта.
+    const [adminAudit, adminPurged] = await Promise.all([
+      this.adminAudit.totals24h(),
+      this.adminAudit.purged24h(),
+    ]);
+
     const [
       activity,
       events,
@@ -863,6 +887,9 @@ export class AdminMetricsService {
       // разойдётся на границе месяца.
       bonus_budget_spent_rub: budget.spent_rub,
       bonus_budget_limit_rub: budget.limit_rub,
+      admin_logins_24h: adminAudit.logins,
+      admin_audit_writes_24h: adminAudit.writes,
+      admin_sessions_purged_24h: adminPurged,
       share_cards_created_24h: SHARE_CARD_KINDS.reduce<Record<string, number>>(
         (totals, kind) => {
           totals[kind] = shareCards.find((row) => row.kind === kind)?.total ?? 0;

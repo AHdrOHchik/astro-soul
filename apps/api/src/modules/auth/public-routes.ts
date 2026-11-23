@@ -32,6 +32,13 @@ const FILES_PATH = /^\/api\/v1\/files\/(pdf|card)\/[^/]+$/;
  */
 const FOUNDERS_COUNT_PATH = /^\/api\/v1\/founders\/count$/;
 
+/**
+ * Вход в админ-панель (1.6.15): единственный админский маршрут без сессии и без
+ * initData — иначе войти было бы нечем. Защита своя: подпись Telegram Login
+ * Widget (окно 300 секунд), `ADMIN_TG_ID` и лимит попыток по IP.
+ */
+const ADMIN_LOGIN_PATH = /^\/api\/v1\/admin\/auth\/telegram$/;
+
 /** Триггер джобов: секрет в заголовке `X-Jobs-Secret` (крон, не пользователь). */
 const JOBS_RUN_PATH = /^\/api\/v1\/internal\/jobs\/run$/;
 
@@ -46,6 +53,7 @@ export function isPublicPath(requestPath: string): boolean {
     WHEEL_PNG_PATH.test(normalized) ||
     FOUNDERS_COUNT_PATH.test(normalized) ||
     FILES_PATH.test(normalized) ||
+    ADMIN_LOGIN_PATH.test(normalized) ||
     JOBS_RUN_PATH.test(normalized) ||
     TELEGRAM_WEBHOOK_PATH.test(normalized)
   );

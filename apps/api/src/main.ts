@@ -39,6 +39,11 @@ async function bootstrap(): Promise<void> {
   // Битый JSON в теле — это 400 от контракта, а не HTML-страница Express.
   app.useBodyParser('json', { limit: '64kb' });
   app.getHttpAdapter().getInstance().disable('x-powered-by');
+  // Сервис живёт за прокси (`docs/DOCKER.md`): без этого `req.ip` — адрес
+  // прокси, и лимит входа в панель (10 неудач за 15 минут) стал бы общим на
+  // всех. Доверяем **одному** хопу — тому, что добавляет сам прокси; остальное
+  // в `X-Forwarded-For` клиент может написать сам, и доверять этому нельзя.
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
   app.enableShutdownHooks();
 
   process.on('unhandledRejection', (reason: unknown) => {

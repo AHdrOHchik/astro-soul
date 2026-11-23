@@ -6,6 +6,8 @@ import { RateLimitMiddleware } from './common/rate-limit.middleware';
 import { RequestIdMiddleware } from './common/request-id.middleware';
 import { EnvModule } from './config/env.module';
 import { DbModule } from './db/db.module';
+import { AdminAuditModule } from './modules/admin-audit/admin-audit.module';
+import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
 import { InitDataMiddleware } from './modules/auth/init-data.middleware';
 import { BillingModule } from './modules/billing/billing.module';
 import { ChartsModule } from './modules/charts/charts.module';
@@ -46,6 +48,11 @@ import { PresenceService } from './modules/users/presence.service';
     FilesModule,
     // Бесплатный доступ по праву (итерация 39): коды, «первые 50», приглашения.
     GrantsModule,
+    // Админка (итерация 40, 1.6.15): сессии панели и журнал аудита.
+    // `AdminAuthModule` нужен здесь не только ради маршрутов: его
+    // `AdminSessionService` спрашивает middleware авторизации.
+    AdminAuthModule,
+    AdminAuditModule,
   ],
   providers: [
     // Присутствие (итерация 38) — провайдер корневого модуля: его спрашивает

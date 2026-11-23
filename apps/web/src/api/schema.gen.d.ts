@@ -70,6 +70,18 @@ export interface paths {
                                     exhausted?: boolean;
                                 };
                                 /**
+                                 * @description Вход в админ-панель (1.6.15). `enabled` — настроен ли
+                                 *     `ADMIN_TG_ID`: без него войти не может никто, и это
+                                 *     видно снаружи одним полем. `sessions_active` — сколько
+                                 *     живых (не отозванных и не просроченных) сессий сейчас;
+                                 *     забытая сессия на чужом ноутбуке видна здесь, а не
+                                 *     только в базе.
+                                 */
+                                admin_auth?: {
+                                    enabled?: boolean;
+                                    sessions_active?: number;
+                                };
+                                /**
                                  * @description Утренний пуш (1.6.13). `enabled` — `PUSH_ENABLED` в
                                  *     рантайме: включение функции — рестарт API, а не
                                  *     деплой кода. `last_run_at` — время последнего цикла
@@ -719,7 +731,16 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -847,7 +868,16 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -2984,7 +3014,7 @@ export interface paths {
         post: {
             parameters: {
                 query?: {
-                    job?: "subscriptions_downgrade" | "pending_payments_resolve" | "refund_undelivered" | "report_refund" | "pdn_retention_cleanup" | "forecast_nightly" | "forecast_push";
+                    job?: "subscriptions_downgrade" | "pending_payments_resolve" | "refund_undelivered" | "report_refund" | "pdn_retention_cleanup" | "forecast_nightly" | "forecast_push" | "push_share_retention" | "admin_sessions_cleanup";
                 };
                 header: {
                     "X-Jobs-Secret": string;
@@ -3014,6 +3044,360 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/auth/telegram": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Вход в админ-панель по подписи Telegram Login Widget
+         * @description Единственный админский маршрут без сессии и без `initData`: иначе
+         *     войти было бы нечем. Защита своя — подпись `hash`, окно `auth_date`
+         *     300 секунд, `id = ADMIN_TG_ID` и лимит неудачных попыток по IP.
+         *
+         *     Поля приходят «как есть» из виджета (все, включая `hash`): набор полей
+         *     задаёт Telegram, жёсткая схема ломалась бы на первом новом поле
+         *     (`first_name`, `last_name`, `username`, `photo_url` — все необязательны).
+         *
+         *     `id` принимается и строкой, и числом. Подпись считается по
+         *     `data_check_string` из отсортированных `k=v`, ключ —
+         *     `secret = SHA256(bot_token)`; сравнение — constant-time.
+         *
+         *     На успехе ставится cookie `__Host-admin_session` (см.
+         *     `AdminSessionCookie`) и **не** отдаётся ничего, кроме `{ok: true}`:
+         *     идентификатор сессии в теле означал бы, что он попадает в логи
+         *     фронта и в отчёты об ошибках.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    /**
+                     * @example {
+                     *       "id": "777000001",
+                     *       "first_name": "Владелец",
+                     *       "auth_date": 1770000000,
+                     *       "hash": "00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff"
+                     *     }
+                     */
+                    "application/json": {
+                        id: string | number;
+                        /** @description Unix-время подписи, секунды */
+                        auth_date: number;
+                        hash: string;
+                        first_name?: string;
+                        last_name?: string;
+                        username?: string;
+                        photo_url?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            responses: {
+                /** @description Сессия создана, cookie выставлена */
+                200: {
+                    headers: {
+                        /** @description `__Host-admin_session=<uuid>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=43200` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            ok: true;
+                        };
+                    };
+                };
+                /**
+                 * @description `details.reason = invalid_hash` — подпись не совпала;
+                 *     `details.reason = auth_stale` — `auth_date` старше 300 секунд.
+                 */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = forbidden` — id не равен `ADMIN_TG_ID`; сессия не создаётся, журнал не пишется */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `details.reason = missing_hash | missing_fields | malformed` — подписи нет, нет `id`/`auth_date`, тип поля не строка/число */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description Слишком много неудач с одного IP. Тело содержит
+                 *     `details.retry_after` (секунды). Заблокированный запрос подпись
+                 *     **не проверяет**.
+                 */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Кто вошёл в панель, срок сессии и CSRF-токен
+         * @description Доступ — `initData` или cookie-сессия панели. `name` — снимок имени из
+         *     сессии (`first_name last_name` на момент входа, иначе `username`), а не
+         *     текущее имя пользователя: история входов не должна меняться задним
+         *     числом.
+         *
+         *     `csrf_token` нужен панели потому, что cookie `HttpOnly` и JS её не
+         *     прочитает. Токен ротируется при каждом входе, а не при каждом запросе:
+         *     иначе две открытые вкладки гасили бы токен друг другу. Для входа по
+         *     `initData` `expires_at` и `csrf_token` — `null` (там CSRF не нужен).
+         *
+         *     `expires_at` — подсказка для интерфейса; **источник правды — `401`**:
+         *     панель не продлевает сессию по своим часам.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Текущий админ */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @description Telegram id (bigint строкой — не теряет точность в JS) */
+                            tg_id: string;
+                            /** @description Снимок имени из сессии (или из `initData`) */
+                            name: string;
+                            /**
+                             * Format: date-time
+                             * @description `null` — вход по `initData`: сессии нет
+                             */
+                            expires_at: string | null;
+                            /** @description `null` — вход по `initData`: CSRF не требуется */
+                            csrf_token: string | null;
+                        };
+                    };
+                };
+                /** @description UNAUTHORIZED */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Выход из панели (отзыв сессии)
+         * @description Ставит `revoked_at` и снимает cookie (`Max-Age=0`). Сессия перестаёт
+         *     работать немедленно — это и есть смысл строки в базе вместо подписи.
+         *
+         *     Идемпотентно: повторный вызов (в том числе с уже отозванной cookie или
+         *     вовсе без неё) отвечает `200 {ok: true}` и ничего не меняет. Второй
+         *     записи `session.logout` в журнале не появляется: писать «вышел» дважды
+         *     — врать в журнале.
+         *
+         *     Если сессия жива, запрос с cookie обязан нести `X-Admin-CSRF`: иначе
+         *     чужой сайт мог бы разлогинить админа одной формой. Без cookie
+         *     (`logout` уже случился) CSRF не требуется — иначе повторная кнопка
+         *     получала бы `403` на успешном действии.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Сессия отозвана или её уже не было */
+                200: {
+                    headers: {
+                        /** @description `__Host-admin_session=; Max-Age=0` */
+                        "Set-Cookie"?: string;
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            ok: true;
+                        };
+                    };
+                };
+                /** @description `csrf_missing` / `csrf_mismatch` — для живой сессии без заголовка или с чужим токеном */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Журнал действий админа
+         * @description Лента `at DESC, id DESC`. Курсор `(at, id)`, а не `offset`: журнал
+         *     пополняется на каждом действии, и `offset` на живой ленте теряет и
+         *     дублирует строки.
+         *
+         *     Пишутся только действия: `session.login`, `session.logout`,
+         *     `code.create`, `grant.create`, `grant.revoke` (плюс `session.purge` от
+         *     джоба уборки). Чтения не пишутся — иначе журнал перестаёт быть
+         *     читаемым.
+         *
+         *     `before`/`after` — только изменённые поля. ПДн нет: карта — `chart_id`,
+         *     платёж — `charge_id`, ни дат рождения, ни имён получателей.
+         *     `actor_name` — снимок на момент действия (ник меняется, журнал — нет).
+         *     Таблица append-only: `UPDATE`/`DELETE` запрещены триггером.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description `session`, `code`, `grant`, … */
+                    entity?: string;
+                    entity_id?: string;
+                    /** @description `session.login`, `code.create`, `grant.create`, `grant.revoke`, … */
+                    action?: string;
+                    actor_tg_id?: string;
+                    /** @description Больше 200 — `422`: «попросил 500, получил 200» выглядит как потеря данных */
+                    limit?: number;
+                    /** @description Непрозрачное значение из `next_cursor` предыдущей страницы */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Страница журнала */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["AdminAuditEntry"][];
+                            /** @description `null` — страниц больше нет */
+                            next_cursor: string | null;
+                        };
+                    };
+                };
+                /** @description UNAUTHORIZED */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `invalid_limit` / `invalid_cursor` / `invalid_actor_tg_id` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3389,6 +3773,24 @@ export interface paths {
                             founders_taken?: number;
                             bonus_budget_spent_rub?: number;
                             bonus_budget_limit_rub?: number;
+                            /**
+                             * @description Входов в админ-панель за сутки (1.6.15). Считается по
+                             *     журналу (`session.login`), а не по логу процесса: рестарт
+                             *     API не должен обнулять цифру дежурства.
+                             */
+                            admin_logins_24h?: number;
+                            /**
+                             * @description Записей в журнал аудита за сутки. Ноль при живых действиях
+                             *     админа значит, что аудит сломан; рост без действий —
+                             *     повод открыть `GET /admin/audit`.
+                             */
+                            admin_audit_writes_24h?: number;
+                            /**
+                             * @description Сколько просроченных сессий панели убрал джоб
+                             *     `admin_sessions_cleanup` за сутки. Ноль неделями — таблица
+                             *     растёт, и видно это только здесь.
+                             */
+                            admin_sessions_purged_24h?: number;
                         };
                     };
                 };
@@ -4252,6 +4654,34 @@ export interface components {
             } | null;
         };
         /**
+         * @description Одна запись журнала аудита (1.6.15). Пишет сервер; изменить или удалить
+         *     запись нельзя (триггер в БД). `before`/`after` — только изменённые
+         *     поля и без ПДн.
+         */
+        AdminAuditEntry: {
+            id: string;
+            /** Format: date-time */
+            at: string;
+            /** @description `0` — служебная запись (уборка сессий), а не действие человека */
+            actor_tg_id: string;
+            /** @description Снимок имени на момент действия */
+            actor_name: string;
+            /** @example grant.create */
+            action: string;
+            /** @example grant */
+            entity: string;
+            entity_id?: string | null;
+            before?: {
+                [key: string]: unknown;
+            } | null;
+            after?: {
+                [key: string]: unknown;
+            } | null;
+            reason?: string | null;
+            /** @description `X-Request-Id` запроса, который сделал действие */
+            request_id?: string | null;
+        };
+        /**
          * @description Счётчики одного запуска крона. Все поля есть всегда; нули означают
          *     «делать было нечего». Имена совпадают с полями `JobRunResult` в коде.
          * @example {
@@ -4276,7 +4706,10 @@ export interface components {
          *       "pushes_failed": 0,
          *       "telegram_cancel_retried": 0,
          *       "telegram_cancel_cancelled": 0,
-         *       "telegram_cancel_gave_up": 0
+         *       "telegram_cancel_gave_up": 0,
+         *       "push_runs_purged": 0,
+         *       "share_cards_purged": 0,
+         *       "admin_sessions_purged": 0
          *     }
          */
         JobRunResult: {
@@ -4312,6 +4745,10 @@ export interface components {
             telegram_cancel_retried?: number;
             telegram_cancel_cancelled?: number;
             telegram_cancel_gave_up?: number;
+            push_runs_purged?: number;
+            share_cards_purged?: number;
+            /** @description Сессий админ-панели удалено: просрочены больше 7 дней (1.6.15, джоб `admin_sessions_cleanup`). */
+            admin_sessions_purged?: number;
         };
         /**
          * @description Вход `POST /compatibility`. `additionalProperties: false` — не
@@ -4714,7 +5151,16 @@ export interface components {
         };
     };
     responses: never;
-    parameters: never;
+    parameters: {
+        /**
+         * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+         *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+         *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+         *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+         *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+         */
+        AdminCsrf: string;
+    };
     requestBodies: never;
     headers: {
         /**

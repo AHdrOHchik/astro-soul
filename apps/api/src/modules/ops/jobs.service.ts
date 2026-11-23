@@ -8,6 +8,7 @@ import { SubscriptionCancelService } from '../billing/subscription-cancel.servic
 import { EngagementService } from '../engagement/engagement.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
+import { AdminSessionService } from '../admin-auth/admin-session.service';
 
 /** Через сколько минут недоставленный товар считаем поводом для возврата. */
 export const REFUND_AFTER_MINUTES = 10;
@@ -57,7 +58,8 @@ export type JobName =
   | 'pdn_retention_cleanup'
   | 'forecast_nightly'
   | 'forecast_push'
-  | 'push_share_retention';
+  | 'push_share_retention'
+  | 'admin_sessions_cleanup';
 
 export const JOB_NAMES: readonly JobName[] = [
   'subscriptions_downgrade',
@@ -68,6 +70,7 @@ export const JOB_NAMES: readonly JobName[] = [
   'forecast_nightly',
   'forecast_push',
   'push_share_retention',
+  'admin_sessions_cleanup',
 ];
 
 export type MutableJobRunResult = { -readonly [K in keyof JobRunResult]: JobRunResult[K] };
@@ -110,6 +113,14 @@ export interface JobRunResult {
   readonly push_runs_purged: number;
   /** Удалено карточек шеринга старше 30 дней, которые никто не открывал. */
   readonly share_cards_purged: number;
+  /**
+   * Удалено сессий админки, просроченных больше недели (1.6.15).
+   *
+   * Неделя, а не «сразу»: срок сессии — 12 часов, но `revoked_at`/`expires_at`
+   * нужны дежурству ещё пару дней, чтобы ответить «почему разлогинило».
+   * Дальше строка не значит ничего, кроме риска.
+   */
+  readonly admin_sessions_purged: number;
 }
 
 /**
@@ -133,6 +144,7 @@ export class JobsService {
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(EngagementService) private readonly engagement: EngagementService,
     @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(AdminSessionService) private readonly adminSessions: AdminSessionService,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
@@ -171,6 +183,7 @@ export class JobsService {
       pushes_failed: 0,
       push_runs_purged: 0,
       share_cards_purged: 0,
+      admin_sessions_purged: 0,
     };
 
     if (pick('subscriptions_downgrade')) {
@@ -232,6 +245,13 @@ export class JobsService {
       const purged = await this.cleanupPushAndShare();
       result.push_runs_purged = purged.pushRuns;
       result.share_cards_purged = purged.shareCards;
+    }
+
+    if (pick('admin_sessions_cleanup')) {
+      // Уборка сессий панели: просроченные больше 7 дней. Тот же прогон, что и
+      // остальное удержание, но отдельным `job`, чтобы её можно было дёрнуть
+      // руками, не запуская ночную генерацию.
+      result.admin_sessions_purged = await this.adminSessions.purge(7);
     }
 
     if (pick('pdn_retention_cleanup')) {
