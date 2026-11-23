@@ -34,12 +34,36 @@ export const PLAN_CODES = [
  */
 export const TEST_PLAN_CODES = ['test_1', 'test_report_1'] as const;
 
-/** Всё, что сервер умеет выставлять в инвойсе: каталог + тестовые. */
-export const ALL_PLAN_CODES = [...PLAN_CODES, ...TEST_PLAN_CODES] as const;
+/**
+ * Цена основателя (контракт 1.6.14) — единственный «некаталожный» платный
+ * тариф.
+ *
+ * Строка `founder_month` лежит в `plans` с `is_active = false`: её не видит
+ * витрина и не продаёт `POST /billing/invoice` никому, кроме человека из
+ * списка первых 50 (`GET /founders/count`). Цена в звёздах — в сиде и в БД,
+ * здесь только код: числа в этом файле запрещены тестом-стражем.
+ */
+export const FOUNDER_PLAN_CODES = ['founder_month'] as const;
+
+/** Код тарифа основателей: 30 дней доступа по цене ниже каталога. */
+export const FOUNDER_PLAN_CODE = 'founder_month' as const;
+
+/**
+ * Всё, что сервер умеет выставлять в инвойсе: каталог + тестовые + цена
+ * основателя. `isPlanCode` по-прежнему отвечает только за каталог — иначе
+ * `founder_month` попал бы в витрину как обычный тариф.
+ */
+export const ALL_PLAN_CODES = [...PLAN_CODES, ...TEST_PLAN_CODES, ...FOUNDER_PLAN_CODES] as const;
 
 export type CataloguePlanCode = (typeof PLAN_CODES)[number];
 export type TestPlanCode = (typeof TEST_PLAN_CODES)[number];
+export type FounderPlanCode = (typeof FOUNDER_PLAN_CODES)[number];
 export type PlanCode = (typeof ALL_PLAN_CODES)[number];
+
+/** Тариф, который продаётся только основателю. */
+export function isFounderPlanCode(value: unknown): value is FounderPlanCode {
+  return value === FOUNDER_PLAN_CODE;
+}
 
 export type PlanKind = 'one_off' | 'subscription';
 

@@ -12,7 +12,7 @@ import {
   PUSH_OPEN_TEXT,
   buildPushMessage,
 } from '../src/modules/engagement/push-message';
-import { MOON_ADVICE, MOON_PHASES } from '../src/modules/share/share.service';
+import { MOON_ADVICE, MOON_GOOD_FOR, MOON_PHASES } from '../src/modules/share/share.service';
 import { forbiddenTopicIn } from '../src/modules/reports/validators';
 import { PresenceService } from '../src/modules/users/presence.service';
 import { TelegramWebhookService } from '../src/modules/telegram/telegram-webhook.service';
@@ -897,10 +897,37 @@ describe('текст пуша: 96 комбинаций «8 фаз × 12 знак
     expect(message.text).not.toMatch(/ты |твой|твоя|дорог/iu);
   });
 
-  it('вторая строка берёт фразу из MOON_ADVICE, а не выдумывает', () => {
+  it('вторая строка берёт позитивную фразу из MOON_GOOD_FOR (1.6.14)', () => {
+    // Долг 8.5: в пуше — «хорошо для», а не «лучше не начинать». `MOON_ADVICE`
+    // остаётся карточке `moon`: там человек сам открыл текст и ждёт
+    // предостережения, а на экране блокировки предостережение читается как
+    // запрет от чужого имени.
     for (const phase of MOON_PHASES) {
       const line = buildPushMessage({ sign: 'Рыбы', phase }).text.split('\n\n')[1] ?? '';
-      expect(line).toContain(MOON_ADVICE[phase]);
+      expect(line).toContain(MOON_GOOD_FOR[phase]);
+      expect(line).not.toContain(MOON_ADVICE[phase]);
+    }
+  });
+
+  it('ни в одной из 96 комбинаций нет запрета вместо пожелания', () => {
+    // Слова, которые превращают прогноз в запрет. Проверяем весь текст, а не
+    // только вторую строку: запрет мог бы приехать из приглашения.
+    const forbiddenPhrases = [
+      'не начинай',
+      'не стоит',
+      'нельзя',
+      'лучше не',
+      'избегай',
+      'опасно',
+      'остерегайся',
+    ];
+
+    for (const { sign, phase } of combos) {
+      const text = buildPushMessage({ sign, phase }).text.toLowerCase();
+
+      for (const phrase of forbiddenPhrases) {
+        expect(text).not.toContain(phrase);
+      }
     }
   });
 

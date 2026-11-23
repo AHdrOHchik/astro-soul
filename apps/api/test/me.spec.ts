@@ -144,6 +144,9 @@ describe('GET /api/v1/me — данные', () => {
     expect(me.subscription).toMatchObject({ plan: 'none', is_active: false, expires_at: null });
     // Контракт 1.4.0: реальные права и карта, а не заглушки.
     expect(me.chart_id).toBeNull();
+    // Контракт 1.6.14: к правам добавлен блок бесплатного доступа. У нового
+    // человека он пуст — но поля есть всегда, чтобы клиенту не нужно было
+    // различать «нет блока» и «прав нет».
     expect(me.entitlements).toEqual({
       is_active: false,
       plan: 'none',
@@ -153,7 +156,16 @@ describe('GET /api/v1/me — данные', () => {
       full_report_chart_id: null,
       compat_per_month: 0,
       solar_included: false,
+      all_access_until: null,
+      source: null,
+      single_reports: 0,
+      single_compat: 0,
+      is_founder: false,
+      founder_place: null,
     });
+    // Ссылка приглашения собирается из `short_id` и не содержит telegram id.
+    expect(me.referral_link).toMatch(/^https:\/\/t\.me\/astro_soul_test_bot\?start=ref_[A-Za-z0-9]{6,16}$/u);
+    expect(me.referral_link).not.toContain(String(FICTIONAL_USER.id));
     expect(me.quotas.map((quota) => quota.code).sort()).toEqual([
       'ask_daily',
       'compat_month',

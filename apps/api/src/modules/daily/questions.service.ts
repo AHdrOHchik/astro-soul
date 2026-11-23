@@ -8,6 +8,7 @@ import { ApiError, notFound, validationFailed } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import { pageLimit, pageOffset } from '../../common/paging';
 import { ChartsRepository } from '../charts/charts.repository';
+import { AccessService } from '../entitlements/access.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
 import { LLM_PROVIDER } from '../llm/llm.module';
@@ -85,6 +86,7 @@ export class QuestionsService {
     @Inject(QuestionsRepository) private readonly repo: QuestionsRepository,
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -392,8 +394,12 @@ export class QuestionsService {
       return;
     }
 
-    const entitlements = await this.entitlements.getEntitlements(userId);
-    if (!entitlements.isActive) {
+    // Единственная дверь доступа (1.6.14): право «всё включено» открывает
+    // вопросы так же, как подписка. Раньше здесь стоял `entitlements.isActive`,
+    // и любой новый источник прав пришлось бы добавлять именно тут — то есть
+    // это место и было причиной, по которой гранты «не работают».
+    const allowed = await this.access.hasAccess(userId, 'ask');
+    if (!allowed) {
       throw new ApiError('FORBIDDEN', 403, {
         reason: 'subscription_required',
         message: 'Вопросы карте входят в подписку',

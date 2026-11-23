@@ -14,6 +14,7 @@ import { DailyModule } from './modules/daily/daily.module';
 import { EventsModule } from './modules/events/events.module';
 import { FilesModule } from './modules/files/files.module';
 import { GeoModule } from './modules/geo/geo.module';
+import { GrantsModule } from './modules/grants/grants.module';
 import { HealthModule } from './modules/health/health.module';
 import { MeModule } from './modules/me/me.module';
 import { EngagementModule } from './modules/engagement/engagement.module';
@@ -43,6 +44,8 @@ import { PresenceService } from './modules/users/presence.service';
     PdfModule,
     ShareModule,
     FilesModule,
+    // Бесплатный доступ по праву (итерация 39): коды, «первые 50», приглашения.
+    GrantsModule,
   ],
   providers: [
     // Присутствие (итерация 38) — провайдер корневого модуля: его спрашивает

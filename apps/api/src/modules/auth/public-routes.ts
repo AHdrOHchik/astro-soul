@@ -25,6 +25,13 @@ const WHEEL_PNG_PATH = /^\/api\/v1\/charts\/[^/]+\/wheel\.png$/;
  */
 const FILES_PATH = /^\/api\/v1\/files\/(pdf|card)\/[^/]+$/;
 
+/**
+ * Счётчик «первые 50» (контракт 1.6.14): два числа, ни ПДн, ни прав.
+ * Витрине он нужен до входа в мини-апп — иначе «осталось 7 мест» нельзя
+ * показать тому, кто ещё не открыл приложение.
+ */
+const FOUNDERS_COUNT_PATH = /^\/api\/v1\/founders\/count$/;
+
 /** Триггер джобов: секрет в заголовке `X-Jobs-Secret` (крон, не пользователь). */
 const JOBS_RUN_PATH = /^\/api\/v1\/internal\/jobs\/run$/;
 
@@ -37,6 +44,7 @@ export function isPublicPath(requestPath: string): boolean {
     PUBLIC_PATHS.has(normalized) ||
     WHEEL_SVG_PATH.test(normalized) ||
     WHEEL_PNG_PATH.test(normalized) ||
+    FOUNDERS_COUNT_PATH.test(normalized) ||
     FILES_PATH.test(normalized) ||
     JOBS_RUN_PATH.test(normalized) ||
     TELEGRAM_WEBHOOK_PATH.test(normalized)

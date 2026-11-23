@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { Invoice, SubscriptionState } from '@astro-soul/shared';
+import { isFounderPlanCode, type Invoice, type SubscriptionState } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { ApiError, conflict, internalError, invalidFields, rateLimited } from '../../common/api-error';
@@ -10,6 +10,7 @@ import { UsersRepository } from '../users/users.repository';
 import { ChartsRepository } from '../charts/charts.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
+import { GrantsRepository } from '../grants/grants.repository';
 import { SubscriptionPeriodUnsupportedError, TelegramClient } from '../telegram/telegram.client';
 import {
   XTR_SUBSCRIPTION_PERIOD_SECONDS,
@@ -36,6 +37,7 @@ export class BillingService {
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(ChartsRepository) private readonly charts: ChartsRepository,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
+    @Inject(GrantsRepository) private readonly grants: GrantsRepository,
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
@@ -66,8 +68,16 @@ export class BillingService {
    */
   async createInvoice(auth: VerifiedInitData, body: unknown): Promise<Invoice> {
     const { planCode, chartId } = parseInvoiceRequest(body);
+
+    // Пользователь нужен раньше плана: цена основателя (1.6.14) продаётся
+    // только тому, у кого есть место в `founders`, и проверка идёт по `user_id`.
+    const { userId } = await this.users.ensureUser({
+      telegramUserId: auth.telegramUserId,
+      languageCode: auth.user.language_code,
+    });
+
     // План — строка из `plans`: цена, тексты и права только оттуда.
-    const plan = await this.resolveSellablePlan(planCode);
+    const plan = await this.resolveSellablePlan(planCode, userId);
 
     // Полный разбор покупается для конкретной карты: без `chart_id` платёж
     // пришлось бы «прикреплять» к первой карте задним числом — это сюрприз,
@@ -78,11 +88,6 @@ export class BillingService {
         { reason: 'chart_required_for_report' },
       );
     }
-
-    const { userId } = await this.users.ensureUser({
-      telegramUserId: auth.telegramUserId,
-      languageCode: auth.user.language_code,
-    });
 
     if (chartId !== null) {
       const chart = await this.charts.findOwnedBy(chartId, userId);
@@ -269,11 +274,26 @@ export class BillingService {
    * (`is_active = false`) и тестовый тариф при выключенном флаге: клиент не
    * должен различать «нет такого» и «есть, но не для тебя».
    */
-  private async resolveSellablePlan(planCode: string): Promise<PlanRow> {
+  private async resolveSellablePlan(planCode: string, userId: string): Promise<PlanRow> {
     const plan = await this.plans.getPlan(planCode);
 
     if (plan === null) {
       planNotAvailable();
+    }
+
+    // Цена основателя (1.6.14): строка `is_active = false`, потому что она не
+    // для каталога, но продаётся — и только тому, у кого есть место в
+    // `founders`. Проверка серверная: клиент может попросить `founder_month`
+    // сколько угодно раз, и без места получит тот же `422`, что и за
+    // несуществующий тариф.
+    if (isFounderPlanCode(planCode)) {
+      const place = await this.grants.founderPlace(userId);
+
+      if (place === null) {
+        planNotAvailable();
+      }
+
+      return plan;
     }
 
     if (plan.testOnly) {

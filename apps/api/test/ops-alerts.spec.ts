@@ -7,6 +7,7 @@ import type { Response } from 'express';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
 import type { AppEnv } from '../src/config/env';
 import type { DbService } from '../src/db/db.service';
+import type { BonusBudgetService } from '../src/modules/grants/bonus-budget.service';
 import { HealthController } from '../src/modules/health/health.controller';
 import type { AdminMetricsService, ProductMetrics } from '../src/modules/ops/admin-metrics.service';
 import { AlertsService, ALERT_THRESHOLDS, type AlertsResponse } from '../src/modules/ops/alerts.service';
@@ -189,6 +190,9 @@ describe('алерты: пороги в одном месте', () => {
       backup_stale: 36,
       // Седьмое правило (1.6.13): провалы утреннего пуша за сутки.
       push_failed: 20,
+      // Восьмое правило (1.6.14): порог берётся из `BONUS_BUDGET_RUB`, поэтому
+      // в таблице стоит 0 — «сравнивать со значением из окружения».
+      bonus_budget_exhausted: 0,
     });
   });
 });
@@ -271,7 +275,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
     return signInitData({ botToken: TEST_BOT_TOKEN, user: { ...FICTIONAL_USER, id } });
   }
 
-  it('отдаёт все семь алертов с уровнями и порогами', async () => {
+  it('отдаёт все восемь алертов с уровнями и порогами', async () => {
     const response = await request(ctx.app.getHttpServer())
       .get('/api/v1/admin/alerts')
       .set(INIT_DATA_HEADER, initDataFor(FICTIONAL_USER.id))
@@ -285,6 +289,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
       'llm_spend',
       'generations_failing',
       'push_failed',
+      'bonus_budget_exhausted',
       'backup_stale',
     ]);
     expect(body.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
@@ -294,6 +299,9 @@ describe('GET /admin/alerts и /health — маршруты', () => {
       'critical',
       'warning',
       'warning',
+      'warning',
+      // Восьмое правило (1.6.14): бюджет бесплатного доступа выбран. Warning, а
+      // не critical: продукт работает, ломается только выдача новых прав.
       'warning',
       'warning',
     ]);
@@ -316,7 +324,13 @@ describe('GET /admin/alerts и /health — маршруты', () => {
     expect(response.body).toMatchObject({
       status: 'degraded',
       telegram_webhook: 'stale',
-      flags: { test_plans: false, report_breaker: true },
+      flags: {
+        test_plans: false,
+        report_breaker: true,
+        // Бюджет бесплатного доступа виден мониторингу числом: «пусто» и
+        // «исчерпан» — разные состояния, и флаг-булеан их не различил бы.
+        bonus_budget: { spent_rub: 0, exhausted: false },
+      },
     });
     expect(typeof response.body.checked_at).toBe('string');
   });
@@ -332,8 +346,14 @@ describe('/health — коды ответа', () => {
       REPORT_BREAKER_ENABLED: '1',
     } as unknown as AppEnv;
     const webhook = webhookWith({ state: 'ok', ok: true, checkedAt: new Date().toISOString() });
+    // Бюджет бесплатного доступа (1.6.14): в тестах `/health` он «не исчерпан»,
+    // иначе `status` уезжал бы в `degraded` и коды ответа проверялись бы не в
+    // том состоянии.
+    const bonusBudget = {
+      state: () => Promise.resolve({ spent_rub: 0, limit_rub: 15_000, exhausted: false }),
+    } as unknown as BonusBudgetService;
 
-    return new HealthController(db, astro, env, webhook);
+    return new HealthController(db, astro, env, webhook, bonusBudget);
   }
 
   function fakeResponse(): { status: (code: number) => void; code: number } {

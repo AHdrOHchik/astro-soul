@@ -76,8 +76,10 @@ export async function seedPlans(
           grantsJson(plan),
           plan.sort,
           // Тестовый тариф лежит в таблице только потому, что на неё ссылаются
-          // инвойсы и платежи; в каталоге он неактивен.
-          !plan.testOnly,
+          // инвойсы и платежи; в каталоге он неактивен. Цена основателя — тоже
+          // вне витрины: её продают только человеку из первых 50, и решает это
+          // сервер, а не список планов в приложении.
+          !plan.testOnly && plan.founderOnly !== true,
           plan.testOnly,
         ],
       );
@@ -109,6 +111,24 @@ export async function seedPlans(
       // счёта и тексты приводим к сиду при каждом прогоне. Иначе стенд, где
       // `test_1` создался недельным, никогда не станет тридцатидневным, и
       // «тестовая оплата» не выставляется (Bot API принимает только 2 592 000).
+      // Цена основателя обязана быть неактивной всегда: это не «данные
+      // владельца», а правило витрины. Если строку когда-то создали активной
+      // (или владелец включил её руками), витрина показала бы `founder_month`
+      // всем — то есть скидку, которую нельзя получить.
+      if (plan.founderOnly === true) {
+        const hidden = await client.query(
+          `UPDATE plans
+              SET is_active = false, updated_at = now()
+            WHERE code = $1 AND is_active
+            RETURNING code`,
+          [plan.code],
+        );
+
+        if (hidden.rowCount === 1) {
+          backfilled += 1;
+        }
+      }
+
       if (plan.testOnly) {
         const synced = await client.query(
           `UPDATE plans

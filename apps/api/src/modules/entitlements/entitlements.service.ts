@@ -1,8 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  EMPTY_GRANT_ENTITLEMENTS,
   entitlementsForPlan,
   FREE_ENTITLEMENTS,
   type Entitlements,
+  type GrantEntitlements,
+  type GrantSource,
   type SubscriptionState,
 } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
@@ -36,6 +39,58 @@ export class EntitlementsService {
     month: 'month',
     year: 'year',
   };
+
+  /**
+   * Бесплатный доступ по праву (контракт 1.6.14) — отдельный блок.
+   *
+   * Читается **всегда**, даже когда есть подписка: человек может иметь и
+   * купленный год, и подаренные 14 дней — и «действует до» должно показывать
+   * самый поздний конец, а не то, что первым попало в `ORDER BY`.
+   */
+  async getGrantEntitlements(userId: string): Promise<GrantEntitlements> {
+    const row = await this.db.queryOne<{
+      all_access_until: Date | null;
+      single_reports: number;
+      single_compat: number;
+      founder_place: number | null;
+      source: GrantSource | null;
+    }>(
+      `SELECT
+         (SELECT max(expires_at) FROM grants
+           WHERE user_id = $1 AND kind = 'all_access' AND revoked_at IS NULL
+             AND starts_at IS NOT NULL AND expires_at > now()) AS all_access_until,
+         (SELECT count(*)::int FROM grants
+           WHERE user_id = $1 AND kind = 'single_report'
+             AND consumed_at IS NULL AND revoked_at IS NULL) AS single_reports,
+         (SELECT count(*)::int FROM grants
+           WHERE user_id = $1 AND kind = 'single_compat'
+             AND consumed_at IS NULL AND revoked_at IS NULL) AS single_compat,
+         (SELECT place FROM founders WHERE user_id = $1) AS founder_place,
+         -- Источник — у самого позднего действующего права: клиент показывает
+         -- «доступ от партнёра» / «от друга», и это должно быть то право,
+         -- которое человек получил последним.
+         (SELECT source FROM grants
+           WHERE user_id = $1 AND revoked_at IS NULL
+             AND (expires_at IS NULL OR expires_at > now())
+             AND (consumed_at IS NULL OR kind = 'all_access')
+           ORDER BY created_at DESC
+           LIMIT 1) AS source`,
+      [userId],
+    );
+
+    if (row === null) {
+      return EMPTY_GRANT_ENTITLEMENTS;
+    }
+
+    return {
+      allAccessUntil: row.all_access_until?.toISOString() ?? null,
+      source: row.source,
+      singleReports: row.single_reports,
+      singleCompat: row.single_compat,
+      isFounder: row.founder_place !== null,
+      founderPlace: row.founder_place,
+    };
+  }
 
   async getEntitlements(userId: string): Promise<Entitlements> {
     const [subscription, oneOff, readyReport] = await Promise.all([
@@ -78,13 +133,37 @@ export class EntitlementsService {
         : await this.baseEntitlements(subscription.plan);
 
     const kinds = new Set(oneOff.map((row) => row.kind));
+    const grants = await this.getGrantEntitlements(userId);
+    // Действующее право «всё включено» даёт права годового плана, а не
+    // месячного: подарок — это «попробуй всё», включая карту года, и разница
+    // в цене здесь ничего не значит (это не продажа).
+    const allAccess = grants.allAccessUntil !== null;
+
+    const withAccess: Entitlements = allAccess
+      ? {
+          ...base,
+          // `plan` намеренно остаётся тем, чем был: `'none'`, если подписки нет.
+          // Грант — не подписка, и `plan: 'year'` соврал бы клиенту и метрикам.
+          isActive: true,
+          fullForecast: true,
+          askPerDay: Math.max(base.askPerDay, 5),
+          compatPerMonth: Math.max(base.compatPerMonth, 1),
+          solarIncluded: true,
+        }
+      : base;
 
     return {
-      ...base,
-      fullReport: base.fullReport || kinds.has('report') || readyReport !== null,
+      ...withAccess,
+      fullReport: withAccess.fullReport || kinds.has('report') || readyReport !== null,
       fullReportChartId: paidChart,
-      compatPerMonth: Math.max(base.compatPerMonth, kinds.has('compat') ? 1 : 0),
-      solarIncluded: base.solarIncluded || kinds.has('solar'),
+      compatPerMonth: Math.max(
+        withAccess.compatPerMonth,
+        kinds.has('compat') ? 1 : 0,
+        // Одноразовое право тоже открывает экран совместимости: иначе кнопка
+        // «заказать» осталась бы закрытой, хотя право уже есть.
+        grants.singleCompat > 0 ? 1 : 0,
+      ),
+      solarIncluded: withAccess.solarIncluded || kinds.has('solar'),
     };
   }
 

@@ -68,3 +68,48 @@ export function entitlementsForPlan(plan: PlanRightsSource): Entitlements {
     solarIncluded: grants.solarIncluded,
   };
 }
+
+/**
+ * Источник бесплатного права (контракт 1.6.14).
+ *
+ * `partner` — партнёрский код, `founder` — «первые 50», `referral` — друг
+ * пригласил, `admin` — ручная выдача. Платёж не участвует ни в одном из них:
+ * грант — это право по обстоятельству, а не покупка.
+ */
+export type GrantSource = 'partner' | 'founder' | 'referral' | 'admin';
+
+/** Что именно даёт право. */
+export type GrantKind = 'all_access' | 'single_report' | 'single_compat';
+
+/**
+ * Бесплатный доступ по праву — отдельный блок `Me.entitlements` (1.6.14).
+ *
+ * Отдельный от `Entitlements`, а не поля внутри: `Entitlements` — форма прав,
+ * из которой считается квота, и она не должна зависеть от того, откуда право
+ * взялось. Клиент рисует «открыто до 14 декабря» по `allAccessUntil` и не
+ * решает доступ сам — сервер всё равно проверяет `hasAccess`.
+ */
+export interface GrantEntitlements {
+  /** До какого момента действует «всё включено»; `null` — такого права нет. */
+  readonly allAccessUntil: string | null;
+  /** Откуда последнее действующее право; `null` — прав нет. */
+  readonly source: GrantSource | null;
+  /** Неизрасходованных бесплатных разборов. */
+  readonly singleReports: number;
+  /** Неизрасходованных бесплатных совместимостей. */
+  readonly singleCompat: number;
+  /** Человек в списке первых 50. */
+  readonly isFounder: boolean;
+  /** Номер места основателя (1..50); `null` — не основатель. */
+  readonly founderPlace: number | null;
+}
+
+/** Прав нет: пользователь без кодов, приглашений и места в «первых 50». */
+export const EMPTY_GRANT_ENTITLEMENTS: GrantEntitlements = {
+  allAccessUntil: null,
+  source: null,
+  singleReports: 0,
+  singleCompat: 0,
+  isFounder: false,
+  founderPlace: null,
+};

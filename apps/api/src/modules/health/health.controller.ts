@@ -6,6 +6,7 @@ import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { AstroClient } from '../astro/astro.client';
 import { TelegramWebhookService } from '../telegram/telegram-webhook.service';
+import { BonusBudgetService } from '../grants/bonus-budget.service';
 
 /**
  * Единственный публичный маршрут `/api/v1/*` (контракт: `security: []`).
@@ -34,14 +35,19 @@ export class HealthController {
     @Inject(AstroClient) private readonly astro: AstroClient,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(TelegramWebhookService) private readonly webhook: TelegramWebhookService,
+    @Inject(BonusBudgetService) private readonly bonusBudget: BonusBudgetService,
   ) {}
 
   @Get()
   async health(@Res({ passthrough: true }) response: Response): Promise<HealthResponse> {
-    const [dbOk, astroState, push] = await Promise.all([
+    const [dbOk, astroState, push, bonusBudget] = await Promise.all([
       this.db.ping(),
       this.astro.health(),
       this.pushState(),
+      // 1.6.14: бюджет бесплатного доступа — видимое снаружи состояние, а не
+      // только строка в логе: «подарки кончились» должно объясняться одним
+      // запросом к `/health`, а не перепиской.
+      this.bonusBudget.state(),
     ]);
 
     // Состояние вебхука — из последней проверки при старте/диагностике
@@ -55,7 +61,11 @@ export class HealthController {
     // Пуш (итерация 38): если функция включена, а цикл не запускался дольше двух
     // часов — это поломка, которую иначе никто не заметит. Люди просто перестают
     // получать «доброе утро» и не жалуются: отсутствие сообщения не болит.
-    const degraded = !dbOk || astroState !== 'ok' || webhook.state !== 'ok' || push.stale;
+    // Бюджет бесплатного доступа: исчерпанный бюджет не «поломка», но и не
+    // «всё хорошо» — `degraded`, чтобы мониторинг показал это до жалоб
+    // («почему код не активируется»).
+    const degraded =
+      !dbOk || astroState !== 'ok' || webhook.state !== 'ok' || push.stale || bonusBudget.exhausted;
 
     // `503` только там, где сервис не может обслуживать запросы вообще.
     if (!dbOk) {
@@ -79,6 +89,11 @@ export class HealthController {
           enabled: push.enabled,
           last_run_at: push.lastRunAt,
           last_sent_count: push.lastSentCount,
+        },
+        bonus_budget: {
+          spent_rub: bonusBudget.spent_rub,
+          limit_rub: bonusBudget.limit_rub,
+          exhausted: bonusBudget.exhausted,
         },
       },
       checked_at: new Date().toISOString(),

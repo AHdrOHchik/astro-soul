@@ -20,6 +20,12 @@ const PROBLEM_CODES: Record<ProblemCode, true> = {
   INTERNAL: true,
   UPSTREAM_LLM: true,
   GEO_NOT_FOUND: true,
+  // 410: the access code existed and expired. A code of its own rather than 404 so the
+  // screen can say "the term is over" and not "there is no such code".
+  GONE: true,
+  // 503: the monthly free-access budget is spent. The screen says "try next month"
+  // instead of "something broke on our side" — nothing is broken.
+  BONUS_BUDGET_EXHAUSTED: true,
 };
 
 /**

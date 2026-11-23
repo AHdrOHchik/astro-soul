@@ -11,6 +11,9 @@ import { computeWarnings, WARNING_CODES, type ChartWarning } from './charts.warn
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { WheelSignatureService } from './wheel-signature.service';
+import { GrantsService } from '../grants/grants.service';
+import { ReferralsService } from '../grants/referrals.service';
+import { JsonLogger } from '../../common/logger';
 
 export const API_PREFIX = '/api/v1';
 /** PNG для шаринга: 1080 px по ширине — стандарт для картинок в чатах. */
@@ -64,6 +67,9 @@ export class ChartsService {
     @Inject(ChartsRepository) private readonly charts: ChartsRepository,
     @Inject(WheelSignatureService) private readonly signature: WheelSignatureService,
     @Inject(APP_ENV) private readonly env: AppEnv,
+    @Inject(GrantsService) private readonly grants: GrantsService,
+    @Inject(ReferralsService) private readonly referrals: ReferralsService,
+    @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
   /**
@@ -115,9 +121,46 @@ export class ChartsService {
       warnings: computeWarnings({ timePrecision: input.time_precision, place: input.birth_place }),
     });
 
+    if (row.inserted) {
+      await this.afterChartCreated(userId);
+    }
+
     // `inserted` различает вставку и попадание в существующую строку по
     // `(user_id, input_hash)`: это и есть 201 против 200.
     return { response: this.toResponse(row, !row.inserted), created: row.inserted };
+  }
+
+  /**
+   * Побочные эффекты первой карты (1.6.14) — **после** записи карты и вне её
+   * транзакции: карта уже существует, и её нельзя терять из-за подарка.
+   *
+   * Здесь два события:
+   *   1. ожидающие права «всё включено» начинают течь — до карты они лежали в
+   *      `pending` и не сжигали дни;
+   *   2. пригласивший получает 30 дней, если этот человек пришёл по `ref_` и
+   *      карта у него первая.
+   *
+   * Ошибки только логируются: `POST /charts` не должен отвечать 5xx из-за
+   * того, что не удалось начислить подарок, — карту человек уже получил.
+   */
+  private async afterChartCreated(userId: string): Promise<void> {
+    try {
+      await this.grants.startPendingFor(userId);
+    } catch (error) {
+      this.logger.warn('grant_start_failed', {
+        user: userId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    try {
+      await this.referrals.rewardAfterChart(userId);
+    } catch (error) {
+      this.logger.warn('referral_reward_failed', {
+        user: userId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /** `GET /charts/current` — карта пользователя или 404 (онбординг). */

@@ -34,7 +34,15 @@ export type AlertId =
   | 'llm_spend'
   | 'generations_failing'
   | 'backup_stale'
-  | 'push_failed';
+  | 'push_failed'
+  /**
+   * Месячный бюджет бесплатного доступа исчерпан (1.6.14).
+   *
+   * `warning`, а не `critical`: продукт работает, действующие права действуют,
+   * ломается только выдача новых — но человек в этот момент видит
+   * `503 bonus_budget_exhausted` и не понимает, почему «код не подходит».
+   */
+  | 'bonus_budget_exhausted';
 
 export type AlertLevel = 'critical' | 'warning';
 
@@ -78,6 +86,15 @@ export const ALERT_THRESHOLDS = {
    * люди блокируют бота, это норма, и такие чаты отключаются сами.
    */
   push_failed: 20,
+  /**
+   * Бюджет бесплатного доступа, рубли (итерация 39).
+   *
+   * Порог — «бюджет выбран», то есть сравнение с `BONUS_BUDGET_RUB` из
+   * окружения: `value` — потрачено, `threshold` — лимит. Число не дублируется
+   * константой: иначе владелец поднял бы бюджет в `.env`, а алерт продолжал бы
+   * срабатывать по старому порогу.
+   */
+  bonus_budget_exhausted: 0,
 } as const;
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -187,6 +204,19 @@ export class AlertsService {
         threshold: ALERT_THRESHOLDS.push_failed,
         since: crossings.push,
         fired: pushFailuresValue > ALERT_THRESHOLDS.push_failed,
+      },
+      {
+        id: 'bonus_budget_exhausted',
+        level: 'warning',
+        value: metrics.bonus_budget_spent_rub,
+        threshold: metrics.bonus_budget_limit_rub,
+        // `since` не считаем: превышение бюджета — состояние месяца, а не
+        // событие в потоке, и «когда именно перевалило» восстанавливается по
+        // `grants` делением, а не окном. `null` честнее выдумки.
+        since: null,
+        // Сравнение с лимитом, а не с `ALERT_THRESHOLDS`: порог здесь — сумма
+        // бюджета, и она меняется окружением, а не релизом.
+        fired: metrics.bonus_budget_spent_rub >= metrics.bonus_budget_limit_rub,
       },
       {
         id: 'backup_stale',

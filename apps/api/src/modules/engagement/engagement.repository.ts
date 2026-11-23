@@ -93,11 +93,23 @@ export class EngagementRepository {
               c.user_id,
               ${EngagementRepository.TZ_EXPR} AS tz,
               c.data,
+              -- 1.6.14: «полный прогноз оплачен» — это подписка ИЛИ право
+              -- «всё включено». Одним предикатом в двух местах: и в SELECT
+              -- (paid), и в WHERE (генерировать каждый день, а не один раз за
+              -- жизнь карты). Без грантов человек с подарком получал бы
+              -- короткую версию, хотя экран показывал бы полную.
               EXISTS (
                 SELECT 1 FROM subscriptions s
                  WHERE s.user_id = c.user_id
                    AND s.status = 'active'
                    AND s.expires_at > $1::timestamptz
+              ) OR EXISTS (
+                SELECT 1 FROM grants g
+                 WHERE g.user_id = c.user_id
+                   AND g.kind = 'all_access'
+                   AND g.revoked_at IS NULL
+                   AND g.starts_at IS NOT NULL
+                   AND g.expires_at > $1::timestamptz
               ) AS paid
          FROM charts c
         WHERE ${EngagementRepository.TZ_EXPR} ~ '^[A-Za-z][A-Za-z0-9_+/-]*$'
@@ -113,6 +125,14 @@ export class EngagementRepository {
                    WHERE s2.user_id = c.user_id
                      AND s2.status = 'active'
                      AND s2.expires_at > $1::timestamptz
+                )
+                OR EXISTS (
+                  SELECT 1 FROM grants g2
+                   WHERE g2.user_id = c.user_id
+                     AND g2.kind = 'all_access'
+                     AND g2.revoked_at IS NULL
+                     AND g2.starts_at IS NOT NULL
+                     AND g2.expires_at > $1::timestamptz
                 )
                 OR c.created_at < $1::timestamptz - interval '1 day'
               )
@@ -309,8 +329,11 @@ export class EngagementRepository {
     kind: string = 'daily_forecast',
   ): Promise<boolean> {
     const row = await this.db.queryOne<{ id: string }>(
-      `INSERT INTO push_log (user_id, local_date, kind)
-       VALUES ($1, $2::date, $3)
+      // `sent = false` пишется явно: заявка — ещё не отправка. Если процесс
+      // умрёт до `finishPush`, строка останется `sent = false, error IS NULL`,
+      // и метрика `push_claimed_not_sent_24h` это покажет (1.6.14).
+      `INSERT INTO push_log (user_id, local_date, kind, sent)
+       VALUES ($1, $2::date, $3, false)
        ON CONFLICT (user_id, local_date, kind) DO NOTHING
        RETURNING id`,
       [userId, localDate, kind],
@@ -327,7 +350,9 @@ export class EngagementRepository {
     error: string | null,
   ): Promise<void> {
     await this.db.query(
-      `UPDATE push_log SET error = $4
+      // `sent = (error IS NULL)`: успех — единственный случай, когда сообщение
+      // точно ушло. Отказ Bot API (`blocked`, `rate_limited`) — не отправка.
+      `UPDATE push_log SET error = $4, sent = ($4::text IS NULL)
         WHERE user_id = $1 AND local_date = $2::date AND kind = $3`,
       [userId, localDate, kind, error],
     );
@@ -416,19 +441,40 @@ export class EngagementRepository {
     };
   }
 
-  /** Итоги `push_log` за сутки: сколько ушло и сколько сломалось. */
-  async pushLogTotals24h(): Promise<{ sent: number; failed: number }> {
-    const row = await this.db.queryOne<{ sent: number; failed: number }>(
-      `SELECT count(*) FILTER (WHERE error IS NULL)::int AS sent,
+  /**
+   * Итоги `push_log` за сутки: сколько ушло, сколько сломалось и сколько
+   * осталось «заявкой без отправки».
+   *
+   * Третье число (1.6.14, долг 8.5) — тихая потеря: строка создана, ошибки нет,
+   * но `sent = false`. Значит процесс умер между заявкой и отправкой; ни
+   * исключения, ни записи в логе об этом не осталось, и без счётчика это
+   * видно только по жалобе «пуш не пришёл».
+   */
+  async pushLogTotals24h(): Promise<{ sent: number; failed: number; claimedNotSent: number }> {
+    const row = await this.db.queryOne<{
+      sent: number;
+      failed: number;
+      claimed_not_sent: number;
+    }>(
+      // `failed` считается по `error`, а не по `sent`: строки, записанные до
+      // 0036, получили `sent = true` по умолчанию, хотя ошибка в них есть, и
+      // алерт `push_failed` не должен «потерять» их в день миграции. Отказы
+      // «человек заблокировал бота» — не поломка: такие чаты гасятся сами.
+      `SELECT count(*) FILTER (WHERE sent AND error IS NULL)::int AS sent,
               count(*) FILTER (
                 WHERE error IS NOT NULL
                   AND error NOT IN ('blocked', 'chat_not_found')
-              )::int AS failed
+              )::int AS failed,
+              count(*) FILTER (WHERE NOT sent AND error IS NULL)::int AS claimed_not_sent
          FROM push_log
         WHERE sent_at >= now() - interval '24 hours'`,
     );
 
-    return { sent: row?.sent ?? 0, failed: row?.failed ?? 0 };
+    return {
+      sent: row?.sent ?? 0,
+      failed: row?.failed ?? 0,
+      claimedNotSent: row?.claimed_not_sent ?? 0,
+    };
   }
 
   /** Стоимость LLM за месяц по удержанию: прогнозы + «спроси карту». */

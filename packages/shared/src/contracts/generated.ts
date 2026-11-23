@@ -57,6 +57,19 @@ export interface paths {
                                 test_plans?: boolean;
                                 report_breaker?: boolean;
                                 /**
+                                 * @description Бюджет бесплатного доступа (1.6.14): сколько уже
+                                 *     выдано в этом календарном месяце, каков лимит и
+                                 *     исчерпан ли он. `exhausted = true` переводит
+                                 *     `status` в `degraded`: продукт работает, но новые
+                                 *     коды и подарки отвечают `503 bonus_budget_exhausted`,
+                                 *     и об этом надо знать до жалоб.
+                                 */
+                                bonus_budget?: {
+                                    spent_rub?: number;
+                                    limit_rub?: number;
+                                    exhausted?: boolean;
+                                };
+                                /**
                                  * @description Утренний пуш (1.6.13). `enabled` — `PUSH_ENABLED` в
                                  *     рантайме: включение функции — рестарт API, а не
                                  *     деплой кода. `last_run_at` — время последнего цикла
@@ -285,6 +298,597 @@ export interface paths {
                     content: {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/activate-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Активировать код доступа
+         * @description Код — право на выдачу, а не право само по себе: активация создаёт строку
+         *     в `grants` и **не создаёт** подписку. Ни `subscriptions`, ни `charge_id`,
+         *     ни автопродления: грант нечего отменять, и алерт
+         *     `subscription_cancel_no_charge_id_24h` его не увидит.
+         *
+         *     **Срок начинается с карты.** Код можно активировать до онбординга, но
+         *     дни начинают течь после построения карты: иначе человек сжигает
+         *     подаренный месяц, глядя на экран ввода даты рождения. До карты право
+         *     лежит в `pending` и видно в `Me.entitlements.all_access_until = null`.
+         *
+         *     Один код — одна активация на человека (уникальный ключ
+         *     `(code_id, user_id)`), счётчик активаций увеличивается атомарно
+         *     (`UPDATE … WHERE activations < max_activations`). Повторная активация
+         *     другого кода того же вида **продлевает** срок, а не создаёт второе
+         *     право.
+         *
+         *     Ответ — полный блок `Me.entitlements`, чтобы клиенту не нужен был
+         *     второй запрос и он не показывал «активировано» без подтверждения
+         *     сервера.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /**
+                         * @description 8 знаков из алфавита `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`
+                         *     (без `0`, `O`, `1`, `I`). Регистр и пробелы не важны:
+                         *     сервер нормализует значение.
+                         * @example K7M2P9X4
+                         */
+                        code: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Право активировано (или продлено); тело — новые права */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            entitlements: components["schemas"]["Entitlements"];
+                        };
+                    };
+                };
+                /** @description UNAUTHORIZED */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `code_not_found` — кода нет или он выключен */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description `code_exhausted` — все активации кода использованы;
+                 *     `already_activated` — этот человек уже активировал этот код
+                 */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `code_expired` — срок действия кода закончился */
+                410: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `field_errors[{field: "code"}]` — пусто или формат не тот */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /**
+                 * @description `bonus_budget_exhausted` — месячный бюджет бесплатного доступа
+                 *     исчерпан. Действующие права продолжают работать: отказ только в
+                 *     новых.
+                 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/founder-claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Занять место в «первых 50»
+         * @description Атомарная серверная выдача места: два одновременных нажатия не могут
+         *     получить одно место, а номер места уникален в схеме (`place BETWEEN 1
+         *     AND 50`). Счётчик в приложении здесь не работает по определению.
+         *
+         *     Что получает основатель: один бесплатный полный разбор (расходуется на
+         *     первом заказе), 14 дней «всё включено» (срок снова начинается с карты) и
+         *     постоянную цену `founder_month` — 250 ⭐ вместо каталожных. Цена — не
+         *     грант, а строка `plans` с `is_active = false`, к которой сервер пускает
+         *     только основателя.
+         *
+         *     Повторный вызов идемпотентен: возвращает то же место и `200`, ничего
+         *     второго не выдавая. 51-й получает `409 founders_exhausted` — акция
+         *     конечна по определению, а не «попробуйте позже».
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Место занято (или уже было) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            founder_place: number;
+                            entitlements: components["schemas"]["Entitlements"];
+                        };
+                    };
+                };
+                /** @description UNAUTHORIZED */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `founders_exhausted` — все 50 мест заняты */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `bonus_budget_exhausted` — права выдать нечем */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/referral": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ссылка приглашения и счётчики
+         * @description Ссылка `https://t.me/<bot>?start=ref_<short_id>`. `short_id` — 8 знаков
+         *     без `telegram_id` и `user_id`: ссылка не ПДн, её можно пересылать.
+         *
+         *     `link = null` без `BOT_USERNAME` — как `share.link`: битая ссылка хуже
+         *     отсутствующей.
+         *
+         *     Награда пригласившему — 30 дней «всё включено» и только после того, как
+         *     приглашённый построил карту. Потолок — 90 дней на человека из этого
+         *     источника; проверяется **до** начисления. Работает один уровень: за
+         *     приглашённых приглашённого награды нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @example k7m2p9x4 */
+                            short_id: string;
+                            /** Format: uri */
+                            link: string | null;
+                            /** @description Сколько людей пришло по ссылке. */
+                            joined: number;
+                            /** @description По скольким из них награда уже начислена. */
+                            rewarded: number;
+                        };
+                    };
+                };
+                /** @description UNAUTHORIZED */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/founders/count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Сколько мест «первых 50» занято
+         * @description Публичный маршрут без initData: витрина показывает «осталось N мест» до
+         *     входа в мини-апп. ПДн нет — только два числа, ни мест, ни имён.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @example 7 */
+                            taken: number;
+                            /** @example 50 */
+                            total: number;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/grants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * История прав человека (для поддержки)
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`).
+         *
+         *     `user_id` обязателен: «все права всех людей» — это выгрузка базы, а не
+         *     экран поддержки, поэтому без параметра — `422`. Отозванные права
+         *     **входят** в список (`revoked: true`): вопрос «почему у человека
+         *     отобрали доступ» отвечается историей, а не логами.
+         */
+        get: {
+            parameters: {
+                query: {
+                    user_id: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                /** Format: uuid */
+                                id: string;
+                                /** Format: uuid */
+                                user_id: string;
+                                /** @enum {string} */
+                                kind: "all_access" | "single_report" | "single_compat";
+                                /** @enum {string} */
+                                source: "admin" | "partner" | "founder" | "referral" | "purchase";
+                                /** Format: uuid */
+                                code_id?: string | null;
+                                days?: number | null;
+                                /** Format: date-time */
+                                starts_at?: string | null;
+                                /** Format: date-time */
+                                expires_at?: string | null;
+                                /** Format: date-time */
+                                consumed_at?: string | null;
+                                /** Format: date-time */
+                                revoked_at?: string | null;
+                                revoked: boolean;
+                                /** Format: date-time */
+                                created_at: string;
+                            }[];
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description VALIDATION_FAILED */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Выдать или отозвать право вручную
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`), как у `/admin/metrics`.
+         *
+         *     Тело: `{user_id, kind, days?, action?, grant_id?}`. `action: "issue"`
+         *     (по умолчанию) выдаёт право, `action: "revoke"` отзывает по `grant_id`.
+         *     **Отзыв не удаляет строку**: `revoked_at` — это история выдачи, и
+         *     «почему у человека отобрали доступ» должно отвечаться запросом.
+         *
+         *     Тело `POST /admin/codes`: `{kind, days?, max_activations,
+         *     partner_name?, expires_at?}`. `max_activations` обязателен: код без
+         *     счётчика — это и есть бесконтрольная раздача.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** Format: uuid */
+                        user_id: string;
+                        /** @enum {string} */
+                        kind: "all_access" | "single_report" | "single_compat";
+                        /** @description Только для `all_access`: 1..3650. */
+                        days?: number;
+                        /** @enum {string} */
+                        action?: "issue" | "revoke";
+                        /**
+                         * Format: uuid
+                         * @description Обязателен для `revoke`.
+                         */
+                        grant_id?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            grant_id: string;
+                            kind: string;
+                            source: string;
+                            /** Format: date-time */
+                            expires_at: string | null;
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `grant_not_found` — отзывать нечего (или право уже отозвано) */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `bonus_budget_exhausted` */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Последние коды с остатком активаций
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`). Порядок — новые сначала.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["AccessCode"][];
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Создать код доступа
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        kind: "all_access" | "single_report" | "single_compat";
+                        /** @description Обязателен для `all_access`. */
+                        days?: number;
+                        max_activations: number;
+                        /** @description Метка партнёра */
+                        partner_name?: string | null;
+                        /** Format: date-time */
+                        expires_at?: string | null;
+                    };
+                };
+            };
+            responses: {
+                /** @description Код создан */
+                201: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AccessCode"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description VALIDATION_FAILED */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };
@@ -2742,6 +3346,49 @@ export interface paths {
                              *     ретрай после падения.
                              */
                             push_duplicate_prevented_24h?: number;
+                            /**
+                             * @description Заявка в `push_log` была, отправки не было (1.6.14):
+                             *     строка создана до вызова Bot API, `error` пуст, но
+                             *     `sent = false` — процесс умер между заявкой и отправкой.
+                             *     Тихая потеря пушей, которую иначе видно только по
+                             *     жалобам «мне не пришло».
+                             */
+                            push_claimed_not_sent_24h?: number;
+                            /**
+                             * @description Действующих прав доступа сейчас (1.6.14): неотозванные
+                             *     `all_access` с неистёкшим сроком и нерасходованные
+                             *     одноразовые права.
+                             */
+                            grants_active?: number;
+                            /**
+                             * @description Выдано прав за 24 часа — по источникам: `partner`,
+                             *     `founder`, `referral`, `admin`. Ключа нет, если из этого
+                             *     источника за сутки ничего не выдавали.
+                             * @example {
+                             *       "partner": 4,
+                             *       "founder": 11,
+                             *       "referral": 2
+                             *     }
+                             */
+                            grants_issued_24h?: {
+                                [key: string]: number;
+                            };
+                            /**
+                             * @description Оценка упущенной выручки за сутки, рубли. Считается по
+                             *     каталогу: подаренные дни «всё включено» × месячная цена /
+                             *     30 плюс выданные одноразовые права по их цене, звёзды
+                             *     пересчитаны по `STAR_RATE_RUB`. Это управленческая
+                             *     оценка, а не бухгалтерия; сравнивать её надо с
+                             *     `BONUS_BUDGET_RUB`.
+                             */
+                            grants_revenue_lost_rub_24h?: number;
+                            codes_activated_24h?: number;
+                            referrals_joined_24h?: number;
+                            referrals_rewarded_24h?: number;
+                            /** @description Сколько мест «первых 50» занято (из 50). */
+                            founders_taken?: number;
+                            bonus_budget_spent_rub?: number;
+                            bonus_budget_limit_rub?: number;
                         };
                     };
                 };
@@ -2861,7 +3508,7 @@ export interface components {
          */
         Problem: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND" | "GONE" | "BONUS_BUDGET_EXHAUSTED";
             /** @description Готовый текст для показа пользователю (ru */
             message: string;
             /** @description Для поиска в логах */
@@ -2981,6 +3628,14 @@ export interface components {
             };
             share?: components["schemas"]["ShareCapability"];
             notifications?: components["schemas"]["Notifications"];
+            /**
+             * Format: uri
+             * @description Ссылка приглашения друга (1.6.14): `https://t.me/<bot>?start=ref_<short_id>`.
+             *     Необязательное поле: `null` — `BOT_USERNAME` не настроен (как у
+             *     `share.link = false`), и приглашать пока нечем. В `short_id` нет ни
+             *     `telegram_id`, ни `user_id`: ссылка не ПДн и её можно пересылать.
+             */
+            referral_link?: string | null;
         };
         /**
          * @description Согласия на уведомления (контракт 1.6.11).
@@ -3119,6 +3774,53 @@ export interface components {
             full_report_chart_id?: string | null;
             compat_per_month: number;
             solar_included: boolean;
+            /**
+             * Format: date-time
+             * @description До какого момента действует право «всё включено» (1.6.14).
+             *     `null` — такого права нет. Срок **начинается с построения карты**:
+             *     код, активированный до онбординга, ждёт и дни не сжигает.
+             */
+            all_access_until?: string | null;
+            /**
+             * @description Источник последнего действующего права: `partner` — партнёрский
+             *     код, `founder` — «первые 50», `referral` — приглашённый друг,
+             *     `admin` — ручная выдача. `null` — прав нет.
+             * @enum {string|null}
+             */
+            source?: "partner" | "founder" | "referral" | "admin" | null;
+            /** @description Неизрасходованных бесплатных разборов. */
+            single_reports?: number;
+            /** @description Неизрасходованных бесплатных совместимостей. */
+            single_compat?: number;
+            /** @description Человек в списке первых 50. */
+            is_founder?: boolean;
+            /**
+             * @description Номер места основателя (1..50); `null` — не основатель. Только для
+             *     показа: право купить `founder_month` проверяется на сервере.
+             */
+            founder_place?: number | null;
+        };
+        /** @description Код доступа (1.6.14) — право на выдачу, а не право само по себе. */
+        AccessCode: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * @description 8 знаков из алфавита ABCDEFGHJKLMNPQRSTUVWXYZ23456789.
+             * @example K7M2P9X4
+             */
+            code: string;
+            /** @enum {string} */
+            kind: "all_access" | "single_report" | "single_compat";
+            /** @description Только для `all_access`. */
+            days?: number | null;
+            max_activations: number;
+            activations: number;
+            partner_name?: string | null;
+            is_active: boolean;
+            /** Format: date-time */
+            expires_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
         };
         GeoPlace: {
             /** @example Москва */

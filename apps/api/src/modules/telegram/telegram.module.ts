@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { EventsModule } from '../events/events.module';
+import { GrantsModule } from '../grants/grants.module';
 import { UsersRepository } from '../users/users.repository';
 import { FilesModule } from '../files/files.module';
 import { ShareModule } from '../share/share.module';
@@ -20,7 +21,9 @@ import { PushCallbackService } from './push-callback.service';
  * `switchInlineQuery` из мини-аппа не приводит к карточке в чате.
  */
 @Module({
-  imports: [EventsModule, FilesModule, ShareModule],
+  // `GrantsModule` — обработчики `pt_` и `ref_` в `/start` (1.6.14): бот
+  // активирует партнёрский код и запоминает приглашение до появления карты.
+  imports: [EventsModule, FilesModule, ShareModule, GrantsModule],
   providers: [
     TelegramClient,
     TelegramStartService,

@@ -1,10 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Entitlements, Me, Notifications, OnboardingStep } from '@astro-soul/shared';
+import type { Me, Notifications, OnboardingStep } from '@astro-soul/shared';
 import { DbService } from '../../db/db.service';
 import { conflict, invalidFields } from '../../common/api-error';
 import { displayNameOf, type VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
+import { toEntitlementsDto as toEntitlements } from '../entitlements/entitlements.dto';
+import { AccessCodesService } from '../grants/access-codes.service';
+import { ReferralsService, parseReferralStart } from '../grants/referrals.service';
+import { parsePartnerStart } from '../grants/grants-start';
 import { QuotasService } from '../quotas/quotas.service';
 import { EventsRepository } from '../events/events.repository';
 import { FileStorageService } from '../files/file-storage.service';
@@ -17,21 +21,12 @@ import type { AppEnv } from '../../config/env';
 import { JsonLogger } from '../../common/logger';
 
 /**
- * `Entitlements` (packages/shared, camelCase) → контракт (`Me.entitlements`,
- * snake_case, как и остальные поля ответа).
+ * Сборка `Me.entitlements` живёт в `entitlements/entitlements.dto.ts`: та же
+ * форма нужна `POST /me/activate-code` и `POST /me/founder-claim`, а две копии
+ * разошлись бы на первом же новом поле. Экспорт оставлен для совместимости
+ * существующих импортов.
  */
-export function toEntitlementsDto(entitlements: Entitlements): NonNullable<Me['entitlements']> {
-  return {
-    is_active: entitlements.isActive,
-    plan: entitlements.plan,
-    full_forecast: entitlements.fullForecast,
-    ask_per_day: entitlements.askPerDay as 0 | 1 | 5 | -1,
-    full_report: entitlements.fullReport,
-    full_report_chart_id: entitlements.fullReportChartId,
-    compat_per_month: entitlements.compatPerMonth,
-    solar_included: entitlements.solarIncluded,
-  };
-}
+export { toEntitlementsDto } from '../entitlements/entitlements.dto';
 
 @Injectable()
 export class MeService {
@@ -46,6 +41,8 @@ export class MeService {
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(SubscriptionCancelService) private readonly subscriptionCancel: SubscriptionCancelService,
     @Inject(TelegramInlineService) private readonly inline: TelegramInlineService,
+    @Inject(ReferralsService) private readonly referrals: ReferralsService,
+    @Inject(AccessCodesService) private readonly codes: AccessCodesService,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -75,15 +72,25 @@ export class MeService {
     return row?.id ?? null;
   }
 
-  async getMe(auth: VerifiedInitData): Promise<Me> {
+  async getMe(auth: VerifiedInitData, options: { readonly start?: string } = {}): Promise<Me> {
     const { userId, isNew } = await this.users.ensureUser({
       telegramUserId: auth.telegramUserId,
       languageCode: auth.user.language_code,
     });
 
-    const [profileState, entitlements, subscription, latestReportId] = await Promise.all([
+    // Партнёрский код и приглашение приходят в `start` (`GET /me?start=…`):
+    // бот может передать их только текстом, а мини-апп — параметром, и без
+    // этого пути человек, у которого ещё нет аккаунта, не смог бы активировать
+    // ни код, ни приглашение. Ошибка здесь **не** роняет `/me`: промокод не
+    // повод не пустить в приложение.
+    if (options.start !== undefined && options.start !== '') {
+      await this.applyStart(userId, options.start);
+    }
+
+    const [profileState, entitlements, grants, subscription, latestReportId] = await Promise.all([
       this.users.getProfileState(userId),
       this.entitlements.getEntitlements(userId),
+      this.entitlements.getGrantEntitlements(userId),
       this.entitlements.getSubscriptionState(userId),
       // QA-18: без этого поля заказ «теряется» после закрытия мини-аппа,
       // и человек платит второй раз. Всегда есть в ответе, `null` — нет разборов.
@@ -112,7 +119,10 @@ export class MeService {
       subscription,
       // Реальные права из getEntitlements(userId): фронт рисует по ним
       // пейволл, но доступ всё равно решается на сервере (payments.md §4).
-      entitlements: toEntitlementsDto(entitlements),
+      entitlements: toEntitlements(entitlements, grants),
+      // Ссылка приглашения (1.6.14). Без `BOT_USERNAME` её не собрать — отдаём
+      // `null`, как и у шаринга: битая ссылка хуже отсутствующей.
+      referral_link: await this.referralLink(userId),
       quotas,
       onboarding_step: onboardingStep,
       // Границы предпроверки ввода для поиска города. Только два числа:
@@ -140,6 +150,55 @@ export class MeService {
       // переключатель в интерфейсе показывает серверное значение, а не догадку.
       notifications: await this.notificationsState(userId),
     };
+  }
+
+  /**
+   * `start` из `/me`: `pt_<code>` — активировать код, `ref_<short>` — записать
+   * приглашение. Всё остальное молча игнорируется: `start` приходит и от
+   * чужих ссылок.
+   */
+  private async applyStart(userId: string, start: string): Promise<void> {
+    try {
+      const partnerCode = parsePartnerStart(start);
+
+      if (partnerCode !== null) {
+        await this.codes.activate(userId, partnerCode);
+        return;
+      }
+
+      const shortId = parseReferralStart(start);
+
+      if (shortId !== null) {
+        const result = await this.referrals.joinByShortId(shortId, userId);
+
+        if (result !== 'joined') {
+          this.logger.info('referral_join_skipped', { result });
+        }
+      }
+    } catch (error) {
+      this.logger.warn('me_start_apply_failed', {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** `https://t.me/<bot>?start=ref_<short_id>` — `null`, если бот не настроен. */
+  private async referralLink(userId: string): Promise<string | null> {
+    const bot = this.env.BOT_USERNAME;
+
+    if (bot === undefined) {
+      return null;
+    }
+
+    try {
+      const shortId = await this.referrals.ensureShortId(userId);
+      return `https://t.me/${bot}?start=ref_${shortId}`;
+    } catch (error) {
+      this.logger.warn('referral_link_failed', {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   /** Текущие согласия на уведомления (`Me.notifications`). */
@@ -321,6 +380,27 @@ export class MeService {
         [userId],
       );
 
+      // Бесплатный доступ (итерация 39). Права, приглашения и активации
+      // кодов — это записи о человеке, поэтому удаляются запросом, а не
+      // «каскадом когда-нибудь»: каскад есть в схеме, но проверять удаление
+      // ПДн по намерению схемы — тот же случай, что с `compat_partners`.
+      //
+      // Счётчик `access_codes.used_activations` **не** уменьшается: удаление
+      // аккаунта не возвращает активацию в общий котёл, иначе «активировал →
+      // удалился → активировал снова» стал бы способом обойти лимит кода.
+      const grantRows = await client.query(`DELETE FROM grants WHERE user_id = $1`, [userId]);
+      const referralRows = await client.query(
+        `DELETE FROM referrals WHERE referrer_id = $1 OR referred_id = $1`,
+        [userId],
+      );
+      // Место основателя освобождается: это не награда, которую можно
+      // передать, а занятый слот акции.
+      const founderRows = await client.query(`DELETE FROM founders WHERE user_id = $1`, [userId]);
+      const activationRows = await client.query(
+        `DELETE FROM access_code_activations WHERE user_id = $1`,
+        [userId],
+      );
+
       await client.query(`DELETE FROM users WHERE id = $1`, [userId]);
 
       this.logger.info('account_deleted', {
@@ -328,6 +408,10 @@ export class MeService {
         telegram_cancel_state: cancel.state,
         compatibilities_deleted: compatRows.rowCount ?? 0,
         compat_partners_deleted: partnerRows.rowCount ?? 0,
+        grants_deleted: grantRows.rowCount ?? 0,
+        referrals_deleted: referralRows.rowCount ?? 0,
+        founder_places_freed: founderRows.rowCount ?? 0,
+        code_activations_deleted: activationRows.rowCount ?? 0,
         pdf_keys_deleted: pdfKeys.length,
       });
     });

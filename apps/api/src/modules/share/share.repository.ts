@@ -73,6 +73,20 @@ export class ShareRepository {
     );
   }
 
+  /**
+   * Отметка «карточку открыли по ссылке» (1.6.14).
+   *
+   * Нужна чистке: удаляются только карточки старше 30 дней, которые никто не
+   * открывал. Открытая карточка — работающая ссылка в чужой переписке, и
+   * удалять её по возрасту значило бы ломать чужой пост.
+   */
+  async markOpened(shortId: string): Promise<void> {
+    await this.db.query(
+      `UPDATE share_cards SET last_opened_at = now() WHERE short_id = $1`,
+      [shortId],
+    );
+  }
+
   /** Карточка по её `short_id` (ссылка `t.me/<bot>?start=sh_<short_id>`). */
   async resolveShortId(shortId: string): Promise<ShareCardRow | null> {
     return this.findByShortId(shortId);

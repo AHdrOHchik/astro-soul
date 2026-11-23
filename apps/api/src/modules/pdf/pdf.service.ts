@@ -6,6 +6,7 @@ import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import type { VerifiedInitData } from '../auth/init-data';
 import { AstroClient } from '../astro/astro.client';
+import { AccessService } from '../entitlements/access.service';
 import { EventsRepository } from '../events/events.repository';
 import { FileStorageService } from '../files/file-storage.service';
 import { ReportsRepository, type ReportRow } from '../reports/reports.repository';
@@ -59,6 +60,7 @@ export class PdfService {
     @Inject(PdfRepository) private readonly repo: PdfRepository,
     @Inject(FileStorageService) private readonly storage: FileStorageService,
     @Inject(AstroClient) private readonly astro: AstroClient,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(APP_ENV) private readonly env: AppEnv,
@@ -195,7 +197,12 @@ export class PdfService {
 
     // Право на PDF — это право на разбор по этой карте, а не просто `ready`:
     // тизер тоже бывает `ready`, но текста для документа в нём нет.
-    const owned = await this.reports.hasReportEntitlement(userId, report.chart_id);
+    //
+    // Спрашиваем `AccessService`, а не `entitlements` напрямую (1.6.14):
+    // бесплатный разбор по коду или от основателя материализуется в
+    // `entitlements` при списании, но если однажды появится ещё один источник
+    // прав, он должен подключиться внутри `hasAccess`, а не в PDF.
+    const owned = await this.access.hasAccess(userId, 'report', { chartId: report.chart_id });
     if (!owned) {
       throw forbidden(reasonOptions('report_not_paid', 'PDF — часть оплаченного разбора'));
     }
