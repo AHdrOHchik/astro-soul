@@ -85,5 +85,20 @@ jobs:
           pnpm --filter @astro-soul/shared run test
           pnpm --filter @astro-soul/ui run test
 
-      - name: Линт, типы, тесты
-        run: pnpm check
+      - name: lint
+        run: pnpm lint
+
+      - name: typecheck
+        run: pnpm typecheck
+
+      - name: build
+        run: pnpm build
+
+      - name: unit tests
+        run: pnpm test
+
+      - name: astro tests
+        run: pnpm test:astro
+
+      - name: astro lint
+        run: pnpm lint:astro
