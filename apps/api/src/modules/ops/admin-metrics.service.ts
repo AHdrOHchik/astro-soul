@@ -4,6 +4,7 @@ import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { breakerState, validationStreak, type ReportHistoryRow } from '../reports/breaker';
 import { TelegramWebhookService } from '../telegram/telegram-webhook.service';
+import { EngagementRepository } from '../engagement/engagement.repository';
 
 /**
  * Метрики продукта (`GET /admin/metrics`, контракт 1.4.0).
@@ -231,6 +232,19 @@ export interface ProductMetrics {
    * стало больше» читалось бы как успех, даже если весь рост — `moon`.
    */
   readonly share_cards_created_24h: Readonly<Record<string, number>>;
+  /** Утренний пуш (1.6.13): сколько сообщений ушло за сутки. */
+  readonly push_sent_24h: number;
+  /** Отправки, которые Bot API отверг (`blocked` и `chat not found` не в счёт). */
+  readonly push_failed_24h: number;
+  /**
+   * Люди, которых пуш не достаёт из-за отсутствия пояса в карте.
+   *
+   * Это состояние, а не поток: один и тот же человек считается и завтра. Иначе
+   * счётчик рос бы на 1440 в сутки (минута × сутки) и не значил бы ничего.
+   */
+  readonly push_skipped_no_tz_24h: number;
+  /** Сколько раз уникальный ключ `push_log` предотвратил второй пуш за сутки. */
+  readonly push_duplicate_prevented_24h: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -262,6 +276,7 @@ export class AdminMetricsService {
     @Inject(DbService) private readonly db: DbService,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(TelegramWebhookService) private readonly webhook: TelegramWebhookService,
+    @Inject(EngagementRepository) private readonly engagement: EngagementRepository,
   ) {}
 
   async getMetrics(): Promise<ProductMetrics> {
@@ -281,6 +296,9 @@ export class AdminMetricsService {
       paymentHealth,
       daily,
       shareCards,
+      pushLog,
+      pushRuns,
+      pushNoTz,
     ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -582,6 +600,14 @@ export class AdminMetricsService {
             WHERE created_at >= now() - interval '24 hours'
             GROUP BY kind`,
         ),
+        // Утренний пуш (итерация 38). Три источника:
+        //   • `push_log` — что реально ушло и что сломалось;
+        //   • `push_runs` — защиты от дублей (их не видно в `push_log`, потому
+        //     что проигравший гонку ничего не пишет);
+        //   • карты без пояса — состояние «этих не достать никогда».
+        this.engagement.pushLogTotals24h(),
+        this.engagement.pushRunTotals24h(),
+        this.engagement.countPushNoTz(),
       ]);
 
     const eventsByName: Record<string, number> = {};
@@ -679,6 +705,10 @@ export class AdminMetricsService {
       pdf_build_p95_ms: daily?.pdfBuildP95 ?? 0,
       // Все пять видов в ответе всегда: ноль — это «не создавали», и он
       // осмысленнее пропущенного ключа, по которому нельзя построить график.
+      push_sent_24h: pushLog.sent,
+      push_failed_24h: pushLog.failed,
+      push_skipped_no_tz_24h: pushNoTz,
+      push_duplicate_prevented_24h: pushRuns.duplicatePrevented,
       share_cards_created_24h: SHARE_CARD_KINDS.reduce<Record<string, number>>(
         (totals, kind) => {
           totals[kind] = shareCards.find((row) => row.kind === kind)?.total ?? 0;

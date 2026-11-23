@@ -37,6 +37,29 @@ export function buildMiniAppUrl(miniAppUrl: string | undefined, chartId: string)
 }
 
 /**
+ * Адрес мини-аппа без параметра карты — кнопка «Открыть разбор дня» в утреннем
+ * пуше (итерация 38).
+ *
+ * `startapp` здесь не нужен: пуш приходит человеку, у которого карта уже есть,
+ * и приложение откроет экран «Сегодня» само. Параметр `startapp` из настроек
+ * снимаем: чужой `chart_<id>` в конфиге увёл бы кнопку не туда.
+ */
+export function buildTodayUrl(miniAppUrl: string | undefined): string | null {
+  if (miniAppUrl === undefined || miniAppUrl === '') {
+    return null;
+  }
+
+  try {
+    const url = new URL(miniAppUrl);
+    url.searchParams.delete('startapp');
+    return url.toString();
+  } catch {
+    // `MINI_APP_URL` — не URL: кнопку не рисуем, текст всё равно уйдёт.
+    return null;
+  }
+}
+
+/**
  * `sh_<short_id>` — метка карточки шеринга (контракт 1.6.8).
  *
  * Отдельный префикс, а не `chart_`: по ссылке `t.me/<bot>?start=sh_…` бот

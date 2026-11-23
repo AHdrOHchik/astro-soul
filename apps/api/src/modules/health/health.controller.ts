@@ -38,7 +38,11 @@ export class HealthController {
 
   @Get()
   async health(@Res({ passthrough: true }) response: Response): Promise<HealthResponse> {
-    const [dbOk, astroState] = await Promise.all([this.db.ping(), this.astro.health()]);
+    const [dbOk, astroState, push] = await Promise.all([
+      this.db.ping(),
+      this.astro.health(),
+      this.pushState(),
+    ]);
 
     // Состояние вебхука — из последней проверки при старте/диагностике
     // (итерация 26). `stale` значит «не проверяли или проверка старше суток»:
@@ -48,7 +52,10 @@ export class HealthController {
     // `degraded` — если хоть одна зависимость не подтверждена. Сайдкар движка
     // был в формуле с 1.2.0, вебхук добавлен итерацией 36: без него в Telegram
     // не доставляется `pre_checkout_query`.
-    const degraded = !dbOk || astroState !== 'ok' || webhook.state !== 'ok';
+    // Пуш (итерация 38): если функция включена, а цикл не запускался дольше двух
+    // часов — это поломка, которую иначе никто не заметит. Люди просто перестают
+    // получать «доброе утро» и не жалуются: отсутствие сообщения не болит.
+    const degraded = !dbOk || astroState !== 'ok' || webhook.state !== 'ok' || push.stale;
 
     // `503` только там, где сервис не может обслуживать запросы вообще.
     if (!dbOk) {
@@ -68,8 +75,50 @@ export class HealthController {
       flags: {
         test_plans: this.env.PAYMENTS_TEST_PLANS === '1',
         report_breaker: this.env.REPORT_BREAKER_ENABLED === '1',
+        push: {
+          enabled: push.enabled,
+          last_run_at: push.lastRunAt,
+          last_sent_count: push.lastSentCount,
+        },
       },
       checked_at: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Состояние утреннего пуша для `/health`.
+   *
+   * `stale` — включённый пуш не запускался дольше двух часов. Порог выбран по
+   * окну: планировщик тикает каждую минуту, цикл пишет строку в `push_runs`
+   * каждый запуск, поэтому двух часов молчания достаточно, чтобы отличить
+   * «деплой» от «таймер умер».
+   */
+  private async pushState(): Promise<{
+    readonly enabled: boolean;
+    readonly lastRunAt: string | null;
+    readonly lastSentCount: number;
+    readonly stale: boolean;
+  }> {
+    const enabled = this.env.PUSH_ENABLED === '1';
+
+    if (!enabled) {
+      return { enabled: false, lastRunAt: null, lastSentCount: 0, stale: false };
+    }
+
+    const row = await this.db.queryOne<{ last_run_at: Date | null; sent: number | null }>(
+      `SELECT max(finished_at) AS last_run_at,
+              (SELECT sent FROM push_runs ORDER BY started_at DESC LIMIT 1) AS sent
+         FROM push_runs`,
+    );
+
+    const lastRunAt = row?.last_run_at ?? null;
+    const ageMs = lastRunAt === null ? Number.POSITIVE_INFINITY : Date.now() - lastRunAt.getTime();
+
+    return {
+      enabled: true,
+      lastRunAt: lastRunAt === null ? null : lastRunAt.toISOString(),
+      lastSentCount: row?.sent ?? 0,
+      stale: ageMs > 2 * 60 * 60 * 1000,
     };
   }
 }

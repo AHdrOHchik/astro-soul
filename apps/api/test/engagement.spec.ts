@@ -413,90 +413,21 @@ describe('forecast_nightly', () => {
   });
 });
 
-describe('forecast_push', () => {
-  const at = atMoscow(8);
-
-  async function forecastFor(fixture: Fixture, text = 'Сегодня лучше начать с одного дела.'): Promise<void> {
-    await ctx.db.query(
-      `INSERT INTO forecasts (chart_id, date, teaser, full_text, is_paid)
-       VALUES ($1, $2::date, $3, $3, true)`,
-      [fixture.chartId, moscowDate(at), text],
-    );
-  }
-
-  it('шлёт 1–2 предложения с кнопкой «Открыть» и ставит отметку', async () => {
-    const fixture = await userWithChart();
-    await forecastFor(
-      fixture,
-      'Утро спокойное, но к обеду появится повод ответить резко. Вечером лучше не начинать новых споров. Третий абзац в пуш не попадает.',
-    );
-
-    const result = await engagement.runPush(at);
-
-    expect(result.sent).toBe(1);
-    expect(telegram.pushes).toHaveLength(1);
-    const push = telegram.pushes[0];
-    expect(push?.button?.text).toBe('Открыть');
-    expect(push?.button?.webAppUrl).toContain(fixture.chartId);
-    expect(push?.text).not.toContain('Третий абзац');
-    expect(push?.text).not.toContain('Сегодня лучше начать с одного дела.');
-
-    const row = await ctx.db.queryOne<{ push_sent_at: Date | null }>(
-      `SELECT push_sent_at FROM forecasts WHERE chart_id = $1`,
-      [fixture.chartId],
-    );
-    expect(row?.push_sent_at).not.toBeNull();
-
-    // Второй прогон в тот же день ничего не отправляет.
-    expect((await engagement.runPush(at)).sent).toBe(0);
-  });
-
-  it('403 → карта помечается и больше не пушится', async () => {
-    const fixture = await userWithChart();
-    await forecastFor(fixture);
-    telegram.pushOutcome = 'blocked';
-
-    const result = await engagement.runPush(at);
-    expect(result.blocked).toBe(1);
-
-    const chart = await ctx.db.queryOne<{ push_blocked_at: Date | null }>(
-      `SELECT push_blocked_at FROM charts WHERE id = $1`,
-      [fixture.chartId],
-    );
-    expect(chart?.push_blocked_at).not.toBeNull();
-
-    telegram.pushOutcome = 'sent';
-    expect((await engagement.runPush(at)).sent).toBe(0);
-  });
-
-  it('429 → pushes_deferred и никакого ретрая в этом прогоне', async () => {
-    const fixture = await userWithChart();
-    await forecastFor(fixture);
-    telegram.pushOutcome = 'rate_limited';
-
-    const result = await engagement.runPush(at);
-
-    expect(result.deferred).toBe(1);
-    expect(result.sent).toBe(0);
-    const row = await ctx.db.queryOne<{ push_sent_at: Date | null }>(
-      `SELECT push_sent_at FROM forecasts WHERE chart_id = $1`,
-      [fixture.chartId],
-    );
-    expect(row?.push_sent_at).toBeNull();
-  });
-
-  it('не активному 7 дней не пишем: pushes_skipped_inactive', async () => {
-    const fixture = await userWithChart();
-    await forecastFor(fixture);
-    await ctx.db.query(`DELETE FROM events WHERE user_id = $1`, [fixture.userId]);
-    await ctx.db.query(`UPDATE users SET created_at = now() - interval '30 days' WHERE id = $1`, [
-      fixture.userId,
-    ]);
-
-    const result = await engagement.runPush(at);
-
-    expect(result.sent).toBe(0);
-    expect(result.skippedInactive).toBe(1);
-    expect(telegram.pushes).toHaveLength(0);
+/**
+ * Утренний пуш 08:00 переехал в `push-morning.spec.ts` (итерация 38).
+ *
+ * Здесь был блок `forecast_push`, проверявший прежнюю семантику: пуш из текста
+ * прогноза, окно ±30 минут, фильтр «заходил за 7 дней», отметка
+ * `forecasts.push_sent_at`. В 1.6.13 это заменено целиком — текст собирается из
+ * констант и фактов дня, окно 08:00–08:04, согласие `users.push_enabled`,
+ * идемпотентность через `push_log`. Проверять старое поведение бессмысленно:
+ * код, который его реализовывал, удалён. Новые тесты — в
+ * `apps/api/test/push-morning.spec.ts`.
+ */
+describe('forecast_push (перенесено в push-morning.spec.ts)', () => {
+  it('старый сценарий пуша из прогноза больше не существует', () => {
+    // Маркер вместо тишины: если блок кто-то вернёт, тест напомнит, что
+    // семантика изменилась, и объяснит, где искать актуальные проверки.
+    expect(typeof EngagementService.prototype.runPush).toBe('function');
   });
 });

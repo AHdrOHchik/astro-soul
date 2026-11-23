@@ -33,7 +33,8 @@ export type AlertId =
   | 'subscription_cancel_blocked'
   | 'llm_spend'
   | 'generations_failing'
-  | 'backup_stale';
+  | 'backup_stale'
+  | 'push_failed';
 
 export type AlertLevel = 'critical' | 'warning';
 
@@ -68,6 +69,15 @@ export const ALERT_THRESHOLDS = {
   generations_failing: 5,
   /** Дамп не делался дольше 36 часов (при ежедневном расписании это один пропуск). */
   backup_stale: 36,
+  /**
+   * Провалов утреннего пуша за сутки (итерация 38).
+   *
+   * 20 — не «доля от базы»: при базе в сотни человек и одном цикле в сутки любая
+   * ошибка повторится завтра, поэтому 20 отказов означают не «немного шума», а
+   * «Bot API или наш текст сломан». `blocked`/`chat not found` не считаются:
+   * люди блокируют бота, это норма, и такие чаты отключаются сами.
+   */
+  push_failed: 20,
 } as const;
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -114,6 +124,10 @@ export class AlertsService {
       metrics.forecast_failed_24h +
       metrics.questions_failed_24h +
       metrics.pdf_failed_24h;
+
+    // Провалы пуша — отдельный алерт: у рассылки своя причина поломки (Bot API,
+    // текст, лимиты), и складывать её с генерациями значит скрыть обе.
+    const pushFailuresValue = metrics.push_failed_24h;
 
     const backupStaleSince =
       backupAge === null
@@ -167,6 +181,14 @@ export class AlertsService {
         fired: failuresValue > ALERT_THRESHOLDS.generations_failing,
       },
       {
+        id: 'push_failed',
+        level: 'warning',
+        value: pushFailuresValue,
+        threshold: ALERT_THRESHOLDS.push_failed,
+        since: crossings.push,
+        fired: pushFailuresValue > ALERT_THRESHOLDS.push_failed,
+      },
+      {
         id: 'backup_stale',
         level: 'warning',
         value: backupAge === null ? null : Math.round(backupAge * 10) / 10,
@@ -216,12 +238,14 @@ export class AlertsService {
     cancel: string | null;
     spend: string | null;
     failures: string | null;
+    push: string | null;
   }> {
     const row = await this.db.queryOne<{
       payment: Date | null;
       cancel: Date | null;
       spend: Date | null;
       failures: Date | null;
+      push: Date | null;
     }>(
       `SELECT
          (SELECT min(x.t) FROM (
@@ -266,12 +290,20 @@ export class AlertsService {
               UNION ALL
               SELECT updated_at FROM report_pdfs
                WHERE status = 'failed' AND updated_at >= now() - interval '24 hours'
-            ) AS u) AS x WHERE x.running > $4) AS failures`,
+            ) AS u) AS x WHERE x.running > $4) AS failures,
+         (SELECT min(x.t) FROM (
+            SELECT t, sum(1) OVER (ORDER BY t) AS running FROM (
+              SELECT sent_at AS t FROM push_log
+               WHERE error IS NOT NULL
+                 AND error NOT IN ('blocked', 'chat_not_found')
+                 AND sent_at >= now() - interval '24 hours'
+            ) AS u) AS x WHERE x.running > $5) AS push`,
       [
         ALERT_THRESHOLDS.payment_not_arriving,
         ALERT_THRESHOLDS.subscription_cancel_blocked,
         ALERT_THRESHOLDS.llm_spend,
         ALERT_THRESHOLDS.generations_failing,
+        ALERT_THRESHOLDS.push_failed,
       ],
     );
 
@@ -280,6 +312,7 @@ export class AlertsService {
       cancel: row?.cancel?.toISOString() ?? null,
       spend: row?.spend?.toISOString() ?? null,
       failures: row?.failures?.toISOString() ?? null,
+      push: row?.push?.toISOString() ?? null,
     };
   }
 }

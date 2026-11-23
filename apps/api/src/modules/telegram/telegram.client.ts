@@ -15,6 +15,19 @@ export const TELEGRAM_CANCEL_TIMEOUT_MS = 5000;
 export const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
 /**
+ * Ответы Bot API, после которых чат считается мёртвым навсегда.
+ *
+ * `400` с таким описанием — не «повтори позже», а ровно то же, что `403`:
+ * человек заблокировал бота, удалил аккаунт или чат больше не существует.
+ * Повтор каждый день только тратит лимиты и добавляет ошибок в метрики.
+ */
+const GONE_FOR_GOOD = /chat not found|user is deactivated|bot was blocked|peer_id_invalid/iu;
+
+function isGoneForGood(description: string | undefined): boolean {
+  return description !== undefined && GONE_FOR_GOOD.test(description);
+}
+
+/**
  * Результат `editUserStarSubscription`. Метод не бросает: его вызывают ради
  * побочного эффекта в Telegram, а решение об удалении данных от него не зависит.
  *
@@ -56,6 +69,36 @@ export interface InlineQueryPhotoResult {
   readonly photo_width: number;
   readonly photo_height: number;
   readonly caption: string;
+}
+
+/**
+ * Кнопка под сообщением (итерация 38).
+ *
+ * Два вида в одном типе: `webAppUrl` открывает мини-апп на экране «Сегодня»,
+ * `callbackData` возвращает апдейт боту, не открывая приложение. Оба сразу
+ * невозможны — Bot API такого не принимает, поэтому рисуем ровно одно поле.
+ */
+export interface PushButton {
+  readonly text: string;
+  readonly webAppUrl?: string;
+  readonly callbackData?: string;
+}
+
+/**
+ * Итог `sendMessage` для пуша.
+ *
+ * `blocked` (403) и `not_found` (400 `chat not found`) — «писать больше нельзя»,
+ * лечится только согласием человека. `rate_limited` несёт `retryAfterSeconds`
+ * из `parameters.retry_after` — без него «подожди и повтори» нечем измерить.
+ */
+export type PushSendStatus = 'sent' | 'blocked' | 'not_found' | 'rate_limited' | 'failed';
+
+export interface PushSendResult {
+  readonly status: PushSendStatus;
+  /** Только для `rate_limited`; `null` — Bot API не сказал, ждём секунду. */
+  readonly retryAfterSeconds: number | null;
+  /** Ответ Bot API без payload: пишется в `push_log.error`, не в чат. */
+  readonly error: string | null;
 }
 
 export interface TelegramUserRef {
@@ -351,8 +394,8 @@ export class TelegramClient {
   async sendPush(
     chatId: number | string,
     text: string,
-    options: { readonly button?: { readonly text: string; readonly webAppUrl: string } } = {},
-  ): Promise<'sent' | 'blocked' | 'rate_limited' | 'failed'> {
+    options: { readonly buttons?: readonly (readonly PushButton[])[] } = {},
+  ): Promise<PushSendResult> {
     const body: Record<string, unknown> = {
       chat_id: chatId,
       text,
@@ -360,30 +403,62 @@ export class TelegramClient {
       disable_web_page_preview: true,
     };
 
-    if (options.button !== undefined) {
-      body['reply_markup'] = {
-        inline_keyboard: [[{ text: options.button.text, web_app: { url: options.button.webAppUrl } }]],
-      };
+    if (options.buttons !== undefined && options.buttons.length > 0) {
+      body['reply_markup'] = { inline_keyboard: options.buttons };
     }
 
     const response = await this.post('sendMessage', body);
 
     if (response.status === 403) {
       this.logger.warn('telegram_push_blocked', { reason: 'blocked' });
-      return 'blocked';
+      return { status: 'blocked', retryAfterSeconds: null, error: 'blocked' };
     }
 
     if (response.status === 429) {
-      this.logger.warn('telegram_push_rate_limited', { reason: 'rate_limited' });
-      return 'rate_limited';
+      const retryAfter = TelegramClient.retryAfterOf(response.parameters);
+      this.logger.warn('telegram_push_rate_limited', { retry_after: retryAfter });
+      return { status: 'rate_limited', retryAfterSeconds: retryAfter, error: 'rate_limited' };
+    }
+
+    if (response.status === 400 && isGoneForGood(response.description)) {
+      // `chat not found` / `user is deactivated`: чата больше нет, повторять
+      // бессмысленно — это тот же случай, что 403, только другим кодом.
+      this.logger.warn('telegram_push_gone', { reason: 'not_found' });
+      return { status: 'not_found', retryAfterSeconds: null, error: 'chat_not_found' };
     }
 
     if (!response.ok) {
       this.logger.warn('telegram_push_failed', { status: response.status });
-      return 'failed';
+      return {
+        status: 'failed',
+        retryAfterSeconds: null,
+        // Только код и описание Bot API: текст пуша в журнал не пишем.
+        error: `telegram_${response.status}${response.description === undefined ? '' : `: ${response.description}`}`,
+      };
     }
 
-    return 'sent';
+    return { status: 'sent', retryAfterSeconds: null, error: null };
+  }
+
+  /**
+   * Ответ на нажатие inline-кнопки (`callback_query`).
+   *
+   * Обязателен: без `answerCallbackQuery` у человека «крутится» часики на
+   * кнопке. `text` показывается всплывающей подсказкой и **не** остаётся в
+   * чате — именно поэтому отказ от пушей не порождает второго сообщения.
+   */
+  async answerCallbackQuery(callbackQueryId: string, text: string): Promise<void> {
+    await this.call('answerCallbackQuery', { callback_query_id: callbackQueryId, text });
+  }
+
+  /** `parameters.retry_after` (секунды) из ответа 429. */
+  private static retryAfterOf(parameters: unknown): number | null {
+    if (typeof parameters !== 'object' || parameters === null) {
+      return null;
+    }
+
+    const value = (parameters as { retry_after?: unknown }).retry_after;
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
   }
 
   /** Возврат звёзд: доступен, пока платёж не выведен (payments.md §3.5). */
@@ -460,7 +535,14 @@ export class TelegramClient {
     method: string,
     body: Record<string, unknown>,
     timeoutMs: number = TELEGRAM_TIMEOUT_MS,
-  ): Promise<{ status: number; ok: boolean; result?: unknown; description?: string }> {
+  ): Promise<{
+    status: number;
+    ok: boolean;
+    result?: unknown;
+    description?: string;
+    /** `parameters` из ответа: там лежит `retry_after` для `429`. */
+    parameters?: unknown;
+  }> {
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}/bot${this.token}/${method}`, {
@@ -478,7 +560,7 @@ export class TelegramClient {
     }
 
     const payload = (await response.json().catch(() => null)) as
-      | { ok?: boolean; result?: unknown; description?: string }
+      | { ok?: boolean; result?: unknown; description?: string; parameters?: unknown }
       | null;
 
     return {
@@ -486,6 +568,7 @@ export class TelegramClient {
       ok: response.ok && payload?.ok === true,
       ...(payload?.result === undefined ? {} : { result: payload.result }),
       ...(payload?.description === undefined ? {} : { description: payload.description }),
+      ...(payload?.parameters === undefined ? {} : { parameters: payload.parameters }),
     };
   }
 

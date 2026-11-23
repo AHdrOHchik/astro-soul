@@ -56,6 +56,22 @@ export interface paths {
                             flags?: {
                                 test_plans?: boolean;
                                 report_breaker?: boolean;
+                                /**
+                                 * @description Утренний пуш (1.6.13). `enabled` — `PUSH_ENABLED` в
+                                 *     рантайме: включение функции — рестарт API, а не
+                                 *     деплой кода. `last_run_at` — время последнего цикла
+                                 *     рассылки; `last_sent_count` — сколько сообщений ушло
+                                 *     в нём. Включённый пуш без запусков дольше двух часов
+                                 *     переводит `status` в `degraded`: иначе смерть
+                                 *     планировщика не видна никому — люди просто перестают
+                                 *     получать «доброе утро» и не жалуются.
+                                 */
+                                push?: {
+                                    enabled?: boolean;
+                                    /** Format: date-time */
+                                    last_run_at?: string | null;
+                                    last_sent_count?: number;
+                                };
                             };
                             /**
                              * Format: date-time
@@ -2699,6 +2715,33 @@ export interface paths {
                             share_cards_created_24h?: {
                                 [key: string]: number;
                             };
+                            /**
+                             * @description Сколько утренних пушей ушло за 24 часа (1.6.13). Считается
+                             *     по `push_log`, а не по «согласиям»: это доставленные
+                             *     сообщения.
+                             */
+                            push_sent_24h?: number;
+                            /**
+                             * @description Отправки, которые Bot API отверг за 24 часа. `blocked` и
+                             *     `chat not found` не считаются: человек заблокировал бота —
+                             *     это отказ, а не поломка, и такие чаты отключаются сами.
+                             */
+                            push_failed_24h?: number;
+                            /**
+                             * @description Люди, которых пуш не достаёт из-за отсутствия валидного
+                             *     пояса в карте. Это **состояние**, а не поток за сутки:
+                             *     один и тот же человек считается и завтра, иначе счётчик
+                             *     рос бы на 1440 в сутки (минута × сутки) и не значил бы
+                             *     ничего.
+                             */
+                            push_skipped_no_tz_24h?: number;
+                            /**
+                             * @description Сколько раз уникальный ключ `push_log`
+                             *     `(user_id, local_date, kind)` предотвратил второй пуш за
+                             *     те же местные сутки: повторный тик, второй инстанс или
+                             *     ретрай после падения.
+                             */
+                            push_duplicate_prevented_24h?: number;
                         };
                     };
                 };
@@ -2744,6 +2787,7 @@ export interface paths {
          *     | `llm_spend` | warning | `forecast_cost_rub_24h + questions_cost_rub_24h + compat_cost_rub_24h > 500` ₽ — бюджет GigaChat неизвестен |
          *     | `generations_failing` | warning | `compat_failed_24h + forecast_failed_24h + questions_failed_24h + pdf_failed_24h > 5` — модель или промпт сломались |
          *     | `backup_stale` | warning | последний успешный дамп старше 36 часов (или маркера нет вовсе — «не знаем» тоже плохо) |
+         *     | `push_failed` | warning | `push_failed_24h > 20` — утренняя рассылка сломалась (Bot API, текст). `blocked` и `chat not found` не считаются: это отказ человека |
          *
          *     Единицы `value`: штуки (`payment_not_arriving`,
          *     `subscription_cancel_blocked`, `generations_failing`), минуты
@@ -2972,7 +3016,7 @@ export interface components {
              *     алерт добавляется здесь и в `AlertsService` одним PR.
              * @enum {string}
              */
-            id: "payment_not_arriving" | "telegram_webhook" | "subscription_cancel_blocked" | "llm_spend" | "generations_failing" | "backup_stale";
+            id: "payment_not_arriving" | "telegram_webhook" | "subscription_cancel_blocked" | "llm_spend" | "generations_failing" | "backup_stale" | "push_failed";
             /**
              * @description `critical` — человек уже пострадал или пострадает без
              *     вмешательства (оплата, вебхук, отмена подписки). `warning` — деньги
@@ -3522,7 +3566,11 @@ export interface components {
          *       "forecasts_failed": 0,
          *       "pushes_sent": 0,
          *       "pushes_skipped_inactive": 0,
+         *       "pushes_skipped_seen": 0,
+         *       "pushes_skipped_no_tz": 0,
+         *       "pushes_duplicate_prevented": 0,
          *       "pushes_deferred": 0,
+         *       "pushes_blocked": 0,
          *       "pushes_failed": 0,
          *       "telegram_cancel_retried": 0,
          *       "telegram_cancel_cancelled": 0,
@@ -3542,8 +3590,22 @@ export interface components {
             forecasts_skipped?: number;
             forecasts_failed?: number;
             pushes_sent?: number;
+            /**
+             * @description Оставлено для совместимости и теперь всегда `0`: правило «писать
+             *     только тем, кто заходил за 7 дней» заменено правилом «не писать
+             *     тому, кто уже открывал приложение после 07:30 по своему поясу»
+             *     (счётчик — `pushes_skipped_seen`, 1.6.13).
+             */
             pushes_skipped_inactive?: number;
+            /** @description Пропущены: человек уже открывал приложение после 07:30 по своему поясу (1.6.13). */
+            pushes_skipped_seen?: number;
+            /** @description Пропущены: у карты нет валидного пояса — 08:00 по местному не вычислить (1.6.13). */
+            pushes_skipped_no_tz?: number;
+            /** @description Второй запуск в те же местные сутки: сработал уникальный ключ `push_log` (1.6.13). */
+            pushes_duplicate_prevented?: number;
             pushes_deferred?: number;
+            /** @description `403` и `chat not found`: согласие снято, повторять нечего (1.6.13). */
+            pushes_blocked?: number;
             pushes_failed?: number;
             telegram_cancel_retried?: number;
             telegram_cancel_cancelled?: number;

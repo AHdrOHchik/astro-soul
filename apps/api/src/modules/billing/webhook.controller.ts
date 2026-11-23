@@ -7,6 +7,7 @@ import { JsonLogger } from '../../common/logger';
 import { PaymentsService } from './payments.service';
 import { TelegramInlineService } from '../telegram/telegram-inline.service';
 import { TelegramStartService } from '../telegram/telegram-start.service';
+import { PushCallbackService } from '../telegram/push-callback.service';
 
 const SECRET_HEADER = 'x-telegram-bot-api-secret-token';
 
@@ -52,6 +53,39 @@ function readInlineQuery(update: unknown): { id: string; query: string } | null 
   return { id, query: typeof query === 'string' ? query : '' };
 }
 
+/**
+ * Достаём `callback_query`: нажатие кнопки «Отключить» под утренним пушем
+ * (итерация 38). Именно этот апдейт приходит, когда `callback_data: push_off`,
+ * и по нему нельзя отправлять сообщение — только `answerCallbackQuery`.
+ */
+function readCallbackQuery(
+  update: unknown,
+): { id: string; data: string; telegramUserId: bigint | null } | null {
+  if (typeof update !== 'object' || update === null) {
+    return null;
+  }
+
+  const callback = (update as { callback_query?: unknown }).callback_query;
+  if (typeof callback !== 'object' || callback === null) {
+    return null;
+  }
+
+  const { id, data, from } = callback as {
+    id?: unknown;
+    data?: unknown;
+    from?: { id?: unknown };
+  };
+
+  if (typeof id !== 'string' || id === '' || typeof data !== 'string') {
+    return null;
+  }
+
+  const telegramUserId =
+    typeof from?.id === 'number' && Number.isSafeInteger(from.id) ? BigInt(from.id) : null;
+
+  return { id, data, telegramUserId };
+}
+
 function safeEqual(expected: string, provided: string | undefined): boolean {
   if (provided === undefined) {
     return false;
@@ -76,6 +110,7 @@ export class TelegramWebhookController {
     @Inject(PaymentsService) private readonly payments: PaymentsService,
     @Inject(TelegramStartService) private readonly start: TelegramStartService,
     @Inject(TelegramInlineService) private readonly inline: TelegramInlineService,
+    @Inject(PushCallbackService) private readonly pushCallback: PushCallbackService,
     @Inject(APP_ENV) private readonly env: AppEnv,
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
@@ -119,6 +154,19 @@ export class TelegramWebhookController {
         await this.inline.handleQuery(inlineQuery);
       } catch (error) {
         this.logger.warn('telegram_inline_failed', {
+          reason: error instanceof Error ? error.name : 'unknown',
+        });
+      }
+    }
+
+    // `callback_query` — нажатие «Отключить» в утреннем пуше. Ошибка ответа не
+    // должна ронять вебхук: Telegram повторит доставку, а отказ уже записан.
+    const callback = readCallbackQuery(update);
+    if (callback !== null) {
+      try {
+        await this.pushCallback.handleCallback(callback);
+      } catch (error) {
+        this.logger.warn('telegram_push_callback_failed', {
           reason: error instanceof Error ? error.name : 'unknown',
         });
       }
