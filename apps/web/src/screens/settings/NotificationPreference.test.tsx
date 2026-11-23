@@ -1,12 +1,13 @@
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Me } from '../../api';
 import { ru } from '../../i18n/ru';
 import { apiError, deferred, fakeAnalytics, fakeApi, fakeTelegram, me, meWithChart } from '../../test/fixtures';
 import { SettingsScreen, type SettingsScreenProps } from './SettingsScreen';
 
-function setup(profile: Me = meWithChart, api = fakeApi()) {
+function setup(profile: Me = meWithChart, api = fakeApi(), notificationsUi = '1') {
+  vi.stubEnv('VITE_NOTIFICATIONS_UI', notificationsUi);
   const user = userEvent.setup();
   const refreshMe = vi.fn<SettingsScreenProps['refreshMe']>().mockResolvedValue(profile);
   const view = render(
@@ -23,8 +24,20 @@ function setup(profile: Me = meWithChart, api = fakeApi()) {
   return { ...view, api, user };
 }
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('SettingsScreen: daily forecast notification', () => {
-  it('defaults to on when an older GET /me has no notifications field', async () => {
+  it('hides the entire notifications section when VITE_NOTIFICATIONS_UI is not 1', async () => {
+    setup(meWithChart, fakeApi(), '0');
+    await screen.findByRole('heading', { name: ru.settings.title });
+    expect(screen.queryByRole('heading', { name: ru.settings.notifications.title })).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: ru.settings.notifications.dailyForecast })).not.toBeInTheDocument();
+    expect(screen.queryByText('Приходит раз в день, по времени места рождения. Отключить можно в любой момент')).not.toBeInTheDocument();
+  });
+
+  it('defaults to on when an older GET /me has no notifications field while the flag is enabled', async () => {
     const olderMe: Me = { ...meWithChart, notifications: undefined };
     setup(olderMe);
     expect(await screen.findByRole('switch', { name: ru.settings.notifications.dailyForecast })).toBeChecked();

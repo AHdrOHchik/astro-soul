@@ -22,6 +22,7 @@ import { SubscriptionInfo } from './SubscriptionInfo';
 import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
 import { CompatibilityHistory, type CompatibilityHistoryCache } from '../compatibility/CompatibilityHistory';
 import { useRequest } from '../../hooks/useRequest';
+import { config } from '../../config';
 import { formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import type { Telegram } from '../../telegram';
@@ -248,7 +249,7 @@ function Sections({ me, api, support, telegram, supportLink, track, refreshMe, o
         />
       )}
 
-      {typeof me.chart_id === 'string' && <NotificationPreference api={api} notifications={me.notifications}/>}
+      {config.notificationsUI() && typeof me.chart_id === 'string' && <NotificationPreference api={api} notifications={me.notifications}/>}
 
       <section className={styles.section} aria-labelledby={ids.documents}>
         <h2 id={ids.documents} className={styles.title}>
