@@ -36,6 +36,24 @@ async function paywallBuiltWith(value: string | undefined) {
 /** The plans of the three subscriptions, as far as the document has them in any form. */
 const subscriptionPlans = async () => (await screen.findAllByRole('radio')).filter((radio) => /^Подписка на /.test(radio.closest('label')?.textContent ?? ''));
 
+describe('VITE_NOTIFICATIONS_UI: the notification preference is enabled only alongside the push release', () => {
+  it('is off by default and for every value except the exact string 1', async () => {
+    for (const value of [undefined, '', '0', 'true', 'yes']) {
+      vi.stubEnv('VITE_NOTIFICATIONS_UI', value);
+      vi.resetModules();
+      const { config } = await import('./config');
+      expect(config.notificationsUI()).toBe(false);
+    }
+  });
+
+  it('is on only when VITE_NOTIFICATIONS_UI=1', async () => {
+    vi.stubEnv('VITE_NOTIFICATIONS_UI', '1');
+    vi.resetModules();
+    const { config } = await import('./config');
+    expect(config.notificationsUI()).toBe(true);
+  });
+});
+
 describe('VITE_SUBSCRIPTIONS: subscriptions are sold only when the build says `enabled`', () => {
   it('not set: no subscription plan in the DOM', async () => {
     await paywallBuiltWith(undefined);

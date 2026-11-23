@@ -23,6 +23,7 @@ export type Me = components['schemas']['Me'];
 /** The subscription as `Me` carries it: the plan, until when, and whether Telegram renews it. */
 export type Subscription = components['schemas']['SubscriptionState'];
 export type SubscriptionCancelResult = components['schemas']['SubscriptionCancelResult'];
+export type NotificationSettings = components['schemas']['Notifications'];
 /** What the user may use right now. Drawn by the app, decided by the server alone. */
 export type Entitlements = components['schemas']['Entitlements'];
 export type Quota = components['schemas']['Quota'];
@@ -212,6 +213,7 @@ const PATHS = {
   questions: '/api/v1/questions',
   question: '/api/v1/questions/{question_id}',
   subscriptionCancel: '/api/v1/subscription/cancel',
+  notifications: '/api/v1/me/notifications',
 } as const satisfies Record<string, keyof paths>;
 
 /** The header of idempotent order endpoints that makes a repeated order the same order. */
@@ -226,6 +228,8 @@ export interface Api {
   deleteMe(signal?: AbortSignal): Promise<void>;
   /** Disables auto-renewal; never changes local access before `GET /me` confirms it. */
   cancelSubscription(idempotencyKey: string, signal?: AbortSignal): Promise<SubscriptionCancelResult>;
+  /** Stores and returns the server's authoritative daily forecast notification setting. */
+  updateNotifications(dailyForecast: boolean, signal?: AbortSignal): Promise<NotificationSettings>;
   /**
    * Candidates for a birth place; an empty list when nothing matches. A failure of the
    * geodata provider is an error (503 `GEO_NOT_FOUND`), not an empty list.
@@ -556,6 +560,16 @@ export function createApi(options: HttpClientOptions): Api {
 
     async deleteMe(signal) {
       await request<unknown>('DELETE', PATHS.me, { signal, retry: false });
+    },
+
+    async updateNotifications(dailyForecast, signal) {
+      const value: unknown = await request('POST', PATHS.notifications, {
+        body: { daily_forecast: dailyForecast },
+        signal,
+        retry: false,
+      });
+      if (!isRecord(value) || typeof value.daily_forecast !== 'boolean') throw invalid();
+      return { daily_forecast: value.daily_forecast };
     },
 
     async cancelSubscription(idempotencyKey, signal) {

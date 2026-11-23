@@ -25,6 +25,8 @@ export const config = {
    * one then, and a subscription the user already has is still shown.
    */
   subscriptions: subscriptionsModeOf(import.meta.env.VITE_SUBSCRIPTIONS) === 'enabled',
+  /** Enable the notification preference UI only alongside the actual 08:00 push release. */
+  notificationsUI: () => import.meta.env.VITE_NOTIFICATIONS_UI === '1',
   /** Stand-in for Telegram initData in a plain browser. Not present in production builds at all. */
   devInitData: import.meta.env.DEV ? (import.meta.env.VITE_DEV_INIT_DATA ?? '') : '',
   /**

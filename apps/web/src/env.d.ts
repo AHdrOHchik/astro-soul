@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_SUPPORT_CONTACT?: string;
   /** `enabled` or `off` (the same as unset): whether the app sells subscriptions. Anything else stops the build. */
   readonly VITE_SUBSCRIPTIONS?: string;
+  /** `1` only when the actual daily forecast push is released; unset/other = hide its preference UI. */
+  readonly VITE_NOTIFICATIONS_UI?: string;
   /** Dev builds only: raw initData to send when the app runs outside Telegram. */
   readonly VITE_DEV_INIT_DATA?: string;
   /** Dev builds only: how a pretended invoice ends outside Telegram (`paid`, `cancelled`, `failed`, `pending`). */

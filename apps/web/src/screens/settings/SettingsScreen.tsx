@@ -13,7 +13,7 @@ import {
 } from '@astro-soul/ui';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { Track } from '../../analytics';
-import { failureCodeOf, isApiError, serverTextOf, type Api, type Me, type Quota } from '../../api';
+import { failureCodeOf, fieldErrorsOf, isApiError, serverTextOf, type Api, type Me, type Quota } from '../../api';
 import { ErrorState } from '../../components/ErrorState';
 import { Reference } from '../../components/Reference';
 import { SupportButton } from '../../components/SupportButton';
@@ -22,6 +22,7 @@ import { SubscriptionInfo } from './SubscriptionInfo';
 import { CompatibilityEntry } from '../compatibility/CompatibilityEntry';
 import { CompatibilityHistory, type CompatibilityHistoryCache } from '../compatibility/CompatibilityHistory';
 import { useRequest } from '../../hooks/useRequest';
+import { config } from '../../config';
 import { formatMoment } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import type { Telegram } from '../../telegram';
@@ -33,7 +34,7 @@ const SKELETON_BLOCKS = [0, 1, 2];
 const DOCUMENTS: readonly LegalDocument[] = ['privacy', 'terms'];
 
 export interface SettingsScreenProps {
-  api: Pick<Api, 'deleteMe' | 'getCompatibilities' | 'getPlans' | 'cancelSubscription'>;
+  api: Pick<Api, 'deleteMe' | 'getCompatibilities' | 'getPlans' | 'cancelSubscription' | 'updateNotifications'>;
   telegram: Pick<Telegram, 'isTelegram' | 'close' | 'openLink'>;
   /** Loads `Me` anew: the subscription and the quotas are shown as the server has them now. */
   refreshMe: (signal?: AbortSignal) => Promise<Me>;
@@ -190,7 +191,7 @@ export function SettingsScreen({
 
 interface SectionsProps {
   me: Me;
-  api: Pick<Api, 'getCompatibilities' | 'getPlans' | 'cancelSubscription'>;
+  api: Pick<Api, 'getCompatibilities' | 'getPlans' | 'cancelSubscription' | 'updateNotifications'>;
   support: ReactNode;
   telegram: Pick<Telegram, 'openLink'>;
   supportLink: string;
@@ -248,6 +249,8 @@ function Sections({ me, api, support, telegram, supportLink, track, refreshMe, o
         />
       )}
 
+      {config.notificationsUI() && typeof me.chart_id === 'string' && <NotificationPreference api={api} notifications={me.notifications}/>}
+
       <section className={styles.section} aria-labelledby={ids.documents}>
         <h2 id={ids.documents} className={styles.title}>
           {copy.documents}
@@ -282,6 +285,70 @@ function Sections({ me, api, support, telegram, supportLink, track, refreshMe, o
         </Button>
       </section>
     </div>
+  );
+}
+
+type NotificationSaveError = { kind: 'generic' } | { kind: 'field'; field: string; message: string };
+
+function NotificationPreference({ api, notifications }: {
+  api: Pick<Api, 'updateNotifications'>;
+  notifications: Me['notifications'];
+}) {
+  const [dailyForecast, setDailyForecast] = useState(notifications?.daily_forecast ?? true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<NotificationSaveError | null>(null);
+  const noteId = useId();
+  const errorId = useId();
+
+  const save = async (next: boolean) => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const saved = await api.updateNotifications(next);
+      // This setting is a promise to the user: only the server's answer changes its value.
+      setDailyForecast(saved.daily_forecast);
+    } catch (reason) {
+      const fieldError = isApiError(reason) && reason.status === 422 ? fieldErrorsOf(reason)[0] : undefined;
+      setSaveError(fieldError === undefined
+        ? { kind: 'generic' }
+        : { kind: 'field', field: fieldError.field, message: fieldError.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fieldInvalid = saveError?.kind === 'field' && saveError.field === 'daily_forecast';
+  const describedBy = fieldInvalid ? `${noteId} ${errorId}` : noteId;
+
+  return (
+    <section className={styles.section} aria-labelledby={`${noteId}-heading`}>
+      <h2 id={`${noteId}-heading`} className={styles.title}>{copy.notifications.title}</h2>
+      <div className={styles.notificationSetting}>
+        <label className={styles.notificationRow}>
+          <span>{copy.notifications.dailyForecast}</span>
+          <span className={styles.switch}>
+            <input
+              className={styles.switchInput}
+              type="checkbox"
+              role="switch"
+              checked={dailyForecast}
+              disabled={saving}
+              aria-invalid={fieldInvalid || undefined}
+              aria-describedby={describedBy}
+              onChange={(event) => { void save(event.currentTarget.checked); }}
+            />
+            <span className={styles.switchTrack} aria-hidden="true"><span className={styles.switchThumb}/></span>
+          </span>
+        </label>
+        <p id={noteId} className={styles.muted}>{copy.notifications.note}</p>
+        {saveError && (
+          <p id={errorId} className={styles.notificationError} role="alert">
+            {saveError.kind === 'generic' ? copy.notifications.saveFailed : `${saveError.message} (${saveError.field})`}
+          </p>
+        )}
+      </div>
+    </section>
   );
 }
 
