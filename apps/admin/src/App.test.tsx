@@ -112,17 +112,17 @@ describe('входной гейт', () => {
     expect(meta.querySelector('span[title]')?.getAttribute('title')).toMatch(/401/);
   });
 
-  it('меню показывает все восемь разделов, три — с пометкой «нет маршрутов»', async () => {
+  it('меню показывает все восемь разделов, и «нет маршрутов» среди них больше нет', async () => {
     renderApp('live');
     await screen.findByText('Владелец');
 
     const nav = screen.getByRole('navigation');
     expect(nav.querySelectorAll('a')).toHaveLength(8);
-    // «Аудит» получил маршрут в 1.6.15, «Основатели» и «Эксплуатация» — в 1.6.17,
-    // поэтому пометок стало три (пользователи, платежи, тарифы). Пометка значит
-    // «маршрутов нет», а не «экран готов»: сами экраны придут в PR панели.
-    expect(nav.querySelectorAll('.nav__mark')).toHaveLength(3);
-    const audit = [...nav.querySelectorAll('a')].find((link) => link.textContent.includes('Аудит'));
-    expect(audit?.querySelector('.nav__mark')).toBeNull();
+    // Пометка «нет маршрутов» значит «у раздела нет ни одного живого адреса».
+    // С 1.6.16–1.6.18 таких разделов не осталось: «Пользователи», «Платежи» и
+    // «Тарифы» получили свои маршруты, «Аудит» — в 1.6.15, «Основатели» и
+    // «Эксплуатация» — в 1.6.17. Пустой список здесь проверяется не «на глаз»:
+    // сверку `SCREEN_READINESS` с `paths:` держит `routes.contract.test.ts`.
+    expect(nav.querySelectorAll('.nav__mark')).toHaveLength(0);
   });
 });

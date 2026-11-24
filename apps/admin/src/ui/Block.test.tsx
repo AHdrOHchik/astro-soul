@@ -123,6 +123,8 @@ describe('состояния блока данных', () => {
       </Block>,
     );
     expect(screen.getByText(/ADMIN_TG_ID/)).toBeInTheDocument();
+    // И текст сервера рядом: «не админ» — его слова, панель их не заменяет.
+    expect(screen.getByText(/не админ/)).toBeInTheDocument();
   });
 
   it('сеть: у ошибки нет request_id — панель не выдумывает его', () => {

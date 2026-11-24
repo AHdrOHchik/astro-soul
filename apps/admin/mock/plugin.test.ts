@@ -458,26 +458,65 @@ describe('dev-мокер: тарифы и пользователи', () => {
   it('PATCH с правильной версией меняет цену и пишет историю со снимком имени', async () => {
     const okReply = await patchPlan({ price_stars: 349, comment: 'акция выходного дня', base_version: 7 });
     expect(okReply.status).toBe(200);
-    const result = (await okReply.json()) as { plan: { version: number; updated_by_name: string | null } };
+    const result = (await okReply.json()) as {
+      plan: { version: number; price_stars: number };
+      effective_from: string;
+      price_change_scope: string;
+    };
     expect(result.plan.version).toBe(8);
-    expect(result.plan.updated_by_name).toContain('ДЕМО');
+    expect(result.plan.price_stars).toBe(349);
+    expect(result.price_change_scope).toBe('only_new_purchases');
+    // Строка каталога больше ничего не обещает: «кто менял» живёт в истории.
+    expect(result.plan).not.toHaveProperty('updated_by_name');
 
     const history = await get('/api/v1/admin/plans/month_399/history', { headers: { cookie } });
-    const rows = (await history.json()) as { items: { from_price: number | null; to_price: number; actor_name: string; comment: string }[] };
-    expect(rows.items[0]?.from_price).toBe(399);
-    expect(rows.items[0]?.to_price).toBe(349);
+    const rows = (await history.json()) as {
+      items: { plan_code: string; previous_price_stars: number | null; price_stars: number; actor_name: string; comment: string; version: number }[];
+    };
+    expect(rows.items[0]?.plan_code).toBe('month_399');
+    expect(rows.items[0]?.previous_price_stars).toBe(399);
+    expect(rows.items[0]?.price_stars).toBe(349);
+    expect(rows.items[0]?.version).toBe(8);
     // Снимок имени на момент действия — колонка «кто менял» не ходит в `users`.
     expect(rows.items[0]?.actor_name).toContain('ДЕМО');
     expect(rows.items[0]?.comment).toBe('акция выходного дня');
   });
 
-  it('founder_month не редактируется даже с корректным телом', async () => {
-    const reply = await send('PATCH', '/api/v1/admin/plans/founder_month', { price_stars: 250, comment: 'по просьбе', base_version: 2 });
-    expect(reply.status).toBe(403);
-    expect(JSON.stringify(await reply.json())).toContain('founder_plan_locked');
+  it('PATCH снимает test_only только с confirm; без него — 422 confirmation_required', async () => {
+    const without = await send('PATCH', '/api/v1/admin/plans/test_1', { test_only: false, comment: 'в продажу', base_version: 1 });
+    expect(without.status).toBe(422);
+    expect(JSON.stringify(await without.json())).toContain('confirmation_required');
+
+    const withConfirm = await send('PATCH', '/api/v1/admin/plans/test_1', {
+      test_only: false,
+      confirm: 'disable_test_plan',
+      comment: 'в продажу',
+      base_version: 1,
+    });
+    expect(withConfirm.status).toBe(200);
+    const plan = (await withConfirm.json()) as { plan: { test_only: boolean } };
+    expect(plan.plan.test_only).toBe(false);
+    // Цена не менялась — и в ответе каталога `price_change_scope` нет: правило
+    // «кого касается» касается только смены цены.
+    expect(plan).not.toHaveProperty('price_change_scope');
   });
 
-  it('поиск принимает ровно один параметр; два — 422, как на сервере', async () => {
+  it('founder_month: цена закрыта (403), а test_only на нём снимается', async () => {
+    const reply = await send('PATCH', '/api/v1/admin/plans/founder_month', { price_stars: 199, comment: 'по просьбе', base_version: 2 });
+    expect(reply.status).toBe(403);
+    expect(JSON.stringify(await reply.json())).toContain('founder_plan_locked');
+
+    const flag = await send('PATCH', '/api/v1/admin/plans/founder_month', { test_only: true, comment: 'закрыть на время проверки', base_version: 2 });
+    expect(flag.status).toBe(200);
+  });
+
+  it('неизвестное поле в теле — 422 unknown_field, а не «молча проигнорировали»', async () => {
+    const reply = await patchPlan({ price_stars: 300, comment: 'со скидкой', base_version: 8, discount_price_stars: 250 });
+    expect(reply.status).toBe(422);
+    expect(JSON.stringify(await reply.json())).toContain('unknown_field');
+  });
+
+  it('поиск принимает ровно один параметр; в списке нет ни telegram_id, ни имени', async () => {
     const two = await get(`/api/v1/admin/users?telegram_id=777003&alias=anna_chart`, { headers: { cookie } });
     expect(two.status).toBe(422);
 
@@ -485,41 +524,276 @@ describe('dev-мокер: тарифы и пользователи', () => {
     expect(none.status).toBe(422);
 
     const byAlias = await get('/api/v1/admin/users?alias=%40anna_chart', { headers: { cookie } });
-    const rows = (await byAlias.json()) as { items: { tg_id: string }[] };
+    const rows = (await byAlias.json()) as { items: Record<string, unknown>[]; truncated: boolean };
     expect(byAlias.status).toBe(200);
-    expect(rows.items.map((item) => item.tg_id)).toEqual(['777003']);
+    expect(rows.items.map((item) => item.alias)).toEqual(['anna_chart']);
+    expect(rows.truncated).toBe(false);
+    // Фикстура не хитрее контракта: `AdminUserSummary` не содержит ни `tg_id`,
+    // ни `name` — «без ПДн при любом фильтре».
+    expect(rows.items[0]).not.toHaveProperty('tg_id');
+    expect(rows.items[0]).not.toHaveProperty('name');
+    expect(rows.items[0]).toHaveProperty('has_subscription', true);
+
+    const byTelegram = await get('/api/v1/admin/users?telegram_id=777003', { headers: { cookie } });
+    const card = (await (await get(`/api/v1/admin/users/${DEMO_USER_ID}`, { headers: { cookie } })).json()) as {
+      telegram_id: string;
+      payments: { charge_id: string; amount_stars: number; status: string }[];
+    };
+    expect(byTelegram.status).toBe(200);
+    // `telegram_id` — только в карточке, и платежи — как в контракте.
+    expect(card.telegram_id).toBe('777003');
+    expect(card.payments.map((item) => item.status)).toContain('paid');
+    expect(card.payments[0]).not.toHaveProperty('kind');
   });
 
-  it('возврат только полный: без основания 422; сумма серверная; повтор — 409', async () => {
+  it('возврат: тело — charge_id + reason; сумма серверная; повтор — 409', async () => {
     const cardReply = await get(`/api/v1/admin/users/${DEMO_USER_ID}`, { headers: { cookie } });
-    const card = (await cardReply.json()) as { refundable: { amount_stars: number } | null };
-    expect(card.refundable?.amount_stars).toBe(399);
+    const card = (await cardReply.json()) as { payments: { charge_id: string; amount_stars: number }[] };
+    // Карточка не отдаёт «квоту на возврат» — сумма берётся из самого заряда.
+    expect(card).not.toHaveProperty('refundable');
+    expect(card.payments.find((item) => item.charge_id === 'chg_9001')?.amount_stars).toBe(399);
 
-    const noReason = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, {});
+    const noReason = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { charge_id: 'chg_9001' });
     expect(noReason.status).toBe(422);
 
-    const okReply = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { reason: 'возврат по обращению 4211' });
-    const result = (await okReply.json()) as { amount_stars: number; currency: string; status: string };
-    expect(okReply.status).toBe(200);
-    // Тела ответа без поля суммы на вход — сервер сам решает, сколько: здесь это 399 ⭐ XTR.
-    expect(result).toMatchObject({ amount_stars: 399, currency: 'XTR', status: 'refunded' });
+    const noCharge = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { reason: 'без платежа' });
+    expect(noCharge.status).toBe(404);
+    expect(JSON.stringify(await noCharge.json())).toContain('charge_not_found');
 
-    const again = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { reason: 'ещё раз' });
+    // Попытка навязать сумму — отказ: панель не имеет права просить частичный возврат.
+    const withAmount = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, {
+      charge_id: 'chg_9001',
+      reason: 'хочу половину',
+      amount_stars: 100,
+    });
+    expect(withAmount.status).toBe(422);
+    expect(JSON.stringify(await withAmount.json())).toContain('refund_amount_not_allowed');
+
+    const okReply = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { charge_id: 'chg_9001', reason: 'возврат по обращению 4211' });
+    const result = (await okReply.json()) as { ok: boolean; charge_id: string; amount_stars: number; access_revoked: boolean };
+    expect(okReply.status).toBe(200);
+    expect(result).toMatchObject({ ok: true, charge_id: 'chg_9001', amount_stars: 399, access_revoked: false });
+    expect(result).not.toHaveProperty('currency');
+
+    const again = await send('POST', `/api/v1/admin/users/${DEMO_USER_ID}/refund`, { charge_id: 'chg_9001', reason: 'ещё раз' });
     expect(again.status).toBe(409);
-    expect(JSON.stringify(await again.json())).toContain('nothing_to_refund');
+    expect(JSON.stringify(await again.json())).toContain('already_refunded');
+
+    // Возврат виден и в ленте платежей: charge переведён в `refunded`.
+    const feed = (await (await get('/api/v1/admin/payments?charge_id=chg_9001', { headers: { cookie } })).json()) as {
+      items: { status: string; refunded_at: string | null }[];
+    };
+    expect(feed.items[0]?.status).toBe('refunded');
+    expect(feed.items[0]?.refunded_at).not.toBeNull();
   });
 
-  it('бан переключается с обязательным основанием; пуш — флажем', async () => {
-    const banned = await send('POST', `/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003/ban`, { reason: 'спам в промптах' });
+  it('бан и разбан — один маршрут с banned; пуш — без тела, один за сутки', async () => {
+    const target = '2b1f7a04-9d3c-4e21-8a55-000000000003';
+
+    const noReason = await send('POST', `/api/v1/admin/users/${target}/ban`, { banned: true });
+    expect(noReason.status).toBe(422);
+
+    const banned = await send('POST', `/api/v1/admin/users/${target}/ban`, { banned: true, reason: 'спам в промптах' });
     expect((await banned.json())).toMatchObject({ banned: true });
 
-    const card = (await (await get('/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003', { headers: { cookie } })).json()) as { ban_reason: string | null };
+    const card = (await (await get(`/api/v1/admin/users/${target}`, { headers: { cookie } })).json()) as {
+      banned: boolean;
+      ban_reason: string | null;
+    };
+    expect(card.banned).toBe(true);
     expect(card.ban_reason).toBe('спам в промптах');
 
-    const noReason = await send('POST', `/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003/ban`, {});
-    expect(noReason.status).toBe(422);
+    // Разбана «отдельным маршрутом» нет — тем же `ban` с `banned: false`.
+    const unbanned = await send('POST', `/api/v1/admin/users/${target}/ban`, { banned: false, reason: 'обращение 4290' });
+    expect((await unbanned.json())).toMatchObject({ banned: false });
+    const afterUnban = (await (await get(`/api/v1/admin/users/${target}`, { headers: { cookie } })).json()) as { banned: boolean };
+    expect(afterUnban.banned).toBe(false);
 
-    const push = await send('POST', `/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000003/push`, { enabled: false });
-    expect((await push.json())).toMatchObject({ push_enabled: false });
+    const push = await send('POST', `/api/v1/admin/users/${target}/push`, {});
+    expect(push.status).toBe(200);
+    expect((await push.json())).toMatchObject({ sent: true, kind: 'test' });
+
+    const again = await send('POST', `/api/v1/admin/users/${target}/push`, {});
+    expect(again.status).toBe(409);
+    expect(JSON.stringify(await again.json())).toContain('push_test_sent_24h');
+
+    // Тело для пуша — ошибка, а не «молча игнорируем»: флагом правит человек.
+    const withBody = await send('POST', '/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000002/push', { enabled: true });
+    expect(withBody.status).toBe(422);
+  });
+
+  it('отказ доставки пуша не выдумывается: у выключенного пуша — 409 push_disabled', async () => {
+    const reply = await send('POST', '/api/v1/admin/users/2b1f7a04-9d3c-4e21-8a55-000000000002/push', {});
+    expect(reply.status).toBe(409);
+    const problem = (await reply.json()) as { details?: { reason?: string } };
+    expect(problem.details?.reason).toBe('push_disabled');
+    // Никакого `telegram_status` фикстура не изобретает.
+    expect(problem).not.toHaveProperty('telegram_status');
+  });
+});
+
+/**
+ * Новый блок — «Платежи и генерации», «Основатели и партнёры», «Эксплуатация».
+ * Свой экземпляр мокера: алерты и дамп меняют состояние замыкания.
+ */
+describe('dev-мокер: платежи, основатели и эксплуатация', () => {
+  let mock: Handles;
+  let cookie = '';
+
+  const get = (path: string, init?: RequestInit) => fetch(mock.origin + path, init);
+  const send = (method: 'POST', path: string, body: unknown, withCsrf = true) =>
+    get(path, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+        ...(withCsrf ? { 'X-Admin-CSRF': DEMO_CSRF } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+  beforeAll(async () => {
+    mock = await serveMock(null);
+    const login = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody(),
+    });
+    cookie = login.headers.getSetCookie()[0] ?? '';
+  });
+
+  afterAll(async () => {
+    await mock.close();
+  });
+
+  it('лента платежей: точный charge_id, фильтр статуса и курсор в конце — null', async () => {
+    const all = (await (await get('/api/v1/admin/payments?limit=2', { headers: { cookie } })).json()) as {
+      items: unknown[];
+      next_cursor: string | null;
+    };
+    expect(all.items).toHaveLength(2);
+    expect(all.next_cursor).not.toBeNull();
+
+    const next = await get(`/api/v1/admin/payments?limit=2&cursor=${all.next_cursor}`, { headers: { cookie } });
+    expect(next.status).toBe(200);
+
+    const bad = await get('/api/v1/admin/payments?status=refunded&limit=999', { headers: { cookie } });
+    expect(bad.status).toBe(422);
+    expect(JSON.stringify(await bad.json())).toContain('invalid_limit');
+
+    const one = (await (await get('/api/v1/admin/payments?charge_id=chg_orphan', { headers: { cookie } })).json()) as {
+      items: { charge_id: string; user_id: string | null; currency: string }[];
+    };
+    expect(one.items.map((item) => item.charge_id)).toEqual(['chg_orphan']);
+    // «Человека нет» в фикстуре — это `null`, а не выдуманный uuid.
+    expect(one.items[0]?.user_id).toBeNull();
+    expect(one.items[0]?.currency).toBe('XTR');
+  });
+
+  it('разборы: перегенерация только упавшего — 202 в очередь, готовый — 409', async () => {
+    const list = (await (await get('/api/v1/admin/reports?status=failed', { headers: { cookie } })).json()) as {
+      items: { id: string; status: string; attempts: number }[];
+      truncated: boolean;
+    };
+    const failed = list.items[0];
+    if (failed === undefined) throw new Error('фикстура не отдала упавший разбор');
+    expect(failed.status).toBe('failed');
+
+    const reply = await send('POST', `/api/v1/admin/reports/${failed.id}/regenerate`, {});
+    expect(reply.status).toBe(202);
+    expect((await reply.json())).toMatchObject({ report_id: failed.id, state: 'queued', attempts: failed.attempts + 1 });
+
+    // Тот же разбор теперь `queued` — второй перегон уже нельзя.
+    const again = await send('POST', `/api/v1/admin/reports/${failed.id}/regenerate`, {});
+    expect(again.status).toBe(409);
+    expect(JSON.stringify(await again.json())).toContain('report_not_regenerable');
+
+    const ready = (await (await get('/api/v1/admin/reports?status=ready', { headers: { cookie } })).json()) as {
+      items: { id: string }[];
+    };
+    const readyId = ready.items[0]?.id;
+    if (readyId === undefined) throw new Error('фикстура не отдала готовый разбор');
+    expect((await send('POST', `/api/v1/admin/reports/${readyId}/regenerate`, {})).status).toBe(409);
+
+    const filter = await get('/api/v1/admin/reports?kind=nope', { headers: { cookie } });
+    expect(filter.status).toBe(422);
+  });
+
+  it('основатели: мест 50, `username` нет; партнёры: revenue без возвратов', async () => {
+    const founders = (await (await get('/api/v1/admin/founders', { headers: { cookie } })).json()) as {
+      items: Record<string, unknown>[];
+      next_cursor: string | null;
+    };
+    expect(founders.items.map((item) => item.place)).toEqual([1, 2, 3]);
+    // 1.6.18 вынесла `username` из `AdminFounder`: колонки «ник» рисовать нечем.
+    expect(founders.items[0]).not.toHaveProperty('username');
+    expect(typeof founders.items[0]?.telegram_id).toBe('string');
+    expect(founders.next_cursor).toBeNull();
+
+    const partners = (await (await get('/api/v1/admin/partners', { headers: { cookie } })).json()) as {
+      items: { partner_name: string; revenue_stars: number; paid_users: number; last_activation_at: string | null }[];
+    };
+    expect(partners.items.map((item) => item.partner_name)).toContain('podcast-razbor');
+    // «Код раздавали, никто не пришёл» — строка с нулями, а не отсутствие строки.
+    const empty = partners.items.find((item) => item.partner_name === 'leaflet-2026');
+    expect(empty).toMatchObject({ activations_total: 0, revenue_stars: 0, last_activation_at: null });
+  });
+
+  it('дамп: 202 «запущено», повтор в окне — 409 с retry_after_seconds', async () => {
+    const started = await send('POST', '/api/v1/admin/backup/run', { reason: 'перед миграцией' });
+    expect(started.status).toBe(202);
+    expect((await started.json())).toMatchObject({ started: true });
+
+    const again = await send('POST', '/api/v1/admin/backup/run', { reason: 'ещё раз' });
+    expect(again.status).toBe(409);
+    const problem = (await again.json()) as { details?: { reason?: string; retry_after_seconds?: number } };
+    expect(problem.details?.reason).toBe('backup_too_frequent');
+    expect(typeof problem.details?.retry_after_seconds).toBe('number');
+
+    const short = await send('POST', '/api/v1/admin/backup/run', { reason: 'ок' });
+    expect(short.status).toBe(422);
+    expect(JSON.stringify(await short.json())).toContain('invalid_reason');
+
+    expect((await send('POST', '/api/v1/admin/backup/run', { reason: 'без токена' }, false)).status).toBe(403);
+  });
+
+  it('вебхук: ответ Bot API как есть; алерт: ack скрывает показ, не меняя value', async () => {
+    const hook = await send('POST', '/api/v1/admin/telegram/webhook', { reason: 'сменили домен' });
+    expect(hook.status).toBe(200);
+    expect((await hook.json())).toMatchObject({ ok: true, last_error_message: null });
+
+    const alerts = (await (await get('/api/v1/admin/alerts', { headers: { cookie } })).json()) as {
+      alerts: { id: string; value: number | null; threshold: number; fired: boolean; acked_until: string | null }[];
+    };
+    const fired = alerts.alerts.find((item) => item.fired);
+    if (fired === undefined) throw new Error('фикстура не отдала сработавший алерт');
+
+    const bad = await send('POST', `/api/v1/admin/alerts/${fired.id}/ack`, { minutes: 5 });
+    expect(bad.status).toBe(422);
+    expect(JSON.stringify(await bad.json())).toContain('invalid_minutes');
+
+    const unknown = await send('POST', '/api/v1/admin/alerts/nope/ack', { minutes: 60 });
+    expect(unknown.status).toBe(422);
+    expect(JSON.stringify(await unknown.json())).toContain('unknown_alert');
+
+    const ack = await send('POST', `/api/v1/admin/alerts/${fired.id}/ack`, { minutes: 60 });
+    expect(ack.status).toBe(200);
+    const result = (await ack.json()) as { acked_until: string; alert: { value: number | null; threshold: number; fired: boolean } };
+    expect(new Date(result.acked_until).getTime()).toBeGreaterThan(Date.now());
+    // «Скрыт» ≠ «исправлено»: значение и порог остались как были.
+    expect(result.alert.fired).toBe(false);
+    expect(result.alert.value).toBe(fired.value);
+    expect(result.alert.threshold).toBe(fired.threshold);
+
+    const after = (await (await get('/api/v1/admin/alerts', { headers: { cookie } })).json()) as {
+      alerts: { id: string; fired: boolean }[];
+    };
+    expect(after.alerts.find((item) => item.id === fired.id)?.fired).toBe(false);
+  });
+
+  it('несуществующего маршрута мокер не изображает: карта платежа — 404', async () => {
+    const reply = await get('/api/v1/admin/payments/chg_9001', { headers: { cookie } });
+    expect(reply.status).toBe(404);
+    expect(MOCK_MARKER.length).toBeGreaterThan(0);
   });
 });
