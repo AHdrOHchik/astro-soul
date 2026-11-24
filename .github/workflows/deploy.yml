@@ -1,0 +1,176 @@
+name: deploy
+
+# Выбор: workflow_dispatch, а не workflow_run. Так деплой — явное действие
+# владельца под защитой environment=production, и нельзя случайно выкатить
+# образы сразу после зелёного release. Требуется тот же тег, что у release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег, опубликованный workflow release'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Проверка тега
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "ОШИБКА: некорректный tag '$tag'" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # Строгий хост-ключ: known_hosts приходит готовым секретом, ssh-keyscan
+      # в CI не запускается. Ключ и known_hosts не пишутся в репозиторий.
+      - name: SSH-ключ и known_hosts
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          for name in SSH_HOST SSH_PORT SSH_USER SSH_KEY SSH_KNOWN_HOSTS GHCR_READ_TOKEN; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "ОШИБКА: не задан $name — см. docs/DEPLOY.md" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$SSH_PORT" =~ ^[0-9]+$ ]]; then
+            echo "ОШИБКА: SSH_PORT должен быть числом" >&2
+            exit 1
+          fi
+          install -d -m 700 "$HOME/.ssh"
+          install -m 700 /dev/stdin "$HOME/.ssh/id_ed25519" <<< "$SSH_KEY"
+          install -m 600 /dev/stdin "$HOME/.ssh/known_hosts" <<< "$SSH_KNOWN_HOSTS"
+          test -s "$HOME/.ssh/id_ed25519"
+          test -s "$HOME/.ssh/known_hosts"
+          echo "SSH-материалы установлены; host key проверяется строго"
+
+      # Артефакт того же тега берём из последнего успешного release. Маркер
+      # RELEASE_TAG внутри не даёт тихо выложить старую админку с новым API.
+      - name: Статика админки из release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          mapfile -t runs < <(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?status=success&per_page=20" \
+            --jq '.workflow_runs[].id')
+          found=0
+          for id in "${runs[@]}"; do
+            rm -rf artifact/admin-dist
+            if gh run download "$id" -n admin-dist --dir artifact >/dev/null 2>&1; then
+              if [[ -f artifact/admin-dist/RELEASE_TAG ]] && \
+                 [[ "$(cat artifact/admin-dist/RELEASE_TAG)" == "$TAG" ]]; then
+                found=1
+                echo "admin-dist: release run #$id, tag=$TAG"
+                break
+              fi
+            fi
+          done
+          if [[ "$found" -ne 1 ]]; then
+            echo "ОШИБКА: нет артефакта admin-dist для тега '$TAG' — сначала выполни release с этим тегом" >&2
+            exit 1
+          fi
+          test -s artifact/admin-dist/index.html
+
+      # Скрипт версионируется в репозитории и передаётся по stdin. Первая
+      # строка потока — токен GHCR: он не светится в аргументах ssh, а
+      # --password-stdin внутри скрипта не даёт ему попасть в логи.
+      - name: Выкладка на VPS
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' "$GHCR_TOKEN"
+            cat scripts/deploy/remote-release.sh
+          } | ssh -i "$HOME/.ssh/id_ed25519" -p "$SSH_PORT" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              "$SSH_USER@$SSH_HOST" \
+              "IFS= read -r GHCR_TOKEN; export GHCR_TOKEN; bash -s -- '$TAG' '$REPO_OWNER' '$GHCR_USER'" \
+              2>&1 | tee remote-deploy.log
+
+      # Пока нет admin.Dockerfile (Б-2): отдельная статика. Когда он появится,
+      # этот шаг заменяется сервисом admin в compose.
+      - name: rsync админки в /var/www/admin
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          SSH_OPTS=(-i "$HOME/.ssh/id_ed25519" -p "$SSH_PORT" -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$HOME/.ssh/known_hosts")
+          ssh "${SSH_OPTS[@]}" "$SSH_USER@$SSH_HOST" 'install -d -m 0755 /var/www/admin'
+          RSYNC_SSH="ssh -i $HOME/.ssh/id_ed25519 -p $SSH_PORT -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          rsync -az --delete --exclude=RELEASE_TAG --exclude=BOOTSTRAP \
+            -e "$RSYNC_SSH" artifact/admin-dist/ "$SSH_USER@$SSH_HOST:/var/www/admin/"
+          echo "Админка обновлена: /var/www/admin"
+
+      - name: Итог deploy
+        if: always()
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          health="unknown"
+          rollback="unknown"
+          rollback_health=""
+          if [[ -f remote-deploy.log ]]; then
+            line="$(grep -m1 '^ASTRO_DEPLOY_RESULT ' remote-deploy.log || true)"
+            if [[ -n "$line" ]]; then
+              health="$line"
+              health="${health#*health=}"
+              health="${health%% *}"
+              rollback="$line"
+              rollback="${rollback#*rollback=}"
+              rollback="${rollback%% *}"
+            fi
+            rollback_health="$(grep -m1 '^ASTRO_ROLLBACK_HEALTH ' remote-deploy.log | awk '{print $2}' || true)"
+          fi
+          {
+            echo "## deploy"
+            echo "- Тег: \`$TAG\`"
+            echo "- Время (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "- health: $health"
+            echo "- Откат: $rollback"
+            if [[ -n "$rollback_health" ]]; then
+              echo "- health после отката: $rollback_health"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
