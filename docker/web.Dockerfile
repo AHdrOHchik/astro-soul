@@ -18,6 +18,7 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/shared ./packages/shared
 COPY packages/ui ./packages/ui
+COPY apps/api/src ./apps/api/src
 COPY apps/web ./apps/web
 
 # Переменные фронта попадают в бандл на этапе сборки (build-time), а не в runtime-ENV.
