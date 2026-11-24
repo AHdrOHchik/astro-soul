@@ -10,22 +10,21 @@ import { useEffect, useState } from 'react';
 import type { ScreenKey } from '../api/routes';
 
 export interface RouterLocation {
-  readonly screen: ScreenKey;
+  readonly screen: RoutedScreen;
   readonly query: Readonly<Record<string, string>>;
 }
 
-const SCREENS: readonly ScreenKey[] = [
-  'overview',
-  'users',
-  'payments',
-  'plans',
-  'codes',
-  'founders',
-  'ops',
-  'audit',
-];
+/**
+ * Разделы, которые умеет открывать хэш-роутер. `login` в списке нет намеренно:
+ * экран входа выбирается состоянием сессии, а не адресом, и ссылка `#/login`
+ * не должна открывать «вход» у вошедшего человека.
+ */
+const ROUTED_SCREENS = ['overview', 'users', 'payments', 'plans', 'codes', 'founders', 'ops', 'audit'] as const satisfies readonly ScreenKey[];
 
-const SCREEN_SET = new Set<string>(SCREENS);
+/** Один из восьми разделов — тип, а не `string`: опечатка в адресе не живёт. */
+export type RoutedScreen = (typeof ROUTED_SCREENS)[number];
+
+const SCREEN_SET = new Set<string>(ROUTED_SCREENS as readonly string[]);
 
 /** `#/codes?user_id=…` → `{ screen: 'codes', query: { user_id: '…' } }`. */
 export function parseHash(hash: string): RouterLocation {
@@ -42,7 +41,7 @@ export function parseHash(hash: string): RouterLocation {
     }
   }
 
-  return { screen: SCREEN_SET.has(screen) ? (screen as ScreenKey) : 'overview', query };
+  return { screen: SCREEN_SET.has(screen) ? (screen as RoutedScreen) : 'overview', query };
 }
 
 export function toHref(screen: ScreenKey, query?: Record<string, string | undefined>): string {

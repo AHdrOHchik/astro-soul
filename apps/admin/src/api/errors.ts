@@ -25,8 +25,12 @@ export interface ApiErrorInit {
   readonly reason?: string | null;
   readonly fieldErrors?: readonly FieldError[];
   readonly route?: string;
-  /** `details.retry_after` из ответа `429` — секунды до новой попытки. */
+  /** Секунды до новой попытки: `details.retry_after` (`429`) и `details.retry_after_seconds` (оба `409` дампа). */
   readonly retryAfterSeconds?: number | null;
+  /** `details.missing` у `503 backup_not_configured` — имена переменных окружения, которых нет. */
+  readonly missing?: readonly string[];
+  /** `details.last_error_message` у `502 telegram/webhook` — текст Bot API, дословно. */
+  readonly upstreamMessage?: string | null;
 }
 
 export class ApiError extends Error {
@@ -37,6 +41,8 @@ export class ApiError extends Error {
   readonly fieldErrors: readonly FieldError[];
   readonly route: string | undefined;
   readonly retryAfterSeconds: number | null;
+  readonly missing: readonly string[];
+  readonly upstreamMessage: string | null;
 
   constructor(init: ApiErrorInit) {
     super(init.message);
@@ -48,6 +54,8 @@ export class ApiError extends Error {
     this.fieldErrors = init.fieldErrors ?? [];
     this.route = init.route;
     this.retryAfterSeconds = init.retryAfterSeconds ?? null;
+    this.missing = init.missing ?? [];
+    this.upstreamMessage = init.upstreamMessage ?? null;
   }
 
   get isUnauthorized(): boolean {
@@ -95,6 +103,8 @@ export interface ParsedProblem {
   readonly reason: string | null;
   readonly fieldErrors: readonly FieldError[];
   readonly retryAfterSeconds: number | null;
+  readonly missing: readonly string[];
+  readonly upstreamMessage: string | null;
 }
 
 export function parseProblem(body: unknown): ParsedProblem | null {
@@ -103,13 +113,17 @@ export function parseProblem(body: unknown): ParsedProblem | null {
   const message = asString(body.message);
   if (!code || !message) return null;
   const details = isRecord(body.details) ? body.details : undefined;
-  const retry = details?.retry_after;
+  // Имя поля различается: `retry_after` у `429`, `retry_after_seconds` у обоих
+  // `409` дампа (1.6.18). Читаем оба, потому что смысл один и тот же.
+  const retry = details?.retry_after ?? details?.retry_after_seconds;
   return {
     code,
     message,
     reason: asString(details?.reason),
     fieldErrors: fieldErrorsOf(body.details),
     retryAfterSeconds: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 ? Math.ceil(retry) : null,
+    missing: Array.isArray(details?.missing) ? details.missing.filter((item): item is string => typeof item === 'string') : [],
+    upstreamMessage: asString(details?.last_error_message),
   };
 }
 
@@ -124,6 +138,8 @@ export function errorFromResponse(status: number, body: unknown, requestId: stri
     fieldErrors: problem?.fieldErrors ?? [],
     route,
     retryAfterSeconds: problem?.retryAfterSeconds ?? null,
+    missing: problem?.missing ?? [],
+    upstreamMessage: problem?.upstreamMessage ?? null,
   });
 }
 

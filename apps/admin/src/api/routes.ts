@@ -125,7 +125,7 @@ const USERS: readonly AdminRoute[] = [
     key: 'usersSearch',
     method: 'GET',
     path: `${API_PREFIX}/admin/users`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
     why: 'Поиск человека — ровно одним параметром: `?telegram_id=`, `?alias=` или `?q=`. Без него карточку открыть нечем; два сразу сервер не принимает.',
     screens: ['users'],
@@ -134,7 +134,7 @@ const USERS: readonly AdminRoute[] = [
     key: 'userCard',
     method: 'GET',
     path: `${API_PREFIX}/admin/users/{id}`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
     why: 'Карточка: карта, подписка, платежи, гранты, push_enabled, last_seen_at.',
     screens: ['users'],
@@ -143,27 +143,27 @@ const USERS: readonly AdminRoute[] = [
     key: 'userRefund',
     method: 'POST',
     path: `${API_PREFIX}/admin/users/{id}/refund`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Возврат звёзд (refundStarPayment) с суммой, посчитанной на сервере.',
+    why: 'Возврат по выбранному `charge_id` (только `charge_id` + `reason`); сумму считает сервер и возвращает её же.',
     screens: ['users'],
   },
   {
     key: 'userBan',
     method: 'POST',
     path: `${API_PREFIX}/admin/users/{id}/ban`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Заблокировать и разблокировать человека с обязательным основанием в аудит.',
+    why: 'Бан и разбан одним маршрутом: `ban` с `banned: true|false` и основанием в аудит. Отдельного `unban` в контракте нет.',
     screens: ['users'],
   },
   {
     key: 'userPush',
     method: 'POST',
     path: `${API_PREFIX}/admin/users/{id}/push`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Включить и выключить утренний пуш человека.',
+    why: 'Тестовая отправка утреннего пуша: `200 {sent, sent_at, kind}`; выключенный пуш — `409 push_disabled`.',
     screens: ['users'],
   },
 ];
@@ -173,18 +173,18 @@ const PAYMENTS: readonly AdminRoute[] = [
     key: 'reportsList',
     method: 'GET',
     path: `${API_PREFIX}/admin/reports`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Провалы генераций за 24 часа (`?status=failed`) с владельцем, кодом ошибки, стоимостью и длительностью.',
+    why: 'Лента разборов с фильтрами `status`/`kind`/`user_id`; текста разбора в ответе нет намеренно.',
     screens: ['payments', 'overview'],
   },
   {
     key: 'reportRegenerate',
     method: 'POST',
     path: `${API_PREFIX}/admin/reports/{id}/regenerate`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Перегенерация разбора с обязательной причиной в аудит.',
+    why: 'Перегенерация упавшего разбора: `202 {report_id, state, attempts}`; тела запроса у маршрута нет.',
     screens: ['payments'],
   },
   {
@@ -203,25 +203,25 @@ const PLANS: readonly AdminRoute[] = [
     key: 'plansList',
     method: 'GET',
     path: `${API_PREFIX}/admin/plans`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Каталог тарифов с ценой в звёздах, is_active, test_only и датой изменения.',
+    why: 'Каталог тарифов: `price_stars`, `test_only`, `active`, `founder_only`, `version`, `updated_at`.',
     screens: ['plans'],
   },
   {
     key: 'plansPatch',
     method: 'PATCH',
     path: `${API_PREFIX}/admin/plans/{code}`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
-    why: 'Цена, test_only, is_active — с записью «было → стало» в аудит.',
+    why: 'Цена и `test_only` — с `comment`, `base_version` и `confirm` при снятии тестового флага; `is_active` не правится.',
     screens: ['plans'],
   },
   {
     key: 'plansAudit',
     method: 'GET',
     path: `${API_PREFIX}/admin/plans/{code}/history`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
     why: 'Кто и когда менял цену в прошлый раз — без этого подтверждение изменения цены неполное.',
     screens: ['plans'],
@@ -318,6 +318,54 @@ const OPS: readonly AdminRoute[] = [
   },
 ];
 
+/**
+ * Чего панель ждёт, а контракта на это нет (1.6.18). Это не «маршруты, которые
+ * мы вызываем», а перечень того, чего на экранах сознательно нет: у экрана нет
+ * кнопки, которая вела бы в никуда, и нет цифры, посчитанной на клиенте.
+ *
+ * Флаг `inContract: false` здесь — не «когда-нибудь включим», а запись в
+ * отчёт бэкенду: эти четыре адреса в `api.openapi.yaml` отсутствуют, и запрос к
+ * ним панель не делает (гейт `assertCallable` её бы и не пустил).
+ */
+const GAPS: readonly AdminRoute[] = [
+  {
+    key: 'paymentDetail',
+    method: 'GET',
+    path: `${API_PREFIX}/admin/payments/{id}`,
+    inContract: false,
+    needsSession: true,
+    why: 'Открыть один платёж по `charge_id`. Маршрута нет — на экране «Платежи» нет и ссылки «к карте платежа», только фильтр ленты.',
+    screens: ['payments'],
+  },
+  {
+    key: 'paymentsExport',
+    method: 'GET',
+    path: `${API_PREFIX}/admin/payments/export.csv`,
+    inContract: false,
+    needsSession: true,
+    why: 'Выгрузка ленты в CSV. Экранировать запятые на клиенте панель не будет: цифры разъедутся, и это будут уже не серверные данные.',
+    screens: ['payments'],
+  },
+  {
+    key: 'plansCreate',
+    method: 'POST',
+    path: `${API_PREFIX}/admin/plans`,
+    inContract: false,
+    needsSession: true,
+    why: 'Создать тариф. Контракт разрешает панели только `PATCH` цены и `test_only`; завести тариф — работа миграции, не кнопки.',
+    screens: ['plans'],
+  },
+  {
+    key: 'usersBulk',
+    method: 'POST',
+    path: `${API_PREFIX}/admin/users/bulk`,
+    inContract: false,
+    needsSession: true,
+    why: 'Массовые действия (забанить/вернуть всем сразу). Их нет намеренно: каждое действие с деньгами обязано быть одиночным и записанным в аудит.',
+    screens: ['users'],
+  },
+];
+
 const AUDIT: readonly AdminRoute[] = [
   {
     key: 'auditList',
@@ -341,6 +389,8 @@ export const ADMIN_ROUTES: readonly AdminRoute[] = [
   ...FOUNDERS,
   ...OPS,
   ...AUDIT,
+  // В конце: то, чего в контракте нет. Ни один экран эти маршруты не зовёт.
+  ...GAPS,
 ];
 
 const BY_KEY = new Map(ADMIN_ROUTES.map((route) => [route.key, route]));
@@ -373,11 +423,16 @@ export function routeLabel(item: AdminRoute): string {
 export type ScreenReadiness = 'ready' | 'waiting-for-routes';
 
 export const SCREEN_READINESS: Record<ScreenKey, ScreenReadiness> = {
-  login: 'waiting-for-routes',
+  login: 'ready',
   overview: 'ready',
-  users: 'waiting-for-routes',
-  payments: 'waiting-for-routes',
-  plans: 'waiting-for-routes',
+  // 1.6.16–1.6.18: маршруты этих разделов приехали в `paths:`, поэтому
+  // «ждём серверные маршруты» на них — неправда, и флаг поднят. Готовность
+  // экрана ≠ полнота контракта: `GAPS` ниже (карточка платежа, CSV, создание
+  // тарифа, массовые действия) по-прежнему не сделана, и каждый экран называет
+  // её текстом «маршрута нет», а не кнопкой в никуда.
+  users: 'ready',
+  payments: 'ready',
+  plans: 'ready',
   codes: 'ready',
   // 1.6.17: все маршруты §5 пришли — «нет маршрутов» в меню больше не правда.
   // Сами экраны появятся в PR панели; до этого они показывают заглушку.

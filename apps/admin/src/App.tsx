@@ -5,37 +5,32 @@
  *   1. Пока нет живой сессии, панель показывает экран входа, а не пустые
  *      таблицы. Вход — `POST /admin/auth/telegram` (контракт 1.6.15), до его
  *      ответа приватные запросы не отправляются вовсе.
- *   2. Раздел без серверных маршрутов не получает «каркас с нулями»: он
- *      показывает список отсутствующих маршрутов (`NotImplemented`).
+ *   2. Раздел, у которого нет ни одного живого маршрута, не получает «каркас с
+ *      нулями». С 1.6.16–1.6.18 таких разделов не осталось: восемь экранов
+ *      реализованы, а то, чего контракт не позволяет (карточка платежа, CSV,
+ *      создание тарифа, массовые действия), каждый экран называет списком
+ *      «маршрута нет» (`ui/RouteGaps`) вместо кнопки в никуда.
  *
  * Публичного «обзора без входа» больше нет: он был костылём эпохи, когда
  * `/admin/me` не существовал. С 1.6.15 входу делать нечего в роли декорации.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { AdminApi } from './api/admin';
 import { ru } from './i18n/ru';
-import { useHashLocation, type RouterLocation } from './lib/router';
+import { useHashLocation, type RouterLocation, type RoutedScreen } from './lib/router';
 import { Login } from './auth/Login';
 import { useSession, type SessionStore } from './auth/session';
 import { Layout } from './ui/Layout';
 import { Audit } from './screens/Audit';
 import { Codes } from './screens/Codes';
-import { NotImplemented } from './screens/NotImplemented';
+import { Founders } from './screens/Founders';
+import { Ops } from './screens/Ops';
 import { Overview } from './screens/Overview';
+import { Payments } from './screens/Payments';
 import { Plans } from './screens/Plans';
 import { Users } from './screens/Users';
 
-const TITLES: Record<string, string> = {
-  overview: ru.nav.overview,
-  users: ru.nav.users,
-  payments: ru.nav.payments,
-  plans: ru.nav.plans,
-  codes: ru.nav.codes,
-  founders: ru.nav.founders,
-  ops: ru.nav.ops,
-  audit: ru.nav.audit,
-};
 
 export interface AppProps {
   readonly api: AdminApi;
@@ -108,21 +103,20 @@ function Screen({ location, view, api, session, demo, now, sessionLive }: Screen
     return <Login store={session} view={view} demo={demo} />;
   }
 
+  // Все восемь разделов реализованы, поэтому сопоставление полное: новый
+  // `ScreenKey` без экрана не соберётся (`satisfies` ловит пропущенный ключ), и
+  // «неизвестный экран» не превращается в ветку с заглушкой.
   const screen = location.screen;
-  const content =
-    screen === 'overview' ? (
-      <Overview api={api} sessionLive={sessionLive} now={now} />
-    ) : screen === 'codes' ? (
-      <Codes api={api} sessionLive={sessionLive} now={now} />
-    ) : screen === 'plans' ? (
-      <Plans api={api} sessionLive={sessionLive} demo={demo} now={now} />
-    ) : screen === 'users' ? (
-      <Users api={api} sessionLive={sessionLive} demo={demo} />
-    ) : screen === 'audit' ? (
-      <Audit api={api} query={location.query} />
-    ) : (
-      <NotImplemented screen={screen} title={TITLES[screen] ?? screen} />
-    );
+  const content: Record<RoutedScreen, ReactNode> = {
+    overview: <Overview api={api} sessionLive={sessionLive} now={now} />,
+    codes: <Codes api={api} sessionLive={sessionLive} now={now} />,
+    plans: <Plans api={api} sessionLive={sessionLive} demo={demo} now={now} />,
+    users: <Users api={api} sessionLive={sessionLive} demo={demo} />,
+    payments: <Payments api={api} sessionLive={sessionLive} demo={demo} />,
+    founders: <Founders api={api} sessionLive={sessionLive} demo={demo} />,
+    ops: <Ops api={api} sessionLive={sessionLive} demo={demo} />,
+    audit: <Audit api={api} query={location.query} />,
+  };
 
-  return content;
+  return content[screen];
 }

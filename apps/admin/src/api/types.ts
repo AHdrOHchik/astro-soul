@@ -6,10 +6,11 @@
  * `api.openapi.yaml`, то не запрашивается и не рисуется, а выносится отдельным
  * запросом к контракту; за экран на придуманном адресе PR отклоняется.
  *
- * Вход (`/admin/me`, `POST /admin/auth/telegram`) и аудит (`/admin/audit`) с
- * 1.6.15 — выведенные типы, как и всё остальное. Исключение — блок «НЕ В
- * КОНТРАКТЕ» в конце файла (`/admin/plans*`, `/admin/users*`): он помечен как
- * отсутствующий и существует только для dev-мокера.
+ * История: формы «Тарифов» и «Пользователей» когда-то жили здесь ручным блоком
+ * «НЕ В КОНТРАКТЕ» (их собрали по ответам владельца на запрос к контракту). С
+ * 1.6.16–1.6.18 эти маршруты в `paths:`, и блок удалён: поле, придуманное
+ * панелью, неотличимо от поля, которого сервер никогда не отдавал, — а теперь
+ * такое расхождение невозможно по построению.
  */
 
 import type { components, paths } from './schema.gen';
@@ -54,163 +55,83 @@ export type GrantKind = GrantRow['kind'];
 export type GrantSource = GrantRow['source'];
 
 /* ------------------------------------------------------------------------- *
- * НЕ В КОНТРАКТЕ 1.6.15.
+ * 1.6.16–1.6.18 — «Пользователи», «Тарифы», «Платежи и генерации»,
+ * «Основатели и партнёры», «Эксплуатация».
  *
- * Формы ниже нужны, чтобы dev-мокер отвечал в той же конвенции, что и
- * остальные маршруты. Экраны, построенные на них, не
- * выезжают в прод, пока бэкенд не добавит маршруты в `api.openapi.yaml`: гейт
- * в `http.assertCallable` не даёт сделать запрос на неизвестный путь.
- * Как только маршрут появится в контракте — тип удаляется и его место
- * занимает выведенный из `paths` (так произошло с формами входа в 1.6.15).
+ * Всё ниже выведено из `paths` / `components.schemas`. Обязательные поля
+ * (например `comment` и `base_version` у цены, `charge_id` у возврата) —
+ * обязанность типа, а не договорённость в комментарии: экран не соберётся,
+ * если решит послать «половину» запроса.
  * ------------------------------------------------------------------------- */
 
-/**
- * Формы «Тарифов» и «Пользователей» — тоже «НЕ В КОНТРАКТЕ»: маршрутов
- * `/admin/plans*` и `/admin/users*` в 1.6.15 нет. Формы взяты из ответов
- * владельца на запрос к контракту (`answers/admin-pr1-review.md`) — это и есть
- * причина каждой формы, а не удобная выдумка панели:
- *
- *   • у `AdminPlanPatchBody` обязателен `comment`, а `base_version` нужен для
- *     честного `409 price_changed` — панель не имеет права писать поверх
- *     изменённого значения;
- *   • `AdminRefundBody` НЕ содержит суммы: возврат только полный, сумму
- *     считает сервер (`AdminUserCard.refundable`) и её же возвращает;
- *   • `AdminPlanHistoryRow.actor_name` — снимок имени на момент действия,
- *     поэтому колонка «кто менял» не требует запроса к `users`.
- *
- * В день, когда маршруты появятся в `api.openapi.yaml`, блоки ниже удаляются,
- * а их место берут типы, выведенные из `paths`.
- */
-
-export interface AdminPlanRow {
-  readonly code: string;
-  readonly title: string;
-  /** Цена в звёздах — только со сервера, панель не конвертирует и не пересчитывает. */
-  readonly price_stars: number;
-  readonly discount_price_stars: number | null;
-  readonly is_active: boolean;
-  readonly test_only: boolean;
-  /** `founder_month`: право проверяется по таблице `founders`, в витрине его нет. */
-  readonly founder_only: boolean;
-  /** Код из ответа сервера: кого касается новая цена (`only_new_purchases`). */
-  readonly price_change_scope: string;
-  /** Версия строки: уходит в `base_version`, на расхождении сервер ответит 409. */
-  readonly version: number;
-  readonly updated_at: string;
-  /** Снимок имени из аудита на момент последней правки. */
-  readonly updated_by_name: string | null;
-  readonly updated_by_tg_id: string | null;
-}
-
-export interface AdminPlansResponse {
-  readonly items: readonly AdminPlanRow[];
-}
-
-export interface AdminPlanPatchBody {
-  readonly price_stars: number;
-  readonly discount_price_stars: number | null;
-  /** Обязателен: без основания цену менять нельзя (ответ владельца, §4). */
-  readonly comment: string;
-  readonly base_version: number;
-}
-
-export interface AdminPlanAuditLine {
-  readonly at: string;
-  readonly actor_name: string;
-  readonly actor_tg_id: string;
-  readonly request_id: string | null;
-}
-
-export interface AdminPlanPatchResult {
-  readonly plan: AdminPlanRow;
-  readonly audit: AdminPlanAuditLine;
-  readonly price_change_scope: string;
-}
-
-export interface AdminPlanHistoryRow {
-  readonly at: string;
-  readonly actor_tg_id: string;
-  readonly actor_name: string;
-  readonly from_price: number | null;
-  readonly to_price: number;
-  readonly comment: string;
-}
-
-export interface AdminPlanHistoryResponse {
-  readonly items: readonly AdminPlanHistoryRow[];
-}
+/** `GET /admin/users` — параметры поиска. Сервер требует ровно один; см. `UsersSearchParams`. */
+type UsersSearchQuery = NonNullable<paths['/api/v1/admin/users']['get']['parameters']['query']>;
 
 /**
- * Ровно один параметр поиска: union не даёт собрать запрос с двумя, а сервер
- * на двух отвечает 422 — панель предпочитает не создавать этот ответ самим
- * своим типом.
+ * Ровно один параметр поиска. Имена и типы — из контракта; «один» — правило
+ * сервера (`422 invalid_search` на нуле и на двух), и тип собирает его так,
+ * чтобы второй параметр нельзя было даже передать.
  */
 export type UsersSearchParams =
-  | { readonly telegram_id: string; readonly alias?: never; readonly q?: never }
-  | { readonly alias: string; readonly telegram_id?: never; readonly q?: never }
-  | { readonly q: string; readonly telegram_id?: never; readonly alias?: never };
+  | { readonly telegram_id: NonNullable<UsersSearchQuery['telegram_id']>; readonly alias?: never; readonly q?: never }
+  | { readonly alias: NonNullable<UsersSearchQuery['alias']>; readonly telegram_id?: never; readonly q?: never }
+  | { readonly q: NonNullable<UsersSearchQuery['q']>; readonly telegram_id?: never; readonly alias?: never };
 
-export interface AdminUserRow {
-  readonly user_id: string;
-  readonly tg_id: string;
-  readonly alias: string | null;
-  readonly name: string | null;
-  readonly plan_code: string | null;
-  readonly access_until: string | null;
-  readonly banned: boolean;
-}
+export type AdminUserSummary = Schemas['AdminUserSummary'];
+export type AdminUsersPage = paths['/api/v1/admin/users']['get']['responses'][200]['content']['application/json'];
 
-export interface AdminUserSearchResponse {
-  readonly items: readonly AdminUserRow[];
-}
+/** `GET /admin/users/{id}` — карточка: ПДн, карта, подписка, гранты, платежи, счётчики. */
+export type AdminUserCard = Schemas['AdminUserCard'];
+export type AdminPayment = Schemas['AdminPayment'];
 
-export interface AdminUserPaymentRow {
-  readonly id: string;
-  readonly charge_id: string;
-  readonly kind: 'payment' | 'refund';
-  readonly stars: number;
-  readonly at: string;
-  readonly refunded: boolean;
-}
+/** `POST /admin/users/{id}/refund` — тело: только платёж и основание. Суммы здесь нет. */
+export type AdminRefundBody = paths['/api/v1/admin/users/{id}/refund']['post']['requestBody']['content']['application/json'];
+export type AdminRefundResult = Schemas['AdminRefundResult'];
 
-/** Сумма возврата, посчитанная сервером: панель её только показывает и ни в чём не пересчитывает. */
-export interface AdminRefundQuote {
-  readonly charge_id: string;
-  readonly amount_stars: number;
-  readonly currency: string;
-}
+/** `POST /admin/users/{id}/ban` — бан и разбан одним маршрутом: `banned` решает. */
+export type AdminBanBody = paths['/api/v1/admin/users/{id}/ban']['post']['requestBody']['content']['application/json'];
+export type AdminBanResult = Schemas['AdminBanResult'];
 
-export interface AdminUserCard {
-  readonly user_id: string;
-  readonly tg_id: string;
-  readonly alias: string | null;
-  readonly name: string | null;
-  readonly created_at: string;
-  readonly last_seen_at: string | null;
-  readonly push_enabled: boolean;
-  readonly banned_at: string | null;
-  readonly ban_reason: string | null;
-  readonly subscription: { readonly plan_code: string; readonly until: string; readonly source: string } | null;
-  readonly payments: readonly AdminUserPaymentRow[];
-  /** `null` — возвращать нечего. Сумма здесь же: ввод «сколько вернуть» на экране запрещён. */
-  readonly refundable: AdminRefundQuote | null;
-}
+/** `POST /admin/users/{id}/push` — тестовая отправка; `sent:false` — пуш выключен. */
+export type AdminPushResult = paths['/api/v1/admin/users/{id}/push']['post']['responses'][200]['content']['application/json'];
 
-export interface AdminRefundResult {
-  readonly charge_id: string;
-  readonly amount_stars: number;
-  readonly currency: string;
-  readonly status: string;
-}
+/** `GET /admin/plans` — каталог. `version` — оптимистичная блокировка цены. */
+export type AdminPlan = Schemas['AdminPlan'];
+export type AdminPlansResponse = Schemas['AdminPlanPage'];
 
-export interface AdminBanResult {
-  readonly user_id: string;
-  readonly banned: boolean;
-  readonly reason: string;
-  readonly at: string;
-}
+/** `PATCH /admin/plans/{code}` — `comment` и `base_version` обязательны. */
+export type AdminPlanPatchBody = paths['/api/v1/admin/plans/{code}']['patch']['requestBody']['content']['application/json'];
+export type AdminPlanPatchResult = paths['/api/v1/admin/plans/{code}']['patch']['responses'][200]['content']['application/json'];
+export type PriceChangeScope = Schemas['PriceChangeScope'];
 
-export interface AdminPushResult {
-  readonly user_id: string;
-  readonly push_enabled: boolean;
-}
+/** История цены: `actor_name` — снимок на момент правки, джойнинг не нужен. */
+export type AdminPlanHistoryEntry = Schemas['AdminPlanHistoryEntry'];
+export type AdminPlanHistoryResponse = paths['/api/v1/admin/plans/{code}/history']['get']['responses'][200]['content']['application/json'];
+
+/** `GET /admin/reports` — лента разборов; текста разбора в ответе нет намеренно. */
+export type AdminReportSummary = Schemas['AdminReportSummary'];
+export type ReportsQuery = paths['/api/v1/admin/reports']['get']['parameters']['query'];
+export type AdminReportsPage = paths['/api/v1/admin/reports']['get']['responses'][200]['content']['application/json'];
+
+/** `POST /admin/reports/{id}/regenerate` — `202`, очередь, а не «готово». */
+export type AdminReportRegenerateResult = paths['/api/v1/admin/reports/{id}/regenerate']['post']['responses'][202]['content']['application/json'];
+
+/** `GET /admin/payments` — лента платежей; `next_cursor` — единственный способ листать. */
+export type AdminPaymentEntry = Schemas['AdminPaymentEntry'];
+export type AdminPaymentsPage = Schemas['AdminPaymentsPage'];
+export type PaymentsQuery = paths['/api/v1/admin/payments']['get']['parameters']['query'];
+
+/** «Основатели»: `AdminFounder` без `username` (1.6.18) — ника в контракте нет. */
+export type AdminFounder = Schemas['AdminFounder'];
+export type AdminFoundersPage = Schemas['AdminFoundersPage'];
+export type FoundersQuery = paths['/api/v1/admin/founders']['get']['parameters']['query'];
+
+/** «Партнёры»: только агрегаты, `revenue_stars` — без учёта возвратов. */
+export type AdminPartner = Schemas['AdminPartner'];
+export type AdminPartnersPage = Schemas['AdminPartnersPage'];
+
+/** Тело «операций с основанием» (`backup/run`, `telegram/webhook`): `{reason}`. */
+export type AdminReasonBody = paths['/api/v1/admin/backup/run']['post']['requestBody']['content']['application/json'];
+export type AdminBackupRunResult = paths['/api/v1/admin/backup/run']['post']['responses'][202]['content']['application/json'];
+export type AdminWebhookSetResult = paths['/api/v1/admin/telegram/webhook']['post']['responses'][200]['content']['application/json'];
+export type AdminAlertAckResult = paths['/api/v1/admin/alerts/{id}/ack']['post']['responses'][200]['content']['application/json'];
