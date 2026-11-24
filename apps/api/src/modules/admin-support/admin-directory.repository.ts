@@ -84,7 +84,13 @@ export class AdminDirectoryRepository {
             ORDER BY gr.created_at DESC
             LIMIT 1
          ) g ON true
-        WHERE ($1::timestamptz IS NULL OR (f.created_at, f.user_id) > ($1, $2::uuid))
+        -- Курсор живёт в миллисекундах (Date#toISOString), а timestamptz
+        -- хранит микросекунды. Без date_trunc строка-курсор оказывалась
+        -- БОЛЬШЕ собственного усечённого значения и возвращалась второй раз:
+        -- панель показывала одно место дважды, а последнюю страницу никогда.
+        -- Нашёл полный прогон тестов (round44), а не страница панели.
+        WHERE ($1::timestamptz IS NULL
+               OR (date_trunc('milliseconds', f.created_at), f.user_id) > ($1, $2::uuid))
         ORDER BY f.created_at, f.user_id
         LIMIT $3`,
       [cursor?.createdAt ?? null, cursor?.id ?? null, limit + 1],
@@ -195,7 +201,12 @@ export class AdminDirectoryRepository {
         WHERE ($1::text IS NULL OR telegram_payment_charge_id = $1)
           AND ($2::uuid IS NULL OR user_id = $2::uuid)
           AND ($3::text IS NULL OR status = $3::payment_status)
-          AND ($4::timestamptz IS NULL OR (created_at, id) < ($4, $5::uuid))
+          -- Та же причина, что у основателей: курсор в миллисекундах, колонка —
+          -- в микросекундах. Для DESC ошибка была тише (строка-курсор просто не
+          -- повторялась), но с двумя платежами в одну миллисекунду лента теряла
+          -- строку.
+          AND ($4::timestamptz IS NULL
+               OR (date_trunc('milliseconds', created_at), id) < ($4, $5::uuid))
         ORDER BY created_at DESC, id DESC
         LIMIT $6`,
       [

@@ -15,18 +15,32 @@
 import type { Http, HttpResult, ProbeResult } from './http';
 import type {
   AccessCode,
+  AdminAlertAckResult,
+  AdminBanBody,
   AdminBanResult,
   AuditPage,
+  AdminBackupRunResult,
   AdminMe,
   AdminPlanHistoryResponse,
   AdminPlanPatchBody,
   AdminPlanPatchResult,
   AdminPlansResponse,
   AdminPushResult,
+  AdminFoundersPage,
+  AdminPartnersPage,
+  AdminPaymentsPage,
+  AdminReasonBody,
+  AdminRefundBody,
   AdminRefundResult,
+  AdminReportRegenerateResult,
+  AdminReportsPage,
   AdminUserCard,
-  AdminUserSearchResponse,
+  AdminUsersPage,
+  AdminWebhookSetResult,
   AlertsResponse,
+  FoundersQuery,
+  PaymentsQuery,
+  ReportsQuery,
   CodeCreateBody,
   FoundersCount,
   GrantKind,
@@ -65,17 +79,35 @@ export interface AdminApi {
   createCode(body: CodeCreateBody): Promise<HttpResult<AccessCode>>;
   grants(userId: string, signal?: AbortSignal): Promise<HttpResult<readonly GrantRow[]>>;
   grantWrite(body: GrantsWriteBody): Promise<HttpResult<GrantWriteResult>>;
-  /** «Тарифы»: каталог с ценой и историей правок. Маршрутов нет в контракте — в проде блок «недоступно». */
+  /** «Тарифы»: каталог с ценой, версией строки и историей правок (1.6.16). */
   plans(signal?: AbortSignal): Promise<HttpResult<AdminPlansResponse>>;
+  /**
+   * Цена и флаг «только для теста». `comment` и `base_version` обязательны по
+   * контракту; снятие `test_only` требует `confirm: 'disable_test_plan'`.
+   */
   plansPatch(code: string, body: AdminPlanPatchBody): Promise<HttpResult<AdminPlanPatchResult>>;
   plansHistory(code: string, signal?: AbortSignal): Promise<HttpResult<AdminPlanHistoryResponse>>;
   /** «Пользователи»: поиск ровно одним параметром, карточка, действия с основанием. */
-  usersSearch(params: UsersSearchParams, signal?: AbortSignal): Promise<HttpResult<AdminUserSearchResponse>>;
+  usersSearch(params: UsersSearchParams, signal?: AbortSignal): Promise<HttpResult<AdminUsersPage>>;
   userCard(id: string, signal?: AbortSignal): Promise<HttpResult<AdminUserCard>>;
-  /** Возврат звёзд — только полный: тела запроса без суммы нет, сумму вернёт сервер. */
-  userRefund(id: string, body: { reason: string }): Promise<HttpResult<AdminRefundResult>>;
-  userBan(id: string, body: { reason: string }): Promise<HttpResult<AdminBanResult>>;
-  userPush(id: string, body: { enabled: boolean }): Promise<HttpResult<AdminPushResult>>;
+  /** Возврат только полный: тело — `{charge_id, reason}`, суммы в запросе нет. */
+  userRefund(id: string, body: AdminRefundBody): Promise<HttpResult<AdminRefundResult>>;
+  /** Бан и разбан одним маршрутом: `banned` решает, `reason` — основание в аудит. */
+  userBan(id: string, body: AdminBanBody): Promise<HttpResult<AdminBanResult>>;
+  /** Тестовая отправка утреннего пуша: тела у запроса нет, ответ — `sent`. */
+  userPush(id: string): Promise<HttpResult<AdminPushResult>>;
+  /** «Платежи и генерации»: лента платежей по курсору и лента разборов. */
+  payments(query?: PaymentsQuery, signal?: AbortSignal): Promise<HttpResult<AdminPaymentsPage>>;
+  reports(query?: ReportsQuery, signal?: AbortSignal): Promise<HttpResult<AdminReportsPage>>;
+  /** `202` — разбор снова в очереди; «готово» экран не обещает. */
+  reportRegenerate(id: string): Promise<HttpResult<AdminReportRegenerateResult>>;
+  /** «Основатели и партнёры»: места 1…50 и агрегаты по партнёрам. */
+  founders(query?: FoundersQuery, signal?: AbortSignal): Promise<HttpResult<AdminFoundersPage>>;
+  partners(signal?: AbortSignal): Promise<HttpResult<AdminPartnersPage>>;
+  /** «Эксплуатация»: дамп, переустановка вебхука, подтверждение алерта. */
+  backupRun(body: AdminReasonBody): Promise<HttpResult<AdminBackupRunResult>>;
+  webhookSet(body: AdminReasonBody): Promise<HttpResult<AdminWebhookSetResult>>;
+  alertAck(id: string, body: { minutes: number }): Promise<HttpResult<AdminAlertAckResult>>;
   /** Вход: `probe`, потому что маршрута нет в контракте и 404 — это ответ, а не авария. */
   me(): Promise<ProbeResult<AdminMe>>;
   login(payload: TelegramAuthPayload): Promise<HttpResult<unknown>>;
@@ -113,7 +145,7 @@ export function createAdminApi(http: Http): AdminApi {
 
     plansHistory: (code, signal) => http.call<AdminPlanHistoryResponse>('plansAudit', { params: { code }, signal }),
 
-    usersSearch: (params, signal) => http.call<AdminUserSearchResponse>('usersSearch', { query: { ...params }, signal }),
+    usersSearch: (params, signal) => http.call<AdminUsersPage>('usersSearch', { query: { ...params }, signal }),
 
     userCard: (id, signal) => http.call<AdminUserCard>('userCard', { params: { id }, signal }),
 
@@ -121,7 +153,25 @@ export function createAdminApi(http: Http): AdminApi {
 
     userBan: (id, body) => http.call<AdminBanResult>('userBan', { params: { id }, body: { ...body } }),
 
-    userPush: (id, body) => http.call<AdminPushResult>('userPush', { params: { id }, body: { ...body } }),
+    // Тела нет: `POST /admin/users/{id}/push` — это «отправь тестовый пуш», а
+    // не «включи/выключи пуши»: флагом управляет человек в мини-аппе.
+    userPush: (id) => http.call<AdminPushResult>('userPush', { params: { id } }),
+
+    payments: (query, signal) => http.call<AdminPaymentsPage>('paymentsList', { query: { ...query }, signal }),
+
+    reports: (query, signal) => http.call<AdminReportsPage>('reportsList', { query: { ...query }, signal }),
+
+    reportRegenerate: (id) => http.call<AdminReportRegenerateResult>('reportRegenerate', { params: { id }, body: {} }),
+
+    founders: (query, signal) => http.call<AdminFoundersPage>('foundersList', { query: { ...query }, signal }),
+
+    partners: (signal) => http.call<AdminPartnersPage>('partnersStats', { signal }),
+
+    backupRun: (body) => http.call<AdminBackupRunResult>('backupNow', { body: { ...body } }),
+
+    webhookSet: (body) => http.call<AdminWebhookSetResult>('webhookSet', { body: { ...body } }),
+
+    alertAck: (id, body) => http.call<AdminAlertAckResult>('alertsAck', { params: { id }, body: { ...body } }),
 
     me: () => http.probe<AdminMe>('authMe'),
 

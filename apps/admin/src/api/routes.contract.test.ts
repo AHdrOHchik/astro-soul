@@ -2,11 +2,17 @@
  * Тест-страж реестра маршрутов. Он не проверяет интерфейс — он проверяет, что
  * панель не врёт себе про то, что умеет бэкенд.
  *
- * Падает в двух случаях:
+ * Падает в трёх случаях:
  *   • маршрут появился в `api.openapi.yaml`, а в реестре ещё `inContract:
  *     false` — экран надо включать;
  *   • маршрут помечен доступным, а в контракте его нет — экран построен на
- *     выдуманном адресе; такое отклоняется на ревью без разговоров.
+ *     выдуманном адресе; такое отклоняется на ревью без разговоров;
+ *   • экран начал звать адрес из списка «маршрута нет» — заглушка протекла в
+ *     запрос.
+ *
+ * Сверка идёт по паре `МЕТод + путь`, а не по пути: `/api/v1/admin/plans` в
+ * контракте есть (`GET`, `PATCH/{code}`), а `POST /api/v1/admin/plans` — нет, и
+ * «такого маршрута нет» обязано означать именно это.
  */
 
 // Контракт читается через vite-загрузчик `?raw`: тест смотрит ровно в тот же
@@ -14,29 +20,37 @@
 // тянет node-типы в сборку фронтенда. Если файла нет — импорт упадёт, и тест
 // не пройдёт молча.
 import contractSource from '../../../../api.openapi.yaml?raw';
+import apiSource from './admin.ts?raw';
 import { describe, expect, it } from 'vitest';
-import { ADMIN_ROUTES, missingRoutesFor, route } from './routes';
+import { ADMIN_ROUTES, missingRoutesFor, SCREEN_READINESS, route, type ScreenKey } from './routes';
 import { callableRoutes } from './http';
 import { config } from '../env';
 
 const source = contractSource;
 
-/** Ключи секции `paths:` — это и есть список того, что сервер умеет. */
-function contractPaths(text: string): Set<string> {
-  const paths = new Set<string>();
+/** Ключи `paths:` вместе с методами: `GET /api/v1/admin/plans`. */
+function contractOperations(text: string): Set<string> {
+  const ops = new Set<string>();
   let inside = false;
+  let current: string | null = null;
   for (const line of text.split('\n')) {
     if (line === 'paths:') {
       inside = true;
       continue;
     }
-    if (inside) {
-      if (line !== '' && !line.startsWith('  ')) break;
-      const match = /^ {2}(\/[^\s:]+):$/.exec(line);
-      if (match?.[1]) paths.add(match[1]);
+    if (!inside) continue;
+    if (line !== '' && !line.startsWith('  ')) break;
+    const pathMatch = /^ {2}(\/[^\s:]+):$/.exec(line);
+    if (pathMatch?.[1]) {
+      current = pathMatch[1];
+      continue;
+    }
+    const methodMatch = /^ {4}(get|post|patch|put|delete):$/.exec(line);
+    if (methodMatch?.[1] && current !== null) {
+      ops.add(`${methodMatch[1].toUpperCase()} ${current}`);
     }
   }
-  return paths;
+  return ops;
 }
 
 function contractVersion(text: string): string {
@@ -45,7 +59,14 @@ function contractVersion(text: string): string {
   return match[1].replaceAll('"', '');
 }
 
-const paths = contractPaths(source);
+const ops = contractOperations(source);
+
+/** Как реестр называет маршрут: `GET /api/v1/admin/plans`. */
+function label(item: { method: string; path: string }): string {
+  return `${item.method} ${item.path}`;
+}
+
+const missing = ADMIN_ROUTES.filter((item) => !item.inContract);
 
 describe('реестр маршрутов админки', () => {
   it('ключи реестра уникальны', () => {
@@ -53,8 +74,8 @@ describe('реестр маршрутов админки', () => {
   });
 
   it('каждый маршрут реестра описан честно против api.openapi.yaml', () => {
-    const wrong = ADMIN_ROUTES.filter((item) => paths.has(item.path) !== item.inContract).map(
-      (item) => `${item.method} ${item.path}: в контракте ${paths.has(item.path) ? 'есть' : 'нет'}, в реестре ${item.inContract ? 'есть' : 'нет'}`,
+    const wrong = ADMIN_ROUTES.filter((item) => ops.has(label(item)) !== item.inContract).map(
+      (item) => `${label(item)}: в контракте ${ops.has(label(item)) ? 'есть' : 'нет'}, в реестре ${item.inContract ? 'есть' : 'нет'}`,
     );
     expect(wrong).toEqual([]);
   });
@@ -62,26 +83,24 @@ describe('реестр маршрутов админки', () => {
   it('число отсутствующих маршрутов известно: это список задач бэкенду', () => {
     // Со сменой контракта список обязан сокращаться руками: он и есть перечень
     // того, что панели не разрешено. 1.6.15 забрал вход (3 маршрута) и журнал
-    // (1) — было 20, стало 16; 1.6.17 забрал последнюю волну §5 (6) — стало 10.
-    const missing = ADMIN_ROUTES.filter((item) => !item.inContract);
-    expect(missing).toHaveLength(10);
-    expect(missing.map((item) => item.path).sort()).toEqual([
-      '/api/v1/admin/plans',
-      '/api/v1/admin/plans/{code}',
-      '/api/v1/admin/plans/{code}/history',
-      '/api/v1/admin/reports',
-      '/api/v1/admin/reports/{id}/regenerate',
-      '/api/v1/admin/users',
-      '/api/v1/admin/users/{id}',
-      '/api/v1/admin/users/{id}/ban',
-      '/api/v1/admin/users/{id}/push',
-      '/api/v1/admin/users/{id}/refund',
-    ].sort());
+    // (1) — было 20, стало 16; 1.6.17 закрыл §5 (6) — стало 10; 1.6.16–1.6.18
+    // привезли «Пользователей», «Тарифы» и «Платежи/генерации» (9) — осталось 4.
+    // Это то, чего панель просит, но не делает: карточка платежа, CSV, создание
+    // тарифа, массовые действия.
+    expect(missing).toHaveLength(4);
+    expect(missing.map((item) => item.path).sort()).toEqual(
+      [
+        '/api/v1/admin/payments/{id}',
+        '/api/v1/admin/payments/export.csv',
+        '/api/v1/admin/plans',
+        '/api/v1/admin/users/bulk',
+      ].sort(),
+    );
   });
 
   it('в прод-сборке панель дергает вход и аудит: их нет в списке «недоступно»', () => {
-    // Страж сверяется с `paths:` сгенерированного контракта 1.6.15 — этот тест
-    // падает и если флаг подняли зря, и если забыли поднять, когда маршрут приехал.
+    // Страж сверяется с `paths:` сгенерированного контракта — этот тест падает
+    // и если флаг подняли зря, и если забыли поднять, когда маршрут приехал.
     // `callableRoutes()` — тот же список, по которому `http` пропускает запросы.
     const live = new Set(callableRoutes().map((item) => item.key));
     expect([...live].filter((key) => key.startsWith('auth') || key === 'auditList').sort()).toEqual([
@@ -95,61 +114,99 @@ describe('реестр маршрутов админки', () => {
     expect(live.has('foundersCount')).toBe(true);
   });
 
-  it('пришедшее в 1.6.15 помечено рабочим: вход и аудит — в боевом списке', () => {
+  it('пришедшее в 1.6.15–1.6.18 помечено рабочим: флаги подняты на всех десяти экранах', () => {
     // Этот тест падает, если кто-то «временно» вернёт флаг назад, и чинится
-    // только вместе с реестром: «Сервер ещё не принимает сессии» больше не
-    // имеет права появляться как дефолт.
-    for (const key of ['authTelegram', 'authMe', 'authLogout', 'auditList']) {
-      expect(route(key).inContract, `${key} в 1.6.15 есть — флаг обязан быть поднят`).toBe(true);
+    // только вместе с реестром: «Сервер ещё не принимает сессии» и «ждём
+    // /admin/users» больше не имеют права появляться как дефолт.
+    for (const key of [
+      'authTelegram',
+      'authMe',
+      'authLogout',
+      'auditList',
+      // 1.6.16: «Пользователи» и «Тарифы».
+      'usersSearch',
+      'userCard',
+      'userRefund',
+      'userBan',
+      'userPush',
+      'plansList',
+      'plansPatch',
+      'plansAudit',
+      // 1.6.16–1.6.17: «Платежи и генерации», «Основатели», «Эксплуатация».
+      'paymentsList',
+      'reportsList',
+      'reportRegenerate',
+      'foundersList',
+      'partnersStats',
+      'backupNow',
+      'webhookSet',
+      'alertsAck',
+    ]) {
+      expect(route(key).inContract, `${key} есть в контракте — флаг обязан быть поднят`).toBe(true);
     }
+    // Разбан — не отдельный маршрут: его в `paths:` нет и в реестре тоже нет,
+    // и появление `userUnban` здесь означало бы экран на выдуманном адресе.
+    expect(ops.has('POST /api/v1/admin/users/{id}/unban')).toBe(false);
+    expect(ADMIN_ROUTES.some((item) => item.key === 'userUnban')).toBe(false);
   });
 
   it('панель не дергает маршруты, которых нет: они помечены как отсутствующие', () => {
     // Список отсутствующих маршрутов = задачи бэкенду. Он проверяется, потому
     // что «забыли выключить флаг» — это ровно тот путь, по которому экран
     // начинает показывать выдуманные данные.
-    const missing = ADMIN_ROUTES.filter((item) => !item.inContract).map((item) => item.path);
-    expect(missing).toEqual(
+    expect(missing.map((item) => item.path)).toEqual(
       expect.arrayContaining([
-        '/api/v1/admin/users',
-        '/api/v1/admin/users/{id}',
-        '/api/v1/admin/users/{id}/refund',
-        '/api/v1/admin/users/{id}/push',
-        '/api/v1/admin/reports/{id}/regenerate',
-        '/api/v1/admin/reports',
+        '/api/v1/admin/payments/{id}',
+        '/api/v1/admin/payments/export.csv',
         '/api/v1/admin/plans',
-        '/api/v1/admin/plans/{code}',
-        // 1.6.17: этих шести здесь больше нет — они пришли в контракт и
-        // переключены в реестре. Осталось то, что ещё не сделано бэкендом
-        // (планы/пользователи/разборы — 1.6.16), это задачи панели.
+        '/api/v1/admin/users/bulk',
       ]),
     );
-    for (const path of missing) {
-      expect(paths.has(path), `маршрут ${path} уже появился в контракте — реестр устарел`).toBe(false);
+    for (const item of missing) {
+      expect(ops.has(label(item)), `маршрут ${label(item)} уже появился в контракте — реестр устарел`).toBe(false);
+    }
+  });
+
+  it('заглушка не протечёт в запрос: ни один ключ из списка отсутствующих в AdminApi не вызывается', () => {
+    // `createAdminApi` обращается к маршрутам по ключу (`http.call('userCard', …)`),
+    // поэтому достаточно посмотреть, что ключей из `GAPS` в тексте нет:
+    // запрос на несуществующий адрес не появится «случайно».
+    for (const item of missing) {
+      expect(apiSource.includes(`'${item.key}'`), `ключ ${item.key} появился в AdminApi — а маршрута нет`).toBe(false);
     }
   });
 
   it('то, что панель заявляет рабочим, действительно есть в контракте', () => {
-    const used = ADMIN_ROUTES.filter((item) => item.inContract).map((item) => item.path);
+    const used = ADMIN_ROUTES.filter((item) => item.inContract).map((item) => label(item));
     expect(used).toEqual(
       expect.arrayContaining([
-        '/api/v1/health',
-        '/api/v1/founders/count',
-        '/api/v1/admin/metrics',
-        '/api/v1/admin/alerts',
-        '/api/v1/admin/codes',
-        '/api/v1/admin/grants',
-        '/api/v1/admin/auth/telegram',
-        '/api/v1/admin/me',
-        '/api/v1/admin/auth/logout',
-        '/api/v1/admin/audit',
-        // 1.6.17: последняя волна §5 — маршруты есть, экраны придут в PR панели.
-        '/api/v1/admin/founders',
-        '/api/v1/admin/partners',
-        '/api/v1/admin/payments',
-        '/api/v1/admin/backup/run',
-        '/api/v1/admin/telegram/webhook',
-        '/api/v1/admin/alerts/{id}/ack',
+        'GET /api/v1/health',
+        'GET /api/v1/founders/count',
+        'GET /api/v1/admin/metrics',
+        'GET /api/v1/admin/alerts',
+        'GET /api/v1/admin/codes',
+        'GET /api/v1/admin/grants',
+        'POST /api/v1/admin/auth/telegram',
+        'GET /api/v1/admin/me',
+        'POST /api/v1/admin/auth/logout',
+        'GET /api/v1/admin/audit',
+        // 1.6.16–1.6.18: всё, что приехало последней волной.
+        'GET /api/v1/admin/users',
+        'GET /api/v1/admin/users/{id}',
+        'POST /api/v1/admin/users/{id}/refund',
+        'POST /api/v1/admin/users/{id}/ban',
+        'POST /api/v1/admin/users/{id}/push',
+        'GET /api/v1/admin/plans',
+        'PATCH /api/v1/admin/plans/{code}',
+        'GET /api/v1/admin/plans/{code}/history',
+        'GET /api/v1/admin/reports',
+        'POST /api/v1/admin/reports/{id}/regenerate',
+        'GET /api/v1/admin/payments',
+        'GET /api/v1/admin/founders',
+        'GET /api/v1/admin/partners',
+        'POST /api/v1/admin/backup/run',
+        'POST /api/v1/admin/telegram/webhook',
+        'POST /api/v1/admin/alerts/{id}/ack',
       ]),
     );
   });
@@ -158,22 +215,26 @@ describe('реестр маршрутов админки', () => {
     expect(config.contractVersion).toBe(contractVersion(source));
   });
 
-  it('несуществующие экраны перечисляют именно отсутствующие маршруты', () => {
-    // «Аудит» ушёл в 1.6.15, «Основатели» и «Операции» — в 1.6.17: у них больше
-    // нет ни одного отсутствующего маршрута, поэтому ждать маршрутов им нечего.
-    const planned = ['users', 'payments', 'plans'] as const;
-    for (const screen of planned) {
-      const missing = missingRoutesFor(screen);
-      expect(missing.length, `экран ${screen} обязан ждать хотя бы один маршрут`).toBeGreaterThan(0);
-      for (const item of missing) {
+  it('готовность раздела согласована с реестром, а список «чего нет» — с контрактом', () => {
+    const screens = Object.keys(SCREEN_READINESS) as ScreenKey[];
+    for (const screen of screens) {
+      const live = ADMIN_ROUTES.some((item) => item.inContract && item.screens.includes(screen));
+      // 'ready' — есть хотя бы один живой маршрут, которым экран заполняется.
+      // 'waiting-for-routes' — живых нет вовсе, и показывать, кроме ожидания, нечего.
+      expect(SCREEN_READINESS[screen] === 'ready', `${screen}: живых маршрутов ${live ? 'нет' : 'есть'}, а флаг другой`).toBe(live);
+      for (const item of missingRoutesFor(screen)) {
         expect(item.inContract).toBe(false);
-        expect(paths.has(item.path)).toBe(false);
+        expect(ops.has(label(item))).toBe(false);
       }
     }
-    // У живых экранов тоже могут быть недостающие маршруты (Обзор ждёт /admin/reports),
-    // но хотя бы один рабочий обязан быть.
-    for (const screen of ['overview', 'codes', 'audit', 'founders', 'ops'] as const) {
-      expect(ADMIN_ROUTES.some((item) => item.inContract && item.screens.includes(screen))).toBe(true);
+    // Восьми разделов коснулся контракт: «ждём маршруты» не осталось ни у одного.
+    expect(screens.filter((screen) => SCREEN_READINESS[screen] === 'waiting-for-routes')).toEqual([]);
+    // Четыре пробела — ровно на тех экранах, где они видны текстом «маршрута нет».
+    expect(missingRoutesFor('payments').map((item) => item.key).sort()).toEqual(['paymentDetail', 'paymentsExport']);
+    expect(missingRoutesFor('plans').map((item) => item.key)).toEqual(['plansCreate']);
+    expect(missingRoutesFor('users').map((item) => item.key)).toEqual(['usersBulk']);
+    for (const screen of ['overview', 'codes', 'founders', 'ops', 'audit', 'login'] as const) {
+      expect(missingRoutesFor(screen), `${screen} не должен врать про отсутствие маршрутов`).toHaveLength(0);
     }
   });
 

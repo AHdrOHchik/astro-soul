@@ -140,7 +140,10 @@ describe('http-слой админки', () => {
     const { calls, fetchImpl } = recorder(() => jsonResponse({}));
     const http = createHttp({ fetchImpl });
 
-    await expect(http.call('userCard')).rejects.toMatchObject({ code: 'ROUTE_NOT_IN_CONTRACT' });
+    // «Пользователей» и «Тарифов» этот гейт касался до 1.6.16; теперь он
+    // проверяется на маршруте, которого в контракте нет по-настоящему.
+    await expect(http.call('usersBulk')).rejects.toMatchObject({ code: 'ROUTE_NOT_IN_CONTRACT' });
+    await expect(http.call('paymentDetail')).rejects.toMatchObject({ code: 'ROUTE_NOT_IN_CONTRACT' });
     expect(calls).toHaveLength(0);
   });
 
@@ -148,7 +151,7 @@ describe('http-слой админки', () => {
     const { calls, fetchImpl } = recorder(() => jsonResponse({ code: 'NOT_FOUND', message: 'Такой страницы нет.', request_id: 'r' }, { status: 404 }));
     const http = createHttp({ fetchImpl, allowUnknownRoutes: true });
 
-    const probed: ProbeResult<unknown> = await http.probe('usersSearch');
+    const probed: ProbeResult<unknown> = await http.probe('paymentDetail', { params: { id: 'chg_9001' } });
     expect(probed.kind).toBe('unavailable');
     expect(calls).toHaveLength(1);
   });
@@ -163,7 +166,7 @@ describe('http-слой админки', () => {
   });
 
   it('probe различает «нет маршрута», «не вошёл» и аварию', async () => {
-    const unavailable = await createHttp({ fetchImpl: recorder(() => jsonResponse({})).fetchImpl }).probe('usersSearch');
+    const unavailable = await createHttp({ fetchImpl: recorder(() => jsonResponse({})).fetchImpl }).probe('usersBulk');
     expect(unavailable.kind).toBe('unavailable');
 
     const unauthorized = await createHttp({ fetchImpl: recorder(() => jsonResponse({}, { status: 401 })).fetchImpl }).probe('authMe');

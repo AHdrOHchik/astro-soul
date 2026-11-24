@@ -202,6 +202,15 @@ export interface ListCursor {
   readonly id: string;
 }
 
+/**
+ * Курсор `(created_at, id)`.
+ *
+ * Точность — **миллисекунды**: `toISOString()` не умеет микросекунды, а
+ * `timestamptz` их хранит. Поэтому запросы сравнивают
+ * `date_trunc('milliseconds', created_at)` с этим значением, а не колонку
+ * целиком: иначе строка-курсор больше собственного усечённого значения и
+ * возвращается второй раз (дефект найден полным прогоном в round44).
+ */
 export function encodeCursor(createdAt: Date, id: string): string {
   return Buffer.from(`${createdAt.toISOString()}|${id}`, 'utf8').toString('base64url');
 }

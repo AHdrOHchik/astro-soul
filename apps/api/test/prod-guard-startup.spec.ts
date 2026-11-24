@@ -39,6 +39,25 @@ describe('прод-гард в production', () => {
       },
     });
     guard = ctx.app.get(ProdGuardService);
+
+    // Состояние «чистого прода» готовим сами, а не надеемся на порядок файлов:
+    // `plans` — справочник, его не чистит `truncateAll`, а другие спеки
+    // (например, `plan-test-only`) создают там тестовые строки. Тест, который
+    // краснеет из-за соседа, ничего не говорит о прод-гарде.
+    await ctx.db.query(
+      `INSERT INTO plans (code, kind, subscription_plan, stars, period_seconds, title, invoice_title,
+                          description, price_label, paywall_title, paywall_subtitle, grants, sort,
+                          is_active, test_only)
+       VALUES ('test_1', 'subscription', 'week', 1, 604800, 'Тестовый тариф',
+               'Тестовый тариф', 'Описание', '1 ⭐', 'Заголовок', 'Подзаголовок',
+               '{"fullForecast":true,"askPerDay":-1,"compatPerMonth":1,"solarIncluded":true}'::jsonb,
+               5, false, true),
+              ('test_report_1', 'one_off', 'none', 1, NULL, 'Тестовый разбор',
+               'Тестовый разбор', 'Описание', '1 ⭐', 'Заголовок', 'Подзаголовок',
+               '{"report":true}'::jsonb, 6, false, true)
+       ON CONFLICT (code) DO UPDATE SET test_only = true, is_active = false`,
+    );
+    await ctx.db.query(`UPDATE plans SET is_active = false WHERE test_only`);
   });
 
   afterAll(async () => {

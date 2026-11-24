@@ -191,11 +191,21 @@ describe('components', () => {
   });
 
   it('keep interface text in src/i18n', () => {
+    // Строка — это то, что человек увидит. Комментарий он не увидит никогда,
+    // поэтому комментарии кириллицей не нарушение: код в репозитории
+    // комментируется по-русски, и одно объяснение на четыре строки в
+    // `errors.ts` не «вынесенный из i18n текст», а объяснение. Страж ловил
+    // именно их (round44: полный прогон `pnpm check` в CI).
     const found: string[] = [];
     for (const file of code) {
       if (file.path.startsWith('apps/web/src/i18n/')) continue;
       file.text.split('\n').forEach((line, index) => {
-        if (/[\u0400-\u04FF]/.test(line)) found.push(`${file.path}:${index + 1} ${line.trim()}`);
+        const trimmed = line.trim();
+        // Комментарий целиком: `//`, `/* …`, `* …` (внутри блока) и `*/`.
+        const isComment =
+          trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
+        if (isComment) return;
+        if (/[\u0400-\u04FF]/.test(line)) found.push(`${file.path}:${index + 1} ${trimmed}`);
       });
     }
     expect(found).toEqual([]);
