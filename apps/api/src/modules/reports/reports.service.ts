@@ -294,13 +294,13 @@ export class ReportsService {
     // Проверка доступа — через единственную дверь `hasAccess` (1.6.14).
     //   • оплаченный разбор этой карты — как раньше, по карте, а не по флагу
     //     `fullReport`: одна покупка не открывает разборы по другим картам;
-    //   • одноразовое право (`single_report` из кода партнёра или «первых 50»)
-    //     списывается здесь же — атомарно, в одной транзакции. Поэтому двойной
-    //     тап не даёт двух бесплатных разборов, а отказ в правах не оставляет
-    //     «сгоревшее» право.
+    //   • одноразовое право **не списывается здесь** (1.6.17). Раньше
+    //     `single_report` гасился на заказе, и провал генерации (модель, формат,
+    //     брейкер) сжигал подаренное право: человек платил попыткой за наш сбой.
+    //     Теперь расход — на `ready`, в `settleGrantFor` ниже.
     const owned = await this.access.hasAccess(userId, 'report', {
       chartId: chart.id,
-      consume: true,
+      consume: false,
     });
     if (!owned) {
       throw new ApiError('PAYMENT_REQUIRED', 402, {
@@ -661,6 +661,11 @@ export class ReportsService {
         normalization,
       });
 
+      // Право на разбор списывается **после** того, как текст собран (1.6.17).
+      // Ошибка расхода не должна превращать готовый разбор в `failed`: текст уже
+      // есть, и человек его увидит; в лог уходит `report_grant_settle_failed`.
+      await this.settleGrantFor(report);
+
       this.logger.info('report_ready', {
         report_id: reportId,
         attempts: budget.attempts,
@@ -697,6 +702,55 @@ export class ReportsService {
       await this.repo.fail(reportId, code);
       // Отметки о главах остаются в `reports.section_status`: видно, где встали.
       await this.repo.saveDiagnostics(reportId, sectionStatus, validation, normalization);
+    }
+  }
+
+  /**
+   * Расход одноразового права на разбор — на `ready` (1.6.17).
+   *
+   * Кому списывать: только если разбор **не оплачен по карте** и у человека нет
+   * действующего «всё включено». Иначе подписчик с подарком терял бы подарок при
+   * первом же разборе по подписке — ровно та ошибка, которую в итерации 39
+   * починили для совместимости.
+   *
+   * Что если права не осталось (два одновременных заказа на разных картах с
+   * одним правом): разбор всё равно остаётся `ready` — текст уже собран, и
+   * отбирать его хуже, чем признать в логе (`report_grant_missing`). Цена такой
+   * гонки — один бесплатный разбор, цена обратного решения — сгоревшее право у
+   * человека, который ничего не нарушил.
+   */
+  private async settleGrantFor(report: ReportRow): Promise<void> {
+    try {
+      if (await this.access.reportPaidFor(report.user_id, report.chart_id)) {
+        return;
+      }
+
+      const rights = await this.entitlements.getEntitlements(report.user_id);
+
+      if (rights.fullReport) {
+        return;
+      }
+
+      const consumed = await this.access.consumeSingleReport(report.user_id, report.chart_id);
+
+      if (consumed) {
+        this.logger.info('report_grant_consumed', {
+          report_id: report.id,
+          chart_id: report.chart_id,
+        });
+        return;
+      }
+
+      this.logger.warn('report_grant_missing', {
+        report_id: report.id,
+        chart_id: report.chart_id,
+        note: 'разбор готов, но одноразового права уже нет — текст отдан',
+      });
+    } catch (error) {
+      this.logger.error('report_grant_settle_failed', {
+        report_id: report.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

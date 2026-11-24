@@ -7,6 +7,9 @@ import { EventsModule } from '../events/events.module';
 import { GrantsModule } from '../grants/grants.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { AdminController } from './admin.controller';
+import { AdminOpsController } from './admin-ops.controller';
+import { AdminOpsService } from './admin-ops.service';
+import { BackupService } from './backup.service';
 import { AdminMetricsService } from './admin-metrics.service';
 import { AlertsService } from './alerts.service';
 import { JobsController } from './jobs.controller';
@@ -32,8 +35,16 @@ import { PushSchedulerService } from './push-scheduler.service';
     AdminAuthModule,
     AdminAuditModule,
   ],
-  controllers: [AdminController, JobsController],
-  providers: [AdminMetricsService, AlertsService, JobsService, ProdGuardService, PushSchedulerService],
+  controllers: [AdminController, AdminOpsController, JobsController],
+  providers: [
+    AdminMetricsService,
+    AlertsService,
+    AdminOpsService,
+    BackupService,
+    JobsService,
+    ProdGuardService,
+    PushSchedulerService,
+  ],
   // Прод-гард нужен `main.ts` до `listen`: он спрашивает провайдер у корневого
   // инжектора, а не создаёт его руками.
   exports: [ProdGuardService],

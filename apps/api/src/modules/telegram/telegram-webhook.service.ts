@@ -317,6 +317,91 @@ export class TelegramWebhookService {
     );
   }
 
+  /**
+   * Переустановка вебхука по кнопке в панели (контракт 1.6.17).
+   *
+   * Два правила, и оба про то, что «переустановить» не должно ухудшать:
+   *   • **`deleteWebhook` не вызывается никогда.** Если новый адрес плохой,
+   *     после `delete` мы остались бы совсем без вебхука — то есть без
+   *     `pre_checkout_query` и без оплаты. `setWebhook` заменяет адрес
+   *     атомарно со стороны Telegram;
+   *   • **ответ Bot API отдаётся как есть.** `last_error_message` — текст
+   *     Telegram, а не «что-то пошло не так»: поддержка должна видеть причину
+   *     (например, «Webhook URL must be HTTPS» или отказ по сертификату).
+   *
+   * Ответ Telegram не подтверждён `getWebhookInfo` — значит считаем, что не
+   * сработало, и говорим это вслух: `setWebhook` с нерезолвящимся адресом
+   * возвращает `ok: true`, и верить ему на слово нельзя.
+   */
+  async reinstall(): Promise<{ readonly ok: boolean; readonly lastErrorMessage: string | null }> {
+    const url = this.expectedUrl();
+
+    if (url === null) {
+      return { ok: false, lastErrorMessage: 'адрес вебхука не настроен' };
+    }
+
+    const answer = await this.telegram.setWebhook(url, this.env.TELEGRAM_WEBHOOK_SECRET ?? '');
+
+    if (!answer.ok) {
+      this.logger.error('telegram_webhook_reinstall_failed', {
+        url,
+        status: answer.status,
+        description: answer.description,
+      });
+
+      // Состояние запоминаем, чтобы `/health` и `/admin/metrics` не показывали
+      // «всё хорошо» сразу после неудачной переустановки.
+      const current = await this.telegram.getWebhookInfo();
+      this.remember(
+        this.status(
+          'failed',
+          url,
+          current.result ?? {
+            url: '',
+            hasCustomCertificate: false,
+            pendingUpdateCount: 0,
+            lastErrorDate: null,
+            lastErrorMessage: answer.description,
+            lastSynchronizationErrorDate: null,
+            maxConnections: null,
+            allowedUpdates: null,
+          },
+          answer.description,
+        ),
+      );
+
+      return { ok: false, lastErrorMessage: answer.description };
+    }
+
+    const after = await this.telegram.getWebhookInfo();
+    const confirmed = after.result?.url === url;
+
+    this.logger.info('telegram_webhook_reinstalled', { url, confirmed });
+
+    this.remember(
+      this.status(
+        confirmed ? 'registered' : 'failed',
+        url,
+        after.result ?? {
+          url,
+          hasCustomCertificate: false,
+          pendingUpdateCount: 0,
+          lastErrorDate: null,
+          lastErrorMessage: null,
+          lastSynchronizationErrorDate: null,
+          maxConnections: null,
+          allowedUpdates: null,
+        },
+        confirmed ? null : 'setWebhook не подтвердился getWebhookInfo',
+      ),
+    );
+
+    return {
+      ok: confirmed,
+      lastErrorMessage: confirmed ? null : 'setWebhook не подтвердился getWebhookInfo',
+    };
+  }
+
   private status(
     state: WebhookState,
     expectedUrl: string,

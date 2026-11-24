@@ -64,6 +64,10 @@ function crossingsWith(values: {
         failures:
           values.failures === undefined || values.failures === null ? null : new Date(values.failures),
       }),
+    // Подтверждения (`acked_until`, 1.6.17) читаются отдельным запросом к
+    // `admin_audit`. Здесь журнала нет — значит и подтверждений нет: правила
+    // проверяются без него, а сами `ack` живут в `admin-ops.spec.ts`.
+    query: () => Promise.resolve([]),
   } as unknown as DbService;
 }
 

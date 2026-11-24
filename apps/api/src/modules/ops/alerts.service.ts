@@ -62,8 +62,20 @@ export interface AlertEntry {
   readonly threshold: number;
   /** Время первого превышения порога. `null` — не превышен. */
   readonly since: string | null;
-  /** Сработал ли алерт: `value` выше порога (или значение неизвестно там, где это само по себе плохо). */
+  /**
+   * Сработал ли алерт: `value` выше порога (или значение неизвестно там, где
+   * это само по себе плохо) **и** он не подтверждён (1.6.17).
+   */
   readonly fired: boolean;
+  /**
+   * До какого момента показ алерта скрыт подтверждением (`POST
+   * /admin/alerts/{id}/ack`); `null` — не подтверждён.
+   *
+   * Подтверждение **не чинит** алерт: `value`, `threshold` и `since` остаются
+   * прежними — меняется только `fired`. Поэтому в панели это «скрыт до 14:20»,
+   * а не «исправлено», и при истечении срока алерт снова сработает сам.
+   */
+  readonly acked_until: string | null;
 }
 
 export interface AlertsResponse {
@@ -109,6 +121,26 @@ export const ALERT_THRESHOLDS = {
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/**
+ * Все идентификаторы алертов в порядке выдачи (1.6.17).
+ *
+ * Список нужен `POST /admin/alerts/{id}/ack`: неизвестный `id` — это `422`, а не
+ * «подтвердили что-то несуществующее». Держим его рядом с типом `AlertId`, чтобы
+ * новый алерт нельзя было добавить в тип и забыть в проверке (расхождение
+ * поймает тест: `ids()` против `AlertId` в типах и против `list()`).
+ */
+const ALERT_IDS: readonly AlertId[] = [
+  'payment_not_arriving',
+  'telegram_webhook',
+  'subscription_cancel_blocked',
+  'llm_spend',
+  'generations_failing',
+  'push_failed',
+  'bonus_budget_exhausted',
+  'admin_login_failed',
+  'backup_stale',
+];
+
 @Injectable()
 export class AlertsService {
   constructor(
@@ -118,12 +150,18 @@ export class AlertsService {
     @Inject(APP_ENV) private readonly env: AppEnv,
   ) {}
 
+  /** Идентификаторы алертов в порядке ответа (см. `ALERT_IDS`). */
+  ids(): readonly AlertId[] {
+    return ALERT_IDS;
+  }
+
   /** Текущие значения всех алертов и их состояние. */
   async list(now: Date = new Date()): Promise<AlertsResponse> {
-    const [metrics, crossings, backupAge] = await Promise.all([
+    const [metrics, crossings, backupAge, acks] = await Promise.all([
       this.metrics.getMetrics(),
       this.firstCrossings(),
       this.backupAgeHours(now),
+      this.acks(now),
     ]);
 
     const webhook = this.webhook.health();
@@ -163,7 +201,10 @@ export class AlertsService {
             now.getTime() - (backupAge - ALERT_THRESHOLDS.backup_stale) * HOUR_MS,
           ).toISOString();
 
-    const alerts: AlertEntry[] = [
+    // База без `acked_until`: его подставляет финальный `map` ниже, вместе с
+    // пересчётом `fired`. Так подтверждение не может случайно забыться ни у
+    // одного правила.
+    const alerts: Omit<AlertEntry, 'acked_until'>[] = [
       {
         id: 'payment_not_arriving',
         level: 'critical',
@@ -248,7 +289,53 @@ export class AlertsService {
       },
     ];
 
-    return { alerts, checked_at: now.toISOString() };
+    // Подтверждение гасит показ, но не значение: `value`/`threshold`/`since`
+    // остаются теми же — иначе панель показывала бы «всё хорошо» вместо
+    // «известная проблема, о которой знают».
+    return {
+      alerts: alerts.map((entry) => {
+        const ackedUntil = acks.get(entry.id) ?? null;
+
+        return {
+          ...entry,
+          acked_until: ackedUntil,
+          fired: ackedUntil === null ? entry.fired : false,
+        };
+      }),
+      checked_at: now.toISOString(),
+    };
+  }
+
+  /**
+   * Действующие подтверждения: `id → до какого момента`.
+   *
+   * Источник — `admin_audit` (`alert.ack`), а не отдельная таблица: журнал уже
+   * append-only и уже отвечает на вопрос «кто и когда». Новая таблица означала
+   * бы вторую историю того же действия и ещё одну миграцию. Берём **последнее**
+   * подтверждение по каждому алерту: повторное нажатие сдвигает срок вперёд.
+   */
+  private async acks(now: Date): Promise<Map<string, string>> {
+    const rows = await this.db.query<{ entity_id: string; acked_until: string | null }>(
+      `SELECT DISTINCT ON (entity_id) entity_id, after ->> 'acked_until' AS acked_until
+         FROM admin_audit
+        WHERE action = 'alert.ack' AND entity_id IS NOT NULL
+        ORDER BY entity_id, at DESC, id DESC`,
+    );
+
+    const active = new Map<string, string>();
+
+    for (const row of rows) {
+      if (row.acked_until === null) {
+        continue;
+      }
+
+      const until = new Date(row.acked_until);
+      if (!Number.isNaN(until.getTime()) && until.getTime() > now.getTime()) {
+        active.set(row.entity_id, until.toISOString());
+      }
+    }
+
+    return active;
   }
 
   /**

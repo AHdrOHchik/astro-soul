@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { NotImplemented } from './NotImplemented';
 import { missingRoutesFor, type ScreenKey } from '../api/routes';
 
+// С 1.6.17 «Основатели» и «Эксплуатация» больше не заглушки: все их маршруты
+// пришли в контракт, и экран обязан показывать данные, а не список того, чего
+// нет. Если такой экран снова окажется здесь, `missingRoutesFor` вернёт пусто и
+// тест упадёт на `toBeGreaterThan(0)` — то есть вернуть его в заглушки молча
+// нельзя.
 const SCREENS: readonly { key: ScreenKey; title: string }[] = [
   { key: 'users', title: 'Пользователи' },
   { key: 'payments', title: 'Платежи и генерации' },
   { key: 'plans', title: 'Тарифы' },
-  { key: 'founders', title: 'Основатели и партнёры' },
-  { key: 'ops', title: 'Эксплуатация' },
 ];
 
 /**

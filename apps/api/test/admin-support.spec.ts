@@ -202,17 +202,25 @@ describe('цены тарифов', () => {
     expect(row?.stars).toBe(199);
   });
 
-  it('`test_only` через PATCH не меняется: неизвестное поле — 422', async () => {
-    const response = await asAdmin('patch', '/api/v1/admin/plans/month_399')
-      .send({ price_stars: 499, comment: 'пометить тестовым', base_version: 1, test_only: true })
+  it('неизвестное поле по-прежнему 422, а `test_only` с 1.6.17 — не неизвестное', async () => {
+    // Контракт 1.6.16 запрещал трогать флаг из панели; с 1.6.17 он стал полем
+    // запроса (с обязательным `confirm` на снятие — см. `plan-test-only.spec.ts`).
+    // Здесь проверяется то, что осталось верным: посторонние поля не проходят, а
+    // `test_only: true` флаг ставит.
+    const unknown = await asAdmin('patch', '/api/v1/admin/plans/month_399')
+      .send({ price_stars: 499, comment: 'выключить тариф', base_version: 1, is_active: false })
       .expect(422);
 
-    expect(response.body.details.reason).toBe('unknown_field');
+    expect(unknown.body.details.reason).toBe('unknown_field');
 
-    const row = await ctx.db.queryOne<{ test_only: boolean }>(
-      `SELECT test_only FROM plans WHERE code = 'month_399'`,
+    await asAdmin('patch', '/api/v1/admin/plans/month_399')
+      .send({ test_only: true, comment: 'пометить тестовым', base_version: 1 })
+      .expect(200);
+
+    const row = await ctx.db.queryOne<{ test_only: boolean; stars: number }>(
+      `SELECT test_only, stars FROM plans WHERE code = 'month_399'`,
     );
-    expect(row?.test_only).toBe(false);
+    expect(row).toMatchObject({ test_only: true, stars: 399 });
   });
 });
 

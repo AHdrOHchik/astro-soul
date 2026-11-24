@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.16
+  version: 1.6.17
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -901,7 +901,7 @@ components:
       properties:
         code:
           type: string
-          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND, GONE, BONUS_BUDGET_EXHAUSTED]
+          enum: [UNAUTHORIZED, FORBIDDEN, NOT_FOUND, CONFLICT, VALIDATION_FAILED, QUOTA_EXCEEDED, PAYMENT_REQUIRED, RATE_LIMITED, INTERNAL, UPSTREAM_LLM, GEO_NOT_FOUND, GONE, BONUS_BUDGET_EXHAUSTED, UNAVAILABLE]
         message: { type: string, description: Готовый текст для показа пользователю (ru, на «ты») }
         request_id: { type: string, description: Для поиска в логах }
         details:
@@ -1082,13 +1082,14 @@ components:
 
     Alert:
       type: object
-      required: [id, level, value, threshold, since, fired]
+      required: [id, level, value, threshold, since, fired, acked_until]
       properties:
         id:
           type: string
           enum:
             [payment_not_arriving, telegram_webhook, subscription_cancel_blocked,
-             llm_spend, generations_failing, backup_stale, push_failed]
+             llm_spend, generations_failing, backup_stale, push_failed,
+             bonus_budget_exhausted, admin_login_failed]
           description: |
             Идентификатор правила — по нему настраивается мониторинг. Новый
             алерт добавляется здесь и в `AlertsService` одним PR.
@@ -1129,6 +1130,17 @@ components:
             дольше порога»; для `backup_stale` — «старше порога **или** маркера
             нет» (отсутствие маркера тоже срабатывание: молчание не равно
             «всё хорошо»).
+
+            С 1.6.17: подтверждённый алерт (`acked_until` в будущем) отдаётся
+            как `fired: false` — но `value`, `threshold` и `since` остаются
+            прежними. Подтверждение гасит показ, а не чинит проблему.
+        acked_until:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            До какого момента показ алерта скрыт подтверждением
+            (`POST /admin/alerts/{id}/ack`, 1.6.17). `null` — не подтверждён.
+            По истечении срока алерт снова сработает сам.
 
     ShareCapability:
       type: object
@@ -2346,6 +2358,106 @@ components:
         subscription_period_sec: { type: [integer, 'null'], example: 2592000 }
 
     # --- панель поддержки и цен (1.6.16) ------------------------------------
+
+    AdminFounder:
+      type: object
+      description: |-
+        Основатель в панели (1.6.17). ПДн нет: только `place`, `telegram_id` и
+        выдача права.
+      required:
+        [place, user_id, telegram_id, username, created_at, grant_kind, expires_at, code_activated]
+      properties:
+        place: { type: integer, minimum: 1, maximum: 50 }
+        user_id: { type: string, format: uuid }
+        telegram_id: { type: string }
+        username:
+          type: 'null'
+          description: |-
+            Всегда `null`: имена в Telegram не хранятся (в базе нет колонки
+            `username`). Поле оставлено, чтобы панель не переделывала колонку.
+        created_at: { type: string, format: date-time }
+        grant_kind:
+          type: [string, 'null']
+          enum: [all_access, single_report, single_compat, null]
+        expires_at: { type: [string, 'null'], format: date-time }
+        code_activated:
+          type: boolean
+          description: |-
+            Пришёл ли человек по коду (`access_code_activations`). `false` —
+            заявка без кода.
+
+    AdminFoundersPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminFounder' }
+        next_cursor:
+          type: [string, 'null']
+          description: 'Курсор следующей страницы; `null` — страниц больше нет.'
+
+    AdminPartner:
+      type: object
+      description: |-
+        Агрегат по партнёру (1.6.17). Идентификаторов нет — только суммы и
+        счётчики.
+      required:
+        [partner_name, codes_total, activations_total, activated_users, paid_users,
+         revenue_stars, last_activation_at]
+      properties:
+        partner_name: { type: string }
+        codes_total: { type: integer, minimum: 0 }
+        activations_total: { type: integer, minimum: 0 }
+        activated_users: { type: integer, minimum: 0 }
+        paid_users:
+          type: integer
+          minimum: 0
+          description: |-
+            Сколько активировавших код людей заплатили хотя бы раз — главная
+            цифра «работает ли партнёр».
+        revenue_stars:
+          type: integer
+          minimum: 0
+          description: |-
+            Сумма оплаченных платежей этих людей. Возвраты не вычитаются, а не
+            попадают вовсе: у возвращённого платежа `status = 'refunded'`.
+        last_activation_at: { type: [string, 'null'], format: date-time }
+
+    AdminPartnersPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminPartner' }
+
+    AdminPaymentEntry:
+      type: object
+      description: |-
+        Платёж в ленте `GET /admin/payments` (1.6.17). `charge_id` =
+        `telegram_payment_charge_id`. Отличается от `AdminPayment` (1.6.16) —
+        тот про платежи одного человека в карточке и без дат.
+      required:
+        [charge_id, user_id, amount_stars, currency, status, created_at, refunded_at, plan_code]
+      properties:
+        charge_id: { type: string }
+        user_id: { type: [string, 'null'], format: uuid }
+        amount_stars: { type: integer, minimum: 1 }
+        currency: { type: string, enum: [XTR] }
+        status: { type: string, enum: [paid, processed, refunded, failed] }
+        created_at: { type: string, format: date-time }
+        refunded_at: { type: [string, 'null'], format: date-time }
+        plan_code: { type: string }
+
+    AdminPaymentsPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminPaymentEntry' }
+        next_cursor: { type: [string, 'null'] }
 
     AdminPlan:
       type: object
@@ -5110,6 +5222,13 @@ paths:
         (`telegram_webhook`), рубли (`llm_spend`), часы (`backup_stale`).
         `value: null` — значение неизвестно (не было проверки вебхука, нет
         маркера бэкапа).
+
+        **1.6.17: `acked_until`.** У каждого правила есть `acked_until` (или
+        `null`) — до какого момента показ скрыт подтверждением
+        (`POST /admin/alerts/{id}/ack`). Подтверждённый алерт отдаётся с
+        `fired: false`, но `value`, `threshold` и `since` **не меняются**:
+        подтверждение гасит показ, а не чинит проблему. Когда срок истекает,
+        алерт снова сработает сам — продлевать его руками не нужно.
       security:
         - TelegramInitData: []
         - AdminSessionCookie: []
@@ -5148,21 +5267,32 @@ paths:
       tags: [internal]
       summary: Сменить цену тарифа
       description: |-
-        Тело: `{price_stars, comment, base_version}`. Ответ `200 {plan,
-        effective_from}`.
+        Тело: `{comment, base_version}` + хотя бы одно из `price_stars`,
+        `test_only`. Ответ `200 {plan, effective_from}`.
 
         `409 price_changed` — `base_version` устарел (цену изменили в другой
         вкладке), в `details.current` актуальные `price_stars` и `version`.
         `403 founder_plan_locked` — тариф `founder_month`: его цена обещана
-        первым 50 людям и из панели не меняется.
+        первым 50 людям и из панели не меняется (`test_only` менять можно).
+        `422 nothing_to_update` — в теле нет ни цены, ни флага.
 
-        Меняется **только цена**: `test_only`, `is_active`, `grants` этим
-        маршрутом не правятся, а неизвестное поле в теле — `422`. Смена цены
-        действует на новые покупки (`price_change_scope: only_new_purchases`):
-        снимок цены в уже выставленных счетах не пересчитывается.
+        **1.6.17: `test_only` правится здесь же, двумя шагами.** Снять флаг —
+        значит выставить тариф в продажу по его текущей цене (для тестового
+        тарифа это 1 ⭐). Поэтому запрос `test_only: false` при
+        `test_only: true` требует `confirm: "disable_test_plan"`; без него —
+        `422 confirmation_required`, и флаг остаётся как был. Включение флага
+        (`true`) подтверждения не требует: оно закрывает тариф, а не открывает.
 
-        Изменение и запись истории (`plan_price_history`) идут в одной
-        транзакции с записью в `admin_audit`: нет записи — нет новой цены.
+        Цена по-прежнему только из этой ручки: `is_active`, `grants`,
+        `founder_only` не правятся, а неизвестное поле в теле — `422`. Смена
+        цены действует на новые покупки (`price_change_scope:
+        only_new_purchases`): снимок цены в уже выставленных счетах не
+        пересчитывается.
+
+        Изменение цены, запись истории (`plan_price_history`) и запись в
+        `admin_audit` идут в одной транзакции: нет записи — нет новой цены.
+        Смена `test_only` пишется в аудит отдельным действием
+        `plan.test_only_change` и в историю цен не попадает (цена не менялась).
       security:
         - TelegramInitData: []
         - AdminSessionCookie: []
@@ -5178,14 +5308,29 @@ paths:
           application/json:
             schema:
               type: object
-              required: [price_stars, comment, base_version]
+              required: [comment, base_version]
               properties:
-                price_stars: { type: integer, minimum: 1 }
+                price_stars:
+                  type: integer
+                  minimum: 1
+                  description: 'Новая цена в звёздах. Не указана — цена не меняется.'
+                test_only:
+                  type: boolean
+                  description: |-
+                    Тестовый тариф (1.6.17). Не указано — флаг не меняется.
+                    `false` при текущем `true` требует `confirm`.
+                confirm:
+                  type: string
+                  maxLength: 64
+                  description: |-
+                    Второй шаг для `test_only: false` — строка
+                    `disable_test_plan`. Включает защиту от опечатки в один
+                    символ: снятый флаг выставляет тариф в продажу.
                 comment:
                   type: string
                   minLength: 5
                   maxLength: 500
-                  description: 'Зачем меняем цену: через месяц это единственное объяснение.'
+                  description: 'Зачем меняем: через месяц это единственное объяснение.'
                 base_version:
                   type: integer
                   minimum: 1
@@ -5218,7 +5363,9 @@ paths:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
         '422':
-          description: 'VALIDATION_FAILED, `unknown_field`'
+          description: |-
+            VALIDATION_FAILED: `unknown_field`, `nothing_to_update`,
+            `confirmation_required` (для `test_only: false` без `confirm`)
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -5590,6 +5737,324 @@ paths:
               schema: { $ref: '#/components/schemas/Problem' }
         '409':
           description: '`report_not_regenerable`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/founders:
+    get:
+      tags: [internal]
+      summary: Места «первых 50» (панель)
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`).
+
+        `place` — 1…50 по дате заявки. `code_activated` — пришёл ли человек по
+        коду (`access_code_activations`), `false` — пришёл сам. `grant_kind` и
+        `expires_at` — **право основателя** (`grants.source = 'founder'`), а не
+        любое его право.
+
+        **ПДн нет**: ни даты рождения, ни города, ни времени — только
+        `telegram_id` (он же в чеке и в боте) и `place`. `username` всегда
+        `null`: имена в Telegram мы не храним (в базе нет такой колонки).
+
+        Пагинация — курсором (`next_cursor`), а не `offset`: между страницами
+        появляются новые строки, и `offset` показал бы одну дважды.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 50 }
+        - name: cursor
+          in: query
+          description: '`next_cursor` из предыдущего ответа; непрозрачная строка.'
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminFoundersPage' }
+        '403': { description: FORBIDDEN }
+        '422':
+          description: 'VALIDATION_FAILED: `invalid_limit`, `invalid_cursor`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/partners:
+    get:
+      tags: [internal]
+      summary: Партнёры и их конверсия (панель)
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`).
+
+        Группировка по `access_codes.partner_name`. `paid_users` — сколько
+        активировавших код людей **заплатили хотя бы раз**: единственная цифра,
+        которая говорит, работает ли партнёр (активации сами по себе
+        бесплатны). `revenue_stars` — сумма оплаченных платежей этих людей.
+
+        **Возвраты не вычитаются, а не попадают вовсе**: платёж со статусом
+        `refunded` в сумму не входит, поэтому «вычитать» нечего. Отдельной
+        цифры возвратов здесь нет — она в `GET /admin/payments?status=refunded`.
+
+        **Идентификаторов нет**: ни `telegram_id`, ни `user_id`, ни кода —
+        только `partner_name` и агрегаты. Партнёр — внешняя сторона, и его
+        отчёт не должен превращаться в список клиентов.
+
+        Партнёр без активаций остаётся в ответе с нулями: «код раздали, никто
+        не пришёл» — это ответ, а не пустая строка.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPartnersPage' }
+        '403': { description: FORBIDDEN }
+
+  /api/v1/admin/payments:
+    get:
+      tags: [internal]
+      summary: Платежи и возвраты (панель)
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`).
+
+        Главный сценарий — `charge_id` из чека: человек присылает чек,
+        поддержка находит платёж и возвращает звёзды
+        (`POST /admin/users/{id}/refund`). Поиск точный: `ILIKE` по
+        идентификатору платежа находил бы лишнее и выглядел бы как «нашёл».
+
+        `user_id` — **фильтр**, а не поиск по человеку: чтобы найти платежи
+        человека, его `id` сначала берут в `GET /admin/users`. Без фильтров
+        отдаются последние платежи: ПДн здесь нет, и «покажи всех» запрещать
+        незачем.
+
+        `charge_id` — это `payments.telegram_payment_charge_id` (тот же, что
+        нужен `refundStarPayment`), `amount_stars` — `total_amount`.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: charge_id
+          in: query
+          schema: { type: string, minLength: 3 }
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: string, enum: [paid, processed, refunded, failed] }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPaymentsPage' }
+        '403': { description: FORBIDDEN }
+        '422':
+          description: 'VALIDATION_FAILED: `invalid_filter`, `invalid_limit`, `invalid_cursor`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/backup/run:
+    post:
+      tags: [internal]
+      summary: Сделать бэкап сейчас
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`). Тело: `{reason}` (5…500
+        символов), причина уходит в аудит `backup.run`.
+
+        Запускает **тот же** `scripts/db-dump.sh`, что и cron, из процесса API:
+        порядок «локальный файл → выгрузка → файл-маркер» живёт в одном месте и
+        кнопка в панели не может сделать его иначе. Ответ `202` означает
+        «запущено», а не «сделано»: успех подтверждает маркер (`backup_stale` в
+        алертах), а не этот ответ.
+
+        `503 backup_not_configured` — выгрузка не настроена (`BACKUP_S3_URL` /
+        `BACKUP_REMOTE` / `BACKUP_STATE_FILE` пусты). Локальный дамп без
+        выгрузки — не бэкап, и панель должна показать «не настроено», а не
+        «делается».
+
+        `409 backup_in_progress` — дамп уже идёт. `409 backup_too_frequent` —
+        предыдущий запуск был меньше 10 минут назад (`details.retry_after_seconds`).
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/AdminCsrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '202':
+          description: Дамп запущен в фоне
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [started, job_id]
+                properties:
+                  started: { type: boolean, const: true }
+                  job_id: { type: string, format: uuid }
+        '403': { description: FORBIDDEN }
+        '409':
+          description: '`backup_in_progress` / `backup_too_frequent`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: 'VALIDATION_FAILED: `invalid_reason`, `unknown_field`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '503':
+          description: '`UNAVAILABLE` + `backup_not_configured` (в `details.missing` — чего не хватает)'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/telegram/webhook:
+    post:
+      tags: [internal]
+      summary: Переустановить вебхук Telegram
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`). Тело: `{reason}`, аудит —
+        `webhook.reinstall`.
+
+        Вызывает `setWebhook` на адрес из `MINI_APP_URL` + `TELEGRAM_WEBHOOK_SECRET`
+        и отдаёт ответ Bot API **как есть**, включая `last_error_message`:
+        панель показывает текст причины («Webhook URL must be HTTPS»), а не
+        «что-то пошло не так».
+
+        `deleteWebhook` **не вызывается никогда**: если новый адрес плохой, после
+        `delete` мы остались бы совсем без вебхука — то есть без
+        `pre_checkout_query` и без оплаты. `setWebhook` заменяет адрес атомарно.
+
+        `409 webhook_url_not_configured` — `MINI_APP_URL` или
+        `TELEGRAM_WEBHOOK_SECRET` пусты, собирать адрес не из чего.
+
+        `502` — Telegram отказал или ответ не подтвердился `getWebhookInfo`.
+        Тело — `Problem` (единый формат ошибок), поля ответа Bot API лежат в
+        `details`: `url`, `ok`, `last_error_message`.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/AdminCsrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 5, maxLength: 500 }
+      responses:
+        '200':
+          description: Вебхук переустановлен и подтверждён
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, ok, last_error_message]
+                properties:
+                  url: { type: string }
+                  ok: { type: boolean, const: true }
+                  last_error_message: { type: 'null' }
+        '403': { description: FORBIDDEN }
+        '409':
+          description: '`webhook_url_not_configured`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: 'VALIDATION_FAILED: `invalid_reason`, `unknown_field`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '502':
+          description: 'Telegram отказал: `details {url, ok, last_error_message}`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/alerts/{id}/ack:
+    post:
+      tags: [internal]
+      summary: Подтвердить алерт (скрыть на время)
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`). Тело: `{minutes}` —
+        целое от 15 до 1440. Аудит — `alert.ack`.
+
+        Подтверждение **не чинит** алерт, а гасит показ: в `GET /admin/alerts` у
+        правила появляется `acked_until`, а `fired` становится `false` до
+        истечения срока. `value`, `threshold` и `since` **не меняются** — иначе
+        панель показывала бы «всё хорошо» вместо «известная проблема, о которой
+        знают». В интерфейсе это «скрыт до 14:20», а не «исправлено».
+
+        Хранится в журнале (`admin_audit`, действие `alert.ack`): журнал уже
+        append-only, и «кто и на сколько заглушил мониторинг» обязано быть в нём.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - payment_not_arriving
+              - telegram_webhook
+              - subscription_cancel_blocked
+              - llm_spend
+              - generations_failing
+              - push_failed
+              - bonus_budget_exhausted
+              - admin_login_failed
+              - backup_stale
+        - $ref: '#/components/parameters/AdminCsrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [minutes]
+              properties:
+                minutes: { type: integer, minimum: 15, maximum: 1440 }
+      responses:
+        '200':
+          description: Подтверждено до `acked_until`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [acked_until, alert]
+                properties:
+                  acked_until: { type: string, format: date-time }
+                  alert: { $ref: '#/components/schemas/Alert' }
+        '403': { description: FORBIDDEN }
+        '422':
+          description: 'VALIDATION_FAILED: `unknown_alert`, `invalid_minutes`'
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

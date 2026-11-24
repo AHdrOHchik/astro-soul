@@ -3,6 +3,9 @@ import { AdminAuditModule } from '../admin-audit/admin-audit.module';
 import { BillingModule } from '../billing/billing.module';
 import { TelegramModule } from '../telegram/telegram.module';
 import { ReportsModule } from '../reports/reports.module';
+import { AdminDirectoryController } from './admin-directory.controller';
+import { AdminDirectoryRepository } from './admin-directory.repository';
+import { AdminDirectoryService } from './admin-directory.service';
 import { AdminPlansController } from './admin-plans.controller';
 import { AdminPlansRepository } from './admin-plans.repository';
 import { AdminPlansService } from './admin-plans.service';
@@ -28,8 +31,15 @@ import { AdminUsersService } from './admin-users.service';
  */
 @Module({
   imports: [AdminAuditModule, BillingModule, ReportsModule, TelegramModule],
-  controllers: [AdminPlansController, AdminUsersController, AdminReportsController],
+  controllers: [
+    AdminDirectoryController,
+    AdminPlansController,
+    AdminUsersController,
+    AdminReportsController,
+  ],
   providers: [
+    AdminDirectoryRepository,
+    AdminDirectoryService,
     AdminPlansRepository,
     AdminPlansService,
     AdminUsersRepository,

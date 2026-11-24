@@ -3863,6 +3863,13 @@ export interface paths {
          *     (`telegram_webhook`), рубли (`llm_spend`), часы (`backup_stale`).
          *     `value: null` — значение неизвестно (не было проверки вебхука, нет
          *     маркера бэкапа).
+         *
+         *     **1.6.17: `acked_until`.** У каждого правила есть `acked_until` (или
+         *     `null`) — до какого момента показ скрыт подтверждением
+         *     (`POST /admin/alerts/{id}/ack`). Подтверждённый алерт отдаётся с
+         *     `fired: false`, но `value`, `threshold` и `since` **не меняются**:
+         *     подтверждение гасит показ, а не чинит проблему. Когда срок истекает,
+         *     алерт снова сработает сам — продлевать его руками не нужно.
          */
         get: {
             parameters: {
@@ -3965,21 +3972,32 @@ export interface paths {
         head?: never;
         /**
          * Сменить цену тарифа
-         * @description Тело: `{price_stars, comment, base_version}`. Ответ `200 {plan,
-         *     effective_from}`.
+         * @description Тело: `{comment, base_version}` + хотя бы одно из `price_stars`,
+         *     `test_only`. Ответ `200 {plan, effective_from}`.
          *
          *     `409 price_changed` — `base_version` устарел (цену изменили в другой
          *     вкладке), в `details.current` актуальные `price_stars` и `version`.
          *     `403 founder_plan_locked` — тариф `founder_month`: его цена обещана
-         *     первым 50 людям и из панели не меняется.
+         *     первым 50 людям и из панели не меняется (`test_only` менять можно).
+         *     `422 nothing_to_update` — в теле нет ни цены, ни флага.
          *
-         *     Меняется **только цена**: `test_only`, `is_active`, `grants` этим
-         *     маршрутом не правятся, а неизвестное поле в теле — `422`. Смена цены
-         *     действует на новые покупки (`price_change_scope: only_new_purchases`):
-         *     снимок цены в уже выставленных счетах не пересчитывается.
+         *     **1.6.17: `test_only` правится здесь же, двумя шагами.** Снять флаг —
+         *     значит выставить тариф в продажу по его текущей цене (для тестового
+         *     тарифа это 1 ⭐). Поэтому запрос `test_only: false` при
+         *     `test_only: true` требует `confirm: "disable_test_plan"`; без него —
+         *     `422 confirmation_required`, и флаг остаётся как был. Включение флага
+         *     (`true`) подтверждения не требует: оно закрывает тариф, а не открывает.
          *
-         *     Изменение и запись истории (`plan_price_history`) идут в одной
-         *     транзакции с записью в `admin_audit`: нет записи — нет новой цены.
+         *     Цена по-прежнему только из этой ручки: `is_active`, `grants`,
+         *     `founder_only` не правятся, а неизвестное поле в теле — `422`. Смена
+         *     цены действует на новые покупки (`price_change_scope:
+         *     only_new_purchases`): снимок цены в уже выставленных счетах не
+         *     пересчитывается.
+         *
+         *     Изменение цены, запись истории (`plan_price_history`) и запись в
+         *     `admin_audit` идут в одной транзакции: нет записи — нет новой цены.
+         *     Смена `test_only` пишется в аудит отдельным действием
+         *     `plan.test_only_change` и в историю цен не попадает (цена не менялась).
          */
         patch: {
             parameters: {
@@ -4002,8 +4020,20 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        price_stars: number;
-                        /** @description Зачем меняем цену: через месяц это единственное объяснение. */
+                        /** @description Новая цена в звёздах. Не указана — цена не меняется. */
+                        price_stars?: number;
+                        /**
+                         * @description Тестовый тариф (1.6.17). Не указано — флаг не меняется.
+                         *     `false` при текущем `true` требует `confirm`.
+                         */
+                        test_only?: boolean;
+                        /**
+                         * @description Второй шаг для `test_only: false` — строка
+                         *     `disable_test_plan`. Включает защиту от опечатки в один
+                         *     символ: снятый флаг выставляет тариф в продажу.
+                         */
+                        confirm?: string;
+                        /** @description Зачем меняем: через месяц это единственное объяснение. */
                         comment: string;
                         /** @description `AdminPlan.version`, которую видела панель. */
                         base_version: number;
@@ -4052,7 +4082,10 @@ export interface paths {
                         "application/problem+json": components["schemas"]["Problem"];
                     };
                 };
-                /** @description VALIDATION_FAILED, `unknown_field` */
+                /**
+                 * @description VALIDATION_FAILED: `unknown_field`, `nothing_to_update`,
+                 *     `confirmation_required` (для `test_only: false` без `confirm`)
+                 */
                 422: {
                     headers: {
                         [name: string]: unknown;
@@ -4714,6 +4747,517 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/founders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Места «первых 50» (панель)
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`).
+         *
+         *     `place` — 1…50 по дате заявки. `code_activated` — пришёл ли человек по
+         *     коду (`access_code_activations`), `false` — пришёл сам. `grant_kind` и
+         *     `expires_at` — **право основателя** (`grants.source = 'founder'`), а не
+         *     любое его право.
+         *
+         *     **ПДн нет**: ни даты рождения, ни города, ни времени — только
+         *     `telegram_id` (он же в чеке и в боте) и `place`. `username` всегда
+         *     `null`: имена в Telegram мы не храним (в базе нет такой колонки).
+         *
+         *     Пагинация — курсором (`next_cursor`), а не `offset`: между страницами
+         *     появляются новые строки, и `offset` показал бы одну дважды.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                    /** @description `next_cursor` из предыдущего ответа; непрозрачная строка. */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminFoundersPage"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description VALIDATION_FAILED: `invalid_limit`, `invalid_cursor` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/partners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Партнёры и их конверсия (панель)
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`).
+         *
+         *     Группировка по `access_codes.partner_name`. `paid_users` — сколько
+         *     активировавших код людей **заплатили хотя бы раз**: единственная цифра,
+         *     которая говорит, работает ли партнёр (активации сами по себе
+         *     бесплатны). `revenue_stars` — сумма оплаченных платежей этих людей.
+         *
+         *     **Возвраты не вычитаются, а не попадают вовсе**: платёж со статусом
+         *     `refunded` в сумму не входит, поэтому «вычитать» нечего. Отдельной
+         *     цифры возвратов здесь нет — она в `GET /admin/payments?status=refunded`.
+         *
+         *     **Идентификаторов нет**: ни `telegram_id`, ни `user_id`, ни кода —
+         *     только `partner_name` и агрегаты. Партнёр — внешняя сторона, и его
+         *     отчёт не должен превращаться в список клиентов.
+         *
+         *     Партнёр без активаций остаётся в ответе с нулями: «код раздали, никто
+         *     не пришёл» — это ответ, а не пустая строка.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminPartnersPage"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Платежи и возвраты (панель)
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`).
+         *
+         *     Главный сценарий — `charge_id` из чека: человек присылает чек,
+         *     поддержка находит платёж и возвращает звёзды
+         *     (`POST /admin/users/{id}/refund`). Поиск точный: `ILIKE` по
+         *     идентификатору платежа находил бы лишнее и выглядел бы как «нашёл».
+         *
+         *     `user_id` — **фильтр**, а не поиск по человеку: чтобы найти платежи
+         *     человека, его `id` сначала берут в `GET /admin/users`. Без фильтров
+         *     отдаются последние платежи: ПДн здесь нет, и «покажи всех» запрещать
+         *     незачем.
+         *
+         *     `charge_id` — это `payments.telegram_payment_charge_id` (тот же, что
+         *     нужен `refundStarPayment`), `amount_stars` — `total_amount`.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    charge_id?: string;
+                    user_id?: string;
+                    status?: "paid" | "processed" | "refunded" | "failed";
+                    limit?: number;
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminPaymentsPage"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description VALIDATION_FAILED: `invalid_filter`, `invalid_limit`, `invalid_cursor` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/backup/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Сделать бэкап сейчас
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`). Тело: `{reason}` (5…500
+         *     символов), причина уходит в аудит `backup.run`.
+         *
+         *     Запускает **тот же** `scripts/db-dump.sh`, что и cron, из процесса API:
+         *     порядок «локальный файл → выгрузка → файл-маркер» живёт в одном месте и
+         *     кнопка в панели не может сделать его иначе. Ответ `202` означает
+         *     «запущено», а не «сделано»: успех подтверждает маркер (`backup_stale` в
+         *     алертах), а не этот ответ.
+         *
+         *     `503 backup_not_configured` — выгрузка не настроена (`BACKUP_S3_URL` /
+         *     `BACKUP_REMOTE` / `BACKUP_STATE_FILE` пусты). Локальный дамп без
+         *     выгрузки — не бэкап, и панель должна показать «не настроено», а не
+         *     «делается».
+         *
+         *     `409 backup_in_progress` — дамп уже идёт. `409 backup_too_frequent` —
+         *     предыдущий запуск был меньше 10 минут назад (`details.retry_after_seconds`).
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        reason: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Дамп запущен в фоне */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** @constant */
+                            started: true;
+                            /** Format: uuid */
+                            job_id: string;
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `backup_in_progress` / `backup_too_frequent` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED: `invalid_reason`, `unknown_field` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `UNAVAILABLE` + `backup_not_configured` (в `details.missing` — чего не хватает) */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/telegram/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Переустановить вебхук Telegram
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`). Тело: `{reason}`, аудит —
+         *     `webhook.reinstall`.
+         *
+         *     Вызывает `setWebhook` на адрес из `MINI_APP_URL` + `TELEGRAM_WEBHOOK_SECRET`
+         *     и отдаёт ответ Bot API **как есть**, включая `last_error_message`:
+         *     панель показывает текст причины («Webhook URL must be HTTPS»), а не
+         *     «что-то пошло не так».
+         *
+         *     `deleteWebhook` **не вызывается никогда**: если новый адрес плохой, после
+         *     `delete` мы остались бы совсем без вебхука — то есть без
+         *     `pre_checkout_query` и без оплаты. `setWebhook` заменяет адрес атомарно.
+         *
+         *     `409 webhook_url_not_configured` — `MINI_APP_URL` или
+         *     `TELEGRAM_WEBHOOK_SECRET` пусты, собирать адрес не из чего.
+         *
+         *     `502` — Telegram отказал или ответ не подтвердился `getWebhookInfo`.
+         *     Тело — `Problem` (единый формат ошибок), поля ответа Bot API лежат в
+         *     `details`: `url`, `ok`, `last_error_message`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        reason: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Вебхук переустановлен и подтверждён */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            url: string;
+                            /** @constant */
+                            ok: true;
+                            last_error_message: null;
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `webhook_url_not_configured` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED: `invalid_reason`, `unknown_field` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description Telegram отказал: `details {url, ok, last_error_message}` */
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/alerts/{id}/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Подтвердить алерт (скрыть на время)
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`). Тело: `{minutes}` —
+         *     целое от 15 до 1440. Аудит — `alert.ack`.
+         *
+         *     Подтверждение **не чинит** алерт, а гасит показ: в `GET /admin/alerts` у
+         *     правила появляется `acked_until`, а `fired` становится `false` до
+         *     истечения срока. `value`, `threshold` и `since` **не меняются** — иначе
+         *     панель показывала бы «всё хорошо» вместо «известная проблема, о которой
+         *     знают». В интерфейсе это «скрыт до 14:20», а не «исправлено».
+         *
+         *     Хранится в журнале (`admin_audit`, действие `alert.ack`): журнал уже
+         *     append-only, и «кто и на сколько заглушил мониторинг» обязано быть в нём.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path: {
+                    id: "payment_not_arriving" | "telegram_webhook" | "subscription_cancel_blocked" | "llm_spend" | "generations_failing" | "push_failed" | "bonus_budget_exhausted" | "admin_login_failed" | "backup_stale";
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        minutes: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Подтверждено до `acked_until` */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: date-time */
+                            acked_until: string;
+                            alert: components["schemas"]["Alert"];
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description VALIDATION_FAILED: `unknown_alert`, `invalid_minutes` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -4745,7 +5289,7 @@ export interface components {
          */
         Problem: {
             /** @enum {string} */
-            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND" | "GONE" | "BONUS_BUDGET_EXHAUSTED";
+            code: "UNAUTHORIZED" | "FORBIDDEN" | "NOT_FOUND" | "CONFLICT" | "VALIDATION_FAILED" | "QUOTA_EXCEEDED" | "PAYMENT_REQUIRED" | "RATE_LIMITED" | "INTERNAL" | "UPSTREAM_LLM" | "GEO_NOT_FOUND" | "GONE" | "BONUS_BUDGET_EXHAUSTED" | "UNAVAILABLE";
             /** @description Готовый текст для показа пользователю (ru */
             message: string;
             /** @description Для поиска в логах */
@@ -4908,7 +5452,7 @@ export interface components {
              *     алерт добавляется здесь и в `AlertsService` одним PR.
              * @enum {string}
              */
-            id: "payment_not_arriving" | "telegram_webhook" | "subscription_cancel_blocked" | "llm_spend" | "generations_failing" | "backup_stale" | "push_failed";
+            id: "payment_not_arriving" | "telegram_webhook" | "subscription_cancel_blocked" | "llm_spend" | "generations_failing" | "backup_stale" | "push_failed" | "bonus_budget_exhausted" | "admin_login_failed";
             /**
              * @description `critical` — человек уже пострадал или пострадает без
              *     вмешательства (оплата, вебхук, отмена подписки). `warning` — деньги
@@ -4945,8 +5489,19 @@ export interface components {
              *     дольше порога»; для `backup_stale` — «старше порога **или** маркера
              *     нет» (отсутствие маркера тоже срабатывание: молчание не равно
              *     «всё хорошо»).
+             *
+             *     С 1.6.17: подтверждённый алерт (`acked_until` в будущем) отдаётся
+             *     как `fired: false` — но `value`, `threshold` и `since` остаются
+             *     прежними. Подтверждение гасит показ, а не чинит проблему.
              */
             fired: boolean;
+            /**
+             * Format: date-time
+             * @description До какого момента показ алерта скрыт подтверждением
+             *     (`POST /admin/alerts/{id}/ack`, 1.6.17). `null` — не подтверждён.
+             *     По истечении срока алерт снова сработает сам.
+             */
+            acked_until: string | null;
         };
         /**
          * @description Что клиент может сделать с шарингом — **до** создания карточки
@@ -5983,6 +6538,86 @@ export interface components {
             is_subscription: boolean;
             /** @example 2592000 */
             subscription_period_sec?: number | null;
+        };
+        /**
+         * @description Основатель в панели (1.6.17). ПДн нет: только `place`, `telegram_id` и
+         *     выдача права.
+         */
+        AdminFounder: {
+            place: number;
+            /** Format: uuid */
+            user_id: string;
+            telegram_id: string;
+            /**
+             * @description Всегда `null`: имена в Telegram не хранятся (в базе нет колонки
+             *     `username`). Поле оставлено, чтобы панель не переделывала колонку.
+             */
+            username: null;
+            /** Format: date-time */
+            created_at: string;
+            /** @enum {string|null} */
+            grant_kind: "all_access" | "single_report" | "single_compat" | null;
+            /** Format: date-time */
+            expires_at: string | null;
+            /**
+             * @description Пришёл ли человек по коду (`access_code_activations`). `false` —
+             *     заявка без кода.
+             */
+            code_activated: boolean;
+        };
+        AdminFoundersPage: {
+            items: components["schemas"]["AdminFounder"][];
+            /** @description Курсор следующей страницы; `null` — страниц больше нет. */
+            next_cursor: string | null;
+        };
+        /**
+         * @description Агрегат по партнёру (1.6.17). Идентификаторов нет — только суммы и
+         *     счётчики.
+         */
+        AdminPartner: {
+            partner_name: string;
+            codes_total: number;
+            activations_total: number;
+            activated_users: number;
+            /**
+             * @description Сколько активировавших код людей заплатили хотя бы раз — главная
+             *     цифра «работает ли партнёр».
+             */
+            paid_users: number;
+            /**
+             * @description Сумма оплаченных платежей этих людей. Возвраты не вычитаются, а не
+             *     попадают вовсе: у возвращённого платежа `status = 'refunded'`.
+             */
+            revenue_stars: number;
+            /** Format: date-time */
+            last_activation_at: string | null;
+        };
+        AdminPartnersPage: {
+            items: components["schemas"]["AdminPartner"][];
+        };
+        /**
+         * @description Платёж в ленте `GET /admin/payments` (1.6.17). `charge_id` =
+         *     `telegram_payment_charge_id`. Отличается от `AdminPayment` (1.6.16) —
+         *     тот про платежи одного человека в карточке и без дат.
+         */
+        AdminPaymentEntry: {
+            charge_id: string;
+            /** Format: uuid */
+            user_id: string | null;
+            amount_stars: number;
+            /** @enum {string} */
+            currency: "XTR";
+            /** @enum {string} */
+            status: "paid" | "processed" | "refunded" | "failed";
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            refunded_at: string | null;
+            plan_code: string;
+        };
+        AdminPaymentsPage: {
+            items: components["schemas"]["AdminPaymentEntry"][];
+            next_cursor: string | null;
         };
         /**
          * @description Тариф в панели. Цена — `price_stars` (в БД `plans.stars`), период —

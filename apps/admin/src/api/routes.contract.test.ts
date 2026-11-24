@@ -60,23 +60,17 @@ describe('реестр маршрутов админки', () => {
   });
 
   it('число отсутствующих маршрутов известно: это список задач бэкенду', () => {
-    // Со сменой контракта список обязан shorten-иться руками: он и есть перечень
-    // того, что панели не разрешено. 1.6.15 забрал из него вход (3 маршрута) и
-    // журнал (1) — было 20, стало 16.
+    // Со сменой контракта список обязан сокращаться руками: он и есть перечень
+    // того, что панели не разрешено. 1.6.15 забрал вход (3 маршрута) и журнал
+    // (1) — было 20, стало 16; 1.6.17 забрал последнюю волну §5 (6) — стало 10.
     const missing = ADMIN_ROUTES.filter((item) => !item.inContract);
-    expect(missing).toHaveLength(16);
+    expect(missing).toHaveLength(10);
     expect(missing.map((item) => item.path).sort()).toEqual([
-      '/api/v1/admin/alerts/{id}/ack',
-      '/api/v1/admin/backup/run',
-      '/api/v1/admin/founders',
-      '/api/v1/admin/partners',
-      '/api/v1/admin/payments',
       '/api/v1/admin/plans',
       '/api/v1/admin/plans/{code}',
       '/api/v1/admin/plans/{code}/history',
       '/api/v1/admin/reports',
       '/api/v1/admin/reports/{id}/regenerate',
-      '/api/v1/admin/telegram/webhook',
       '/api/v1/admin/users',
       '/api/v1/admin/users/{id}',
       '/api/v1/admin/users/{id}/ban',
@@ -125,11 +119,9 @@ describe('реестр маршрутов админки', () => {
         '/api/v1/admin/reports',
         '/api/v1/admin/plans',
         '/api/v1/admin/plans/{code}',
-        '/api/v1/admin/founders',
-        '/api/v1/admin/partners',
-        '/api/v1/admin/backup/run',
-        '/api/v1/admin/telegram/webhook',
-        '/api/v1/admin/alerts/{id}/ack',
+        // 1.6.17: этих шести здесь больше нет — они пришли в контракт и
+        // переключены в реестре. Осталось то, что ещё не сделано бэкендом
+        // (планы/пользователи/разборы — 1.6.16), это задачи панели.
       ]),
     );
     for (const path of missing) {
@@ -151,6 +143,13 @@ describe('реестр маршрутов админки', () => {
         '/api/v1/admin/me',
         '/api/v1/admin/auth/logout',
         '/api/v1/admin/audit',
+        // 1.6.17: последняя волна §5 — маршруты есть, экраны придут в PR панели.
+        '/api/v1/admin/founders',
+        '/api/v1/admin/partners',
+        '/api/v1/admin/payments',
+        '/api/v1/admin/backup/run',
+        '/api/v1/admin/telegram/webhook',
+        '/api/v1/admin/alerts/{id}/ack',
       ]),
     );
   });
@@ -160,8 +159,9 @@ describe('реестр маршрутов админки', () => {
   });
 
   it('несуществующие экраны перечисляют именно отсутствующие маршруты', () => {
-    // «Аудит» из списка ушёл: его маршрут пришёл в 1.6.15, экран настоящий.
-    const planned = ['users', 'payments', 'plans', 'founders', 'ops'] as const;
+    // «Аудит» ушёл в 1.6.15, «Основатели» и «Операции» — в 1.6.17: у них больше
+    // нет ни одного отсутствующего маршрута, поэтому ждать маршрутов им нечего.
+    const planned = ['users', 'payments', 'plans'] as const;
     for (const screen of planned) {
       const missing = missingRoutesFor(screen);
       expect(missing.length, `экран ${screen} обязан ждать хотя бы один маршрут`).toBeGreaterThan(0);
@@ -172,7 +172,7 @@ describe('реестр маршрутов админки', () => {
     }
     // У живых экранов тоже могут быть недостающие маршруты (Обзор ждёт /admin/reports),
     // но хотя бы один рабочий обязан быть.
-    for (const screen of ['overview', 'codes', 'audit'] as const) {
+    for (const screen of ['overview', 'codes', 'audit', 'founders', 'ops'] as const) {
       expect(ADMIN_ROUTES.some((item) => item.inContract && item.screens.includes(screen))).toBe(true);
     }
   });

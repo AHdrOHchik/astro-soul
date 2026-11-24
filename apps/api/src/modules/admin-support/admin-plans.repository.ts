@@ -63,6 +63,61 @@ export class AdminPlansRepository {
   }
 
   /**
+   * Смена `test_only` (1.6.17) — отдельно от цены.
+   *
+   * В `plans.version` флаг не участвует: версия — это версия **цены** (её
+   * показывает панель рядом с ценой и на ней стоит оптимистичная проверка), а
+   * `test_only` — переключатель режима. Поэтому флаг меняется без `FOR UPDATE`
+   * и без записи в `plan_price_history`: история цен не должна пополняться
+   * строками, где цена не менялась.
+   */
+  async updateTestOnly(
+    client: PoolClient,
+    input: {
+      readonly code: string;
+      readonly testOnly: boolean;
+      readonly baseVersion: number;
+    },
+  ): Promise<{ readonly plan: PlanRecord; readonly previous: boolean } | 'version_mismatch' | null> {
+    const row = await client.query<PlanRecord>(
+      `SELECT ${COLUMNS} FROM plans WHERE code = $1 FOR UPDATE`,
+      [input.code],
+    );
+    const current = row.rows[0];
+
+    if (current === undefined) {
+      return null;
+    }
+
+    // Версия всё-таки сверяется: панель пришла со старой вкладкой и могла не
+    // видеть, что тариф уже переключили. `409 price_changed` здесь про то же
+    // самое — «состояние изменилось, перечитай».
+    if (current.version !== input.baseVersion) {
+      return 'version_mismatch';
+    }
+
+    if (current.test_only === input.testOnly) {
+      return { plan: current, previous: current.test_only };
+    }
+
+    const updated = await client.query<PlanRecord>(
+      `UPDATE plans
+          SET test_only = $2, updated_at = now()
+        WHERE code = $1
+        RETURNING ${COLUMNS}`,
+      [input.code, input.testOnly],
+    );
+
+    const plan = updated.rows[0];
+
+    if (plan === undefined) {
+      throw new Error('plans: строка исчезла внутри транзакции');
+    }
+
+    return { plan, previous: current.test_only };
+  }
+
+  /**
    * Смена цены с оптимистической блокировкой.
    *
    * `FOR UPDATE` + сверка `version` **внутри** транзакции: две вкладки панели

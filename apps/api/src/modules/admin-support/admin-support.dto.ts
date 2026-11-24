@@ -98,24 +98,176 @@ function readString(source: Record<string, unknown>, field: string, min: number,
   return trimmed;
 }
 
-// --- цена ------------------------------------------------------------------
+// --- цена и тестовый тариф -------------------------------------------------
 
-export interface AdminPriceUpdate {
-  readonly priceStars: number;
+/**
+ * Тело `PATCH /admin/plans/{code}` (1.6.16 → 1.6.17).
+ *
+ * Две правки живут в одном маршруте, потому что это один и тот же объект и один
+ * и тот же журнал:
+ *   • **цена** (`price_stars`) — с оптимистичной проверкой `base_version`, как
+ *     раньше: панель со старой вкладки не перетирает чужое изменение;
+ *   • **`test_only`** (1.6.17) — то, что нельзя безопасно править в SQL.
+ *
+ * Почему выключение `test_only` требует второго шага. Тариф с `test_only = true`
+ * — это «продаётся за 1 ⭐ только в тестовом режиме». Снять флаг значит
+ * **выставить его в продажу по этой цене**: человек заплатит 1 звезду и получит
+ * подписку. Опечатка в панели (`false` вместо `true`) стоит денег, и заметить её
+ * некому. Поэтому сервер требует `confirm: "disable_test_plan"` — ровно ту
+ * строку, которую панель показывает в диалоге. Включение флага подтверждения не
+ * требует: оно закрывает тариф, а не открывает.
+ *
+ * `price_stars` и `test_only` вместе разрешены: это одна транзакция и одна
+ * запись аудита.
+ */
+export interface AdminPlanUpdate {
+  /** `null` — цену не меняем. */
+  readonly priceStars: number | null;
+  /** `null` — флаг не меняем. */
+  readonly testOnly: boolean | null;
+  /** `confirm: "disable_test_plan"` — обязателен только для `test_only: false`. */
+  readonly confirm: string | null;
   readonly comment: string;
   readonly baseVersion: number;
 }
 
-export function parseAdminPriceUpdate(body: unknown): AdminPriceUpdate {
+/** Строка подтверждения, которую панель присылает второй раз (см. выше). */
+export const DISABLE_TEST_PLAN_CONFIRM = 'disable_test_plan';
+
+export function parseAdminPlanUpdate(body: unknown): AdminPlanUpdate {
   const source = asObject(body);
-  rejectUnknown(source, ['price_stars', 'comment', 'base_version']);
+  rejectUnknown(source, ['price_stars', 'test_only', 'confirm', 'comment', 'base_version']);
+
+  const priceStars =
+    source['price_stars'] === undefined ? null : readPositiveInt(source, 'price_stars');
+
+  let testOnly: boolean | null = null;
+  if (source['test_only'] !== undefined) {
+    if (typeof source['test_only'] !== 'boolean') {
+      throw invalidFields([{ field: 'test_only', message: 'true или false' }]);
+    }
+    testOnly = source['test_only'];
+  }
+
+  if (priceStars === null && testOnly === null) {
+    throw invalid('nothing_to_update', [
+      { field: 'body', message: 'Нужно хотя бы одно поле: price_stars или test_only' },
+    ]);
+  }
+
+  const confirm =
+    source['confirm'] === undefined ? null : readString(source, 'confirm', 1, 64);
 
   return {
-    priceStars: readPositiveInt(source, 'price_stars'),
+    priceStars,
+    testOnly,
+    confirm,
     comment: readString(source, 'comment', 5, 500),
     baseVersion: readPositiveInt(source, 'base_version'),
   };
 }
+
+// --- списки с курсором -----------------------------------------------------
+
+export interface PageLimits {
+  readonly defaultLimit: number;
+  readonly maxLimit: number;
+}
+
+/** `limit` из query: пусто — значение по умолчанию; иначе 1..max. */
+export function parseListLimit(value: unknown, limits: PageLimits): number {
+  if (value === undefined || value === '') {
+    return limits.defaultLimit;
+  }
+
+  const limit = typeof value === 'string' ? Number(value) : Number.NaN;
+  if (!Number.isInteger(limit) || limit < 1 || limit > limits.maxLimit) {
+    throw invalid('invalid_limit', [
+      { field: 'limit', message: `От 1 до ${limits.maxLimit}` },
+    ]);
+  }
+
+  return limit;
+}
+
+/**
+ * Курсор — непрозрачная строка `base64url(<ISO времени>|<id>)`.
+ *
+ * Панель не должна ничего знать о формате (иначе «продолжить с этого места»
+ * однажды начнут собирать руками), а сервер получает keyset-пагинацию без
+ * `OFFSET`: она не съезжает, когда между страницами появилась новая строка.
+ */
+export interface ListCursor {
+  readonly createdAt: Date;
+  readonly id: string;
+}
+
+export function encodeCursor(createdAt: Date, id: string): string {
+  return Buffer.from(`${createdAt.toISOString()}|${id}`, 'utf8').toString('base64url');
+}
+
+export function parseCursor(value: unknown): ListCursor | null {
+  if (value === undefined || value === '') {
+    return null;
+  }
+
+  if (typeof value !== 'string') {
+    throw invalid('invalid_cursor', [{ field: 'cursor', message: 'Курсор из прошлого ответа' }]);
+  }
+
+  const decoded = Buffer.from(value, 'base64url').toString('utf8');
+  const separator = decoded.lastIndexOf('|');
+  const createdAt = new Date(decoded.slice(0, separator));
+  const id = decoded.slice(separator + 1);
+
+  if (separator < 0 || Number.isNaN(createdAt.getTime()) || id === '') {
+    throw invalid('invalid_cursor', [{ field: 'cursor', message: 'Курсор из прошлого ответа' }]);
+  }
+
+  return { createdAt, id };
+}
+
+// --- подтверждение алерта --------------------------------------------------
+
+export interface AdminAlertAck {
+  readonly minutes: number;
+}
+
+const ACK_MIN_MINUTES = 15;
+const ACK_MAX_MINUTES = 1440;
+
+/**
+ * `POST /admin/alerts/{id}/ack` — на сколько минут скрыть алерт.
+ *
+ * Диапазон 15 минут … 24 часа: меньше 15 — «заглушил и не заметил», больше суток
+ * — «выключил мониторинг». Подтверждение **не чинит** алерт: оно гасит показ,
+ * значение и порог остаются в ответе (это проверяет тест).
+ */
+export function parseAlertAck(body: unknown): AdminAlertAck {
+  const source = asObject(body);
+  rejectUnknown(source, ['minutes']);
+
+  const minutes = source['minutes'];
+  if (
+    typeof minutes !== 'number' ||
+    !Number.isInteger(minutes) ||
+    minutes < ACK_MIN_MINUTES ||
+    minutes > ACK_MAX_MINUTES
+  ) {
+    throw invalid('invalid_minutes', [
+      { field: 'minutes', message: `Целое от ${ACK_MIN_MINUTES} до ${ACK_MAX_MINUTES}` },
+    ]);
+  }
+
+  return { minutes };
+}
+
+/** Границы подтверждения — нужны и в контракте, и в панели, и в тестах. */
+export const ALERT_ACK_BOUNDS = {
+  min: ACK_MIN_MINUTES,
+  max: ACK_MAX_MINUTES,
+  default: 60,
+} as const;
 
 // --- поиск пользователей ---------------------------------------------------
 
