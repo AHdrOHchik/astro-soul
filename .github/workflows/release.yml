@@ -1,0 +1,229 @@
+name: release
+
+# Сборка образов только в CI: на VPS 2 ГБ, docker build там заканчивается OOM.
+# Публикация в GHCR + артефакт статики админки. environment=production — ручное
+# подтверждение владельца перед тем, как что-либо попадёт в реестр.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Тег образов. По умолчанию короткий SHA коммита'
+        required: false
+        type: string
+        default: ''
+      bootstrap:
+        description: 'Отметить первый релиз (только пометка в summary и артефакте)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  API_IMAGE: ghcr.io/${{ github.repository_owner }}/astro-soul-api
+  WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/astro-soul-web
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Тег релиза
+        id: meta
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${GITHUB_SHA::7}}"
+          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "ОШИБКА: некорректный tag '$tag': разрешены латиница, цифры, ., _, -" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Релиз $tag, bootstrap=$BOOTSTRAP" >> "$GITHUB_STEP_SUMMARY"
+
+      # Публичные VITE_* лежат в vars: они всё равно попадают в бандл, и держать
+      # их в secrets — значит создать второе хранилище «секретов», которых нет.
+      # Гард Б-1: если флаг включён, а ARG в Dockerfile отсутствует, собрать
+      # бандл молча нельзя — пуш начнёт рассылать неотключаемый в UI функционал.
+      - name: Гард Б-1 и build-args web
+        id: web-args
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_BOT_USERNAME: ${{ vars.VITE_BOT_USERNAME }}
+          VITE_SUPPORT_CONTACT: ${{ vars.VITE_SUPPORT_CONTACT }}
+          VITE_SUBSCRIPTIONS: ${{ vars.VITE_SUBSCRIPTIONS }}
+          VITE_NOTIFICATIONS_UI: ${{ vars.VITE_NOTIFICATIONS_UI }}
+        run: |
+          set -euo pipefail
+          fail() { echo "ОШИБКА: $*" >&2; exit 1; }
+
+          # Читаем Dockerfile именно из этого коммита, а не «по памяти».
+          dockerfile="$(cat docker/web.Dockerfile)"
+          notifications="${VITE_NOTIFICATIONS_UI:-0}"
+          has_notifications_arg=0
+          if grep -q '^ARG VITE_NOTIFICATIONS_UI' <<< "$dockerfile"; then
+            has_notifications_arg=1
+          fi
+
+          [[ -z "${VITE_API_BASE_URL:-}" ]] || \
+            fail "vars.VITE_API_BASE_URL должен быть пустым: мини-апп и API на одном origin"
+          case "${VITE_SUBSCRIPTIONS:-}" in
+            ''|enabled|off) ;;
+            *) fail "vars.VITE_SUBSCRIPTIONS='$VITE_SUBSCRIPTIONS': допустимо enabled, off или пусто" ;;
+          esac
+
+          if [[ "$notifications" == "1" && "$has_notifications_arg" -eq 0 ]]; then
+            fail "Б-1: vars.VITE_NOTIFICATIONS_UI=1, но в docker/web.Dockerfile нет ARG VITE_NOTIFICATIONS_UI — флаг не доходит до сборки. Сначала добавь ARG и проброс в RUN сборки web; собирать бандл без флага запрещено"
+          fi
+
+          delim="BUILD_ARGS_$(date +%s%N)"
+          {
+            echo "build_args<<${delim}"
+            printf 'VITE_API_BASE_URL=%s\n' "${VITE_API_BASE_URL:-}"
+            printf 'VITE_BOT_USERNAME=%s\n' "${VITE_BOT_USERNAME:-}"
+            printf 'VITE_SUPPORT_CONTACT=%s\n' "${VITE_SUPPORT_CONTACT:-}"
+            printf 'VITE_SUBSCRIPTIONS=%s\n' "${VITE_SUBSCRIPTIONS:-}"
+            # Когда ARG появится (исправление Б-1), флаг начнёт доезжать сам.
+            if [[ "$has_notifications_arg" -eq 1 ]]; then
+              printf 'VITE_NOTIFICATIONS_UI=%s\n' "$notifications"
+            fi
+            echo "$delim"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Зависимости монорепо (для сборки админки)
+        run: pnpm install --frozen-lockfile
+
+      # Страж мока живёт в apps/admin/scripts/check-no-mock.mjs и вызывается
+      # пакетным build; здесь он повторяется явно, чтобы результат был виден
+      # в логе и шаг падал, если страж удалили из package.json.
+      - name: 'Админка: статическая сборка и страж мока'
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          API_MOCK: '0'
+          # Админка ждёт VITE_TG_BOT_USERNAME; это то же публичное имя бота,
+          # что задано vars.VITE_BOT_USERNAME для мини-аппа.
+          VITE_TG_BOT_USERNAME: ${{ vars.VITE_BOT_USERNAME }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f apps/admin/scripts/check-no-mock.mjs ]]; then
+            echo "ОШИБКА (Б-2): apps/admin/scripts/check-no-mock.mjs отсутствует — страж мока для админки не существует" >&2
+            exit 1
+          fi
+          pnpm --filter @astro-soul/admin build
+          node apps/admin/scripts/check-no-mock.mjs
+          test -s apps/admin/dist/index.html
+
+          mkdir -p admin-dist
+          cp -a apps/admin/dist/. admin-dist/
+          printf '%s\n' "$TAG" > admin-dist/RELEASE_TAG
+          printf '%s\n' "$BOOTSTRAP" > admin-dist/BOOTSTRAP
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: admin-dist
+          path: admin-dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Сборка и публикация api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api.Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ env.API_IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.API_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Сборка и публикация web (мини-апп)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web.Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: ${{ steps.web-args.outputs.build_args }}
+          tags: |
+            ${{ env.WEB_IMAGE }}:${{ steps.meta.outputs.tag }}
+            ${{ env.WEB_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Проверяем именно прод-теги в реестре: один манифест на version/latest,
+      # платформа linux/amd64. Содержимое бандла здесь не распаковывается —
+      # это не выдаётся за проверку UI.
+      - name: Проверка прод-сборки web в GHCR
+        env:
+          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${WEB_IMAGE}:${TAG}" > web-manifest.txt
+          docker buildx imagetools inspect "${WEB_IMAGE}:latest" > web-latest-manifest.txt
+          digest="$(awk '/^Digest:/ {print $2; exit}' web-manifest.txt)"
+          latest_digest="$(awk '/^Digest:/ {print $2; exit}' web-latest-manifest.txt)"
+          if [[ -z "$digest" || "$digest" != "$latest_digest" ]]; then
+            echo "ОШИБКА: ${WEB_IMAGE}:${TAG} и :latest указывают на разные манифесты" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'Platform:[[:space:]]+linux/amd64' web-manifest.txt; then
+            echo "ОШИБКА: в манифесте web нет платформы linux/amd64" >&2
+            exit 1
+          fi
+          echo "web: ${WEB_IMAGE}:${TAG} и :latest → ${digest}, платформа linux/amd64"
+          echo "Проверены манифест и платформа; содержимое бандла не распаковывалось."
+
+      - name: Итог release
+        if: always()
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          BOOTSTRAP: ${{ inputs.bootstrap }}
+          API_IMAGE: ${{ env.API_IMAGE }}
+          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+        run: |
+          {
+            echo "## release"
+            echo "- Тег: \`$TAG\`"
+            echo "- Время (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
+            echo "- bootstrap: $BOOTSTRAP"
+            echo "- Образы: \`$API_IMAGE:$TAG\`, \`$WEB_IMAGE:$TAG\` (и \`:latest\`)"
+            echo "- Артефакт: admin-dist (статика админки, страж мока)"
+          } >> "$GITHUB_STEP_SUMMARY"
