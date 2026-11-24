@@ -68,13 +68,13 @@ const PUBLIC: readonly AdminRoute[] = [
   },
 ];
 
-/** Маршруты входа: их в 1.6.14 нет, вся панель до их появления — только Обзор на /health. */
+/** Вход: пришёл в 1.6.15 (`round40-backend`). Флаги сверяет тест-страж. */
 const AUTH: readonly AdminRoute[] = [
   {
     key: 'authTelegram',
     method: 'POST',
     path: `${API_PREFIX}/admin/auth/telegram`,
-    inContract: false,
+    inContract: true,
     needsSession: false,
     why: 'Проверить подпись Telegram Login Widget, сверить id с ADMIN_TG_ID и поставить cookie-сессию.',
     screens: ['login'],
@@ -83,7 +83,7 @@ const AUTH: readonly AdminRoute[] = [
     key: 'authMe',
     method: 'GET',
     path: `${API_PREFIX}/admin/me`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
     why: 'Кто вошёл и когда сессия истекает; он же отдаёт CSRF-токен.',
     screens: ['login', 'overview'],
@@ -92,7 +92,7 @@ const AUTH: readonly AdminRoute[] = [
     key: 'authLogout',
     method: 'POST',
     path: `${API_PREFIX}/admin/auth/logout`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
     why: 'Гасить сессию кнопкой в шапке, а не «закрыть вкладку».',
     screens: ['overview'],
@@ -323,7 +323,7 @@ const AUDIT: readonly AdminRoute[] = [
     key: 'auditList',
     method: 'GET',
     path: `${API_PREFIX}/admin/audit`,
-    inContract: false,
+    inContract: true,
     needsSession: true,
     why: 'Журнал действий админа: кто, когда, что менял, было → стало, причина.',
     screens: ['audit', 'plans'],
@@ -381,5 +381,5 @@ export const SCREEN_READINESS: Record<ScreenKey, ScreenReadiness> = {
   codes: 'ready',
   founders: 'waiting-for-routes',
   ops: 'waiting-for-routes',
-  audit: 'waiting-for-routes',
+  audit: 'ready',
 };

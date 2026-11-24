@@ -25,6 +25,8 @@ export interface ApiErrorInit {
   readonly reason?: string | null;
   readonly fieldErrors?: readonly FieldError[];
   readonly route?: string;
+  /** `details.retry_after` из ответа `429` — секунды до новой попытки. */
+  readonly retryAfterSeconds?: number | null;
 }
 
 export class ApiError extends Error {
@@ -34,6 +36,7 @@ export class ApiError extends Error {
   readonly reason: string | null;
   readonly fieldErrors: readonly FieldError[];
   readonly route: string | undefined;
+  readonly retryAfterSeconds: number | null;
 
   constructor(init: ApiErrorInit) {
     super(init.message);
@@ -44,6 +47,7 @@ export class ApiError extends Error {
     this.reason = init.reason ?? null;
     this.fieldErrors = init.fieldErrors ?? [];
     this.route = init.route;
+    this.retryAfterSeconds = init.retryAfterSeconds ?? null;
   }
 
   get isUnauthorized(): boolean {
@@ -85,12 +89,28 @@ function fieldErrorsOf(details: unknown): readonly FieldError[] {
   return out;
 }
 
-export function parseProblem(body: unknown): { code: string; message: string; reason: string | null; fieldErrors: readonly FieldError[] } | null {
+export interface ParsedProblem {
+  readonly code: string;
+  readonly message: string;
+  readonly reason: string | null;
+  readonly fieldErrors: readonly FieldError[];
+  readonly retryAfterSeconds: number | null;
+}
+
+export function parseProblem(body: unknown): ParsedProblem | null {
   if (!isRecord(body)) return null;
   const code = asString(body.code);
   const message = asString(body.message);
   if (!code || !message) return null;
-  return { code, message, reason: asString(isRecord(body.details) ? body.details.reason : undefined), fieldErrors: fieldErrorsOf(body.details) };
+  const details = isRecord(body.details) ? body.details : undefined;
+  const retry = details?.retry_after;
+  return {
+    code,
+    message,
+    reason: asString(details?.reason),
+    fieldErrors: fieldErrorsOf(body.details),
+    retryAfterSeconds: typeof retry === 'number' && Number.isFinite(retry) && retry >= 0 ? Math.ceil(retry) : null,
+  };
 }
 
 export function errorFromResponse(status: number, body: unknown, requestId: string | null, route: string): ApiError {
@@ -103,6 +123,7 @@ export function errorFromResponse(status: number, body: unknown, requestId: stri
     reason: problem?.reason ?? null,
     fieldErrors: problem?.fieldErrors ?? [],
     route,
+    retryAfterSeconds: problem?.retryAfterSeconds ?? null,
   });
 }
 
