@@ -61,6 +61,8 @@ export type MiniReading = ChartResult['mini_reading'];
 export type ClientEvent = components['schemas']['ClientEvent'];
 type EventsBatch = components['schemas']['EventsBatch'];
 type GeoResolveRequest = paths['/api/v1/geo/resolve']['post']['requestBody']['content']['application/json'];
+/** `{code}` — the only field the activation takes (contract 1.6.14), and the only one sent. */
+type ActivateCodeRequest = paths['/api/v1/me/activate-code']['post']['requestBody']['content']['application/json'];
 
 /** What can be bought, by the codes of the contract. Prices are not here: the invoice names them. */
 export type PlanCode = components['schemas']['PlanCode'];
@@ -214,6 +216,7 @@ const PATHS = {
   question: '/api/v1/questions/{question_id}',
   subscriptionCancel: '/api/v1/subscription/cancel',
   notifications: '/api/v1/me/notifications',
+  activateCode: '/api/v1/me/activate-code',
 } as const satisfies Record<string, keyof paths>;
 
 /** The header of idempotent order endpoints that makes a repeated order the same order. */
@@ -230,6 +233,12 @@ export interface Api {
   cancelSubscription(idempotencyKey: string, signal?: AbortSignal): Promise<SubscriptionCancelResult>;
   /** Stores and returns the server's authoritative daily forecast notification setting. */
   updateNotifications(dailyForecast: boolean, signal?: AbortSignal): Promise<NotificationSettings>;
+  /**
+   * Activates an access code. The answer is the whole `Me.entitlements`, so nothing is
+   * shown as «activated» before the server says what it actually opened. Sent once: a
+   * repeat is the user's tap, never the client's retry.
+   */
+  activateCode(code: string, signal?: AbortSignal): Promise<Entitlements>;
   /**
    * Candidates for a birth place; an empty list when nothing matches. A failure of the
    * geodata provider is an error (503 `GEO_NOT_FOUND`), not an empty list.
@@ -394,9 +403,23 @@ function toLimits(value: unknown): Me['limits'] {
   return { geo_min_query_length: min, geo_max_query_length: max };
 }
 
+function toEntitlements(value: unknown): Entitlements {
+  const entitlements = isRecord(value) ? value : {};
+  return {
+    ...FREE,
+    ...(entitlements as Partial<Entitlements>),
+    is_active: entitlements.is_active === true,
+    full_report: entitlements.full_report === true,
+    // The chart the report is bought for: an id, or null. Whatever else arrives names no chart.
+    full_report_chart_id:
+      typeof entitlements.full_report_chart_id === 'string' && entitlements.full_report_chart_id !== ''
+        ? entitlements.full_report_chart_id
+        : null,
+  };
+}
+
 function toMe(value: unknown): Me {
   if (!isRecord(value) || typeof value.user_id !== 'string') throw invalid();
-  const entitlements = isRecord(value.entitlements) ? value.entitlements : {};
   const subscription = isRecord(value.subscription) ? value.subscription : {};
   const limits = toLimits(value.limits);
   return {
@@ -405,17 +428,7 @@ function toMe(value: unknown): Me {
     has_chart: value.has_chart === true,
     chart_id: typeof value.chart_id === 'string' ? value.chart_id : null,
     latest_report_id: typeof value.latest_report_id === 'string' ? value.latest_report_id : null,
-    entitlements: {
-      ...FREE,
-      ...(entitlements as Partial<Entitlements>),
-      is_active: entitlements.is_active === true,
-      full_report: entitlements.full_report === true,
-      // The chart the report is bought for: an id, or null. Whatever else arrives names no chart.
-      full_report_chart_id:
-        typeof entitlements.full_report_chart_id === 'string' && entitlements.full_report_chart_id !== ''
-          ? entitlements.full_report_chart_id
-          : null,
-    },
+    entitlements: toEntitlements(value.entitlements),
     subscription: {
       ...NO_SUBSCRIPTION,
       ...(subscription as Partial<Subscription>),
@@ -570,6 +583,14 @@ export function createApi(options: HttpClientOptions): Api {
       });
       if (!isRecord(value) || typeof value.daily_forecast !== 'boolean') throw invalid();
       return { daily_forecast: value.daily_forecast };
+    },
+
+    async activateCode(code, signal) {
+      const body: ActivateCodeRequest = { code };
+      const value: unknown = await request('POST', PATHS.activateCode, { body, signal, retry: false });
+      // Without the rights the screen would have nothing to confirm: not an activation.
+      if (!isRecord(value) || !isRecord(value.entitlements)) throw invalid();
+      return toEntitlements(value.entitlements);
     },
 
     async cancelSubscription(idempotencyKey, signal) {

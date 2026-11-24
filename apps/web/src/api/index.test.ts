@@ -299,6 +299,55 @@ describe('updateNotifications', () => {
   });
 });
 
+describe('activateCode', () => {
+  it('posts exactly `{code}` to the contract path and returns the rights the server named', async () => {
+    const { api, fetchMock } = setup({ retries: 2 });
+    fetchMock.mockResolvedValue(
+      json(200, {
+        entitlements: {
+          is_active: true,
+          plan: 'none',
+          full_forecast: true,
+          ask_per_day: 5,
+          full_report: false,
+          full_report_chart_id: null,
+          compat_per_month: 1,
+          solar_included: true,
+          all_access_until: '2026-12-12T12:00:00Z',
+          source: 'partner',
+        },
+      }),
+    );
+
+    await expect(api.activateCode('K7M2P9X4')).resolves.toMatchObject({
+      is_active: true,
+      all_access_until: '2026-12-12T12:00:00Z',
+      source: 'partner',
+    });
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toBe('/api/v1/me/activate-code');
+    expect(init?.method).toBe('POST');
+    // Nothing but the code: no chart, no kind, no guess at what the code is for.
+    expect(init?.body).toBe(JSON.stringify({ code: 'K7M2P9X4' }));
+    expect(init?.headers).toMatchObject({ 'X-Telegram-Init-Data': 'init' });
+  });
+
+  it('keeps an answer without the rights out of the screens as a malformed one', async () => {
+    const { api, fetchMock } = setup();
+    fetchMock.mockResolvedValue(json(200, {}));
+
+    await expect(api.activateCode('K7M2P9X4')).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
+  it('does not repeat the activation by itself', async () => {
+    const { api, fetchMock } = setup({ retries: 3 });
+    fetchMock.mockResolvedValue(json(503, { code: 'INTERNAL', message: 'Не получилось', request_id: 'r' }));
+
+    await expect(api.activateCode('K7M2P9X4')).rejects.toMatchObject({ status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('cancelSubscription', () => {
   it('posts without a body, sends the idempotency key, and validates the server confirmation', async () => {
     const { api, fetchMock } = setup({ retries: 2 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { countryName, formatCount, formatDate, formatDayMonth, formatPosition, formatRegion, pluralForm } from './format';
+import { countryName, formatCount, formatDate, formatDay, formatDayMonth, formatDayMonthOf, formatPosition, formatRegion, pluralForm } from './format';
 
 describe('formatDate', () => {
   it('prints an ISO date in Russian without shifting the day', () => {
@@ -10,6 +10,22 @@ describe('formatDate', () => {
 
   it('returns anything else as is', () => {
     expect(formatDate('17.05.1994')).toBe('17.05.1994');
+  });
+});
+
+describe('formatDayMonthOf', () => {
+  it('prints the day a moment falls on without its year', () => {
+    expect(formatDayMonthOf('2026-12-12T12:00:00Z')).toBe('12 декабря');
+    expect(formatDayMonthOf('2026-01-01T09:00:00Z')).toBe('1 января');
+  });
+
+  it('keeps the year of the longer form, so a term that ends far away is never read as this year', () => {
+    expect(formatDay('2027-01-11T12:00:00Z')).toContain('2027');
+  });
+
+  it('returns nothing for a value that is not a moment', () => {
+    expect(formatDayMonthOf('')).toBe('');
+    expect(formatDayMonthOf('not a moment')).toBe('');
   });
 });
 

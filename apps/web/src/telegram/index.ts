@@ -25,6 +25,7 @@ import {
   toRGB,
   viewport,
 } from '@telegram-apps/sdk';
+import { isPartnerStart } from '../lib/accessCode';
 import { installPolyfills } from './polyfills';
 
 /**
@@ -40,6 +41,11 @@ export interface Telegram {
   readonly isTelegram: boolean;
   /** Raw initData for the API auth header; '' when there is none. */
   readonly initData: string;
+  /**
+   * This start came from a `pt_<code>` link: the server has already activated the code.
+   * Only the prefix is ever read here — the payload is neither kept nor sent anywhere.
+   */
+  readonly startedWithCode: boolean;
   /** True when the client draws its own Back button, so the app must not render a second one. */
   readonly hasNativeBackButton: boolean;
   /** Shows the native Back button wired to `handler`; null hides it. */
@@ -175,10 +181,11 @@ function openInvoiceByBridge(link: string): Promise<InvoiceOutcome> {
 const DEV_INVOICE_DELAY_MS = 800;
 
 /** The app as an ordinary web page: local development, tests, a link opened outside Telegram. */
-function browserHost(initData: string, devInvoice?: DevInvoice): Telegram {
+function browserHost(initData: string, devInvoice: DevInvoice | undefined, startedWithCode: boolean): Telegram {
   return {
     isTelegram: false,
     initData,
+    startedWithCode,
     hasNativeBackButton: false,
     setBackHandler: () => undefined,
     ready: () => undefined,
@@ -207,10 +214,28 @@ function browserHost(initData: string, devInvoice?: DevInvoice): Telegram {
  * Launch parameters as every Telegram client passes them, in the URL hash, read
  * without the SDK. Null when there are none: the page is not inside Telegram.
  */
-function launchFromUrl(): { initData: string; version: string } | null {
+function launchFromUrl(): { initData: string; version: string; startParam: string | null } | null {
   const params = new URLSearchParams(window.location.hash.slice(1));
   if (!params.has('tgWebAppVersion') && !params.has('tgWebAppData')) return null;
-  return { initData: params.get('tgWebAppData') ?? '', version: params.get('tgWebAppVersion') ?? '' };
+  return {
+    initData: params.get('tgWebAppData') ?? '',
+    version: params.get('tgWebAppVersion') ?? '',
+    startParam: params.get('tgWebAppStartParam'),
+  };
+}
+
+/**
+ * Whether the launch carried a `pt_<code>` payload. Read from the launch parameters and,
+ * when they name none, from initData's own `start_param`: both are Telegram's, and only the
+ * prefix is looked at. The code is the server's business — it has activated it already.
+ */
+function partnerStartOf(launchParam: string | null | undefined, initData: string): boolean {
+  if (typeof launchParam === 'string' && isPartnerStart(launchParam)) return true;
+  try {
+    return isPartnerStart(new URLSearchParams(initData).get('start_param'));
+  } catch {
+    return false;
+  }
 }
 
 /** Whether a client of this Mini Apps version (`7.10`) can open an invoice; false for anything that is not a version. */
@@ -248,13 +273,14 @@ function openStory(mediaUrl: string, text: string): boolean {
  * depend on that schema: it runs as a web page with an in-app Back button, plus
  * the three bridge calls that exist since the first Mini Apps version.
  */
-function basicHost(initData: string, version: string): Telegram {
+function basicHost(initData: string, version: string, startedWithCode: boolean): Telegram {
   attempt(() => {
     postEvent('web_app_expand');
   });
   return {
     isTelegram: true,
     initData,
+    startedWithCode,
     hasNativeBackButton: false,
     setBackHandler: () => undefined,
     ready() {
@@ -457,7 +483,10 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
   // Only a development build may pretend to pay, whatever it is told.
   if (!isTMA()) {
     bindTheme(false);
-    return launch ? basicHost(launch.initData, launch.version) : browserHost(devInitData, import.meta.env.DEV ? devInvoice : undefined);
+    const startedWithCode = partnerStartOf(launch?.startParam, launch?.initData ?? '');
+    return launch
+      ? basicHost(launch.initData, launch.version, startedWithCode)
+      : browserHost(devInitData, import.meta.env.DEV ? devInvoice : undefined, startedWithCode);
   }
 
   const initData = readInitData();
@@ -466,7 +495,7 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
   } catch (error) {
     report(error);
     bindTheme(false);
-    return basicHost(initData, launch?.version ?? '');
+    return basicHost(initData, launch?.version ?? '', partnerStartOf(launch?.startParam, initData));
   }
 
   attempt(() => miniApp.mountSync.ifAvailable());
@@ -486,6 +515,7 @@ export function initTelegram({ chromeColor, devInitData = '', devInvoice }: Tele
   return {
     isTelegram: true,
     initData,
+    startedWithCode: partnerStartOf(launch?.startParam, initData),
     hasNativeBackButton,
     setBackHandler(handler) {
       if (!hasNativeBackButton) return;

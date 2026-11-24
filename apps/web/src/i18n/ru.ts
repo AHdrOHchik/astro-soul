@@ -447,6 +447,8 @@ export const ru = {
     leave: 'Вернуться',
     /** Nothing is on offer: no report to buy here, and this build sells no subscriptions. Approved by the owner. */
     nothingOnSale: 'Сейчас здесь нечего оплачивать',
+    /** The way from the paywall to a code from a partner: a gift is not something to pay for. */
+    haveCode: 'У меня есть код',
   },
 
   shareCard: {
@@ -656,6 +658,66 @@ export const ru = {
     /** For a 422 that came without the server's own words about the question. */
     rejected: 'Сервер не принял вопрос.',
     failedTitle: 'Ответ не получен',
+  },
+
+  /**
+   * The access code screen (partner programme, contract 1.6.14): a code typed by hand,
+   * and what it opened said in the words of a person rather than the fields of the API.
+   * Every line here is the wording the task asked for, word for word where it gave one.
+   */
+  accessCode: {
+    title: 'Код доступа',
+    lead: 'Восемь знаков из букв и цифр. Регистр, пробелы и дефисы не важны.',
+    field: 'Код',
+    placeholder: 'XXXXXXXX',
+    /** Under the field: the alphabet the codes are made of. */
+    hint: 'Буквы ABCDEFGHJKLMNPQRSTUVWXYZ и цифры 23456789',
+    /** The look-alikes the alphabet leaves out, said when one of them is typed: they are never guessed at. */
+    unknownCharacters: 'В коде нет букв O и I и цифр 0 и 1. Проверь, что ввёл не их.',
+    submit: 'Активировать',
+    submitting: 'Проверяем код…',
+    /** On the confirmation: the one button there, and it only closes the screen. */
+    done: 'Понятно',
+    successTitle: 'Код активирован',
+    /** What a code opened, in the words of the right it gave. */
+    success: {
+      allAccess: (date: string) => `Полный доступ открыт до ${date}`,
+      /** An `all_access` code activated before the chart: its term has not started yet. */
+      pending: 'Код сохранён. Срок начнётся, когда построишь карту',
+      singleReport: 'Открыт один разбор. Он бесплатный',
+      singleCompat: 'Открыта одна совместимость',
+    },
+    /** Why the code was not activated: five different answers, five different things to do. */
+    errors: {
+      not_found: 'Такого кода нет. Проверь буквы и цифры',
+      exhausted: 'Этот код уже разобрали',
+      already_activated: 'Ты уже активировал этот код',
+      expired: 'Срок действия кода истёк',
+      invalid: 'Код состоит из 8 знаков. Проверь, что ввёл его целиком',
+      /** After `429`: `details.retry_after` in whole minutes. */
+      rateLimited: (minutes: number, form: PluralForm) => {
+        const noun = form === 'one' ? 'минуту' : form === 'few' ? 'минуты' : 'минут';
+        return `Слишком много попыток. Попробуй через ${String(minutes)} ${noun}`;
+      },
+      /** A `429` that named no time. */
+      rateLimitedUnknown: 'Слишком много попыток. Попробуй через несколько минут',
+      /** Any other refusal: the server's own words come first, this line only when it sent none. */
+      unknown: 'Код не активирован. Попробуй ещё раз',
+    },
+    /** The row in the cabinet, next to the subscription and not deep in the settings. */
+    entry: {
+      title: 'Код доступа',
+      description: 'Если тебе дали код из восьми знаков',
+    },
+    /** The one-time banner after a start from a `pt_<code>` link: the server has activated it already. */
+    banner: {
+      label: 'Код из ссылки',
+      allAccess: (date: string) => `Тебе открыт полный доступ до ${date}`,
+      pending: 'Код сохранён. Срок начнётся, когда построишь карту',
+      singleReport: 'Тебе открыт один разбор. Он бесплатный',
+      singleCompat: 'Тебе открыта одна совместимость',
+      dismiss: 'Понятно',
+    },
   },
 
   /** Screen 9. */

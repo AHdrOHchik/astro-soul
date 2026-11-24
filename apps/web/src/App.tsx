@@ -25,6 +25,8 @@ import { CompatibilityScreen } from './screens/compatibility/CompatibilityScreen
 import { DocumentScreen } from './screens/DocumentScreen';
 import { ForecastScreen } from './screens/forecast/ForecastScreen';
 import type { KnownForecast } from './screens/forecast/useForecast';
+import { AccessCodeScreen } from './screens/access-code/AccessCodeScreen';
+import { AccessCodeBanner } from './components/AccessCodeBanner';
 import { PaywallScreen } from './screens/paywall/PaywallScreen';
 import { ReportScreen } from './screens/report/ReportScreen';
 import { DeletedScreen } from './screens/settings/DeletedScreen';
@@ -163,20 +165,27 @@ export function App({
     );
   }
   return (
-    <Screens
-      api={api}
-      telegram={telegram}
-      apiBaseUrl={apiBaseUrl}
-      supportLink={supportLink}
-      subscriptions={subscriptions}
-      keys={keys}
-      track={track}
-      today={today}
-      me={me.data}
-      termsRenewed={terms === 'renewed'}
-      onConsentRefused={handleConsentRefused}
-      onDeleted={handleDeleted}
-    />
+    <>
+      <Screens
+        api={api}
+        telegram={telegram}
+        apiBaseUrl={apiBaseUrl}
+        supportLink={supportLink}
+        subscriptions={subscriptions}
+        keys={keys}
+        track={track}
+        today={today}
+        me={me.data}
+        termsRenewed={terms === 'renewed'}
+        onConsentRefused={handleConsentRefused}
+        onDeleted={handleDeleted}
+      />
+      {/*
+        A start from a `pt_<code>` link: the server activated the code before this page was drawn.
+        The banner says what opened, once per start; it is never a question about the code again.
+      */}
+      <AccessCodeBanner startedWithCode={telegram.startedWithCode} entitlements={me.data.entitlements} />
+    </>
   );
 }
 
@@ -197,7 +206,8 @@ type Route =
   | 'today'
   | 'ask'
   | 'settings'
-  | 'compatibility';
+  | 'compatibility'
+  | 'accessCode';
 /** Where the stack starts: at the user's chart, or at the welcome screen while there is none. */
 type Home = Extract<Route, 'welcome' | 'current'>;
 
@@ -219,6 +229,7 @@ const STEP_OF: Record<Route, AnalyticsStep> = {
   ask: 'ask',
   settings: 'settings',
   compatibility: 'compatibility',
+  accessCode: 'access_code',
 };
 
 /** The screens that collect the chart request, in the order the user passes them. */
@@ -582,6 +593,10 @@ function Screens({
     setPaywall({ preferredKind: null, offersReport: false, reportRequired: false, compatibility: false });
     open('paywall');
   };
+  /** The code screen has no menu item for a subscriber: the route itself stays open (a gift may be for a second period). */
+  const openAccessCode = () => {
+    open('accessCode');
+  };
   const openCompatibility = (chartId: string | null) => {
     setCompatibilityChartId(chartId);
     setCompatibilityId(null);
@@ -770,6 +785,20 @@ function Screens({
             setStack(['welcome']);
           }}
           onChartGone={handleChartGone}
+          onHaveCode={openAccessCode}
+        />
+      );
+    case 'accessCode':
+      return (
+        <AccessCodeScreen
+          api={api}
+          entitlements={me.entitlements}
+          // The rights are the app's own state: the confirmation is drawn from the answer to the request,
+          // and `Me` is asked again behind it so every other screen sees what the code opened.
+          refreshMe={refreshMe}
+          track={track}
+          back={back}
+          onClose={goBack}
         />
       );
     case 'forecast':
@@ -870,6 +899,9 @@ function Screens({
           back={back}
           onOpenDocument={open}
           onSubscribe={subscriptions ? openSubscriptions : undefined}
+          // A paid subscription already opens everything: the row is not offered to its owner,
+          // while the route itself stays reachable by a direct address (a gift may be for a second period).
+          onOpenAccessCode={me.subscription.is_active ? undefined : openAccessCode}
           onOpenCompatibility={openCompatibility}
           onOpenSavedCompatibility={openSavedCompatibility}
           onBuyCompatibility={buyCompatibility}
