@@ -14,10 +14,40 @@ describe('Telegram Login Widget', () => {
     expect(isTelegramLoginUser('hash')).toBe(false);
   });
 
-  it('на сервер уходит плоский набор строк, без дописанных полей', () => {
+  it('на сервер уходит ровно набор виджета: id и auth_date — числами', () => {
     const payload = toAuthPayload({ id: 1, first_name: 'Владелец', auth_date: 2, hash: 'h', nested: { a: 1 } });
-    expect(payload).toEqual({ id: '1', first_name: 'Владелец', auth_date: '2', hash: 'h' });
+    expect(payload).toEqual({ id: 1, first_name: 'Владелец', auth_date: 2, hash: 'h' });
     expect(toAuthPayload({})).toBeNull();
+  });
+
+  it('второстепенные поля виджета сохраняются, мусор — нет', () => {
+    const payload = toAuthPayload({
+      id: '42',
+      first_name: 'Владелец',
+      last_name: 'Астра',
+      username: 'owner',
+      photo_url: 'https://x/y.jpg',
+      auth_date: '1700000000',
+      hash: 'abc',
+      bot: { nope: 1 },
+    });
+
+    expect(payload).toEqual({
+      id: 42,
+      first_name: 'Владелец',
+      last_name: 'Астра',
+      username: 'owner',
+      photo_url: 'https://x/y.jpg',
+      auth_date: 1700000000,
+      hash: 'abc',
+    });
+  });
+
+  it('неполная подпись не отправляется вовсе', () => {
+    expect(toAuthPayload({ id: 1, auth_date: 2 })).toBeNull();
+    expect(toAuthPayload({ id: 1, hash: 'h' })).toBeNull();
+    expect(toAuthPayload({ id: 1, auth_date: 2, hash: '   ' })).toBeNull();
+    expect(toAuthPayload('hash')).toBeNull();
   });
 
   it('без имени бота виджет не монтируется — нечего рисовать', () => {

@@ -23,6 +23,21 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { adminMockApi } from './plugin';
 import { DEMO_CSRF, DEMO_USER_ID, MOCK_MARKER } from './fixtures';
 
+/**
+ * Тело входа, как его отдаёт виджет: `id`, свежий `auth_date` (окно сервера —
+ * 300 с) и `hash`. Мокер повторяет ту же проверку, поэтому «устаревшая подпись»
+ * воспроизводима в ДЕМО, а не только в бою: см. `auth_stale` ниже.
+ */
+function loginBody(overrides: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    id: '777001',
+    first_name: 'Владелец',
+    auth_date: Math.floor(Date.now() / 1000),
+    hash: 'demo',
+    ...overrides,
+  });
+}
+
 interface Handles {
   readonly origin: string;
   readonly handled: () => number;
@@ -106,6 +121,115 @@ describe('dev-мокер', () => {
     expect(reply.headers.get('X-Admin-Demo')).toBe('1');
   });
 
+  it('отказы входа воспроизводятся как на сервере: 401 с причиной, 403, 429 нет', async () => {
+    // Смысл мока в том, что тексты входа проверяемы без живого бэкенда: если
+    // мокер на `hash=bad` ответит 200, панель «чинит» отказ и QA его не увидит.
+    const bad = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody({ hash: 'bad' }),
+    });
+    expect(bad.status).toBe(401);
+    expect(((await bad.json()) as { details?: { reason?: string } }).details?.reason).toBe('invalid_hash');
+
+    const stale = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody({ auth_date: Math.floor(Date.now() / 1000) - 301 }),
+    });
+    expect(stale.status).toBe(401);
+    expect(((await stale.json()) as { details?: { reason?: string } }).details?.reason).toBe('auth_stale');
+
+    const forbidden = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody({ id: '999999' }),
+    });
+    expect(forbidden.status).toBe(403);
+    expect(((await forbidden.json()) as { details?: { reason?: string } }).details?.reason).toBe('forbidden');
+  });
+
+  it('журнал аудита: страница по курсору, в конце — null', async () => {
+    const login = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody(),
+    });
+    const cookie = login.headers.getSetCookie()[0] ?? '';
+
+    const first = await get('/api/v1/admin/audit?limit=2', { headers: { cookie } });
+    expect(first.status).toBe(200);
+    const page = (await first.json()) as { items: { id: string }[]; next_cursor: string | null };
+    expect(page.items.map((item) => item.id)).toEqual(['a-8', 'a-7']);
+    expect(page.next_cursor).toBe('c2');
+
+    const second = await get(`/api/v1/admin/audit?limit=2&cursor=${page.next_cursor ?? ''}`, { headers: { cookie } });
+    const nextPage = (await second.json()) as { items: { id: string }[]; next_cursor: string | null };
+    expect(nextPage.items.map((item) => item.id)).toEqual(['a-6', 'a-5']);
+    // «Страниц по номеру» нет ни у мока, ни у сервера: незнакомый параметр
+    // просто не на что опереться, и панель получает первую страницу.
+    const paged = (await get('/api/v1/admin/audit?limit=2&page=2', { headers: { cookie } }).then((r) => r.json())) as { items: { id: string }[] };
+    expect(paged.items.map((item) => item.id)).toEqual(['a-8', 'a-7']);
+
+    const tail = await get('/api/v1/admin/audit?limit=50', { headers: { cookie } });
+    const tailPage = (await tail.json()) as { items: unknown[]; next_cursor: string | null };
+    expect(tailPage.next_cursor).toBeNull();
+    expect(tailPage.items.length).toBe(6);
+  });
+
+  it('журнал: фильтры работают, кривые значения — 422 текстом сервера', async () => {
+    const login = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody(),
+    });
+    const cookie = login.headers.getSetCookie()[0] ?? '';
+
+    const byEntity = await get('/api/v1/admin/audit?entity=grant', { headers: { cookie } });
+    const entityPage = (await byEntity.json()) as { items: { entity: string }[] };
+    expect(entityPage.items.map((item) => item.entity)).toEqual(['grant', 'grant']);
+
+    const byActor = await get('/api/v1/admin/audit?actor_tg_id=0', { headers: { cookie } });
+    expect(((await byActor.json()) as { items: { action: string }[] }).items.map((item) => item.action)).toEqual(['session.purge']);
+
+    const badLimit = await get('/api/v1/admin/audit?limit=201', { headers: { cookie } });
+    expect(badLimit.status).toBe(422);
+    expect(((await badLimit.json()) as { details?: { reason?: string } }).details?.reason).toBe('invalid_limit');
+
+    const badCursor = await get('/api/v1/admin/audit?cursor=вторая', { headers: { cookie } });
+    expect(badCursor.status).toBe(422);
+    expect(((await badCursor.json()) as { details?: { reason?: string } }).details?.reason).toBe('invalid_cursor');
+
+    const badActor = await get('/api/v1/admin/audit?actor_tg_id=abc', { headers: { cookie } });
+    expect(badActor.status).toBe(422);
+    expect(((await badActor.json()) as { details?: { reason?: string } }).details?.reason).toBe('invalid_actor_tg_id');
+  });
+
+  it('журнал закрыт без сессии, и вход/выход CSRF не требуют, а выход живой сессии — требует', async () => {
+    expect((await get('/api/v1/admin/audit')).status).toBe(401);
+
+    const login = await get('/api/v1/admin/auth/telegram', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: loginBody(),
+    });
+    const cookie = login.headers.getSetCookie()[0] ?? '';
+
+    // Выход без заголовка из живой сессии — 403 csrf_missing, как у сервера.
+    const sloppy = await get('/api/v1/admin/auth/logout', { method: 'POST', headers: { cookie } });
+    expect(sloppy.status).toBe(403);
+    expect(((await sloppy.json()) as { details?: { reason?: string } }).details?.reason).toBe('csrf_missing');
+
+    const clean = await get('/api/v1/admin/auth/logout', {
+      method: 'POST',
+      headers: { cookie, 'X-Admin-CSRF': DEMO_CSRF },
+    });
+    expect(clean.status).toBe(200);
+    expect(clean.headers.getSetCookie()[0] ?? '').toContain('Max-Age=0');
+    // Идемпотентность: повтор без сессии — тоже 200, а не 401.
+    expect((await get('/api/v1/admin/auth/logout', { method: 'POST', headers: { 'X-Admin-CSRF': DEMO_CSRF } })).status).toBe(200);
+  });
+
   it('вход по неполному набору полей отклоняется 422 с field_errors', async () => {
     const reply = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
@@ -122,7 +246,7 @@ describe('dev-мокер', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
     expect(login.status).toBe(200);
     const cookie = login.headers.getSetCookie()[0] ?? '';
@@ -139,7 +263,7 @@ describe('dev-мокер', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
     const cookie = login.headers.getSetCookie()[0] ?? '';
 
@@ -165,7 +289,7 @@ describe('dev-мокер', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
     const cookie = login.headers.getSetCookie()[0] ?? '';
 
@@ -181,7 +305,7 @@ describe('dev-мокер', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
     const cookie = login.headers.getSetCookie()[0] ?? '';
 
@@ -201,7 +325,7 @@ describe('dev-мокер', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
     const cookie = login.headers.getSetCookie()[0] ?? '';
     const list = await get(`/api/v1/admin/grants?user_id=${DEMO_USER_ID}`, { headers: { cookie } });
@@ -224,7 +348,7 @@ describe('dev-мокер', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
 
     const reply = await get('/api/v1/admin/what/ever', { headers: { cookie: login.headers.getSetCookie()[0] ?? '' } });
@@ -299,7 +423,7 @@ describe('dev-мокер: тарифы и пользователи', () => {
     const login = await get('/api/v1/admin/auth/telegram', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: '1', auth_date: 1, hash: 'h' }),
+      body: loginBody(),
     });
     cookie = login.headers.getSetCookie()[0] ?? '';
   });

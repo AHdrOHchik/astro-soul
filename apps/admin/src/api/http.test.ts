@@ -148,16 +148,25 @@ describe('http-слой админки', () => {
     const { calls, fetchImpl } = recorder(() => jsonResponse({ code: 'NOT_FOUND', message: 'Такой страницы нет.', request_id: 'r' }, { status: 404 }));
     const http = createHttp({ fetchImpl, allowUnknownRoutes: true });
 
-    const probed: ProbeResult<unknown> = await http.probe('authMe');
+    const probed: ProbeResult<unknown> = await http.probe('usersSearch');
     expect(probed.kind).toBe('unavailable');
     expect(calls).toHaveLength(1);
   });
 
+  it('404 на маршруте из контракта — ответ сервера, а не «маршрута нет»', async () => {
+    // Иначе «не туда отправил» и «сервер не нашёл» выглядели бы одинаково, а
+    // для входа это ровно та подмена, из-за которой человек ищет баг не там.
+    const { fetchImpl } = recorder(() => jsonResponse({ code: 'NOT_FOUND', message: 'Маршрут не найден.', request_id: 'r' }, { status: 404 }));
+    const http = createHttp({ fetchImpl, retries: 0 });
+
+    await expect(http.call('authMe')).rejects.toMatchObject({ code: 'NOT_FOUND', status: 404 });
+  });
+
   it('probe различает «нет маршрута», «не вошёл» и аварию', async () => {
-    const unavailable = await createHttp({ fetchImpl: recorder(() => jsonResponse({})).fetchImpl }).probe('authMe');
+    const unavailable = await createHttp({ fetchImpl: recorder(() => jsonResponse({})).fetchImpl }).probe('usersSearch');
     expect(unavailable.kind).toBe('unavailable');
 
-    const unauthorized = await createHttp({ fetchImpl: recorder(() => jsonResponse({}, { status: 401 })).fetchImpl, allowUnknownRoutes: true }).probe('authMe');
+    const unauthorized = await createHttp({ fetchImpl: recorder(() => jsonResponse({}, { status: 401 })).fetchImpl }).probe('authMe');
     expect(unauthorized.kind).toBe('unauthorized');
 
     const error = await createHttp({ fetchImpl: recorder(() => jsonResponse({}, { status: 500 })).fetchImpl, retries: 0 }).probe('metrics');
