@@ -47,6 +47,11 @@ export function Block<T>({ state, onReload, empty, isEmpty, children }: BlockPro
     const title = error.isUnauthorized ? ru.states.unauthorized : error.isForbidden ? ru.states.forbidden : `${ru.states.error}: ${error.message}`;
     return (
       <Banner level={level} title={title}>
+        {/* Для 401/403 заголовком становится наша формулировка — слова
+            сервера при этом не прячутся: он мог добавить, кого именно не
+            пустили и почему («не в ADMIN_TG_ID» и «нет права на этот раздел»
+            чинятся по-разному). */}
+        {error.isUnauthorized || error.isForbidden ? <p>{error.message}</p> : null}
         <p className="muted mono">
           {error.code}
           {error.reason ? ` · ${error.reason}` : ''}

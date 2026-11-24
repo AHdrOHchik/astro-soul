@@ -14,7 +14,17 @@
  */
 
 import type { components, paths } from '../src/api/schema.gen';
-import type { AdminPlanHistoryRow, AdminPlanRow, AdminUserCard, AdminUserRow, AuditEntry } from '../src/api/types.ts';
+import type {
+  AdminFounder,
+  AdminPartner,
+  AdminPaymentEntry,
+  AdminPlan,
+  AdminPlanHistoryEntry,
+  AdminReportSummary,
+  AdminUserCard,
+  AdminUserSummary,
+  AuditEntry,
+} from '../src/api/types.ts';
 
 /** Маркер для стража: если строка попала в `dist` — мок уехал в прод. */
 export const MOCK_MARKER = 'ADMIN_MOCK_FIXTURE_v1';
@@ -295,180 +305,437 @@ export const mockGrants: MockGrant[] = [
  *     после возврата `refundable` становится `null`.
  * ------------------------------------------------------------------------- */
 
-export const mockPlans: AdminPlanRow[] = [
+/**
+ * Каталог тарифов — ровно `AdminPlan` из 1.6.16: `price_stars`, `test_only`,
+ * `active`, `founder_only`, `version`, `updated_at`. Скидок, `is_active` и
+ * «кто менял» в строке каталога нет — и в моке тоже, иначе экран привык бы к
+ * полям, которых сервер не отдаёт.
+ */
+export const mockPlans: AdminPlan[] = [
   {
     code: 'week_149',
+    kind: 'subscription',
     title: 'Неделя',
     price_stars: 149,
-    discount_price_stars: null,
-    is_active: true,
+    period_days: 7,
     test_only: false,
+    active: true,
     founder_only: false,
-    price_change_scope: 'only_new_purchases',
     version: 3,
     updated_at: nowIso(-9 * DAY),
-    updated_by_name: 'Владелец',
-    updated_by_tg_id: '777001',
   },
   {
     code: 'month_399',
+    kind: 'subscription',
     title: 'Месяц',
     price_stars: 399,
-    discount_price_stars: null,
-    is_active: true,
+    period_days: 30,
     test_only: false,
+    active: true,
     founder_only: false,
-    price_change_scope: 'only_new_purchases',
     version: 7,
     updated_at: nowIso(-2 * DAY),
-    updated_by_name: 'Владелец',
-    updated_by_tg_id: '777001',
   },
   {
     code: 'year_2990',
+    kind: 'subscription',
     title: 'Год',
     price_stars: 2990,
-    discount_price_stars: 2490,
-    is_active: true,
+    period_days: 365,
     test_only: false,
+    active: true,
     founder_only: false,
-    price_change_scope: 'only_new_purchases',
     version: 11,
     updated_at: nowIso(-30 * MINUTE),
-    updated_by_name: 'Поддержка',
-    updated_by_tg_id: '777002',
   },
   {
+    // Разовый разбор: `period_days` у него отсутствует — экран обязан показать
+    // «—», а не 0 дней.
     code: 'one_149',
+    kind: 'one_off',
     title: 'Один разбор',
     price_stars: 149,
-    discount_price_stars: null,
-    is_active: true,
     test_only: false,
+    active: true,
     founder_only: false,
-    price_change_scope: 'only_new_purchases',
     version: 1,
     updated_at: nowIso(-40 * DAY),
-    updated_by_name: null,
-    updated_by_tg_id: null,
   },
   {
-    // Право проверяет сервер по таблице `founders`; в витрине тарифа нет —
-    // и `price_change_scope` у него пустой: панель обязана сказать
-    // «сервер не назвал правило», а не придумать формулировку.
+    // Право проверяет сервер по таблице `founders`: цена обещана первым 50 и
+    // из панели не меняется (`403 founder_plan_locked`).
     code: 'founder_month',
+    kind: 'subscription',
     title: 'Основательский',
     price_stars: 250,
-    discount_price_stars: null,
-    is_active: true,
+    period_days: 30,
     test_only: false,
+    active: true,
     founder_only: true,
-    price_change_scope: '',
     version: 2,
     updated_at: nowIso(-60 * DAY),
-    updated_by_name: 'Владелец',
-    updated_by_tg_id: '777001',
   },
   {
     code: 'test_1',
+    kind: 'one_off',
     title: 'Тестовый',
     price_stars: 1,
-    discount_price_stars: null,
-    is_active: false,
     test_only: true,
+    active: false,
     founder_only: false,
-    price_change_scope: 'only_new_purchases',
     version: 1,
     updated_at: nowIso(-3 * DAY),
-    updated_by_name: 'Поддержка',
-    updated_by_tg_id: '777002',
   },
 ];
 
-export const mockPlanHistory: readonly (AdminPlanHistoryRow & { code: string })[] = [
+/**
+ * История цены — `AdminPlanHistoryEntry`. У самой первой записи
+ * `previous_price_stars` нет: это «не было прежней цены», а не 0 ⭐.
+ */
+export const mockPlanHistory: AdminPlanHistoryEntry[] = [
   {
-    code: 'month_399',
-    at: nowIso(-2 * DAY),
+    id: 'ph-3',
+    plan_code: 'month_399',
+    price_stars: 399,
+    previous_price_stars: 449,
+    version: 7,
+    comment: 'прайс перед новогодним пушем',
     actor_tg_id: '777001',
     // Снимок имени на момент действия — не ссылка на `users`.
     actor_name: 'Владелец',
-    from_price: 449,
-    to_price: 399,
-    comment: 'прайс перед новогодним пушем',
+    effective_from: nowIso(-2 * DAY),
+    created_at: nowIso(-2 * DAY - 5 * MINUTE),
   },
   {
-    code: 'month_399',
-    at: nowIso(-45 * DAY),
+    id: 'ph-1',
+    plan_code: 'month_399',
+    price_stars: 449,
+    previous_price_stars: null,
+    version: 1,
+    comment: 'создание тарифа',
     actor_tg_id: '777002',
     actor_name: 'Поддержка',
-    from_price: null,
-    to_price: 449,
-    comment: 'создание тарифа',
+    effective_from: nowIso(-45 * DAY),
+    created_at: nowIso(-45 * DAY),
+  },
+  {
+    id: 'ph-2',
+    plan_code: 'founder_month',
+    price_stars: 250,
+    previous_price_stars: null,
+    version: 2,
+    comment: 'обещание первым 50: цена зафиксирована, из панели не правится',
+    actor_tg_id: '777001',
+    actor_name: 'Владелец',
+    effective_from: nowIso(-60 * DAY),
+    created_at: nowIso(-60 * DAY),
   },
 ];
 
-/** Полная карточка: строка поиска выводится из неё, а не живёт отдельно. */
-export const mockUsers: AdminUserCard[] = [
-  {
-    user_id: DEMO_USER_ID,
-    tg_id: '777003',
-    alias: 'anna_chart',
-    name: 'Анна (вымышленная)',
-    created_at: nowIso(-120 * DAY),
-    last_seen_at: nowIso(-3 * HOUR),
-    push_enabled: true,
-    banned_at: null,
-    ban_reason: null,
-    subscription: { plan_code: 'month_399', until: nowIso(21 * DAY), source: 'payment' },
-    payments: [
-      { id: 'pay-1', charge_id: 'chg_9001', kind: 'payment', stars: 399, at: nowIso(-9 * DAY), refunded: false },
-      { id: 'pay-2', charge_id: 'chg_8100', kind: 'payment', stars: 399, at: nowIso(-39 * DAY), refunded: true },
-      { id: 'pay-3', charge_id: 'chg_8100r', kind: 'refund', stars: 399, at: nowIso(-38 * DAY), refunded: false },
-    ],
-    refundable: { charge_id: 'chg_9001', amount_stars: 399, currency: 'XTR' },
-  },
-  {
-    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000002',
-    tg_id: '777004',
-    alias: 'banned_ivan',
-    name: 'Иван (вымышленный)',
-    created_at: nowIso(-300 * DAY),
-    last_seen_at: nowIso(-40 * DAY),
-    push_enabled: false,
-    banned_at: nowIso(-10 * DAY),
-    ban_reason: 'массовые промпты-спамы в генерации',
-    subscription: null,
-    payments: [],
-    refundable: null,
-  },
-  {
-    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000003',
-    tg_id: '777005',
-    alias: null,
-    name: 'Мария (вымышленная)',
-    created_at: nowIso(-14 * DAY),
-    last_seen_at: null,
-    push_enabled: true,
-    banned_at: null,
-    ban_reason: null,
-    subscription: null,
-    payments: [{ id: 'pay-9', charge_id: 'chg_9500', kind: 'payment', stars: 149, at: nowIso(-13 * DAY), refunded: false }],
-    refundable: { charge_id: 'chg_9500', amount_stars: 149, currency: 'XTR' },
-  },
-];
-
-export function userRow(card: AdminUserCard): AdminUserRow {
+/** Срез карточки под строку поиска — `AdminUserSummary`, без ПДн. */
+export function userSummary(card: AdminUserCard): AdminUserSummary {
   return {
     user_id: card.user_id,
-    tg_id: card.tg_id,
     alias: card.alias,
-    name: card.name,
-    plan_code: card.subscription?.plan_code ?? null,
-    access_until: card.subscription?.until ?? null,
-    banned: card.banned_at !== null,
+    has_subscription: card.subscription?.is_active === true,
+    subscription_plan: card.subscription?.plan ?? null,
+    subscription_expires_at: card.subscription?.expires_at ?? null,
+    banned: card.banned,
+    created_at: card.created_at,
+    last_seen_at: card.last_seen_at ?? null,
   };
 }
 
+/**
+ * Карточки людей. Три состояния, ради которых экран и нужен: человек с
+ * оплаченным зарядом (возврат возможен), заблокированный (без платежей
+ * вовсе) и новичок с одним разовым платежом. `telegram_id` — только здесь, в
+ * списке поиска его нет намеренно.
+ */
+export const mockUsers: AdminUserCard[] = [
+  {
+    user_id: DEMO_USER_ID,
+    alias: 'anna_chart',
+    created_at: nowIso(-120 * DAY),
+    last_seen_at: nowIso(-3 * HOUR),
+    telegram_id: '777003',
+    push_enabled: true,
+    banned: false,
+    profile: {
+      birth_date: '1991-04-17',
+      birth_time: '07:40',
+      time_precision: 'exact',
+      place_name: 'Тверь',
+      place_region: 'Тверская область',
+      place_country: 'Россия',
+      place_tz: 'Europe/Moscow',
+    },
+    chart: {
+      chart_id: '0f0c2b6a-0000-4000-8000-0000000000a1',
+      time_known: true,
+      engine_version: 'sweph-2.10',
+      created_at: nowIso(-119 * DAY),
+    },
+    subscription: {
+      plan: 'month',
+      is_active: true,
+      expires_at: nowIso(21 * DAY),
+      auto_renew: false,
+      stars_paid_total: 798,
+    },
+    grants: [
+      {
+        id: 'g-15',
+        kind: 'all_access',
+        source: 'admin',
+        days: 14,
+        starts_at: nowIso(-6 * DAY),
+        expires_at: nowIso(8 * DAY),
+        consumed_at: null,
+        revoked_at: null,
+        created_at: nowIso(-6 * DAY),
+      },
+    ],
+    payments: [
+      {
+        charge_id: 'chg_9001',
+        plan_code: 'month_399',
+        amount_stars: 399,
+        status: 'paid',
+        is_test: false,
+        paid_at: nowIso(-9 * DAY),
+      },
+      {
+        charge_id: 'chg_8100',
+        plan_code: 'month_399',
+        amount_stars: 399,
+        status: 'refunded',
+        is_test: false,
+        paid_at: nowIso(-39 * DAY),
+        refunded_at: nowIso(-38 * DAY),
+      },
+      {
+        charge_id: 'chg_7001',
+        plan_code: 'test_1',
+        amount_stars: 1,
+        status: 'failed',
+        is_test: true,
+        paid_at: nowIso(-40 * DAY),
+      },
+    ],
+    counts: { reports: 4, compatibility: 1, questions: 12, forecasts: 2 },
+    cost_rub: 18.4,
+  },
+  {
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000002',
+    alias: 'banned_ivan',
+    created_at: nowIso(-300 * DAY),
+    last_seen_at: nowIso(-40 * DAY),
+    telegram_id: '777004',
+    push_enabled: false,
+    banned: true,
+    banned_at: nowIso(-10 * DAY),
+    ban_reason: 'массовые промпты-спамы в генерации',
+    subscription: null,
+    grants: [],
+    payments: [],
+    counts: { reports: 0, compatibility: 0, questions: 0, forecasts: 0 },
+    cost_rub: 0,
+  },
+  {
+    // Без `profile` и `chart`: человек не заполнял анкету — экран обязан
+    // показать «данных нет», а не ошибку.
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000003',
+    alias: 'maria_new',
+    created_at: nowIso(-14 * DAY),
+    last_seen_at: null,
+    push_enabled: true,
+    banned: false,
+    subscription: null,
+    grants: [
+      {
+        id: 'g-21',
+        kind: 'single_report',
+        source: 'partner',
+        days: null,
+        starts_at: null,
+        expires_at: null,
+        consumed_at: nowIso(-13 * DAY),
+        revoked_at: null,
+        created_at: nowIso(-14 * DAY),
+      },
+    ],
+    payments: [
+      {
+        charge_id: 'chg_9500',
+        plan_code: 'one_149',
+        amount_stars: 149,
+        status: 'processed',
+        is_test: false,
+        paid_at: nowIso(-13 * DAY),
+      },
+    ],
+    counts: { reports: 1, compatibility: 0, questions: 0, forecasts: 0 },
+    cost_rub: 4.2,
+  },
+];
+
+/**
+ * Лента платежей — `AdminPaymentEntry`. Один `user_id: null`: платёж мог быть
+ * сделан человеком, которого потом удалили, и это «не знаем», а не «нулевой
+ * человек».
+ */
+export const mockPayments: AdminPaymentEntry[] = [
+  {
+    charge_id: 'chg_9001',
+    user_id: DEMO_USER_ID,
+    amount_stars: 399,
+    currency: 'XTR',
+    status: 'paid',
+    created_at: nowIso(-9 * DAY),
+    refunded_at: null,
+    plan_code: 'month_399',
+  },
+  {
+    charge_id: 'chg_8100',
+    user_id: DEMO_USER_ID,
+    amount_stars: 399,
+    currency: 'XTR',
+    status: 'refunded',
+    created_at: nowIso(-39 * DAY),
+    refunded_at: nowIso(-38 * DAY),
+    plan_code: 'month_399',
+  },
+  {
+    charge_id: 'chg_9500',
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000003',
+    amount_stars: 149,
+    currency: 'XTR',
+    status: 'processed',
+    created_at: nowIso(-13 * DAY),
+    refunded_at: null,
+    plan_code: 'one_149',
+  },
+  {
+    charge_id: 'chg_orphan',
+    user_id: null,
+    amount_stars: 1,
+    currency: 'XTR',
+    status: 'failed',
+    created_at: nowIso(-2 * DAY),
+    refunded_at: null,
+    plan_code: 'test_1',
+  },
+];
+
+/**
+ * Разборы: один `failed` с кодом ошибки (его и перегенерируют), один `ready`,
+ * один всё ещё `queued`. `cost_rub` — уже потрачено на LLM, возврат по упавшему
+ * разбору считается сервером, не панелью.
+ */
+export const mockReports: AdminReportSummary[] = [
+  {
+    id: '0f0c2b6a-0000-4000-8000-0000000000b1',
+    user_id: DEMO_USER_ID,
+    chart_id: '0f0c2b6a-0000-4000-8000-0000000000a1',
+    kind: 'report',
+    status: 'failed',
+    error_code: 'UPSTREAM_LLM',
+    attempts: 3,
+    cost_rub: 3.1,
+    created_at: nowIso(-4 * HOUR),
+    updated_at: nowIso(-3 * HOUR),
+  },
+  {
+    id: '0f0c2b6a-0000-4000-8000-0000000000b2',
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000003',
+    chart_id: '0f0c2b6a-0000-4000-8000-0000000000a2',
+    kind: 'compat',
+    status: 'queued',
+    error_code: null,
+    attempts: 0,
+    cost_rub: 0,
+    created_at: nowIso(-20 * MINUTE),
+    updated_at: nowIso(-20 * MINUTE),
+  },
+  {
+    id: '0f0c2b6a-0000-4000-8000-0000000000b3',
+    user_id: DEMO_USER_ID,
+    chart_id: '0f0c2b6a-0000-4000-8000-0000000000a1',
+    kind: 'report',
+    status: 'ready',
+    attempts: 1,
+    cost_rub: 2.7,
+    created_at: nowIso(-9 * DAY),
+    updated_at: nowIso(-9 * DAY + 4 * MINUTE),
+  },
+];
+
+/** Места «первых 50»: `username` удалён из контракта в 1.6.18 — поля нет. */
+export const mockFounders: AdminFounder[] = [
+  {
+    place: 1,
+    user_id: DEMO_USER_ID,
+    telegram_id: '777003',
+    created_at: nowIso(-90 * DAY),
+    grant_kind: 'all_access',
+    expires_at: null,
+    code_activated: true,
+  },
+  {
+    place: 2,
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000004',
+    telegram_id: '777006',
+    created_at: nowIso(-88 * DAY),
+    grant_kind: 'all_access',
+    expires_at: nowIso(275 * DAY),
+    code_activated: false,
+  },
+  {
+    // Право кончилось, место осталось: «—» в «действует до» важнее нуля.
+    place: 3,
+    user_id: '2b1f7a04-9d3c-4e21-8a55-000000000005',
+    telegram_id: '777007',
+    created_at: nowIso(-80 * DAY),
+    grant_kind: null,
+    expires_at: null,
+    code_activated: false,
+  },
+];
+
+/** Партнёры: один с нулём активаций — «код раздавали, никто не пришёл». */
+export const mockPartners: AdminPartner[] = [
+  {
+    partner_name: 'podcast-razbor',
+    codes_total: 5,
+    activations_total: 41,
+    activated_users: 38,
+    paid_users: 12,
+    revenue_stars: 4788,
+    last_activation_at: nowIso(-3 * HOUR),
+  },
+  {
+    partner_name: 'astro-chat',
+    codes_total: 2,
+    activations_total: 7,
+    activated_users: 7,
+    paid_users: 0,
+    revenue_stars: 0,
+    last_activation_at: nowIso(-11 * DAY),
+  },
+  {
+    partner_name: 'leaflet-2026',
+    codes_total: 1,
+    activations_total: 0,
+    activated_users: 0,
+    paid_users: 0,
+    revenue_stars: 0,
+    last_activation_at: null,
+  },
+];
+
+/** Состояние дампа для `POST /admin/backup/run`: один запуск на 10 минут. */
+export const MOCK_BACKUP_WINDOW_MS = 10 * MINUTE;
 
 /**
  * Журнал аудита. Порядок — как у серверной ленты (`at DESC`): самые свежие

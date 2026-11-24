@@ -25,22 +25,42 @@ import type { PluginOption } from 'vite';
 import {
   DEMO_CSRF,
   DEMO_USER_ID,
+  MOCK_BACKUP_WINDOW_MS,
+  MOCK_MARKER,
   mockAlerts,
+  mockAudit,
   mockCodes,
+  mockFounders,
   mockGrants,
   mockMe,
   mockMetrics,
-  mockAudit,
+  mockPartners,
+  mockPayments,
   mockPlanHistory,
   mockPlans,
+  mockReports,
   mockUsers,
-  MOCK_MARKER,
   nowIso,
-  userRow,
+  userSummary,
   type MockAccessCode,
   type MockGrant,
 } from './fixtures.ts';
-import type { AdminPlanHistoryRow, AdminPlanRow, AdminUserCard } from '../src/api/types.ts';
+import type {
+  AdminAlertAckResult,
+  AdminBackupRunResult,
+  AdminBanResult,
+  AdminFounder,
+  AdminPartner,
+  AdminPaymentEntry,
+  AdminPlan,
+  AdminPlanHistoryEntry,
+  AdminPushResult,
+  AdminRefundResult,
+  AdminReportRegenerateResult,
+  AdminReportSummary,
+  AdminUserCard,
+  AdminWebhookSetResult,
+} from '../src/api/types.ts';
 
 export interface MockOptions {
   /** Куда проксируются живые запросы: `API_PROXY_TARGET` или `http://localhost:8080`. */
@@ -115,13 +135,19 @@ export function adminMockApi(options: MockOptions): PluginOption {
   let mode: Mode = 'unknown';
   let codes: readonly MockAccessCode[] = mockCodes;
   let grants: readonly MockGrant[] = mockGrants;
-  let plans: readonly AdminPlanRow[] = mockPlans.map((item) => ({ ...item }));
-  let planHistory: readonly (AdminPlanHistoryRow & { code: string })[] = mockPlanHistory.map((item) => ({ ...item }));
+  let plans: readonly AdminPlan[] = mockPlans.map((item) => ({ ...item }));
+  let planHistory: readonly AdminPlanHistoryEntry[] = mockPlanHistory.map((item) => ({ ...item }));
   let users: readonly AdminUserCard[] = mockUsers.map((card) => ({
     ...card,
     payments: card.payments.map((payment) => ({ ...payment })),
-    refundable: card.refundable === null ? null : { ...card.refundable },
   }));
+  let payments: readonly AdminPaymentEntry[] = mockPayments.map((item) => ({ ...item }));
+  let reports: readonly AdminReportSummary[] = mockReports.map((item) => ({ ...item }));
+  let alerts = { ...mockAlerts, alerts: (mockAlerts.alerts ?? []).map((item) => ({ ...item })) };
+  let pushSentAt: Record<string, string> = {};
+  let backupRuns: number[] = [];
+  const founders: readonly AdminFounder[] = mockFounders.map((item) => ({ ...item }));
+  const partners: readonly AdminPartner[] = mockPartners.map((item) => ({ ...item }));
   let issued = 0;
 
   async function resolveMode(): Promise<Mode> {
@@ -234,7 +260,7 @@ export function adminMockApi(options: MockOptions): PluginOption {
     }
 
     if (ctx.method === 'GET' && pathname === '/api/v1/admin/alerts') {
-      json(res, 200, { ...mockAlerts, note: MOCK_MARKER }, demo);
+      json(res, 200, { ...alerts, note: MOCK_MARKER }, demo);
       return;
     }
 
@@ -404,72 +430,108 @@ export function adminMockApi(options: MockOptions): PluginOption {
         problem(res, 404, 'NOT_FOUND', `Плана ${code} нет.`, demo, { reason: 'plan_not_found' });
         return;
       }
-      if (plan.founder_only) {
-        // Ответ владельца §5: `founder_month` не редактируется даже через PATCH.
-        problem(res, 403, 'FORBIDDEN', 'Право на этот план проверяет сервер по таблице founders — цена не правится.', demo, {
-          reason: 'founder_plan_locked',
+      const body = asRecord(ctx.body);
+      const allowed = ['price_stars', 'test_only', 'confirm', 'comment', 'base_version'];
+      const extra = Object.keys(body).filter((key) => !allowed.includes(key));
+      if (extra.length > 0) {
+        // 1.6.16: неизвестное поле — отказ, а не «молча проигнорировали».
+        problem(res, 422, 'VALIDATION_FAILED', 'В теле есть поля, которых контракт не знает.', demo, {
+          reason: 'unknown_field',
+          field_errors: extra.map((field) => ({ field, message: 'Нет такого поля в PATCH /admin/plans/{code}' })),
         });
         return;
       }
-      const body = asRecord(ctx.body);
       const errors: { field: string; message: string }[] = [];
-      const price = body.price_stars;
-      if (typeof price !== 'number' || !Number.isInteger(price) || price < 1) {
-        errors.push({ field: 'price_stars', message: 'Нужно целое число ≥ 1' });
-      }
       if (typeof body.comment !== 'string' || body.comment.trim() === '') {
-        // Основание обязательно (ответ владельца §4) — без него мокер не меняет цену.
         errors.push({ field: 'comment', message: 'Комментарий обязателен: правка цены без основания не записывается' });
       }
+      if (typeof body.base_version !== 'number') {
+        errors.push({ field: 'base_version', message: 'Оптимистичная блокировка: нужна версия строки' });
+      }
+      const price = body.price_stars;
+      if (price !== undefined && (typeof price !== 'number' || !Number.isInteger(price) || price < 1)) {
+        errors.push({ field: 'price_stars', message: 'Нужно целое число ≥ 1' });
+      }
+      // Сужение типа сразу: `body.test_only` — `unknown`, и «проверка в
+      // накопительный массив ошибок».TypeScript не сужает.
+      const testOnly = typeof body.test_only === 'boolean' ? body.test_only : undefined;
+      if (body.test_only !== undefined && testOnly === undefined) {
+        errors.push({ field: 'test_only', message: 'Только true/false' });
+      }
       if (errors.length > 0) {
-        problem(res, 422, 'VALIDATION_FAILED', 'Цена не изменена.', demo, { field_errors: errors });
+        problem(res, 422, 'VALIDATION_FAILED', 'Тариф не изменён.', demo, { field_errors: errors });
+        return;
+      }
+      if (testOnly === false && plan.test_only && body.confirm !== 'disable_test_plan') {
+        // Снять флаг = выставить тариф в продажу по его текущей цене.
+        problem(res, 422, 'VALIDATION_FAILED', 'Снятие test_only требует подтверждения.', demo, {
+          reason: 'confirmation_required',
+          field_errors: [{ field: 'confirm', message: 'Нужно confirm: "disable_test_plan"' }],
+        });
+        return;
+      }
+      const priceChanged = price !== undefined && price !== plan.price_stars;
+      const flagsChanged = testOnly !== undefined && testOnly !== plan.test_only;
+      if (!priceChanged && !flagsChanged) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Менять нечего.', demo, { reason: 'nothing_to_update' });
+        return;
+      }
+      if (priceChanged && plan.founder_only) {
+        // Ответ владельца §5: `founder_month` ценой не правится.
+        problem(res, 403, 'FORBIDDEN', 'Цена этого тарифа обещана первым 50 людям и из панели не меняется.', demo, {
+          reason: 'founder_plan_locked',
+        });
         return;
       }
       if (body.base_version !== plan.version) {
         // 409 price_changed: панель обязана перечитать, а не перезаписать.
         problem(res, 409, 'CONFLICT', 'Тариф изменён другой сессией — показываем текущее значение.', demo, {
           reason: 'price_changed',
-          current: plan,
+          current: { price_stars: plan.price_stars, version: plan.version },
         });
         return;
       }
-      const discount = typeof body.discount_price_stars === 'number' ? body.discount_price_stars : null;
-      const updated: AdminPlanRow = {
+      const nextPrice = priceChanged ? (price as number) : plan.price_stars;
+      const updated: AdminPlan = {
         ...plan,
-        price_stars: price as number,
-        discount_price_stars: discount,
+        price_stars: nextPrice,
+        test_only: testOnly ?? plan.test_only,
         version: plan.version + 1,
         updated_at: nowIso(0),
-        updated_by_name: typeof mockMe.name === 'string' ? mockMe.name : 'ДЕМО',
-        updated_by_tg_id: typeof mockMe.tg_id === 'string' ? mockMe.tg_id : '0',
       };
       plans = plans.map((item) => (item.code === code ? updated : item));
-      planHistory = [
-        {
-          code,
-          at: nowIso(0),
-          actor_tg_id: updated.updated_by_tg_id ?? '0',
-          // Снимок имени на момент действия — не ссылка на `users`.
-          actor_name: updated.updated_by_name ?? 'ДЕМО',
-          from_price: plan.price_stars,
-          to_price: updated.price_stars,
-          comment: String(body.comment).trim(),
-        },
-        ...planHistory,
-      ];
-      json(res, 200, {
+      if (priceChanged) {
+        // История цен пишется только когда менялась цена; `test_only` живёт в аудите.
+        planHistory = [
+          {
+            id: `ph-${planHistory.length + 1}`,
+            plan_code: code,
+            price_stars: nextPrice,
+            previous_price_stars: plan.price_stars,
+            version: updated.version,
+            comment: String(body.comment).trim(),
+            actor_tg_id: typeof mockMe.tg_id === 'string' ? mockMe.tg_id : '0',
+            // Снимок имени на момент действия — не ссылка на `users`.
+            actor_name: typeof mockMe.name === 'string' ? mockMe.name : 'ДЕМО',
+            effective_from: nowIso(0),
+            created_at: nowIso(0),
+          },
+          ...planHistory,
+        ];
+      }
+      const patchResult: { plan: AdminPlan; effective_from: string; price_change_scope?: 'only_new_purchases' } = {
         plan: updated,
-        audit: { at: updated.updated_at, actor_name: updated.updated_by_name, actor_tg_id: updated.updated_by_tg_id, request_id: 'mock' },
-        price_change_scope: updated.price_change_scope,
-        note: MOCK_MARKER,
-      }, demo);
+        effective_from: nowIso(0),
+      };
+      if (priceChanged) patchResult.price_change_scope = 'only_new_purchases';
+      json(res, 200, { ...patchResult, note: MOCK_MARKER }, demo);
       return;
     }
 
     const historyMatch = /^\/api\/v1\/admin\/plans\/([^/]+)\/history$/.exec(pathname);
     if (historyMatch !== null && ctx.method === 'GET') {
       const code = decodeURIComponent(historyMatch[1] ?? '');
-      json(res, 200, { items: planHistory.filter((item) => item.code === code), note: MOCK_MARKER }, demo);
+      json(res, 200, { items: planHistory.filter((item) => item.plan_code === code), note: MOCK_MARKER }, demo);
       return;
     }
 
@@ -481,19 +543,28 @@ export function adminMockApi(options: MockOptions): PluginOption {
       const given = [telegramId !== '', alias !== '', text !== ''].filter(Boolean).length;
       if (given !== 1) {
         problem(res, 422, 'VALIDATION_FAILED', 'Поиск принимает ровно один параметр: telegram_id, alias или q.', demo, {
+          reason: 'invalid_search',
           field_errors: [{ field: 'query', message: 'Ровно один непустой параметр' }],
+        });
+        return;
+      }
+      if (telegramId !== '' && !/^[0-9]{1,20}$/.test(telegramId)) {
+        problem(res, 422, 'VALIDATION_FAILED', 'telegram_id — только цифры (до 20 знаков).', demo, {
+          reason: 'invalid_search',
+          field_errors: [{ field: 'telegram_id', message: '^[0-9]{1,20}$' }],
         });
         return;
       }
       const items = users
         .filter((card) =>
           telegramId !== ''
-            ? card.tg_id === telegramId
+            ? card.telegram_id === telegramId
             : alias !== ''
-              ? card.alias?.toLowerCase() === alias.toLowerCase()
-              : [card.name, card.alias, card.tg_id, card.user_id].some((value) => value !== null && value.toLowerCase().includes(text.toLowerCase())))
-        .map(userRow);
-      json(res, 200, { items, note: MOCK_MARKER }, demo);
+              ? card.alias.toLowerCase() === alias.toLowerCase()
+              : [card.alias, card.telegram_id ?? '', card.user_id].some((value) => value.toLowerCase().includes(text.toLowerCase())))
+        .slice(0, 20)
+        .map(userSummary);
+      json(res, 200, { items, truncated: false, note: MOCK_MARKER }, demo);
       return;
     }
 
@@ -523,57 +594,354 @@ export function adminMockApi(options: MockOptions): PluginOption {
       const body = asRecord(ctx.body);
       const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
       if (action === 'refund') {
+        const allowed = ['charge_id', 'reason'];
+        const extra = Object.keys(body).filter((key) => !allowed.includes(key));
+        if (extra.length > 0) {
+          // Отдельно «суммы» в теле нет: `amount_stars` — это `unknown_field`.
+          problem(res, 422, 'VALIDATION_FAILED', 'Возврат принимает только charge_id и reason.', demo, {
+            reason: extra.includes('amount_stars') ? 'refund_amount_not_allowed' : 'unknown_field',
+            field_errors: extra.map((field) => ({ field, message: 'Сумму считает сервер' })),
+          });
+          return;
+        }
         if (reason === '') {
           problem(res, 422, 'VALIDATION_FAILED', 'Возврат без основания не проводится.', demo, {
             field_errors: [{ field: 'reason', message: 'Обязательно' }],
           });
           return;
         }
-        if (card.refundable === null) {
-          problem(res, 409, 'CONFLICT', 'Возвращать нечего: оплаченного платежа без возврата нет.', demo, { reason: 'nothing_to_refund' });
+        const chargeId = typeof body.charge_id === 'string' ? body.charge_id : '';
+        const payment = card.payments.find((item) => item.charge_id === chargeId);
+        if (payment === undefined) {
+          problem(res, 404, 'NOT_FOUND', 'Платежа с таким charge_id у этого человека нет.', demo, { reason: 'charge_not_found' });
           return;
         }
-        // Возврат только полный: сумма — сумма исходного платежа, поле «сколько»
-        // в теле отсутствует как класс.
-        const quote = card.refundable;
+        if (payment.status === 'refunded' || payment.refunded_at !== undefined) {
+          problem(res, 409, 'CONFLICT', 'По этому платежу уже был возврат.', demo, { reason: 'already_refunded' });
+          return;
+        }
+        if (payment.status === 'failed') {
+          problem(res, 409, 'CONFLICT', 'Возвращать нечего: платёж не прошёл.', demo, { reason: 'nothing_to_refund' });
+          return;
+        }
+        // Возврат только полный: сумма — сумма исходного заряда, поля «сколько»
+        // в теле нет, и `access_revoked` решает сервер (у нас — остаётся).
+        const refund: AdminRefundResult = {
+          ok: true,
+          charge_id: payment.charge_id,
+          amount_stars: payment.amount_stars,
+          refunded_at: nowIso(0),
+          access_revoked: false,
+        };
         users = users.map((item) =>
           item.user_id === id
             ? {
                 ...item,
-                refundable: null,
-                payments: [
-                  { id: `refund-${quote.charge_id}`, charge_id: `${quote.charge_id}r`, kind: 'refund' as const, stars: quote.amount_stars, at: nowIso(0), refunded: false },
-                  ...item.payments.map((payment) => (payment.charge_id === quote.charge_id ? { ...payment, refunded: true } : payment)),
-                ],
+                payments: item.payments.map((entry) =>
+                  entry.charge_id === payment.charge_id ? { ...entry, status: 'refunded' as const, refunded_at: nowIso(0) } : entry),
               }
             : item);
-        json(res, 200, { charge_id: quote.charge_id, amount_stars: quote.amount_stars, currency: quote.currency, status: 'refunded', note: MOCK_MARKER }, demo);
+        payments = payments.map((entry) => (entry.charge_id === payment.charge_id ? { ...entry, status: 'refunded', refunded_at: nowIso(0) } : entry));
+        json(res, 200, { ...refund, note: MOCK_MARKER }, demo);
         return;
       }
       if (action === 'ban') {
-        if (reason === '') {
-          problem(res, 422, 'VALIDATION_FAILED', 'Блокировка без основания не проводится.', demo, {
-            field_errors: [{ field: 'reason', message: 'Обязательно' }],
+        const banned = body.banned;
+        if (typeof banned !== 'boolean') {
+          problem(res, 422, 'VALIDATION_FAILED', 'Нужен флаг banned: true|false — маршрут один на бан и разбан.', demo, {
+            field_errors: [{ field: 'banned', message: 'Только true/false' }],
           });
           return;
         }
-        const banned = card.banned_at === null;
+        if (banned && reason === '') {
+          problem(res, 422, 'VALIDATION_FAILED', 'Блокировка без основания не проводится.', demo, {
+            field_errors: [{ field: 'reason', message: 'Обязательно для banned: true' }],
+          });
+          return;
+        }
+        const result: AdminBanResult = {
+          user_id: id,
+          banned,
+          banned_at: banned ? nowIso(0) : null,
+          reason: banned ? reason : null,
+        };
         users = users.map((item) =>
-          item.user_id === id ? { ...item, banned_at: banned ? nowIso(0) : null, ban_reason: banned ? reason : null } : item);
-        json(res, 200, { user_id: id, banned, reason, at: nowIso(0), note: MOCK_MARKER }, demo);
+          item.user_id === id
+            ? { ...item, banned, banned_at: banned ? nowIso(0) : null, ban_reason: banned ? reason : null }
+            : item);
+        json(res, 200, { ...result, note: MOCK_MARKER }, demo);
         return;
       }
       if (action === 'push') {
-        if (typeof body.enabled !== 'boolean') {
-          problem(res, 422, 'VALIDATION_FAILED', 'Нужен флаг enabled.', demo, {
-            field_errors: [{ field: 'enabled', message: 'Только true/false' }],
+        if (Object.keys(body).length > 0) {
+          problem(res, 422, 'VALIDATION_FAILED', 'У этого запроса тела нет.', demo, {
+            reason: 'unknown_field',
+            field_errors: Object.keys(body).map((field) => ({ field, message: 'Тело не принимается' })),
           });
           return;
         }
-        users = users.map((item) => (item.user_id === id ? { ...item, push_enabled: body.enabled as boolean } : item));
-        json(res, 200, { user_id: id, push_enabled: body.enabled, note: MOCK_MARKER }, demo);
+        if (!card.push_enabled) {
+          problem(res, 409, 'CONFLICT', 'У человека выключены пуши (или он заблокировал бота).', demo, { reason: 'push_disabled' });
+          return;
+        }
+        if (pushSentAt[id] !== undefined) {
+          problem(res, 409, 'CONFLICT', 'Тестовый пуш уже отправляли в эти сутки.', demo, { reason: 'push_test_sent_24h' });
+          return;
+        }
+        const sentAt = nowIso(0);
+        pushSentAt = { ...pushSentAt, [id]: sentAt };
+        const result: AdminPushResult = { user_id: id, sent: true, sent_at: sentAt, kind: 'test' };
+        json(res, 200, { ...result, note: MOCK_MARKER }, demo);
         return;
       }
+    }
+
+    // ---- «Платежи и генерации»: лента зарядов по курсору и лента разборов ----
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/payments') {
+      const chargeId = ctx.url.searchParams.get('charge_id')?.trim() ?? '';
+      const userId = ctx.url.searchParams.get('user_id')?.trim() ?? '';
+      const status = ctx.url.searchParams.get('status')?.trim() ?? '';
+      if (status !== '' && !['paid', 'processed', 'refunded', 'failed'].includes(status)) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Неизвестный статус платежа.', demo, {
+          reason: 'invalid_filter',
+          field_errors: [{ field: 'status', message: 'paid|processed|refunded|failed' }],
+        });
+        return;
+      }
+      const limitRaw = ctx.url.searchParams.get('limit');
+      const limit = limitRaw === null || limitRaw === '' ? 20 : Number(limitRaw);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        problem(res, 422, 'VALIDATION_FAILED', 'limit — целое от 1 до 100.', demo, {
+          reason: 'invalid_limit',
+          field_errors: [{ field: 'limit', message: '1..100' }],
+        });
+        return;
+      }
+      let start = 0;
+      const cursorRaw = ctx.url.searchParams.get('cursor');
+      if (cursorRaw !== null && cursorRaw !== '') {
+        const match = /^(\d+)$/.exec(cursorRaw);
+        if (match === null) {
+          problem(res, 422, 'VALIDATION_FAILED', 'Курсор мне не знаком.', demo, { reason: 'invalid_cursor' });
+          return;
+        }
+        start = Number(match[1]);
+      }
+      const rows = payments.filter(
+        (item) =>
+          (chargeId === '' || item.charge_id === chargeId) &&
+          (userId === '' || item.user_id === userId) &&
+          (status === '' || item.status === status),
+      );
+      const page = rows.slice(start, start + limit);
+      json(res, 200, {
+        items: page,
+        next_cursor: start + limit < rows.length ? String(start + limit) : null,
+        note: MOCK_MARKER,
+      }, demo);
+      return;
+    }
+
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/reports') {
+      const status = ctx.url.searchParams.get('status')?.trim() ?? '';
+      const kind = ctx.url.searchParams.get('kind')?.trim() ?? '';
+      const userId = ctx.url.searchParams.get('user_id')?.trim() ?? '';
+      const statuses = ['queued', 'planning', 'writing', 'ready', 'failed', 'refunded'];
+      const kinds = ['report', 'compat', 'solar'];
+      if (status !== '' && !statuses.includes(status)) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Неизвестный статус разбора.', demo, {
+          reason: 'invalid_filter',
+          field_errors: [{ field: 'status', message: statuses.join('|') }],
+        });
+        return;
+      }
+      if (kind !== '' && !kinds.includes(kind)) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Неизвестный вид разбора.', demo, {
+          reason: 'invalid_filter',
+          field_errors: [{ field: 'kind', message: kinds.join('|') }],
+        });
+        return;
+      }
+      const limitRaw = ctx.url.searchParams.get('limit');
+      const limit = limitRaw === null || limitRaw === '' ? 20 : Number(limitRaw);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        problem(res, 422, 'VALIDATION_FAILED', 'limit — целое от 1 до 100.', demo, {
+          reason: 'invalid_limit',
+          field_errors: [{ field: 'limit', message: '1..100' }],
+        });
+        return;
+      }
+      const rows = reports.filter(
+        (item) => (status === '' || item.status === status) && (kind === '' || item.kind === kind) && (userId === '' || item.user_id === userId),
+      );
+      const page = rows.slice(0, limit);
+      json(res, 200, { items: page, truncated: rows.length > page.length, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    const regenerateMatch = /^\/api\/v1\/admin\/reports\/([^/]+)\/regenerate$/.exec(pathname);
+    if (regenerateMatch !== null && ctx.method === 'POST') {
+      if (ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'DEV-мокер требует X-Admin-CSRF на изменяющий запрос.', demo, { reason: 'csrf_missing' });
+        return;
+      }
+      const id = decodeURIComponent(regenerateMatch[1] ?? '');
+      const report = reports.find((item) => item.id === id);
+      if (report === undefined) {
+        problem(res, 404, 'NOT_FOUND', 'Разбора с таким id нет.', demo, { reason: 'report_not_found' });
+        return;
+      }
+      if (report.status !== 'failed') {
+        problem(res, 409, 'CONFLICT', 'Перезапускать можно только упавший разбор: готовый текст было бы затёрт.', demo, {
+          reason: 'report_not_regenerable',
+        });
+        return;
+      }
+      reports = reports.map((item) => (item.id === id ? { ...item, status: 'queued' as const, updated_at: nowIso(0) } : item));
+      const result: AdminReportRegenerateResult = { report_id: id, state: 'queued', attempts: report.attempts + 1 };
+      json(res, 202, { ...result, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    // ---- «Основатели и партнёры»: места 1…50 и агрегаты по партнёрам ----
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/founders') {
+      const limitRaw = ctx.url.searchParams.get('limit');
+      const limit = limitRaw === null || limitRaw === '' ? 50 : Number(limitRaw);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        problem(res, 422, 'VALIDATION_FAILED', 'limit — целое от 1 до 100.', demo, {
+          reason: 'invalid_limit',
+          field_errors: [{ field: 'limit', message: '1..100' }],
+        });
+        return;
+      }
+      let start = 0;
+      const cursorRaw = ctx.url.searchParams.get('cursor');
+      if (cursorRaw !== null && cursorRaw !== '') {
+        const match = /^(\d+)$/.exec(cursorRaw);
+        if (match === null) {
+          problem(res, 422, 'VALIDATION_FAILED', 'Курсор мне не знаком.', demo, { reason: 'invalid_cursor' });
+          return;
+        }
+        start = Number(match[1]);
+      }
+      const page = founders.slice(start, start + limit);
+      json(res, 200, {
+        items: page,
+        next_cursor: start + limit < founders.length ? String(start + limit) : null,
+        note: MOCK_MARKER,
+      }, demo);
+      return;
+    }
+
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/partners') {
+      json(res, 200, { items: partners, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    // ---- «Эксплуатация»: дамп, вебхук, подтверждение алерта ----
+    if (ctx.method === 'POST' && pathname === '/api/v1/admin/backup/run') {
+      if (ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'DEV-мокер требует X-Admin-CSRF на изменяющий запрос.', demo, { reason: 'csrf_missing' });
+        return;
+      }
+      const body = asRecord(ctx.body);
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (reason.length < 5) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Основание обязательно: от 5 до 500 знаков.', demo, {
+          reason: 'invalid_reason',
+          field_errors: [{ field: 'reason', message: 'minLength 5' }],
+        });
+        return;
+      }
+      if (process.env.API_MOCK_BACKUP === 'unconfigured') {
+        // Имена переменных — из `details.missing`: панель показывает их дословно.
+        problem(res, 503, 'UNAVAILABLE', 'Выгрузка не настроена — локальный дамп бэкапом не считается.', demo, {
+          reason: 'backup_not_configured',
+          missing: ['BACKUP_S3_URL', 'BACKUP_REMOTE', 'BACKUP_STATE_FILE'],
+        });
+        return;
+      }
+      const now = Date.now();
+      const recent = backupRuns.filter((at) => now - at < MOCK_BACKUP_WINDOW_MS);
+      if (recent.length > 0) {
+        const left = Math.ceil((MOCK_BACKUP_WINDOW_MS - (now - Math.max(...recent))) / 1000);
+        problem(res, 409, 'CONFLICT', 'Дамп уже запускался меньше 10 минут назад.', demo, {
+          reason: 'backup_too_frequent',
+          retry_after_seconds: left,
+        });
+        return;
+      }
+      backupRuns = [...recent, now];
+      const result: AdminBackupRunResult = { started: true, job_id: randomUuid(backupRuns.length) };
+      json(res, 202, { ...result, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    if (ctx.method === 'POST' && pathname === '/api/v1/admin/telegram/webhook') {
+      if (ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'DEV-мокер требует X-Admin-CSRF на изменяющий запрос.', demo, { reason: 'csrf_missing' });
+        return;
+      }
+      const body = asRecord(ctx.body);
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (reason.length < 5) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Основание обязательно: от 5 до 500 знаков.', demo, {
+          reason: 'invalid_reason',
+          field_errors: [{ field: 'reason', message: 'minLength 5' }],
+        });
+        return;
+      }
+      const url = 'https://example.invalid/api/v1/telegram/webhook';
+      if (process.env.API_MOCK_WEBHOOK === 'reject') {
+        // Текст Bot API отдаётся дословно, в `details.last_error_message`.
+        problem(res, 502, 'UPSTREAM_LLM', 'Telegram отказался принимать адрес.', demo, {
+          url,
+          ok: false,
+          last_error_message: '[Bad Request: Webhook URL must be HTTPS]',
+        });
+        return;
+      }
+      const result: AdminWebhookSetResult = { url, ok: true, last_error_message: null };
+      json(res, 200, { ...result, note: MOCK_MARKER }, demo);
+      return;
+    }
+
+    const ackMatch = /^\/api\/v1\/admin\/alerts\/([^/]+)\/ack$/.exec(pathname);
+    if (ackMatch !== null && ctx.method === 'POST') {
+      if (ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'DEV-мокер требует X-Admin-CSRF на изменяющий запрос.', demo, { reason: 'csrf_missing' });
+        return;
+      }
+      const id = decodeURIComponent(ackMatch[1] ?? '');
+      const alert = alerts.alerts.find((item) => item.id === id);
+      if (alert === undefined) {
+        problem(res, 422, 'VALIDATION_FAILED', 'Такого правила мониторинга нет.', demo, {
+          reason: 'unknown_alert',
+          field_errors: [{ field: 'id', message: 'только правила из GET /admin/alerts' }],
+        });
+        return;
+      }
+      const body = asRecord(ctx.body);
+      const minutes = body.minutes;
+      if (typeof minutes !== 'number' || !Number.isInteger(minutes) || minutes < 15 || minutes > 1440) {
+        problem(res, 422, 'VALIDATION_FAILED', 'minutes — целое от 15 до 1440.', demo, {
+          reason: 'invalid_minutes',
+          field_errors: [{ field: 'minutes', message: '15..1440' }],
+        });
+        return;
+      }
+      const ackedUntil = nowIso(minutes * 60_000);
+      // Подтверждение гасит показ: `fired` → false, `value`/`threshold`/`since` не трогаются.
+      alerts = {
+        ...alerts,
+        alerts: alerts.alerts.map((item) => (item.id === id ? { ...item, fired: false, acked_until: ackedUntil } : item)),
+      };
+      const result: AdminAlertAckResult = {
+        acked_until: ackedUntil,
+        alert: alerts.alerts.find((item) => item.id === id) ?? alert,
+      };
+      json(res, 200, { ...result, note: MOCK_MARKER }, demo);
+      return;
     }
 
     problem(res, 404, 'NOT_FOUND', `Мокер не знает маршрута ${ctx.method} ${pathname}.`, demo);
