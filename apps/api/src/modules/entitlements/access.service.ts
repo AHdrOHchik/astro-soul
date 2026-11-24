@@ -137,11 +137,22 @@ export class AccessService {
       return true;
     }
 
-    if (paid && chartId === undefined) {
+    const rights = await this.entitlements.getGrantEntitlements(userId);
+
+    // «Всё включено» — это и разбор, причём **любой** карты (1.6.18).
+    //
+    // Раньше проверка шла мимо этого права: `chartId` есть → смотрим только
+    // оплаченный разбор этой карты → дальше только `single_report`. Поэтому
+    // владелец с действующим `all_access` видел открытую совместимость и
+    // платный разбор, а `POST /reports` отвечал `402 report_not_paid`.
+    // Грант не привязан к карте, поэтому и проверка стоит до `chartId`.
+    if (rights.allAccessUntil !== null) {
       return true;
     }
 
-    const rights = await this.entitlements.getGrantEntitlements(userId);
+    if (paid && chartId === undefined) {
+      return true;
+    }
 
     if (rights.singleReports === 0) {
       return false;

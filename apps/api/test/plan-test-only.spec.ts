@@ -66,6 +66,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // `plans` не чистится между файлами (это справочник), поэтому `test_1` с
+  // `is_active = true` переезжал в следующий файл. Полный прогон round44
+  // показал цену: `prod-guard-startup.spec.ts` видел «активный тестовый тариф»
+  // в базе, которую сам не пачкал, и краснел. Убираем за собой.
+  await ctx.db.query(`UPDATE plans SET is_active = false WHERE test_only`);
   await ctx.close();
 });
 

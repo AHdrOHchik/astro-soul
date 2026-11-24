@@ -9,6 +9,12 @@ on:
     branches: [main]
   pull_request:
 
+# Комментарий с причиной падения — единственный канал, который читается из
+# окружений без доступа к логам GitHub.
+permissions:
+  contents: read
+  pull-requests: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -78,12 +84,82 @@ jobs:
       # Отдельный шаг до общего `check`: тесты API и общих пакетов должны
       # отработать (и быть видны в логе), даже если `check` упадёт позже
       # на линте/типах фронта.
+      # Логи пишем в файлы: без этого красный прогон нечем разобрать
+      # (страница логов GitHub из песочницы не читается, а `gh run view
+      # --log-failed` отдаёт EOF). Артефакт скачивается через API.
       - name: Тесты API, shared и UI
+        shell: bash
         run: |
-          pnpm --filter @astro-soul/shared run build
-          pnpm --filter @astro-soul/api run test
-          pnpm --filter @astro-soul/shared run test
-          pnpm --filter @astro-soul/ui run test
+          set -eo pipefail
+          mkdir -p ci-logs
+          pnpm --filter @astro-soul/shared run build 2>&1 | tee ci-logs/shared-build.log
+          pnpm --filter @astro-soul/api run test 2>&1 | tee ci-logs/api-tests.log
+          pnpm --filter @astro-soul/shared run test 2>&1 | tee ci-logs/shared-tests.log
+          pnpm --filter @astro-soul/ui run test 2>&1 | tee ci-logs/ui-tests.log
+          # Панель и веб — теми же командами, что в `pnpm check`. Явно, а не
+          # через `pnpm -r`: иначе непонятно, что именно упало, и зеленеет ли
+          # шаг на самом деле.
+          pnpm --filter @astro-soul/admin run test 2>&1 | tee ci-logs/admin-tests.log
+          pnpm --filter @astro-soul/web run test 2>&1 | tee ci-logs/web-tests.log
 
       - name: Линт, типы, тесты
-        run: pnpm check
+        shell: bash
+        # `tee` — чтобы при падении было что показать в PR: у этого шага
+        # (линт/типы/тесты панели и веба) нет своего вывода нигде, кроме лога
+        # Actions, который из песочницы не читается.
+        run: |
+          set -eo pipefail
+          mkdir -p ci-logs
+          pnpm check 2>&1 | tee ci-logs/check.log
+
+      - name: Логи тестов при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci-logs/
+          retention-days: 7
+
+      # Артефакт скачать тоже не всегда можно, а вот комментарий читается
+      # любым клиентом. Поэтому причина падения пишется в PR одной строкой
+      # на тест: комментарий обновляется, а не размножается.
+      - name: Причина падения в PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const read = (path) => {
+              try { return fs.readFileSync(path, 'utf8'); } catch { return ''; }
+            };
+            const source = read('ci-logs/check.log') + read('ci-logs/api-tests.log') +
+              read('ci-logs/shared-tests.log') + read('ci-logs/ui-tests.log') +
+              read('ci-logs/admin-tests.log') + read('ci-logs/web-tests.log');
+            // Строки в логе префиксованы именем пакета (`apps/api test:  FAIL …`),
+            // поэтому ищем подстроку, а не начало строки.
+            const lines = source
+              .replace(/\u001b\[[0-9;]*m/g, '')
+              .split('\n')
+              .filter((line) =>
+                /FAIL |AssertionError|TypeError:|Tests\s+\d+ failed/.test(line) ||
+                /^\s*×/.test(line));
+            const marker = '<!-- ci-failure-report -->';
+            const body = [
+              marker,
+              '### CI: что упало',
+              '',
+              '```',
+              lines.slice(0, 80).join('\n').slice(0, 55_000) || 'падение до запуска тестов (смотри артефакт ci-logs)',
+              '```',
+            ].join('\n');
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+
+            if (existing === undefined) {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            } else {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            }

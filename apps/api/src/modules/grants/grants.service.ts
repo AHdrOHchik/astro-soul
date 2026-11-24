@@ -65,8 +65,24 @@ export class GrantsService {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
-  /** Есть ли у человека карта: от этого зависит, начнётся ли срок сразу. */
-  async hasChart(userId: string): Promise<boolean> {
+  /**
+   * Есть ли у человека карта: от этого зависит, начнётся ли срок сразу.
+   *
+   * `client` — транзакция вызывающего (активация кода): проверка обязана идти
+   * **в ней же**. Запрос через пул внутри чужой транзакции читает чужое
+   * соединение: на однопоточном Postgres (наш PGlite) это взаимная блокировка,
+   * а на обычном — чтение мимо транзакции, то есть ответ «карты нет» для карты,
+   * созданной в этой же транзакции.
+   */
+  async hasChart(userId: string, client?: PoolClient): Promise<boolean> {
+    if (client !== undefined) {
+      const result = await client.query<{ one: number }>(
+        `SELECT 1 AS one FROM charts WHERE user_id = $1 LIMIT 1`,
+        [userId],
+      );
+      return result.rows[0] !== undefined;
+    }
+
     const row = await this.db.queryOne<{ one: number }>(
       `SELECT 1 AS one FROM charts WHERE user_id = $1 LIMIT 1`,
       [userId],
@@ -77,7 +93,9 @@ export class GrantsService {
 
   async issue(input: IssueGrantInput): Promise<IssuedGrant> {
     if (input.checkBudget !== false) {
-      await this.budget.ensureAvailable(`${input.source}:${input.kind}`);
+      // Та же транзакция, что и выдача: иначе на однопоточной сессии взаимная
+      // блокировка, а на обычной — бюджет без только что выданного права.
+      await this.budget.ensureAvailable(`${input.source}:${input.kind}`, input.client);
     }
 
     const kind = input.kind;
@@ -89,7 +107,7 @@ export class GrantsService {
       throw new Error('grant_all_access_requires_days');
     }
 
-    const startNow = await this.hasChart(input.userId);
+    const startNow = await this.hasChart(input.userId, input.client);
 
     const write = async (client: PoolClient): Promise<{ grant: GrantRow; extended: boolean }> => {
       if (kind === 'all_access') {

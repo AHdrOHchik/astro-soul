@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import { ApiError, reasonOptions } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import { DbService } from '../../db/db.service';
@@ -39,9 +40,17 @@ export class BonusBudgetService {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
-  async state(): Promise<BonusBudgetState> {
-    const row = await this.db.queryOne<{ days: number; reports: number; compats: number }>(
-      `SELECT
+  /**
+   * `client` — транзакция вызывающего (активация кода, выдача из панели).
+   *
+   * Считать бюджет через пул **внутри** чужой транзакции нельзя: на
+   * однопоточном Postgres (PGlite в тестах, любой деплой с одной сессией) это
+   * взаимная блокировка, а на обычном — чтение мимо транзакции, то есть бюджет
+   * считается без ещё не закоммиченных выдач этой же транзакции. Ровно на этом
+   * висела успешная активация кода (`POST /me/activate-code`).
+   */
+  async state(client?: PoolClient): Promise<BonusBudgetState> {
+    const sql = `SELECT
          COALESCE(SUM(CASE WHEN kind = 'all_access' THEN COALESCE(days, 0) ELSE 0 END), 0)::int AS days,
          COALESCE(SUM(CASE WHEN kind = 'single_report' AND consumed_at IS NOT NULL THEN 1 ELSE 0 END), 0)::int
            AS reports,
@@ -49,9 +58,13 @@ export class BonusBudgetService {
            AS compats
          FROM grants
         WHERE created_at >= date_trunc('month', now())
-          AND revoked_at IS NULL`,
-      [],
-    );
+          AND revoked_at IS NULL`;
+
+    const row =
+      client === undefined
+        ? await this.db.queryOne<{ days: number; reports: number; compats: number }>(sql, [])
+        : ((await client.query<{ days: number; reports: number; compats: number }>(sql)).rows[0] ??
+          null);
 
     const days = row?.days ?? 0;
     const reports = row?.reports ?? 0;
@@ -74,8 +87,8 @@ export class BonusBudgetService {
    * Проверка перед выдачей. Бросает `503 bonus_budget_exhausted` — тот же код,
    * что у LLM-капов: это «временная нехватка ресурса», а не «права нет».
    */
-  async ensureAvailable(reason: string): Promise<void> {
-    const state = await this.state();
+  async ensureAvailable(reason: string, client?: PoolClient): Promise<void> {
+    const state = await this.state(client);
 
     if (!state.exhausted) {
       return;

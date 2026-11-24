@@ -256,6 +256,10 @@ describe('успех списывает право один раз', () => {
     const ready = await waitForStatus(ctx, created.body.report_id as string, 'ready');
 
     const grant = await waitForConsumption(ctx, grantId);
+    // `toBeDefined` — половина проверки: `expect(undefined?.consumed_at).not
+    // .toBeNull()` проходит при **отсутствии** строки, и именно так этот тест
+    // однажды «позеленел», не проверив ничего (нашла итерация 44).
+    expect(grant).toBeDefined();
     expect(grant?.consumed_at).not.toBeNull();
 
     // `is_paid` считается по `entitlements`, которая материализуется вместе с
@@ -263,7 +267,14 @@ describe('успех списывает право один раз', () => {
     expect(ready['is_paid']).toBe(true);
   });
 
-  it('подписчик с подарком подарок не теряет', async () => {
+  it('подписка разбор не оплачивает: подарок тратится на разбор', async () => {
+    // Было (итерация 43) наоборот — «подписчик с подарком подарок не теряет»,
+    // и тест был зелёным по неверной причине: расход не случался **никогда**
+    // (проверка `fullReport` перед расходом всегда видела только что
+    // записанный `ready`). Подписка разбор не включает: `fullReport` у неё
+    // `false`, и разбор подписчика с подарком оплачен именно подарком. Значит
+    // право обязано израсходоваться, иначе подарок превращался в бесконечные
+    // бесплатные разборы.
     const fixture = await userWithChart(ctx);
     await ctx.db.query(
       `INSERT INTO subscriptions (user_id, plan, status, expires_at)
@@ -274,16 +285,16 @@ describe('успех списывает право один раз', () => {
 
     const created = await order(ctx, fixture.chartId, 'sub-key').expect(202);
     await waitForStatus(ctx, created.body.report_id as string, 'ready');
-    // Даём расходу шанс случиться: тест проверяет, что его **нет**, а не что
-    // он не успел.
-    await new Promise((resolve) => setTimeout(resolve, 150));
 
-    const grant = await ctx.db.queryOne<{ consumed_at: Date | null }>(
-      `SELECT consumed_at FROM grants WHERE id = $1`,
-      [grantId],
+    const grant = await waitForConsumption(ctx, grantId);
+    expect(grant?.consumed_at).not.toBeNull();
+
+    // Вторая карта у подписчика снова платная: подписка её не открывает.
+    const rights = await ctx.db.queryOne<{ single_reports: number }>(
+      `SELECT count(*)::int AS single_reports FROM grants
+        WHERE user_id = $1 AND kind = 'single_report' AND consumed_at IS NULL`,
+      [fixture.userId],
     );
-    // Разбор уже оплачен подпиской — подарок остаётся на будущее. Это то же
-    // правило, что в итерации 39 починили для совместимости.
-    expect(grant?.consumed_at).toBeNull();
+    expect(rights?.single_reports).toBe(0);
   });
 });

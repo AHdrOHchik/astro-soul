@@ -83,6 +83,12 @@ afterAll(() => {
 beforeEach(async () => {
   seq += 1;
   logPath = join(dir, `calls-${String(seq)}.log`);
+  // Каталог бэкапов свой у каждого теста. Раньше он был один на файл, и
+  // утверждение «при отказе файла нет» проверяло не отказ, а то, что до него
+  // ничего не успели создать: на успешных прогонах в каталоге уже лежал дамп,
+  // и в CI (полный `pnpm check`, второй запуск того же набора) пять тестов на
+  // отказы краснели из-за чужого файла. Нашла итерация 44.
+  backupDir = join(dir, `backups-${String(seq)}`);
   await mkdir(binDir, { recursive: true });
   await mkdir(backupDir, { recursive: true });
   await stub('pg_dump', pgDumpOk);

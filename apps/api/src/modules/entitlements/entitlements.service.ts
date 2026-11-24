@@ -149,6 +149,12 @@ export class EntitlementsService {
           askPerDay: Math.max(base.askPerDay, 5),
           compatPerMonth: Math.max(base.compatPerMonth, 1),
           solarIncluded: true,
+          // Пятая фича — разбор (1.6.18, дефект round44). Здесь её **не было**:
+          // «всё включено» открывал прогноз, вопросы, совместимость и карту
+          // года, а разбор оставался платным — то есть название права было
+          // неправдой в одной пятой части. `fullReportChartId` при этом остаётся
+          // `null`: право не привязано к карте, оплаченного разбора нет.
+          fullReport: true,
         }
       : base;
 

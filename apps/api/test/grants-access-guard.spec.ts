@@ -80,6 +80,25 @@ const SUBSCRIPTIONS_ALLOWED: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Где прямой запрос к `payments` разрешён и почему.
+ *
+ * Требование round44 звучало как «только `AccessService` и биллинг», но в
+ * реальности платёжную таблицу читают ещё три места, и каждое — агрегат, а не
+ * гейт: метрики/алерты эксплуатации и две админские выборки. Поэтому список
+ * закрытый и с причинами: новый читатель — красный тест, а не «странность».
+ */
+const PAYMENTS_ALLOWED: Readonly<Record<string, string>> = {
+  'modules/billing/billing.repository.ts': 'биллинг — владелец таблицы',
+  'modules/billing/subscription-cancel.service.ts': 'отмена подписки сверяет платёж',
+  'modules/entitlements/entitlements.service.ts': '`stars_paid_total` в состоянии подписки',
+  'modules/ops/admin-metrics.service.ts': 'админ-метрики: возвраты за 24 часа',
+  'modules/ops/alerts.service.ts': 'алерт о возвратах',
+  'modules/ops/jobs.service.ts': 'ночные джобы',
+  'modules/admin-support/admin-users.repository.ts': 'карточка человека в панели',
+  'modules/admin-support/admin-directory.repository.ts': 'лента платежей в панели',
+};
+
+/**
  * Где разрешено **менять** `subscriptions`. Тот же закрытый список, но по
  * записи: чтение в агрегате — не то же самое, что `INSERT` подписки из
  * маршрута, который на самом деле выдаёт грант.
@@ -121,6 +140,36 @@ describe('единая дверь к доступу', () => {
       .sort();
 
     expect(found).toEqual(Object.keys(SUBSCRIPTIONS_WRITE_ALLOWED).sort());
+  });
+
+  it('прямые запросы к `payments` только в разрешённых файлах', () => {
+    const found = listTsFiles(SRC)
+      .filter((file) => readFileSync(file, 'utf8').includes('FROM payments'))
+      .map(modulePath)
+      .sort();
+
+    expect(found).toEqual(Object.keys(PAYMENTS_ALLOWED).sort());
+  });
+
+  /**
+   * Второй двери для разбора быть не должно (итерация 44).
+   *
+   * Дефект, который поймал владелец, был ровно про это: `entitlements`
+   * читались в двух местах — в двери и в биллинге, — и второе место не знало
+   * ни про `single_report`, ни про «всё включено». Человек с правом мог
+   * заплатить за то, что у него уже было. Поэтому: «надо ли платить» отвечает
+   * `AccessService`, а биллинг **обязан** спрашивать именно его.
+   */
+  it('биллинг спрашивает дверь, а не считает право сам', () => {
+    const billing = readFileSync(join(SRC, 'modules/billing/billing.service.ts'), 'utf8');
+
+    expect(billing).toMatch(/this\.access\.hasAccess\(/u);
+    // Прежний второй гейт (`hasActiveReportGrant` читал `entitlements` прямо в
+    // репозитории биллинга) удалён; его возвращение — красный тест.
+    // Считаем вызовом, а не упоминанием: в комментарии объяснено, почему его
+    // больше нет, и запрещать само слово было бы шумом.
+    expect(billing).not.toMatch(/hasActiveReportGrant\s*\(/u);
+    expect(billing).not.toContain('FROM entitlements');
   });
 
   it('каждый гейт спрашивает `AccessService`, а не таблицы', () => {

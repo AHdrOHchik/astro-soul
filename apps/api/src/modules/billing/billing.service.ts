@@ -8,6 +8,7 @@ import { JsonLogger } from '../../common/logger';
 import type { VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
 import { ChartsRepository } from '../charts/charts.repository';
+import { AccessService } from '../entitlements/access.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsRepository } from '../events/events.repository';
 import { GrantsRepository } from '../grants/grants.repository';
@@ -37,6 +38,7 @@ export class BillingService {
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(ChartsRepository) private readonly charts: ChartsRepository,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(GrantsRepository) private readonly grants: GrantsRepository,
     @Inject(TelegramClient) private readonly telegram: TelegramClient,
     @Inject(EventsRepository) private readonly events: EventsRepository,
@@ -103,12 +105,33 @@ export class BillingService {
       // Двойная покупка разбора. Проверка смотрит на доступ, а не на цену и не
       // на «тестовый» признак: на тарифе за 1 ⭐ она обязана срабатывать так же,
       // как на 149 ⭐, иначе тест не проверяет то, ради чего он.
-      if (plan.kind === 'one_off' && plan.grant === 'report' && (await this.repo.hasActiveReportGrant(userId, chartId))) {
+      //
+      // 1.6.18: спрашиваем **дверь** `hasAccess`, а не только `entitlements`.
+      // Раньше здесь стоял `hasActiveReportGrant` — второй гейт, который видел
+      // купленный разбор и не видел ни `single_report`, ни «всё включено».
+      // Человек с подаренным правом мог заплатить за то, что у него уже было:
+      // диагностика round44 воспроизвела счёт `201` при действующем праве.
+      // Теперь «уже есть» — это ровно то, что отвечает `hasAccess`, и других
+      // ответов на вопрос «надо ли платить» в биллинге нет.
+      if (
+        plan.kind === 'one_off' &&
+        plan.grant === 'report' &&
+        (await this.access.hasAccess(userId, 'report', { chartId }))
+      ) {
         this.logger.info('invoice_refused_already_owned', { user_id: userId, plan: planCode, chart_id: chartId });
-        throw invalidFields(
-          [{ field: 'chart_id', message: 'Разбор для этой карты уже куплен — открой его' }],
-          { reason: 'report_already_owned' },
-        );
+        // Ответ собирается руками, а не через `invalidFields`: тот перезаписывает
+        // `details`, и `details.reason` (на него смотрит контракт) из него
+        // пропадал бы — оставались только `field_errors`. Так же сделано у
+        // `compat_already_owned` ниже.
+        throw new ApiError('VALIDATION_FAILED', 422, {
+          message: 'Разбор уже доступен — открой его, платить не нужно',
+          details: {
+            reason: 'report_already_owned',
+            field_errors: [
+              { field: 'chart_id', message: 'Разбор уже доступен — открой его' },
+            ],
+          },
+        });
       }
     }
 
