@@ -71,8 +71,8 @@ jobs:
           test -s "$HOME/.ssh/known_hosts"
           echo "SSH-материалы установлены; host key проверяется строго"
 
-      # Артефакт того же тега берём из последнего успешного release. Маркер
-      # RELEASE_TAG внутри не даёт тихо выложить старую админку с новым API.
+      # Артефакт того же тега берём из успешного release. Маркер RELEASE_TAG
+      # внутри не даёт тихо выложить старую админку с новым API.
       - name: Статика админки из release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,26 +80,48 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifact
-          mapfile -t runs < <(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?status=success&per_page=20" \
-            --jq '.workflow_runs[].id')
-          found=0
-          for id in "${runs[@]}"; do
-            rm -rf artifact/admin-dist
-            if gh run download "$id" -n admin-dist --dir artifact >/dev/null 2>&1; then
-              if [[ -f artifact/admin-dist/RELEASE_TAG ]] && \
-                 [[ "$(cat artifact/admin-dist/RELEASE_TAG)" == "$TAG" ]]; then
-                found=1
-                echo "admin-dist: release run #$id, tag=$TAG"
-                break
-              fi
-            fi
-          done
-          if [[ "$found" -ne 1 ]]; then
-            echo "ОШИБКА: нет артефакта admin-dist для тега '$TAG' — сначала выполни release с этим тегом" >&2
+
+          mapfile -t runs < <(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?per_page=50" \
+              --jq '.workflow_runs[]
+                     | select(.head_sha | startswith("'"$TAG"'"))
+                     | [.id, .status, (.conclusion // ""), .html_url] | @tsv'
+          )
+
+          if [[ ${#runs[@]} -eq 0 ]]; then
+            echo "ОШИБКА: не найден запуск release с коммитом '$TAG'" >&2
             exit 1
           fi
+
+          echo "Запуски release с коммитом ${TAG}:"
+          printf '  %s\n' "${runs[@]}"
+
+          ok_id=""
+          for row in "${runs[@]}"; do
+            IFS=$'\t' read -r id status conclusion _ <<< "$row"
+            if [[ "$status" == "completed" && "$conclusion" == "success" ]]; then
+              ok_id="$id"
+              break
+            fi
+          done
+
+          if [[ -z "$ok_id" ]]; then
+            echo "ОШИБКА: release с тегом '$TAG' не завершился успешно (нужно completed/success). Деплоить нельзя." >&2
+            exit 1
+          fi
+
+          rm -rf artifact/admin-dist
+          gh run download "$ok_id" -n admin-dist --dir artifact
+
+          [[ -f artifact/admin-dist/RELEASE_TAG ]] || {
+            echo "ОШИБКА: в артефакте run #$ok_id нет RELEASE_TAG" >&2; exit 1
+          }
+          got="$(tr -d '[:space:]' < artifact/admin-dist/RELEASE_TAG)"
+          [[ "$got" == "$TAG" ]] || {
+            echo "ОШИБКА: в артефакте RELEASE_TAG='$got', ожидался '$TAG'" >&2; exit 1
+          }
           test -s artifact/admin-dist/index.html
+          echo "admin-dist: release run #$ok_id, тег $TAG"
 
       # Скрипт версионируется в репозитории и передаётся по stdin. Первая
       # строка потока — токен GHCR: он не светится в аргументах ssh, а
