@@ -1,0 +1,18 @@
+/* Above every screen: a start with a partner code has news, and it is news for one tap only. */
+.banner {
+  position: fixed;
+  z-index: 30;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-2);
+  max-width: var(--size-content-max);
+  margin: 0 auto;
+  padding: calc(var(--space-3) + var(--safe-top)) max(var(--space-4), var(--safe-right)) var(--space-3) max(var(--space-4), var(--safe-left));
+  border: var(--border-width) solid var(--color-border);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--color-surface-raised);
+}

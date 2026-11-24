@@ -80,6 +80,28 @@ afterEach(() => {
 });
 
 describe('PaywallScreen', () => {
+  it('offers a code from a partner next to what is on sale, and hides the link when there is no way to it', async () => {
+    const onHaveCode = vi.fn();
+    const first = setup({ props: { onHaveCode } });
+    await first.user.click(await screen.findByRole('button', { name: copy.haveCode }));
+    expect(onHaveCode).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    setup();
+    expect(screen.queryByRole('button', { name: copy.haveCode })).not.toBeInTheDocument();
+  });
+
+  it('offers the way to a code when the catalogue has nothing for this screen', async () => {
+    const onHaveCode = vi.fn();
+    const api = fakeApi();
+    api.getPlans.mockResolvedValue([]);
+    const { user } = setup({ api, props: { onHaveCode } });
+
+    // Whatever the screen says about the catalogue, a code is not a purchase: the way stays open.
+    await user.click(await screen.findByRole('button', { name: copy.haveCode }));
+    expect(onHaveCode).toHaveBeenCalledTimes(1);
+  });
+
   it('uses one host CTA, blocks a second press and releases it on a price mismatch', async () => {
     const api = fakeApi();
     const making = deferred<typeof reportInvoice>();

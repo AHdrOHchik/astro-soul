@@ -48,6 +48,11 @@ export interface SettingsScreenProps {
    * the button is then not there, and a subscription the user has is shown as ever.
    */
   onSubscribe?: () => void;
+  /**
+   * The access code row, next to the subscription. Absent for a user whose paid subscription
+   * is active: it already opens everything. The screen itself stays reachable by a direct address.
+   */
+  onOpenAccessCode?: () => void;
   onOpenCompatibility?: (chartId: string | null) => void;
   onOpenSavedCompatibility?: (compatibilityId: string) => void;
   onBuyCompatibility?: (chartId: string) => void;
@@ -73,6 +78,7 @@ export function SettingsScreen({
   back,
   onOpenDocument,
   onSubscribe,
+  onOpenAccessCode,
   onOpenCompatibility,
   onOpenSavedCompatibility,
   onBuyCompatibility,
@@ -129,6 +135,7 @@ export function SettingsScreen({
         refreshMe={refreshMe}
         onOpenDocument={onOpenDocument}
         onSubscribe={onSubscribe}
+        onOpenAccessCode={onOpenAccessCode}
         onOpenCompatibility={onOpenCompatibility}
         onOpenSavedCompatibility={onOpenSavedCompatibility}
         onBuyCompatibility={onBuyCompatibility}
@@ -199,6 +206,7 @@ interface SectionsProps {
   refreshMe: (signal?: AbortSignal) => Promise<Me>;
   onOpenDocument: (name: LegalDocument) => void;
   onSubscribe?: () => void;
+  onOpenAccessCode?: () => void;
   onOpenCompatibility?: (chartId: string | null) => void;
   onOpenSavedCompatibility?: (compatibilityId: string) => void;
   onBuyCompatibility?: (chartId: string) => void;
@@ -208,7 +216,7 @@ interface SectionsProps {
   onDelete: () => void;
 }
 
-function Sections({ me, api, support, telegram, supportLink, track, refreshMe, onOpenDocument, onSubscribe, onOpenCompatibility, onOpenSavedCompatibility, onBuyCompatibility, compatibilityCache, onCompatibilityCacheChange, scrollContainer, onDelete }: SectionsProps) {
+function Sections({ me, api, support, telegram, supportLink, track, refreshMe, onOpenDocument, onSubscribe, onOpenAccessCode, onOpenCompatibility, onOpenSavedCompatibility, onBuyCompatibility, compatibilityCache, onCompatibilityCacheChange, scrollContainer, onDelete }: SectionsProps) {
   const ids = { subscription: useId(), quotas: useId(), documents: useId(), support: useId(), deletion: useId() };
   return (
     <div className={styles.sections}>
@@ -226,6 +234,14 @@ function Sections({ me, api, support, telegram, supportLink, track, refreshMe, o
             refreshMe={refreshMe}
             onSubscribe={onSubscribe}
           />
+          {onOpenAccessCode && (
+            // Next to the subscription and not in the depth of the settings: a code is an alternative to paying.
+            <ListButton
+              title={ru.accessCode.entry.title}
+              description={ru.accessCode.entry.description}
+              onClick={onOpenAccessCode}
+            />
+          )}
         </div>
       </Card>
 

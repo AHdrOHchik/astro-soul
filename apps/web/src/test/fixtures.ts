@@ -59,6 +59,24 @@ export const entitlements: Me['entitlements'] = {
   solar_included: false,
 };
 
+/** What `POST /me/activate-code` answers for a partner code that opens full access until 12 December. */
+export const activatedAllAccess: Me['entitlements'] = {
+  ...entitlements,
+  is_active: true,
+  full_forecast: true,
+  ask_per_day: 5,
+  compat_per_month: 1,
+  solar_included: true,
+  all_access_until: '2026-12-12T12:00:00Z',
+  source: 'partner',
+};
+
+/** The same for a code activated before the chart: the right is there, its term has not started. */
+export const activatedPending: Me['entitlements'] = {
+  ...entitlements,
+  source: 'partner',
+};
+
 export const me: Me = {
   user_id: '00000000-0000-4000-8000-000000000001',
   display_name: null,
@@ -340,6 +358,7 @@ export function fakeApi() {
     sendEvents: vi.fn<Api['sendEvents']>().mockResolvedValue(undefined),
     deleteMe: vi.fn<Api['deleteMe']>().mockResolvedValue(undefined),
     updateNotifications: vi.fn<Api['updateNotifications']>().mockImplementation((dailyForecast) => Promise.resolve({ daily_forecast: dailyForecast })),
+    activateCode: vi.fn<Api['activateCode']>().mockResolvedValue(activatedAllAccess),
     cancelSubscription: vi.fn<Api['cancelSubscription']>().mockResolvedValue({ status: 'cancelled', auto_renew: false, current_period_end: meSubscribed.subscription.expires_at ?? '2026-12-10T09:00:00Z' }),
     getPlans: vi.fn<Api['getPlans']>().mockResolvedValue(cataloguePlans),
     createInvoice: vi.fn<Api['createInvoice']>().mockResolvedValue(reportInvoice),
@@ -417,7 +436,7 @@ export function fakeTermsReload(options: { refusedVersion?: string | null; stora
 }
 
 /** Where the app runs; the methods are always spies. */
-type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery' | 'canOpenLink' | 'canOpenTelegramLink' | 'canShareToStory'>;
+type Host = Pick<Telegram, 'isTelegram' | 'initData' | 'startedWithCode' | 'hasNativeBackButton' | 'canPay' | 'bindMainButton' | 'canSwitchInlineQuery' | 'canOpenLink' | 'canOpenTelegramLink' | 'canShareToStory'>;
 
 /** `invoice`: how Telegram closes every invoice it is asked to open; «paid» unless the test says otherwise. */
 export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | Promise<InvoiceOutcome> } = {}) {
@@ -425,6 +444,7 @@ export function fakeTelegram(host: Partial<Host> & { invoice?: InvoiceOutcome | 
   return {
     isTelegram: true,
     initData: 'query_id=test',
+    startedWithCode: where.startedWithCode ?? false,
     hasNativeBackButton: true,
     canPay: true,
     ...where,

@@ -82,6 +82,8 @@ export interface PaywallScreenProps {
   onAwaiting?: (plan: PlanOffer, report: boolean) => void;
   track: Track;
   back?: ScreenProps['back'];
+  /** The way to a code from a partner: a gift is not something to pay for. */
+  onHaveCode?: () => void;
   onOpenTerms: () => void;
   /** The server confirmed that the report is paid for. */
   onReportPaid: () => void;
@@ -164,6 +166,7 @@ export function PaywallScreen({
   onAwaiting,
   track,
   back,
+  onHaveCode,
   onOpenTerms,
   onReportPaid,
   onOpenReport,
@@ -487,6 +490,16 @@ export function PaywallScreen({
           ) : (
             <Button onClick={onClose}>{copy.leave}</Button>
           )}
+          {onHaveCode && (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                onHaveCode();
+              }}
+            >
+              {copy.haveCode}
+            </Button>
+          )}
         </StateView>
       </Screen>
     );
@@ -567,6 +580,16 @@ export function PaywallScreen({
         <Button variant="ghost" onClick={onOpenTerms}>
           {copy.terms}
         </Button>
+        {onHaveCode && (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              onHaveCode();
+            }}
+          >
+            {copy.haveCode}
+          </Button>
+        )}
       </div>
     </Screen>
   );

@@ -5,10 +5,12 @@ import { createAnalytics } from './analytics';
 import type { ChartResult, Me, TimePrecision } from './api';
 import { App } from './App';
 import { SEARCH_DEBOUNCE_MS } from './hooks/usePlaceSearch';
+import { formatDayMonthOf } from './i18n/format';
 import { CONFIRM_INTERVAL_MS } from './screens/paywall/PaywallScreen';
 import { DELETE_GUARD_MS } from './screens/settings/SettingsScreen';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import {
+  activatedAllAccess,
   apiError,
   chartRequest,
   chartResult,
@@ -460,6 +462,56 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(telegram.setBackHandler).toHaveBeenLastCalledWith(null);
     await user.click(screen.getByRole('button', { name: ru.common.close }));
     expect(telegram.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('leads from the cabinet to the access code and confirms what the server opened', async () => {
+    const { api, user } = returning();
+
+    await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+    await user.click(await screen.findByRole('button', { name: new RegExp(ru.accessCode.entry.title) }));
+
+    expect(heading()).toHaveTextContent(ru.accessCode.title);
+    // Typed the way a code is printed on a card: small letters and a hyphen.
+    await user.type(screen.getByLabelText(ru.accessCode.field), 'k7m2-p9x4');
+    await user.click(screen.getByRole('button', { name: ru.accessCode.submit }));
+
+    expect(await screen.findByRole('heading', { name: ru.accessCode.successTitle })).toBeInTheDocument();
+    expect(screen.getByText(ru.accessCode.success.allAccess(formatDayMonthOf(activatedAllAccess.all_access_until ?? '')))).toBeInTheDocument();
+    expect(api.activateCode).toHaveBeenCalledWith('K7M2P9X4');
+  });
+
+  it('hides the access code row from a user whose paid subscription already opens everything', async () => {
+    const { user } = returning(undefined, meSubscribed);
+
+    await user.click(await screen.findByRole('button', { name: ru.common.settings }));
+    await screen.findByRole('region', { name: ru.settings.subscription.title });
+
+    expect(screen.queryByRole('button', { name: new RegExp(ru.accessCode.entry.title) })).not.toBeInTheDocument();
+  });
+
+  it('announces what a partner link opened instead of asking for the code again', async () => {
+    const { user } = setup({
+      telegram: { startedWithCode: true },
+      api: (fake) => {
+        fake.getMe.mockResolvedValue({ ...meWithChart, entitlements: activatedAllAccess });
+        fake.getCurrentChart.mockResolvedValue(restored);
+      },
+    });
+
+    const banner = await screen.findByRole('status', { name: ru.accessCode.banner.label });
+    expect(banner).toHaveTextContent(ru.accessCode.banner.allAccess(formatDayMonthOf(activatedAllAccess.all_access_until ?? '')));
+    // Nothing asks for the code again: the server activated it before the app was drawn.
+    expect(screen.queryByRole('heading', { name: ru.accessCode.title })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: ru.accessCode.banner.dismiss }));
+    expect(screen.queryByRole('status', { name: ru.accessCode.banner.label })).not.toBeInTheDocument();
+  });
+
+  it('says nothing about codes on an ordinary start', async () => {
+    setup();
+
+    await screen.findByRole('button', { name: ru.welcome.start });
+    expect(screen.queryByRole('status', { name: ru.accessCode.banner.label })).not.toBeInTheDocument();
   });
 
   it('opens the compatibility form from the cabinet without a push or deep link', async () => {
@@ -1376,6 +1428,17 @@ describe('App: round30 main tabs', () => {
     expect(await screen.findAllByRole('radio')).not.toHaveLength(0);
     expect(screen.queryByText(/Полные прогнозы каждый день|вопроса карте в день/i)).not.toBeInTheDocument();
     expect(api.createQuestion).not.toHaveBeenCalled();
+  });
+
+  it('offers a code from a partner on the paywall, next to what is for sale', async () => {
+    const { user } = returning(meWithChart);
+    await screen.findByRole('heading', { name: ru.chart.title });
+    await user.click(screen.getByRole('button', { name: 'Спросить' }));
+    await user.click(screen.getByRole('button', { name: 'Посмотреть подписку' }));
+
+    await user.click(await screen.findByRole('button', { name: ru.paywall.haveCode }));
+
+    expect(await screen.findByRole('heading', { name: ru.accessCode.title })).toBeInTheDocument();
   });
 
   it('does not place the question text or answer in product analytics', async () => {

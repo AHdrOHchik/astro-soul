@@ -77,7 +77,8 @@ export type AnalyticsStep =
   | 'forecast'
   | 'ask'
   | 'settings'
-  | 'compatibility';
+  | 'compatibility'
+  | 'access_code';
 
 /** Request fields the server may reject, as `details.field_errors` names them. */
 const REJECTED_FIELDS = [
