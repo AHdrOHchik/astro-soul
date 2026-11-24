@@ -186,30 +186,6 @@ export class BillingRepository {
   }
 
   /**
-   * Куплен ли уже полный разбор **этой** карты.
-   *
-   * Проверка не смотрит ни на `plan_code`, ни на цену: иначе на тарифе за
-   * 1 ⭐ защита от двойной покупки «не сработала бы, потому что дёшево».
-   * Считается только активный `entitlements (kind = 'report')` для карты:
-   * после возврата запись `revoked`, и купить снова можно.
-   */
-  async hasActiveReportGrant(userId: string, chartId: string): Promise<boolean> {
-    const row = await this.db.queryOne<{ one: number }>(
-      `SELECT 1 AS one
-         FROM entitlements
-        WHERE user_id = $1
-          AND kind = 'report'
-          AND status = 'active'
-          AND (expires_at IS NULL OR expires_at > now())
-          AND chart_id = $2
-        LIMIT 1`,
-      [userId, chartId],
-    );
-
-    return row !== null;
-  }
-
-  /**
    * Есть ли неизрасходованная разовая совместимость (`compat_249`).
    *
    * `used_at IS NULL` — кредит не потрачен; `status = 'active'` — не отозван

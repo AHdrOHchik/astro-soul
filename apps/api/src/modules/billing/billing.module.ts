@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ChartsModule } from '../charts/charts.module';
+import { AccessService } from '../entitlements/access.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsModule } from '../events/events.module';
 import { GrantsDataModule } from '../grants/grants-data.module';
@@ -22,6 +23,9 @@ import { TelegramWebhookController } from './webhook.controller';
     BillingRepository,
     PaymentsService,
     SubscriptionCancelService,
+    // Дверь доступа нужна биллингу, чтобы не продать то, что у человека уже
+    // есть правом (1.6.18): см. `createInvoice`.
+    AccessService,
     EntitlementsService,
     UsersRepository,
   ],
