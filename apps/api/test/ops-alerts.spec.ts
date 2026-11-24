@@ -193,6 +193,9 @@ describe('алерты: пороги в одном месте', () => {
       // Восьмое правило (1.6.14): порог берётся из `BONUS_BUDGET_RUB`, поэтому
       // в таблице стоит 0 — «сравнивать со значением из окружения».
       bonus_budget_exhausted: 0,
+      // Девятое правило (1.6.16): двадцать неудачных входов в панель за сутки —
+      // это уже подбор, а не «забыл пароль».
+      admin_login_failed: 20,
     });
   });
 });
@@ -275,7 +278,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
     return signInitData({ botToken: TEST_BOT_TOKEN, user: { ...FICTIONAL_USER, id } });
   }
 
-  it('отдаёт все восемь алертов с уровнями и порогами', async () => {
+  it('отдаёт все девять алертов с уровнями и порогами', async () => {
     const response = await request(ctx.app.getHttpServer())
       .get('/api/v1/admin/alerts')
       .set(INIT_DATA_HEADER, initDataFor(FICTIONAL_USER.id))
@@ -290,6 +293,7 @@ describe('GET /admin/alerts и /health — маршруты', () => {
       'generations_failing',
       'push_failed',
       'bonus_budget_exhausted',
+      'admin_login_failed',
       'backup_stale',
     ]);
     expect(body.checked_at).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
@@ -302,6 +306,9 @@ describe('GET /admin/alerts и /health — маршруты', () => {
       'warning',
       // Восьмое правило (1.6.14): бюджет бесплатного доступа выбран. Warning, а
       // не critical: продукт работает, ломается только выдача новых прав.
+      'warning',
+      // Девятое правило (1.6.16): серия неудачных входов в панель. Warning:
+      // подбор пароля ломает одну дверь, а не продукт.
       'warning',
       'warning',
     ]);

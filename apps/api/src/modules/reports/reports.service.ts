@@ -461,6 +461,24 @@ export class ReportsService {
     return view;
   }
 
+  /**
+   * Перезапуск разбора, который админка уже вернула в очередь (1.6.16).
+   *
+   * Метод существует потому, что `run` — приватный, и открывать его целиком
+   * наружу значило бы разрешить запуск любого разбора в обход очереди и
+   * проверок. Здесь ровно одно действие: «сгенерировать эту строку в фоне».
+   * Ответ панели (`202`) от модели не зависит, поэтому ошибка только пишется в
+   * лог — как у заказа человеком.
+   */
+  restart(reportId: string): void {
+    void this.run(reportId).catch((error: unknown) => {
+      this.logger.error('report_rerun_crashed', {
+        report_id: reportId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
   /** Генерация: статусы `planning` → `writing` → `ready` (или `failed`). */
   private async run(reportId: string): Promise<void> {
     const budget: Budget = { reportId, costRub: 0, attempts: 0 };

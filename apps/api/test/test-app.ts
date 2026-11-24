@@ -34,6 +34,7 @@ export interface TestContextOptions {
   /** Подмена Bot API: никаких сетевых вызовов в тестах. */
   readonly telegram?: Pick<
     TelegramClient,
+    | 'sendPush'
     | 'createInvoiceLink'
     | 'answerPreCheckoutQuery'
     | 'sendMessage'
@@ -139,6 +140,10 @@ const TABLES = [
   // а запись журнала попадает в ленту следующего теста.
   'admin_sessions',
   'admin_audit',
+  // Итерация 41: история цен. Ключ `plan_price_history` не каскадится от
+  // `users`, но привязана к `plans`, а `plans` не чистится: без явной чистки
+  // история одного теста попадала бы в ленту следующего.
+  'plan_price_history',
   'payments',
   'invoices',
   'subscriptions',

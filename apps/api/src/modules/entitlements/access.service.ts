@@ -59,11 +59,38 @@ export class AccessService {
     @Inject(GrantsRepository) private readonly grants: GrantsRepository,
   ) {}
 
+  /**
+   * Бан проверяется **первым** и до подписки, грантов и разовых прав (1.6.16).
+   *
+   * Почему здесь, а не в каждом маршруте: `hasAccess` — единственная дверь, и
+   * проверка выше источников прав означает, что забаненный не получает доступ
+   * даже с действующей подпиской и подаренным грантом. Порядок важен
+   * буквально: если поставить бан после `getEntitlements`, запрос уже прочитал
+   * бы права и мог бы (в будущем рефакторинге) вернуть `true` по одной из
+   * веток. Здесь отказ — первое, что происходит.
+   *
+   * Бан **не** меняет ни `subscriptions`, ни `grants`, ни `entitlements`:
+   * покупки остаются покупками, а решение «пускать или нет» принимается над
+   * ними. Поэтому же разбан возвращает доступ без повторной оплаты.
+   */
+  async isBanned(userId: string): Promise<boolean> {
+    const row = await this.db.queryOne<{ banned_at: Date | null }>(
+      `SELECT banned_at FROM users WHERE id = $1`,
+      [userId],
+    );
+
+    return row?.banned_at !== null && row?.banned_at !== undefined;
+  }
+
   async hasAccess(
     userId: string,
     feature: AccessFeature,
     options: AccessCheckOptions = {},
   ): Promise<boolean> {
+    if (await this.isBanned(userId)) {
+      return false;
+    }
+
     const rights = await this.entitlements.getEntitlements(userId);
 
     switch (feature) {

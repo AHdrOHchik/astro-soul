@@ -8,6 +8,7 @@ import { EnvModule } from './config/env.module';
 import { DbModule } from './db/db.module';
 import { AdminAuditModule } from './modules/admin-audit/admin-audit.module';
 import { AdminAuthModule } from './modules/admin-auth/admin-auth.module';
+import { AdminSupportModule } from './modules/admin-support/admin-support.module';
 import { InitDataMiddleware } from './modules/auth/init-data.middleware';
 import { BillingModule } from './modules/billing/billing.module';
 import { ChartsModule } from './modules/charts/charts.module';
@@ -53,6 +54,9 @@ import { PresenceService } from './modules/users/presence.service';
     // `AdminSessionService` спрашивает middleware авторизации.
     AdminAuthModule,
     AdminAuditModule,
+    // Панель поддержки и цен (итерация 41, 1.6.16): тарифы, пользователи,
+    // разборы. Гард общий — префикс `/api/v1/admin*` в `InitDataMiddleware`.
+    AdminSupportModule,
   ],
   providers: [
     // Присутствие (итерация 38) — провайдер корневого модуля: его спрашивает

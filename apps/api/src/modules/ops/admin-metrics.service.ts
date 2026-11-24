@@ -296,6 +296,23 @@ export interface ProductMetrics {
   readonly admin_logins_24h: number;
   readonly admin_audit_writes_24h: number;
   readonly admin_sessions_purged_24h: number;
+  /**
+   * Поддержка и цены (1.6.16): три цифры, которых не было и которые иначе
+   * видны только в базе.
+   *
+   * `push_test_sent_24h` — тестовые пуши (`push_log.kind = 'test'`): поддержка
+   * отправляет их, когда человек жалуется «мне не приходит». Ноль при
+   * обращениях значит «пуш не доходит даже тестом» — это уже Bot API или текст,
+   * а не расписание. Считаются только реально ушедшие (`sent`, без ошибки).
+   * `admin_login_failed_24h` — неудачные входы в панель (события `admin_login`
+   * с `ok: false`, включая заблокированные лимитом): рост означает подбор или
+   * сломанный виджет, и по нему же срабатывает алерт `admin_login_failed`.
+   * `refunds_24h` — возвраты за сутки по `payments.refunded_at`, то есть и
+   * панельные, и телеграмные: «сколько денег вернули» — одна цифра.
+   */
+  readonly push_test_sent_24h: number;
+  readonly admin_login_failed_24h: number;
+  readonly refunds_24h: number;
 }
 
 /** Шаги воронки: ровно они попадают в `funnel_30d`. */
@@ -455,6 +472,7 @@ export class AdminMetricsService {
       pushRuns,
       pushNoTz,
       grants,
+      support,
     ] = await Promise.all([
         this.db.queryOne<{ mau: number }>(
           `SELECT count(DISTINCT user_id)::int AS mau
@@ -768,6 +786,26 @@ export class AdminMetricsService {
         // чисел: они читают одни и те же таблицы, а семь запросов в
         // `/admin/metrics` — это семь шансов на медленный ответ.
         this.grantMetrics(),
+        // Поддержка и цены (1.6.16). Один запрос на три числа: тестовые пуши,
+        // неудачные входы в панель и возвраты. Источники разные (`push_log`,
+        // `events`, `payments`), но окно одно — сутки, и разносить их по
+        // трём запросам ради «чистоты» значило бы платить трижды за одно.
+        this.db.queryOne<{
+          test_pushes: string;
+          admin_login_failed: string;
+          refunds: string;
+        }>(
+          `SELECT
+             (SELECT count(*) FROM push_log
+               WHERE kind = 'test' AND sent AND error IS NULL
+                 AND sent_at >= now() - interval '24 hours')::text AS test_pushes,
+             (SELECT count(*) FROM events
+               WHERE name = 'admin_login'
+                 AND props ->> 'ok' = 'false'
+                 AND created_at >= now() - interval '24 hours')::text AS admin_login_failed,
+             (SELECT count(*) FROM payments
+               WHERE refunded_at >= now() - interval '24 hours')::text AS refunds`,
+        ),
       ]);
 
     const eventsByName: Record<string, number> = {};
@@ -890,6 +928,9 @@ export class AdminMetricsService {
       admin_logins_24h: adminAudit.logins,
       admin_audit_writes_24h: adminAudit.writes,
       admin_sessions_purged_24h: adminPurged,
+      push_test_sent_24h: Number(support?.test_pushes ?? '0'),
+      admin_login_failed_24h: Number(support?.admin_login_failed ?? '0'),
+      refunds_24h: Number(support?.refunds ?? '0'),
       share_cards_created_24h: SHARE_CARD_KINDS.reduce<Record<string, number>>(
         (totals, kind) => {
           totals[kind] = shareCards.find((row) => row.kind === kind)?.total ?? 0;
