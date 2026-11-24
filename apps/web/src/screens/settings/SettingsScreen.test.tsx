@@ -68,6 +68,32 @@ async function toLastConfirmation(user: ReturnType<typeof setupUser>) {
 }
 
 describe('SettingsScreen', () => {
+  it('offers the access code next to the subscription and opens it by one tap', async () => {
+    const onOpenAccessCode = vi.fn();
+    const { user } = setup({ props: { onOpenAccessCode } });
+
+    const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+    await user.click(within(subscription).getByRole('button', { name: new RegExp(ru.accessCode.entry.title) }));
+
+    expect(onOpenAccessCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws the access code row for a subscriber too when the app offers it: the route itself stays open', async () => {
+    // Hiding the row for a paid subscription is the app's decision, not this screen's: a gift
+    // may be for a second period, and the screen must not refuse to open for one.
+    setup({ me: meSubscribed, props: { onOpenAccessCode: vi.fn() } });
+
+    const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+    expect(within(subscription).getByRole('button', { name: new RegExp(ru.accessCode.entry.title) })).toBeInTheDocument();
+  });
+
+  it('shows no access code row when the app does not offer it', async () => {
+    setup();
+
+    const subscription = await screen.findByRole('region', { name: copy.subscription.title });
+    expect(within(subscription).queryByRole('button', { name: new RegExp(ru.accessCode.entry.title) })).not.toBeInTheDocument();
+  });
+
   it('offers compatibility in the cabinet using the server quota and opens the current chart', async () => {
     const onOpenCompatibility = vi.fn();
     const { user } = setup({ props: { onOpenCompatibility, onBuyCompatibility: vi.fn() } });

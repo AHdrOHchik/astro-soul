@@ -34,6 +34,12 @@ export function formatDay(iso: string): string {
   return date ? new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' }).format(date) : '';
 }
 
+/** «12 декабря»: the same day without its year, for a term that ends soon. '' when it is not a moment. */
+export function formatDayMonthOf(iso: string): string {
+  const date = momentOf(iso);
+  return date ? new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long' }).format(date) : '';
+}
+
 /** «12 декабря в 09:00»: a moment by the user's clock, the way the device's locale data writes it. '' when it is not a moment. */
 export function formatMoment(iso: string | Date): string {
   const date = typeof iso === 'string' ? momentOf(iso) : iso;
