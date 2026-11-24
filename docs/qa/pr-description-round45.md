@@ -68,16 +68,22 @@
   GHCR релизом.
 * **Б-6** — `infra/cron.md`: строка cron для бэкапа и проверка.
 * **Б-7** — `docs/DEPLOY.md`: таблица build-time vs runtime.
+* **GHCR в нижнем регистре и на деплое**: `remote-release.sh` нормализует
+  владельца (`${OWNER_RAW,,}`). Сборку владелец уже починил в `main`
+  (`08b9255`), а деплой искал образ по `ghcr.io/AHdrOHchik/…` — то есть по имени,
+  которого не существует. Ветка перебазирована на `a5ecad6`, конфликт в
+  `release.yml` решён в стиле владельца (шаг `img`, admin добавлен туда же).
 * **Б-5/Б-8** — в репозитории не тронуты, записаны как задачи деплоя.
 
 ## Тесты
 
 Новые: `me-report-access.spec.ts` (18), `report-access-guard.spec.ts` (5),
 `webhook-secret-leak.spec.ts` (9), `web-build-flags.spec.ts` (5),
-`deploy-admin-image.spec.ts` (5), `db-dump-script.spec.ts` +5.
+`deploy-admin-image.spec.ts` (5), `deploy-ghcr-lowercase.spec.ts` (3),
+`db-dump-script.spec.ts` +5.
 
-Полный прогон: API 79 файлов / 1132 теста, shared 31, ui 39, web 984, admin 248,
-astro 118; `eslint --max-warnings=0` и `tsc` — 0.
+Прогон после ребейза на `a5ecad6`: API 80 файлов / 1135 тестов, shared 31, ui 39,
+web 984, admin 248, astro 118; `eslint --max-warnings=0` и `tsc` — 0.
 
 Три теста, которые были «зелёными по ложной посылке» (подробно — в отчёте
 `docs/qa/reports/round45-report-access.md` §6): страж, проверявший **имя** метода

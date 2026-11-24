@@ -5,8 +5,26 @@
 Причина не в одной неверной ветке, а в двух местах, которые отвечали на один
 вопрос: флаг `entitlements.full_report` и дверь `AccessService`.
 
-Ветка: `arena/39b8f436-astro-soul` от `6000b71` (main после round44 = PR #85,
-`c78835aa`, влит 2026-11-24T15:05:59Z; затем PR #88, `47dd64b`).
+Ветка: `arena/39b8f436-astro-soul` от `6000b71`; работа велась поверх `main` =
+`47dd64b` (round44 влит как PR #85, `c78835aa`, 2026-11-24T15:05:59Z; затем PR #88).
+
+**По ходу итерации `main` ушёл вперёд** — владелец двумя коммитами через веб-UI:
+`08b9255` «Update release.yml» и `a5ecad6` «Update web.Dockerfile». Оба важны, и
+оба влиять на мою работу:
+
+* `08b9255` — имена образов GHCR теперь считаются **шагом в шелле**
+  (`owner="${GITHUB_REPOSITORY_OWNER,,}"`), потому что GHCR не принимает
+  заглавные буквы: `AHdrOHchik` валил сборку до первого шага. Мой `env:
+  ADMIN_IMAGE` из этого коммита убрался, admin добавлен в тот же шаг `img`
+  (`echo "admin=ghcr.io/${owner}/astro-soul-admin"`), теги и итоговая сводка
+  переведены на `steps.img.outputs.admin`;
+* `a5ecad6` — `COPY apps/api/src ./apps/api/src` в `docker/web.Dockerfile`
+  (веб-мок импортирует `apps/api/src/db/plans-seed.ts`, и без копии сборка
+  падала на `tsc`). Слился автоматически, мой `ARG VITE_NOTIFICATIONS_UI`
+  остался.
+
+Ветка перебазирована на `a5ecad6`; конфликт был только в `release.yml` и решён в
+стиле владельца (никакого второго `env:`-блока с именами образов).
 
 ---
 
@@ -263,6 +281,19 @@ Docker (`docker: command not found`), поэтому сборка провере
 (build-time), `PUSH_ENABLED`, `BACKUP_DUMP_MODE`, `ADMIN_HTTP_PORT` (runtime) и
 что будет, если поменять `.env` без пересборки.
 
+### Дополнительно: деплой искал образ не в том регистре (найдено по ходу)
+
+Правка владельца в `release.yml` (`08b9255`) закрыла **сборку**: имена образов в
+нижнем регистре. Но `deploy.yml` передаёт `github.repository_owner` в
+`scripts/deploy/remote-release.sh` как есть, и скрипт собирал
+`ghcr.io/${OWNER}/astro-soul-api:${TAG}` — то есть `ghcr.io/AHdrOHchik/...`.
+`docker pull` на таком имени падает с «invalid reference format»: сборка
+публиковала `ahdrohchik/astro-soul-api`, а выкладка искала
+`AHdrOHchik/astro-soul-api`. Одна строка с тем же приёмом (`OWNER="${OWNER_RAW,,}"`)
+плюс `deploy-ghcr-lowercase.spec.ts`, который держит оба конца: workflow считает
+имена в шелле, деплой нормализует владельца, прямого
+`ghcr.io/${{ github.repository_owner }}` в репозитории нет.
+
 ### Б-5 и Б-8 — задачи деплоя, репозиторий не тронут
 
 * **Б-5 (Postgres tuning)**: `shared_buffers`/`work_mem`/`max_connections`
@@ -305,7 +336,7 @@ Docker (`docker: command not found`), поэтому сборка провере
 
 | Пакет | Итог |
 |---|---|
-| `apps/api` | 79 файлов, 1132 теста — зелёные (первый полный прогон дал 1 красный: страж из п.1; после правки перепроверен отдельным запуском) |
+| `apps/api` | 80 файлов, 1135 тестов — зелёные (первый полный прогон дал 1 красный: страж из п.1; после правки — отдельный прогон, затем полный прогон после ребейза на `a5ecad6`) |
 | `packages/shared` | 4 файла / 31 тест |
 | `packages/ui` | 4 файла / 39 тестов |
 | `apps/web` | 54 файла / 984 теста |
@@ -316,7 +347,8 @@ Docker (`docker: command not found`), поэтому сборка провере
 
 Новые файлы тестов: `me-report-access.spec.ts` (18), `report-access-guard.spec.ts`
 (5), `webhook-secret-leak.spec.ts` (9), `web-build-flags.spec.ts` (5),
-`deploy-admin-image.spec.ts` (5); `db-dump-script.spec.ts` +5.
+`deploy-admin-image.spec.ts` (5), `deploy-ghcr-lowercase.spec.ts` (3);
+`db-dump-script.spec.ts` +5.
 
 ### Не проверено
 

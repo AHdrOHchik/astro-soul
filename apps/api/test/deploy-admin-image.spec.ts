@@ -69,9 +69,15 @@ describe('Б-2: образ админки', () => {
   it('release публикует образ админки в GHCR вместе с api и web', () => {
     const release = read('.github/workflows/release.yml');
 
-    expect(release).toContain('ADMIN_IMAGE: ghcr.io/${{ github.repository_owner }}/astro-soul-admin');
+    // Имена образов считает шаг `img` в шелле (`${owner,,}`): GHCR принимает только
+    // нижний регистр, а `AHdrOHchik` ломал сборку до её начала — это правка
+    // владельца в main (`08b9255`). Поэтому admin добавлен туда же, а не в `env:`.
+    expect(release).toContain('echo "admin=ghcr.io/${owner}/astro-soul-admin" >> "$GITHUB_OUTPUT"');
+    expect(release).toContain('admin_image: ${{ steps.img.outputs.admin }}');
     expect(release).toContain('file: docker/admin.Dockerfile');
-    expect(release).toContain('${{ env.ADMIN_IMAGE }}:latest');
+    expect(release).toContain('${{ steps.img.outputs.admin }}:latest');
+    // Прежний `env:`-стиль ушёл: имя с заглавной буквой в GHCR невалидно.
+    expect(release).not.toContain('env.ADMIN_IMAGE');
   });
 
   it('страж мока существует и вызывается сборкой панели', () => {
