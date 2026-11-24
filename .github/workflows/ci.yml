@@ -97,6 +97,16 @@ jobs:
           pnpm --filter @astro-soul/shared run test 2>&1 | tee ci-logs/shared-tests.log
           pnpm --filter @astro-soul/ui run test 2>&1 | tee ci-logs/ui-tests.log
 
+      - name: Линт, типы, тесты
+        shell: bash
+        # `tee` — чтобы при падении было что показать в PR: у этого шага
+        # (линт/типы/тесты панели и веба) нет своего вывода нигде, кроме лога
+        # Actions, который из песочницы не читается.
+        run: |
+          set -eo pipefail
+          mkdir -p ci-logs
+          pnpm check 2>&1 | tee ci-logs/check.log
+
       - name: Логи тестов при падении
         if: failure()
         uses: actions/upload-artifact@v4
@@ -117,8 +127,8 @@ jobs:
             const read = (path) => {
               try { return fs.readFileSync(path, 'utf8'); } catch { return ''; }
             };
-            const source = read('ci-logs/api-tests.log') + read('ci-logs/shared-tests.log') +
-              read('ci-logs/ui-tests.log');
+            const source = read('ci-logs/check.log') + read('ci-logs/api-tests.log') +
+              read('ci-logs/shared-tests.log') + read('ci-logs/ui-tests.log');
             const lines = source
               .replace(/\u001b\[[0-9;]*m/g, '')
               .split('\n')
@@ -144,6 +154,3 @@ jobs:
             } else {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             }
-
-      - name: Линт, типы, тесты
-        run: pnpm check
