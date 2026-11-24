@@ -28,10 +28,6 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-env:
-  API_IMAGE: ghcr.io/${{ github.repository_owner }}/astro-soul-api
-  WEB_IMAGE: ghcr.io/${{ github.repository_owner }}/astro-soul-web
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -39,9 +35,25 @@ jobs:
     timeout-minutes: 45
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
+      api_image: ${{ steps.img.outputs.api }}
+      web_image: ${{ steps.img.outputs.web }}
 
     steps:
       - uses: actions/checkout@v4
+
+      # GHCR принимает только нижний регистр в имени репозитория.
+      # github.repository_owner = "AHdrOHchik" → invalid tag, сборка падает до старта.
+      # В выражениях GitHub Actions нет lowercase, поэтому имя считается в шелле.
+      # Используем step outputs, а не GITHUB_ENV: outputs гарантированно доступны
+      # в выражениях следующих шагов.
+      - name: Имена образов
+        id: img
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "api=ghcr.io/${owner}/astro-soul-api" >> "$GITHUB_OUTPUT"
+          echo "web=ghcr.io/${owner}/astro-soul-web" >> "$GITHUB_OUTPUT"
 
       - name: Тег релиза
         id: meta
@@ -168,8 +180,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ${{ env.API_IMAGE }}:${{ steps.meta.outputs.tag }}
-            ${{ env.API_IMAGE }}:latest
+            ${{ steps.img.outputs.api }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.img.outputs.api }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -182,8 +194,8 @@ jobs:
           platforms: linux/amd64
           build-args: ${{ steps.web-args.outputs.build_args }}
           tags: |
-            ${{ env.WEB_IMAGE }}:${{ steps.meta.outputs.tag }}
-            ${{ env.WEB_IMAGE }}:latest
+            ${{ steps.img.outputs.web }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.img.outputs.web }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -192,7 +204,7 @@ jobs:
       # это не выдаётся за проверку UI.
       - name: Проверка прод-сборки web в GHCR
         env:
-          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          WEB_IMAGE: ${{ steps.img.outputs.web }}
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
@@ -216,8 +228,8 @@ jobs:
         env:
           TAG: ${{ steps.meta.outputs.tag }}
           BOOTSTRAP: ${{ inputs.bootstrap }}
-          API_IMAGE: ${{ env.API_IMAGE }}
-          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          API_IMAGE: ${{ steps.img.outputs.api }}
+          WEB_IMAGE: ${{ steps.img.outputs.web }}
         run: |
           {
             echo "## release"
