@@ -42,6 +42,16 @@ function listTsFiles(dir: string): string[] {
   return out;
 }
 
+/**
+ * Убирает `//`- и `/* *\/`-комментарии, чтобы статические стражи не срабатывали
+ * на текст объяснений. Грубо, но для «есть ли SQL» этого достаточно: строковые
+ * литералы с `//` внутри в этом репозитории встречаются редко и не влияют на
+ * искомые шаблоны.
+ */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//gu, ' ').replace(/(^|[^:])\/\/[^\n]*/gu, '$1');
+}
+
 function modulePath(file: string): string {
   return relative(SRC, file).split(sep).join('/');
 }
@@ -140,6 +150,32 @@ describe('единая дверь к доступу', () => {
       .map(modulePath);
 
     expect(offenders).toEqual([]);
+  });
+
+  /**
+   * Бан — тоже дверь, и она должна стоять в том же месте (1.6.16).
+   *
+   * Если `banned_at` читает кто-то ещё (маршрут, джоб, «удобная» проверка в
+   * сервисе), то однажды появится путь, который бана не видит. Поэтому запрос к
+   * `users.banned_at` разрешён ровно в одном файле — `AccessService`.
+   */
+  it('`users.banned_at` читается только в `AccessService`', () => {
+    // Смотрим на **SQL**, а не на имя поля: `banned_at` встречается и в DTO, и в
+    // комментариях, и запрещать слово бессмысленно. Значимо другое — кто именно
+    // ходит в таблицу `users` за этим флагом.
+    const found = listTsFiles(SRC)
+      .filter((file) => /(?:FROM|UPDATE|INSERT INTO)\s+users\b[\s\S]{0,400}?banned_at/u.test(
+        stripComments(readFileSync(file, 'utf8')),
+      ))
+      .map(modulePath)
+      .sort();
+
+    // Запись бана живёт в админском репозитории, чтение — только в двери
+    // доступа. Оба адреса закрытые и объяснены.
+    expect(found).toEqual([
+      'modules/admin-support/admin-users.repository.ts',
+      'modules/entitlements/access.service.ts',
+    ]);
   });
 
   it('списание одноразового права идёт через `consumeSingle`', () => {

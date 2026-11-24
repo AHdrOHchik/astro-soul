@@ -3791,6 +3791,25 @@ export interface paths {
                              *     растёт, и видно это только здесь.
                              */
                             admin_sessions_purged_24h?: number;
+                            /**
+                             * @description Тестовые пуши поддержки (`push_log.kind = 'test'`) за сутки.
+                             *     Считаются только ушедшие (`sent`, без ошибки): поддержка
+                             *     отправляет тест, когда человек жалуется «не приходит», и
+                             *     ноль при обращениях значит «не доходит даже тест».
+                             */
+                            push_test_sent_24h?: number;
+                            /**
+                             * @description Неудачных входов в панель за сутки (события `admin_login`
+                             *     с `ok: false`, включая заблокированные лимитом). Рост —
+                             *     подбор или сломанный виджет; по этой же цифре срабатывает
+                             *     алерт `admin_login_failed`.
+                             */
+                            admin_login_failed_24h?: number;
+                            /**
+                             * @description Возвратов за сутки по `payments.refunded_at` — и панельных,
+                             *     и телеграмных. Одна цифра на вопрос «сколько денег вернули».
+                             */
+                            refunds_24h?: number;
                         };
                     };
                 };
@@ -3823,7 +3842,7 @@ export interface paths {
          * @description Доступ только для `ADMIN_TG_ID` из переменной окружения (иначе `403`),
          *     как у `/admin/metrics`.
          *
-         *     Шесть правил, которые настраиваются в любом uptime-сервисе по `id`
+         *     Правила, которые настраиваются в любом uptime-сервисе по `id`
          *     (`fired: true` — пора будить человека). Значения считаются из тех же
          *     данных, что и метрики: ничего нового не хранится, истории превышений
          *     нет — `since` пересчитывается по накопленной сумме в окне.
@@ -3837,6 +3856,7 @@ export interface paths {
          *     | `generations_failing` | warning | `compat_failed_24h + forecast_failed_24h + questions_failed_24h + pdf_failed_24h > 5` — модель или промпт сломались |
          *     | `backup_stale` | warning | последний успешный дамп старше 36 часов (или маркера нет вовсе — «не знаем» тоже плохо) |
          *     | `push_failed` | warning | `push_failed_24h > 20` — утренняя рассылка сломалась (Bot API, текст). `blocked` и `chat not found` не считаются: это отказ человека |
+         *     | `admin_login_failed` | warning | `admin_login_failed_24h > 20` — серия неудачных входов в панель: подбор подписи или сломанный виджет входа |
          *
          *     Единицы `value`: штуки (`payment_not_arriving`,
          *     `subscription_cancel_blocked`, `generations_failing`), минуты
@@ -3873,6 +3893,821 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/plans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Тарифы с ценами (панель)
+         * @description Доступ только для `ADMIN_TG_ID` (иначе `403`).
+         *
+         *     Отдаются **все** строки `plans`, включая неактивные и тестовые: панель
+         *     показывает правду, а не витрину. Цена — `price_stars` (в БД
+         *     `plans.stars`), период — `period_days` (в БД `period_seconds`). Цена
+         *     всегда из таблицы `plans`: второго источника цены у продукта нет.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminPlanPage"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/plans/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Сменить цену тарифа
+         * @description Тело: `{price_stars, comment, base_version}`. Ответ `200 {plan,
+         *     effective_from}`.
+         *
+         *     `409 price_changed` — `base_version` устарел (цену изменили в другой
+         *     вкладке), в `details.current` актуальные `price_stars` и `version`.
+         *     `403 founder_plan_locked` — тариф `founder_month`: его цена обещана
+         *     первым 50 людям и из панели не меняется.
+         *
+         *     Меняется **только цена**: `test_only`, `is_active`, `grants` этим
+         *     маршрутом не правятся, а неизвестное поле в теле — `422`. Смена цены
+         *     действует на новые покупки (`price_change_scope: only_new_purchases`):
+         *     снимок цены в уже выставленных счетах не пересчитывается.
+         *
+         *     Изменение и запись истории (`plan_price_history`) идут в одной
+         *     транзакции с записью в `admin_audit`: нет записи — нет новой цены.
+         */
+        patch: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path: {
+                    code: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        price_stars: number;
+                        /** @description Зачем меняем цену: через месяц это единственное объяснение. */
+                        comment: string;
+                        /** @description `AdminPlan.version`, которую видела панель. */
+                        base_version: number;
+                    };
+                };
+            };
+            responses: {
+                /** @description Новая цена действует с `effective_from` */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            plan: components["schemas"]["AdminPlan"];
+                            /** Format: date-time */
+                            effective_from: string;
+                            price_change_scope?: components["schemas"]["PriceChangeScope"];
+                        };
+                    };
+                };
+                /** @description `founder_plan_locked` / FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `plan_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `price_changed` с `details.current {price_stars, version}` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED, `unknown_field` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/api/v1/admin/plans/{code}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * История цены тарифа
+         * @description Новое сверху, до 100 записей. Таблица `plan_price_history` только
+         *     дополняется: строку нельзя ни изменить, ни удалить (триггер).
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    code: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["AdminPlanHistoryEntry"][];
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `plan_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Поиск пользователя
+         * @description Ровно один фильтр: `telegram_id`, `alias` или `q`. Ноль или два —
+         *     `422 invalid_search`. Ответ — до 20 строк и `truncated`.
+         *
+         *     **Без ПДн при любом фильтре**: в списке нет ни даты/времени/места
+         *     рождения, ни `telegram_id`. Дата рождения и карта есть только в
+         *     `GET /admin/users/{id}`, и то чтение пишется в журнал.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    telegram_id?: string;
+                    /** @description Псевдоним из списка (`u-3f9a1c22`), минимум 2 символа. */
+                    alias?: string;
+                    /** @description Подстрока псевдонима или Telegram ID, минимум 2 символа. */
+                    q?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["AdminUserSummary"][];
+                            /** @description `true` — строк больше 20, сузь фильтр. */
+                            truncated: boolean;
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `invalid_search` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Карточка пользователя
+         * @description Единственный ответ с ПДн: дата, время и место рождения, `telegram_id`.
+         *     Каждое чтение пишет `user.card_view` в `admin_audit` **до** чтения
+         *     данных: если журнал недоступен — `500 admin_audit_write_failed`, и
+         *     карточка не открывается.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminUserCard"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `user_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `admin_audit_write_failed` — журнал недоступен, карточка не читалась */
+                500: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/refund": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Полный возврат звёзд
+         * @description Тело: `{charge_id, reason}`. **Суммы в запросе нет**: возврат всегда
+         *     полный, сумму определяет `payments.total_amount`, а не панель. Поле
+         *     `amount`/`amount_stars`/`stars`/`sum` в теле — `422
+         *     refund_amount_not_allowed`.
+         *
+         *     `404 charge_not_found` — платёж не найден или принадлежит другому
+         *     человеку (различать нельзя: панель не должна узнавать о чужих
+         *     `charge_id`). `409 already_refunded` — уже возвращён; `409
+         *     nothing_to_refund` — возвращать нечего (доступ не выдавался, аккаунт
+         *     обезличен). `502 telegram_refund_failed` — Bot API отказал или не
+         *     ответил: платёж при этом **не** помечается возвращённым.
+         *
+         *     Доступ не отзывается (`access_revoked: false`): возврат — про деньги,
+         *     закрыть доступ — это `POST /admin/users/{id}/ban`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        charge_id: string;
+                        reason: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Возврат подтверждён Telegram */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminRefundResult"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `charge_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `already_refunded` / `nothing_to_refund` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED, `refund_amount_not_allowed` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `telegram_refund_failed` — платёж не изменён */
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/ban": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Заблокировать или разблокировать доступ
+         * @description Тело: `{banned, reason}`. Бан не отменяет подписку, не удаляет данные и
+         *     не трогает покупки: `AccessService.hasAccess` проверяет `banned_at`
+         *     **до** подписки и грантов, поэтому доступ пропадает сразу, а разбан
+         *     возвращает его без повторной оплаты.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        banned: boolean;
+                        /** @description Обязательна при `banned: true`; без неё — `422`. */
+                        reason?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Новое состояние бана */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminBanResult"];
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `user_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description VALIDATION_FAILED */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/push": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Тестовый пуш
+         * @description Отправляет тестовое сообщение (`push_log.kind = 'test'`) без окна
+         *     08:00–08:04 и без проверки `last_seen_at`: поддержка проверяет доставку
+         *     тогда, когда человек пожаловался. Согласие `push_enabled` уважается
+         *     (`409 push_disabled`), тестовый пуш — один на местные сутки (`409
+         *     push_test_sent_24h`, ключ `(user_id, local_date, kind)` тот же, что у
+         *     утренней рассылки).
+         *
+         *     Недоставка — `502 telegram_push_failed`; отказ человека (403 или «chat
+         *     not found») — `409 push_disabled`.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Пуш ушёл */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            user_id: string;
+                            /** @constant */
+                            sent: true;
+                            /** Format: date-time */
+                            sent_at: string;
+                            /** @constant */
+                            kind: "test";
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `user_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `push_disabled` / `push_test_sent_24h` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `telegram_push_failed` */
+                502: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Лента разборов
+         * @description Фильтры `status`, `kind`, `user_id`, `limit` (по умолчанию 20, максимум
+         *     100). Текста разбора и вопросов в ответе нет: поддержке нужен ответ
+         *     «почему не собралось», а не чужой разбор.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    status?: "queued" | "planning" | "writing" | "ready" | "failed" | "refunded";
+                    kind?: "report" | "compat" | "solar";
+                    user_id?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: components["schemas"]["AdminReportSummary"][];
+                            truncated: boolean;
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `invalid_filter` / `invalid_limit` */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/reports/{id}/regenerate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Перезапустить упавший разбор
+         * @description `202 {report_id, state: "queued", attempts}`: разбор собирается в фоне,
+         *     панель опрашивает ленту.
+         *
+         *     Перезапускается только `failed` — иначе `409 report_not_regenerable`
+         *     (иначе панель затёрла бы готовый текст). Новых платежей не создаётся:
+         *     это повтор уже оплаченной работы. `attempts` и лимит `MAX_ATTEMPTS` не
+         *     меняются — лимит попыток относится к генерации, а не к поддержке.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header: {
+                    /**
+                     * @description CSRF-токен сессии админ-панели (значение `csrf_token` из
+                     *     `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+                     *     `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+                     *     проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+                     *     несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
+                     */
+                    "X-Admin-CSRF": components["parameters"]["AdminCsrf"];
+                };
+                path: {
+                    id: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Разбор снова в очереди */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            /** Format: uuid */
+                            report_id: string;
+                            /** @constant */
+                            state: "queued";
+                            attempts: number;
+                        };
+                    };
+                };
+                /** @description FORBIDDEN */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `report_not_found` */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+                /** @description `report_not_regenerable` */
+                409: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/problem+json": components["schemas"]["Problem"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -5149,6 +5984,230 @@ export interface components {
             /** @example 2592000 */
             subscription_period_sec?: number | null;
         };
+        /**
+         * @description Тариф в панели. Цена — `price_stars` (в БД `plans.stars`), период —
+         *     `period_days` (в БД `period_seconds`): панель показывает дни, а счёт
+         *     живёт в секундах. Флаг тестового тарифа — `test_only`, как в базе.
+         */
+        AdminPlan: {
+            /** @example month_399 */
+            code: string;
+            /** @enum {string} */
+            kind: "one_off" | "subscription";
+            title: string;
+            price_stars: number;
+            /** @description У разового товара — `null`. В БД это `period_seconds`. */
+            period_days?: number | null;
+            /** @description Тариф существует только при `PAYMENTS_TEST_PLANS=1`. */
+            test_only: boolean;
+            /** @description `plans.is_active`: тариф продаётся. */
+            active: boolean;
+            /**
+             * @description Тариф «первых 50» (`FOUNDER_PLAN_CODES`). Его цену нельзя менять из
+             *     панели — `403 founder_plan_locked`.
+             */
+            founder_only: boolean;
+            /** @description Версия строки для `base_version` при смене цены. */
+            version: number;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        AdminPlanPage: {
+            items: components["schemas"]["AdminPlan"][];
+        };
+        /** @description Одно изменение цены. Строки только добавляются — истории не бывает «до» и «после». */
+        AdminPlanHistoryEntry: {
+            id: string;
+            plan_code: string;
+            price_stars: number;
+            /** @description `null` — первая запись по тарифу. */
+            previous_price_stars?: number | null;
+            version: number;
+            comment: string;
+            /** @description Telegram ID админа, без имени пользователя. */
+            actor_tg_id: string;
+            /** @description Снимок имени на момент действия. */
+            actor_name: string;
+            /**
+             * Format: date-time
+             * @description С этого момента цена действует на новые покупки.
+             */
+            effective_from: string;
+            /** Format: date-time */
+            created_at?: string;
+        };
+        /**
+         * @description Строка списка. **Без ПДн**: ни даты, ни времени, ни места рождения, ни
+         *     `telegram_id`. `alias` — псевдоним `u-<8 hex>` от `users.id`, имя
+         *     человека в базе не хранится.
+         */
+        AdminUserSummary: {
+            /** Format: uuid */
+            user_id: string;
+            /** @example u-3f9a1c22 */
+            alias: string;
+            has_subscription: boolean;
+            /** @enum {string|null} */
+            subscription_plan?: "trial" | "week" | "month" | "year" | null;
+            /** Format: date-time */
+            subscription_expires_at?: string | null;
+            banned: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_seen_at?: string | null;
+        };
+        AdminPayment: {
+            /** @description `telegram_payment_charge_id` — ключ возврата. */
+            charge_id: string;
+            plan_code: string;
+            amount_stars: number;
+            /** @enum {string} */
+            status: "paid" | "processed" | "refunded" | "failed";
+            is_test: boolean;
+            /** Format: date-time */
+            paid_at: string;
+            /** Format: date-time */
+            refunded_at?: string | null;
+        };
+        /**
+         * @description Карточка человека — единственное место с ПДн (дата, время, место
+         *     рождения) и `telegram_id`. Каждое чтение пишет `user.card_view` в
+         *     `admin_audit` до чтения данных.
+         */
+        AdminUserCard: {
+            /** Format: uuid */
+            user_id: string;
+            alias: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_seen_at?: string | null;
+            /** @description Нужен поддержке для сверки с чатом Telegram; `null` — аккаунт обезличен. */
+            telegram_id?: string | null;
+            push_enabled: boolean;
+            banned: boolean;
+            /** Format: date-time */
+            banned_at?: string | null;
+            ban_reason?: string | null;
+            /** @description Дата, время и место рождения. `null` — профиля нет. */
+            profile?: {
+                /** Format: date */
+                birth_date: string;
+                /** @example 14:35:00 */
+                birth_time?: string | null;
+                /**
+                 * @description В БД — `profiles.time_mode` (переименована в 0006), в контракте — то же имя, что у `Chart.birth.time_precision`.
+                 * @enum {string}
+                 */
+                time_precision: "exact" | "approximate" | "unknown";
+                place_name: string;
+                place_region?: string | null;
+                place_country: string;
+                place_tz: string;
+            } | null;
+            /** @description Последняя карта; `null` — карты нет. */
+            chart?: {
+                /** Format: uuid */
+                chart_id: string;
+                time_known: boolean;
+                engine_version: string;
+                /** Format: date-time */
+                created_at: string;
+            } | null;
+            /** @description `null` — подписки не было. `is_active` считается по сроку, как в `GET /me`. */
+            subscription?: {
+                /** @enum {string} */
+                plan: "trial" | "week" | "month" | "year";
+                is_active: boolean;
+                /** Format: date-time */
+                expires_at?: string | null;
+                auto_renew: boolean;
+                stars_paid_total: number;
+            } | null;
+            grants: {
+                /** Format: uuid */
+                id: string;
+                /** @enum {string} */
+                kind: "all_access" | "single_report" | "single_compat";
+                /** @enum {string} */
+                source: "partner" | "founder" | "referral" | "admin";
+                days?: number | null;
+                /** Format: date-time */
+                starts_at?: string | null;
+                /** Format: date-time */
+                expires_at?: string | null;
+                /** Format: date-time */
+                consumed_at?: string | null;
+                /** Format: date-time */
+                revoked_at?: string | null;
+                /** Format: date-time */
+                created_at: string;
+            }[];
+            /** @description До 50 последних платежей, новые сверху. */
+            payments: components["schemas"]["AdminPayment"][];
+            counts: {
+                reports: number;
+                compatibility: number;
+                questions: number;
+                forecasts: number;
+            };
+            /** @description Стоимость LLM по этому человеку: разборы + прогнозы дня + вопросы, ₽. */
+            cost_rub: number;
+        };
+        /**
+         * @description Итог возврата. Суммы в запросе не было — здесь она из платежа
+         *     (`payments.total_amount`), потому что возврат всегда полный.
+         */
+        AdminRefundResult: {
+            /** @constant */
+            ok: true;
+            charge_id: string;
+            amount_stars: number;
+            /** Format: date-time */
+            refunded_at: string;
+            /**
+             * @description Всегда `false`: возврат не отзывает доступ. Закрыть доступ — это `ban`.
+             * @constant
+             */
+            access_revoked: false;
+        };
+        AdminBanResult: {
+            /** Format: uuid */
+            user_id: string;
+            banned: boolean;
+            /** Format: date-time */
+            banned_at?: string | null;
+            reason?: string | null;
+        };
+        /** @description Разбор в ленте поддержки. Текста разбора и вопросов здесь нет. */
+        AdminReportSummary: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            user_id: string;
+            /** Format: uuid */
+            chart_id: string;
+            /** @enum {string} */
+            kind: "report" | "compat" | "solar";
+            /** @enum {string} */
+            status: "queued" | "planning" | "writing" | "ready" | "failed" | "refunded";
+            error_code?: string | null;
+            /** @description `reports.attempts` — сколько попыток генерации уже было; не лимит. */
+            attempts: number;
+            cost_rub: number;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /**
+         * @description Область действия новой цены. Единственное значение в 1.6.16: уже
+         *     выставленные счета живут по снимку `invoices.stars` и не пересчитываются,
+         *     поэтому «отложенных» цен и планировщика нет.
+         * @enum {string}
+         */
+        PriceChangeScope: "only_new_purchases";
     };
     responses: never;
     parameters: {

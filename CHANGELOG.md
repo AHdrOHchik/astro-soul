@@ -1,5 +1,82 @@
 # Changelog
 
+## Итерация 41 (бэкенд) — панель поддержки и цен (контракт 1.6.16)
+
+Вторая волна админки: то, ради чего поддержка открывает панель. Аддитивно —
+`required` нигде не тронут, формы существующих админских маршрутов
+(`/admin/grants`, `/admin/codes`, `/admin/metrics`, `/admin/alerts`,
+`/admin/auth/*`, `/admin/audit`) не менялись.
+
+### Что появилось
+
+- **`GET /admin/plans`** — все тарифы, включая неактивные и тестовые. Цена —
+  `price_stars` (в БД `plans.stars`), период — `period_days` (в БД
+  `period_seconds`). Флаг тестового тарифа называется `test_only`, как в базе:
+  псевдоним `is_test` не вводится.
+- **`PATCH /admin/plans/{code}`** — `{price_stars, comment (5…500),
+  base_version}` → `200 {plan, effective_from}`. `409 price_changed` с
+  `details.current {price_stars, version}` при устаревшей версии:
+  оптимистическая блокировка вместо «последний победил». `403
+  founder_plan_locked` для `founder_month` — его цена обещана первым 50 и из
+  панели не меняется. Неизвестное поле в теле — `422` (`test_only` и
+  `is_active` не правятся). Действует только на новые покупки
+  (`price_change_scope: only_new_purchases`): снимок в выставленных счетах не
+  пересчитывается. Цена, `UPDATE plans` и строка истории — в одной транзакции с
+  `admin_audit`.
+- **`GET /admin/plans/{code}/history`** — история цены (`plan_price_history`,
+  append-only триггер): когда, с какой на, по какой причине и кто.
+- **`GET /admin/users`** — поиск ровно по одному фильтру (`telegram_id`,
+  `alias`, `q`); ноль или два — `422 invalid_search`. 20 строк + `truncated`.
+  **Без ПДн при любом фильтре**: ни даты/времени/места рождения, ни
+  `telegram_id`. `alias` — псевдоним `u-<8 hex>` от `users.id`.
+- **`GET /admin/users/{id}`** — карточка: профиль (дата/время/место), карта,
+  подписка, права, платежи, счётчики, `cost_rub`. Каждое чтение пишет
+  `user.card_view` в аудит **до** чтения данных: журнал недоступен — `500
+  admin_audit_write_failed`, карточка не открывается.
+- **`POST /admin/users/{id}/refund`** — `{charge_id, reason}`. **Суммы в
+  запросе нет**: возврат всегда полный, сумма — `payments.total_amount`;
+  `amount`/`stars`/`sum` в теле → `422 refund_amount_not_allowed`. `404
+  charge_not_found` (чужой платёж неотличим от несуществующего), `409
+  already_refunded`, `409 nothing_to_refund`, `502 telegram_refund_failed` —
+  и в этом случае платёж **не** помечается. Доступ возврат не отзывает
+  (`access_revoked: false`).
+- **`POST /admin/users/{id}/ban`** — `{banned, reason}`. Бан проверяется в
+  `AccessService.hasAccess` **до** подписки и грантов: забаненный теряет доступ
+  даже с активной подпиской и подарком. Подписку бан не отменяет, данные не
+  удаляет, разбан возвращает доступ без повторной оплаты.
+- **`POST /admin/users/{id}/push`** — тестовый пуш `kind = 'test'`: без окна
+  08:00–08:04 и без `last_seen_at`, но с уважением к `push_enabled`
+  (`409 push_disabled`); один на местные сутки (`409 push_test_sent_24h`).
+  Недоставка — `502 telegram_push_failed`.
+- **`GET /admin/reports`** — лента с фильтрами `status`, `kind`, `user_id`,
+  `limit`; **`POST /admin/reports/{id}/regenerate`** — `202 {report_id,
+  state: "queued", attempts}`, только для `failed` (`409
+  report_not_regenerable`), без второго платежа и без изменения
+  `attempts`/`MAX_ATTEMPTS`.
+- **Метрики**: `push_test_sent_24h`, `admin_login_failed_24h`, `refunds_24h`.
+  **Алерт** `admin_login_failed` (warning, порог 20): серия неудачных входов в
+  панель — подбор или сломанный виджет.
+
+### Проверки
+
+`pnpm lint`, `pnpm typecheck` (с `gen:contracts:check` и `gen:api:check`),
+`pnpm build` — чисто. Тесты в песочнице без системного Postgres: `admin-support`
+25/25, `contract-errors` 15/15, `grants-access-guard` 6/6 (включая новый страж
+бана), `ops-alerts` 16/16 (девять алертов), `billing-plans` и
+`plans-invoice-title` — зелёные; полный прогон API (68 файлов / 979 тестов) и
+сьюты `admin-grants`/`admin-auth`/`admin-audit` там не снимаются — PGlite
+подвешивает их и на базовом коммите, поэтому их гоняет CI. Остальные 40 миграций
+прогнаны на чистой базе и повторно (0039/0040 идемпотентны).
+
+### Миграции
+
+| Файл | Что |
+|---|---|
+| `migrations/0039_plan_prices.sql` | `plans.version` (оптимистическая блокировка), `plan_price_history(...)`, индексы, append-only триггер |
+| `migrations/0040_user_ban.sql` | `users.banned_at`, `users.ban_reason`, `CHECK users_ban_consistent`, частичный индекс `users_banned_idx` |
+
+`plans.updated_at` уже был с миграции `0003` — отдельная колонка не
+добавлялась.
 ## Итерация 41 (панель) — вход по-настоящему и «Аудит» (контракт 1.6.15)
 
 Маршруты входа приехали на бэкенде (итерация 40), и панель перестала делать

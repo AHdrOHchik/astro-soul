@@ -42,7 +42,15 @@ export type AlertId =
    * ломается только выдача новых — но человек в этот момент видит
    * `503 bonus_budget_exhausted` и не понимает, почему «код не подходит».
    */
-  | 'bonus_budget_exhausted';
+  | 'bonus_budget_exhausted'
+  /**
+   * Подбор входа в панель (1.6.16).
+   *
+   * `warning`: продукт работает, но 20+ неудачных входов за сутки — это либо
+   * подбор пароля/подписи, либо сломанный виджет входа. Молчать нельзя: удачная
+   * попытка после серии неудач — это уже чужой вход в панель.
+   */
+  | 'admin_login_failed';
 
 export type AlertLevel = 'critical' | 'warning';
 
@@ -95,6 +103,8 @@ export const ALERT_THRESHOLDS = {
    * срабатывать по старому порогу.
    */
   bonus_budget_exhausted: 0,
+  /** Неудачных входов в панель за сутки: 20 — это уже не «забыл пароль». */
+  admin_login_failed: 20,
 } as const;
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -219,6 +229,14 @@ export class AlertsService {
         fired: metrics.bonus_budget_spent_rub >= metrics.bonus_budget_limit_rub,
       },
       {
+        id: 'admin_login_failed',
+        level: 'warning',
+        value: metrics.admin_login_failed_24h,
+        threshold: ALERT_THRESHOLDS.admin_login_failed,
+        since: crossings.adminLogin,
+        fired: metrics.admin_login_failed_24h > ALERT_THRESHOLDS.admin_login_failed,
+      },
+      {
         id: 'backup_stale',
         level: 'warning',
         value: backupAge === null ? null : Math.round(backupAge * 10) / 10,
@@ -269,6 +287,7 @@ export class AlertsService {
     spend: string | null;
     failures: string | null;
     push: string | null;
+    adminLogin: string | null;
   }> {
     const row = await this.db.queryOne<{
       payment: Date | null;
@@ -276,6 +295,7 @@ export class AlertsService {
       spend: Date | null;
       failures: Date | null;
       push: Date | null;
+      adminLogin: Date | null;
     }>(
       `SELECT
          (SELECT min(x.t) FROM (
@@ -327,13 +347,20 @@ export class AlertsService {
                WHERE error IS NOT NULL
                  AND error NOT IN ('blocked', 'chat_not_found')
                  AND sent_at >= now() - interval '24 hours'
-            ) AS u) AS x WHERE x.running > $5) AS push`,
+            ) AS u) AS x WHERE x.running > $5) AS push,
+         (SELECT min(x.t) FROM (
+            SELECT t, sum(1) OVER (ORDER BY t) AS running FROM (
+              SELECT created_at AS t FROM events
+               WHERE name = 'admin_login' AND props ->> 'ok' = 'false'
+                 AND created_at >= now() - interval '24 hours'
+            ) AS u) AS x WHERE x.running > $6) AS "adminLogin"`,
       [
         ALERT_THRESHOLDS.payment_not_arriving,
         ALERT_THRESHOLDS.subscription_cancel_blocked,
         ALERT_THRESHOLDS.llm_spend,
         ALERT_THRESHOLDS.generations_failing,
         ALERT_THRESHOLDS.push_failed,
+        ALERT_THRESHOLDS.admin_login_failed,
       ],
     );
 
@@ -343,6 +370,7 @@ export class AlertsService {
       spend: row?.spend?.toISOString() ?? null,
       failures: row?.failures?.toISOString() ?? null,
       push: row?.push?.toISOString() ?? null,
+      adminLogin: row?.adminLogin?.toISOString() ?? null,
     };
   }
 }

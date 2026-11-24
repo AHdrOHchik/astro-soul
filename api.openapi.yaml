@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.15
+  version: 1.6.16
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -730,6 +730,75 @@ info:
         `csrf_mismatch`, `admin_session_invalid`, `admin_login_throttled`,
         `invalid_cursor`, `invalid_limit`, `admin_audit_write_failed`.
         Коды `Problem.code` не менялись.
+
+    1.6.16 — панель поддержки и цен (итерация 41). Аддитивно: ни одно
+    существующее поле не переименовано и не удалено из `required`, формы
+    существующих админских маршрутов не менялись.
+      • `GET /admin/plans` (`AdminPlanPage`) — все тарифы, включая неактивные и
+        тестовые: панель показывает правду, а не витрину. Цена — `price_stars`
+        (в БД `plans.stars`), период — `period_days` (в БД `period_seconds`).
+        Флаг тестового тарифа называется `test_only`, как в БД: псевдоним
+        `is_test` запрещён. `founder_only` — производное от закрытого списка
+        `FOUNDER_PLAN_CODES`, а не отдельная колонка;
+      • `PATCH /admin/plans/{code}` — `{price_stars, comment (5…500),
+        base_version}` → `200 {plan, effective_from}`. `409 price_changed` с
+        `details.current {price_stars, version}`, если версия устарела (две
+        вкладки панели). `403 founder_plan_locked` для `founder_month`: его
+        цена — обещание первым 50 людям, и правка из панели её не трогает.
+        Неизвестное поле в теле — `422`: `test_only` и `is_active` через этот
+        маршрут не меняются. Единственное значение `price_change_scope` —
+        `only_new_purchases`: уже выставленные счета не пересчитываются;
+      • `GET /admin/plans/{code}/history` — `{items}` истории цены (`comment`,
+        `actor_tg_id`, `effective_from`). Пишется в `plan_price_history` в той
+        же транзакции, что и `UPDATE plans`, и переживает любые правки панели;
+      • `GET /admin/users` — поиск ровно по одному фильтру: `telegram_id`,
+        `alias` или `q`. Ноль или два фильтра — `422 invalid_search`. 20 строк +
+        `truncated`. **Без ПДн**: ни даты/времени/места рождения, ни
+        `telegram_id`; `alias` — псевдоним `u-<8 hex>` от `users.id`, имя
+        человека в базе не хранится;
+      • `GET /admin/users/{id}` (`AdminUserCard`) — единственное место, где есть
+        дата, время и место рождения, а также `telegram_id` для сверки с чатом.
+        Каждое чтение пишет `user.card_view` в `admin_audit` **до** чтения ПДн:
+        недоступный журнал → `500 admin_audit_write_failed`, карточка не
+        откроется;
+      • `POST /admin/users/{id}/refund` — `{charge_id, reason}`.
+        **Суммы в запросе нет**: возврат всегда полный (`refundStarPayment`
+        частичных не умеет), сумма берётся из `payments.total_amount`; поле
+        `amount`/`stars`/`sum` в теле — `422 refund_amount_not_allowed`. Чужой
+        или несуществующий `charge_id` — `404 charge_not_found`; повторный
+        возврат — `409 already_refunded`; нечего возвращать — `409
+        nothing_to_refund`; отказ Bot API — `502 telegram_refund_failed` и
+        платёж **не** помечается. Доступ возврат не отзывает
+        (`access_revoked: false`): покупка остаётся покупкой, а закрыть доступ —
+        отдельное решение (`ban`);
+      • `POST /admin/users/{id}/ban` — `{banned, reason}` → `AdminBanResult`.
+        Бан проверяется в `AccessService.hasAccess` **до** подписки и грантов,
+        поэтому забаненный теряет доступ даже с действующей подпиской. Бан не
+        отменяет подписку и не удаляет данные: разбан возвращает доступ без
+        повторной оплаты;
+      • `POST /admin/users/{id}/push` — тестовый пуш `kind = 'test'`: без окна
+        08:00–08:04 и без проверки `last_seen_at`, но с уважением к
+        `push_enabled`. Один на местные сутки (`409 push_test_sent_24h`).
+        Недоставка — `502 telegram_push_failed`, отказ человека (403/chat not
+        found) — `409 push_disabled`;
+      • `GET /admin/reports` (`AdminReportSummary`) — лента с фильтрами
+        `status`, `kind`, `user_id`, `limit` (по умолчанию 20, максимум 100);
+        `POST /admin/reports/{id}/regenerate` — `202 {report_id,
+        state: "queued", attempts}`. Перезапускается только `failed` (`409
+        report_not_regenerable`); новых платежей не создаётся, `attempts` и
+        `MAX_ATTEMPTS` не меняются;
+      • `GET /admin/metrics` — `push_test_sent_24h`, `admin_login_failed_24h`,
+        `refunds_24h`;
+      • `GET /admin/alerts` — десятое правило `admin_login_failed` (warning,
+        `admin_login_failed_24h > 20`): серия неудачных входов в панель — это
+        подбор или сломанный виджет входа;
+      • новые машинные причины в `Problem.details.reason`: `invalid_search`,
+        `unknown_field`, `price_changed`, `plan_not_found`,
+        `founder_plan_locked`, `user_not_found`, `charge_not_found`,
+        `already_refunded`, `nothing_to_refund`, `refund_amount_not_allowed`,
+        `telegram_refund_failed`, `push_disabled`, `push_test_sent_24h`,
+        `telegram_push_failed`, `report_not_found`, `report_not_regenerable`,
+        `invalid_filter`. Коды `Problem.code` не менялись.
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`
@@ -2275,6 +2344,232 @@ components:
         stars: { type: integer, example: 399 }
         is_subscription: { type: boolean }
         subscription_period_sec: { type: [integer, 'null'], example: 2592000 }
+
+    # --- панель поддержки и цен (1.6.16) ------------------------------------
+
+    AdminPlan:
+      type: object
+      description: |-
+        Тариф в панели. Цена — `price_stars` (в БД `plans.stars`), период —
+        `period_days` (в БД `period_seconds`): панель показывает дни, а счёт
+        живёт в секундах. Флаг тестового тарифа — `test_only`, как в базе.
+      required: [code, kind, title, price_stars, test_only, active, founder_only, version, updated_at]
+      properties:
+        code: { type: string, example: month_399 }
+        kind: { type: string, enum: [one_off, subscription] }
+        title: { type: string }
+        price_stars: { type: integer, minimum: 1 }
+        period_days:
+          type: [integer, 'null']
+          description: 'У разового товара — `null`. В БД это `period_seconds`.'
+        test_only:
+          type: boolean
+          description: 'Тариф существует только при `PAYMENTS_TEST_PLANS=1`.'
+        active: { type: boolean, description: '`plans.is_active`: тариф продаётся.' }
+        founder_only:
+          type: boolean
+          description: |-
+            Тариф «первых 50» (`FOUNDER_PLAN_CODES`). Его цену нельзя менять из
+            панели — `403 founder_plan_locked`.
+        version:
+          type: integer
+          description: 'Версия строки для `base_version` при смене цены.'
+        updated_at: { type: string, format: date-time }
+
+    AdminPlanPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/AdminPlan' }
+
+    AdminPlanHistoryEntry:
+      type: object
+      description: Одно изменение цены. Строки только добавляются — истории не бывает «до» и «после».
+      required: [id, plan_code, price_stars, version, comment, actor_tg_id, actor_name, effective_from]
+      properties:
+        id: { type: string }
+        plan_code: { type: string }
+        price_stars: { type: integer }
+        previous_price_stars:
+          type: [integer, 'null']
+          description: '`null` — первая запись по тарифу.'
+        version: { type: integer }
+        comment: { type: string, minLength: 5, maxLength: 500 }
+        actor_tg_id: { type: string, description: 'Telegram ID админа, без имени пользователя.' }
+        actor_name: { type: string, description: 'Снимок имени на момент действия.' }
+        effective_from:
+          type: string
+          format: date-time
+          description: 'С этого момента цена действует на новые покупки.'
+        created_at: { type: string, format: date-time }
+
+    AdminUserSummary:
+      type: object
+      description: |-
+        Строка списка. **Без ПДн**: ни даты, ни времени, ни места рождения, ни
+        `telegram_id`. `alias` — псевдоним `u-<8 hex>` от `users.id`, имя
+        человека в базе не хранится.
+      required: [user_id, alias, has_subscription, banned, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        alias: { type: string, example: u-3f9a1c22 }
+        has_subscription: { type: boolean }
+        subscription_plan:
+          type: [string, 'null']
+          enum: [trial, week, month, year, null]
+        subscription_expires_at: { type: [string, 'null'], format: date-time }
+        banned: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: [string, 'null'], format: date-time }
+
+    AdminPayment:
+      type: object
+      required: [charge_id, plan_code, amount_stars, status, is_test, paid_at]
+      properties:
+        charge_id: { type: string, description: '`telegram_payment_charge_id` — ключ возврата.' }
+        plan_code: { type: string }
+        amount_stars: { type: integer }
+        status: { type: string, enum: [paid, processed, refunded, failed] }
+        is_test: { type: boolean }
+        paid_at: { type: string, format: date-time }
+        refunded_at: { type: [string, 'null'], format: date-time }
+
+    AdminUserCard:
+      type: object
+      description: |-
+        Карточка человека — единственное место с ПДн (дата, время, место
+        рождения) и `telegram_id`. Каждое чтение пишет `user.card_view` в
+        `admin_audit` до чтения данных.
+      required: [user_id, alias, created_at, push_enabled, banned, grants, payments, counts, cost_rub]
+      properties:
+        user_id: { type: string, format: uuid }
+        alias: { type: string }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: [string, 'null'], format: date-time }
+        telegram_id:
+          type: [string, 'null']
+          description: 'Нужен поддержке для сверки с чатом Telegram; `null` — аккаунт обезличен.'
+        push_enabled: { type: boolean }
+        banned: { type: boolean }
+        banned_at: { type: [string, 'null'], format: date-time }
+        ban_reason: { type: [string, 'null'] }
+        profile:
+          type: [object, 'null']
+          description: 'Дата, время и место рождения. `null` — профиля нет.'
+          required: [birth_date, time_precision, place_name, place_country, place_tz]
+          properties:
+            birth_date: { type: string, format: date }
+            birth_time: { type: [string, 'null'], example: '14:35:00' }
+            time_precision:
+              type: string
+              enum: [exact, approximate, unknown]
+              description: 'В БД — `profiles.time_mode` (переименована в 0006), в контракте — то же имя, что у `Chart.birth.time_precision`.'
+            place_name: { type: string }
+            place_region: { type: [string, 'null'] }
+            place_country: { type: string }
+            place_tz: { type: string }
+        chart:
+          type: [object, 'null']
+          description: 'Последняя карта; `null` — карты нет.'
+          required: [chart_id, time_known, engine_version, created_at]
+          properties:
+            chart_id: { type: string, format: uuid }
+            time_known: { type: boolean }
+            engine_version: { type: string }
+            created_at: { type: string, format: date-time }
+        subscription:
+          type: [object, 'null']
+          description: '`null` — подписки не было. `is_active` считается по сроку, как в `GET /me`.'
+          required: [plan, is_active, auto_renew, stars_paid_total]
+          properties:
+            plan: { type: string, enum: [trial, week, month, year] }
+            is_active: { type: boolean }
+            expires_at: { type: [string, 'null'], format: date-time }
+            auto_renew: { type: boolean }
+            stars_paid_total: { type: integer }
+        grants:
+          type: array
+          items:
+            type: object
+            required: [id, kind, source, created_at]
+            properties:
+              id: { type: string, format: uuid }
+              kind: { type: string, enum: [all_access, single_report, single_compat] }
+              source: { type: string, enum: [partner, founder, referral, admin] }
+              days: { type: [integer, 'null'] }
+              starts_at: { type: [string, 'null'], format: date-time }
+              expires_at: { type: [string, 'null'], format: date-time }
+              consumed_at: { type: [string, 'null'], format: date-time }
+              revoked_at: { type: [string, 'null'], format: date-time }
+              created_at: { type: string, format: date-time }
+        payments:
+          type: array
+          description: 'До 50 последних платежей, новые сверху.'
+          items: { $ref: '#/components/schemas/AdminPayment' }
+        counts:
+          type: object
+          required: [reports, compatibility, questions, forecasts]
+          properties:
+            reports: { type: integer }
+            compatibility: { type: integer }
+            questions: { type: integer }
+            forecasts: { type: integer }
+        cost_rub:
+          type: number
+          description: 'Стоимость LLM по этому человеку: разборы + прогнозы дня + вопросы, ₽.'
+
+    AdminRefundResult:
+      type: object
+      description: |-
+        Итог возврата. Суммы в запросе не было — здесь она из платежа
+        (`payments.total_amount`), потому что возврат всегда полный.
+      required: [ok, charge_id, amount_stars, refunded_at, access_revoked]
+      properties:
+        ok: { type: boolean, const: true }
+        charge_id: { type: string }
+        amount_stars: { type: integer }
+        refunded_at: { type: string, format: date-time }
+        access_revoked:
+          type: boolean
+          const: false
+          description: 'Всегда `false`: возврат не отзывает доступ. Закрыть доступ — это `ban`.'
+
+    AdminBanResult:
+      type: object
+      required: [user_id, banned]
+      properties:
+        user_id: { type: string, format: uuid }
+        banned: { type: boolean }
+        banned_at: { type: [string, 'null'], format: date-time }
+        reason: { type: [string, 'null'] }
+
+    AdminReportSummary:
+      type: object
+      description: Разбор в ленте поддержки. Текста разбора и вопросов здесь нет.
+      required: [id, user_id, chart_id, kind, status, attempts, cost_rub, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        chart_id: { type: string, format: uuid }
+        kind: { type: string, enum: [report, compat, solar] }
+        status: { type: string, enum: [queued, planning, writing, ready, failed, refunded] }
+        error_code: { type: [string, 'null'] }
+        attempts:
+          type: integer
+          description: '`reports.attempts` — сколько попыток генерации уже было; не лимит.'
+        cost_rub: { type: number }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    PriceChangeScope:
+      type: string
+      description: |-
+        Область действия новой цены. Единственное значение в 1.6.16: уже
+        выставленные счета живут по снимку `invoices.stars` и не пересчитываются,
+        поэтому «отложенных» цен и планировщика нет.
+      enum: [only_new_purchases]
 
 paths:
   /api/v1/health:
@@ -4764,6 +5059,25 @@ paths:
                       Сколько просроченных сессий панели убрал джоб
                       `admin_sessions_cleanup` за сутки. Ноль неделями — таблица
                       растёт, и видно это только здесь.
+                  push_test_sent_24h:
+                    type: integer
+                    description: |-
+                      Тестовые пуши поддержки (`push_log.kind = 'test'`) за сутки.
+                      Считаются только ушедшие (`sent`, без ошибки): поддержка
+                      отправляет тест, когда человек жалуется «не приходит», и
+                      ноль при обращениях значит «не доходит даже тест».
+                  admin_login_failed_24h:
+                    type: integer
+                    description: |-
+                      Неудачных входов в панель за сутки (события `admin_login`
+                      с `ok: false`, включая заблокированные лимитом). Рост —
+                      подбор или сломанный виджет; по этой же цифре срабатывает
+                      алерт `admin_login_failed`.
+                  refunds_24h:
+                    type: integer
+                    description: |-
+                      Возвратов за сутки по `payments.refunded_at` — и панельных,
+                      и телеграмных. Одна цифра на вопрос «сколько денег вернули».
 
         '403': { description: FORBIDDEN }
 
@@ -4775,7 +5089,7 @@ paths:
         Доступ только для `ADMIN_TG_ID` из переменной окружения (иначе `403`),
         как у `/admin/metrics`.
 
-        Шесть правил, которые настраиваются в любом uptime-сервисе по `id`
+        Правила, которые настраиваются в любом uptime-сервисе по `id`
         (`fired: true` — пора будить человека). Значения считаются из тех же
         данных, что и метрики: ничего нового не хранится, истории превышений
         нет — `since` пересчитывается по накопленной сумме в окне.
@@ -4789,6 +5103,7 @@ paths:
         | `generations_failing` | warning | `compat_failed_24h + forecast_failed_24h + questions_failed_24h + pdf_failed_24h > 5` — модель или промпт сломались |
         | `backup_stale` | warning | последний успешный дамп старше 36 часов (или маркера нет вовсе — «не знаем» тоже плохо) |
         | `push_failed` | warning | `push_failed_24h > 20` — утренняя рассылка сломалась (Bot API, текст). `blocked` и `chat not found` не считаются: это отказ человека |
+        | `admin_login_failed` | warning | `admin_login_failed_24h > 20` — серия неудачных входов в панель: подбор подписи или сломанный виджет входа |
 
         Единицы `value`: штуки (`payment_not_arriving`,
         `subscription_cancel_blocked`, `generations_failing`), минуты
@@ -4805,6 +5120,479 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AlertsResponse' }
         '403': { description: FORBIDDEN }
+
+  /api/v1/admin/plans:
+    get:
+      tags: [internal]
+      summary: Тарифы с ценами (панель)
+      description: |-
+        Доступ только для `ADMIN_TG_ID` (иначе `403`).
+
+        Отдаются **все** строки `plans`, включая неактивные и тестовые: панель
+        показывает правду, а не витрину. Цена — `price_stars` (в БД
+        `plans.stars`), период — `period_days` (в БД `period_seconds`). Цена
+        всегда из таблицы `plans`: второго источника цены у продукта нет.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminPlanPage' }
+        '403': { description: FORBIDDEN }
+
+  /api/v1/admin/plans/{code}:
+    patch:
+      tags: [internal]
+      summary: Сменить цену тарифа
+      description: |-
+        Тело: `{price_stars, comment, base_version}`. Ответ `200 {plan,
+        effective_from}`.
+
+        `409 price_changed` — `base_version` устарел (цену изменили в другой
+        вкладке), в `details.current` актуальные `price_stars` и `version`.
+        `403 founder_plan_locked` — тариф `founder_month`: его цена обещана
+        первым 50 людям и из панели не меняется.
+
+        Меняется **только цена**: `test_only`, `is_active`, `grants` этим
+        маршрутом не правятся, а неизвестное поле в теле — `422`. Смена цены
+        действует на новые покупки (`price_change_scope: only_new_purchases`):
+        снимок цены в уже выставленных счетах не пересчитывается.
+
+        Изменение и запись истории (`plan_price_history`) идут в одной
+        транзакции с записью в `admin_audit`: нет записи — нет новой цены.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/AdminCsrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [price_stars, comment, base_version]
+              properties:
+                price_stars: { type: integer, minimum: 1 }
+                comment:
+                  type: string
+                  minLength: 5
+                  maxLength: 500
+                  description: 'Зачем меняем цену: через месяц это единственное объяснение.'
+                base_version:
+                  type: integer
+                  minimum: 1
+                  description: '`AdminPlan.version`, которую видела панель.'
+      responses:
+        '200':
+          description: Новая цена действует с `effective_from`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plan, effective_from]
+                properties:
+                  plan: { $ref: '#/components/schemas/AdminPlan' }
+                  effective_from: { type: string, format: date-time }
+                  price_change_scope: { $ref: '#/components/schemas/PriceChangeScope' }
+        '403':
+          description: '`founder_plan_locked` / FORBIDDEN'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '404':
+          description: '`plan_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`price_changed` с `details.current {price_stars, version}`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: 'VALIDATION_FAILED, `unknown_field`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/plans/{code}/history:
+    get:
+      tags: [internal]
+      summary: История цены тарифа
+      description: |-
+        Новое сверху, до 100 записей. Таблица `plan_price_history` только
+        дополняется: строку нельзя ни изменить, ни удалить (триггер).
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminPlanHistoryEntry' }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`plan_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/users:
+    get:
+      tags: [internal]
+      summary: Поиск пользователя
+      description: |-
+        Ровно один фильтр: `telegram_id`, `alias` или `q`. Ноль или два —
+        `422 invalid_search`. Ответ — до 20 строк и `truncated`.
+
+        **Без ПДн при любом фильтре**: в списке нет ни даты/времени/места
+        рождения, ни `telegram_id`. Дата рождения и карта есть только в
+        `GET /admin/users/{id}`, и то чтение пишется в журнал.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: telegram_id
+          in: query
+          schema: { type: string, pattern: '^[0-9]{1,20}$' }
+        - name: alias
+          in: query
+          description: 'Псевдоним из списка (`u-3f9a1c22`), минимум 2 символа.'
+          schema: { type: string, minLength: 2 }
+        - name: q
+          in: query
+          description: 'Подстрока псевдонима или Telegram ID, минимум 2 символа.'
+          schema: { type: string, minLength: 2 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, truncated]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminUserSummary' }
+                  truncated:
+                    type: boolean
+                    description: '`true` — строк больше 20, сузь фильтр.'
+        '403': { description: FORBIDDEN }
+        '422':
+          description: '`invalid_search`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/users/{id}:
+    get:
+      tags: [internal]
+      summary: Карточка пользователя
+      description: |-
+        Единственный ответ с ПДн: дата, время и место рождения, `telegram_id`.
+        Каждое чтение пишет `user.card_view` в `admin_audit` **до** чтения
+        данных: если журнал недоступен — `500 admin_audit_write_failed`, и
+        карточка не открывается.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminUserCard' }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`user_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '500':
+          description: '`admin_audit_write_failed` — журнал недоступен, карточка не читалась'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/users/{id}/refund:
+    post:
+      tags: [internal]
+      summary: Полный возврат звёзд
+      description: |-
+        Тело: `{charge_id, reason}`. **Суммы в запросе нет**: возврат всегда
+        полный, сумму определяет `payments.total_amount`, а не панель. Поле
+        `amount`/`amount_stars`/`stars`/`sum` в теле — `422
+        refund_amount_not_allowed`.
+
+        `404 charge_not_found` — платёж не найден или принадлежит другому
+        человеку (различать нельзя: панель не должна узнавать о чужих
+        `charge_id`). `409 already_refunded` — уже возвращён; `409
+        nothing_to_refund` — возвращать нечего (доступ не выдавался, аккаунт
+        обезличен). `502 telegram_refund_failed` — Bot API отказал или не
+        ответил: платёж при этом **не** помечается возвращённым.
+
+        Доступ не отзывается (`access_revoked: false`): возврат — про деньги,
+        закрыть доступ — это `POST /admin/users/{id}/ban`.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminCsrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [charge_id, reason]
+              properties:
+                charge_id: { type: string, minLength: 1, maxLength: 200 }
+                reason: { type: string, minLength: 3, maxLength: 500 }
+      responses:
+        '200':
+          description: Возврат подтверждён Telegram
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminRefundResult' }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`charge_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`already_refunded` / `nothing_to_refund`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: 'VALIDATION_FAILED, `refund_amount_not_allowed`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '502':
+          description: '`telegram_refund_failed` — платёж не изменён'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/users/{id}/ban:
+    post:
+      tags: [internal]
+      summary: Заблокировать или разблокировать доступ
+      description: |-
+        Тело: `{banned, reason}`. Бан не отменяет подписку, не удаляет данные и
+        не трогает покупки: `AccessService.hasAccess` проверяет `banned_at`
+        **до** подписки и грантов, поэтому доступ пропадает сразу, а разбан
+        возвращает его без повторной оплаты.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminCsrf'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [banned]
+              properties:
+                banned: { type: boolean }
+                reason:
+                  type: string
+                  minLength: 5
+                  maxLength: 500
+                  description: 'Обязательна при `banned: true`; без неё — `422`.'
+      responses:
+        '200':
+          description: Новое состояние бана
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminBanResult' }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`user_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { description: VALIDATION_FAILED }
+
+  /api/v1/admin/users/{id}/push:
+    post:
+      tags: [internal]
+      summary: Тестовый пуш
+      description: |-
+        Отправляет тестовое сообщение (`push_log.kind = 'test'`) без окна
+        08:00–08:04 и без проверки `last_seen_at`: поддержка проверяет доставку
+        тогда, когда человек пожаловался. Согласие `push_enabled` уважается
+        (`409 push_disabled`), тестовый пуш — один на местные сутки (`409
+        push_test_sent_24h`, ключ `(user_id, local_date, kind)` тот же, что у
+        утренней рассылки).
+
+        Недоставка — `502 telegram_push_failed`; отказ человека (403 или «chat
+        not found») — `409 push_disabled`.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminCsrf'
+      responses:
+        '200':
+          description: Пуш ушёл
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, sent, sent_at, kind]
+                properties:
+                  user_id: { type: string, format: uuid }
+                  sent: { type: boolean, const: true }
+                  sent_at: { type: string, format: date-time }
+                  kind: { type: string, const: test }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`user_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`push_disabled` / `push_test_sent_24h`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '502':
+          description: '`telegram_push_failed`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/reports:
+    get:
+      tags: [internal]
+      summary: Лента разборов
+      description: |-
+        Фильтры `status`, `kind`, `user_id`, `limit` (по умолчанию 20, максимум
+        100). Текста разбора и вопросов в ответе нет: поддержке нужен ответ
+        «почему не собралось», а не чужой разбор.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [queued, planning, writing, ready, failed, refunded] }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [report, compat, solar] }
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, truncated]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminReportSummary' }
+                  truncated: { type: boolean }
+        '403': { description: FORBIDDEN }
+        '422':
+          description: '`invalid_filter` / `invalid_limit`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/reports/{id}/regenerate:
+    post:
+      tags: [internal]
+      summary: Перезапустить упавший разбор
+      description: |-
+        `202 {report_id, state: "queued", attempts}`: разбор собирается в фоне,
+        панель опрашивает ленту.
+
+        Перезапускается только `failed` — иначе `409 report_not_regenerable`
+        (иначе панель затёрла бы готовый текст). Новых платежей не создаётся:
+        это повтор уже оплаченной работы. `attempts` и лимит `MAX_ATTEMPTS` не
+        меняются — лимит попыток относится к генерации, а не к поддержке.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminCsrf'
+      responses:
+        '202':
+          description: Разбор снова в очереди
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [report_id, state, attempts]
+                properties:
+                  report_id: { type: string, format: uuid }
+                  state: { type: string, const: queued }
+                  attempts: { type: integer }
+        '403': { description: FORBIDDEN }
+        '404':
+          description: '`report_not_found`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '409':
+          description: '`report_not_regenerable`'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
 # Закрытый список событий, которые отправляет КЛИЕНТ (контракт 1.5.1).
 # Совпадает с ANALYTICS_EVENTS в apps/api/src/modules/events/events.dto.ts и с
