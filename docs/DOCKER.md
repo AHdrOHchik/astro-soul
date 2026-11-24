@@ -112,7 +112,7 @@ make ps-prod
 
 ## 4. КРИТИЧНО: `VITE_*` — это build-time переменные
 
-Переменные фронтенда (`VITE_API_BASE_URL`, `VITE_BOT_USERNAME`, `VITE_SUPPORT_CONTACT`, `VITE_SUBSCRIPTIONS`) **не читаются контейнером `web` при старте** — Vite подставляет их статически в JS-бандл во время `pnpm --filter @astro-soul/web build` внутри `docker/web.Dockerfile` через `ARG`.
+Переменные фронтенда (`VITE_API_BASE_URL`, `VITE_BOT_USERNAME`, `VITE_SUPPORT_CONTACT`, `VITE_SUBSCRIPTIONS`, `VITE_NOTIFICATIONS_UI`) **не читаются контейнером `web` при старте** — Vite подставляет их статически в JS-бандл во время `pnpm --filter @astro-soul/web build` внутри `docker/web.Dockerfile` через `ARG`.
 
 **Типовая ошибка:** поменять `VITE_SUBSCRIPTIONS=enabled` в `.env` и сделать `docker compose restart web` — внутри собранного бандла останется старое значение.
 
@@ -122,6 +122,13 @@ make ps-prod
 make build-web
 make up          # или make up-prod в проде
 ```
+
+Про `VITE_NOTIFICATIONS_UI` (Б-1, 1.6.19): до этой версии флага не было в
+`docker/web.Dockerfile` вовсе, поэтому значение из `.env`/`vars` молча терялось —
+`import.meta.env.VITE_NOTIFICATIONS_UI` в бандле становился `undefined`, экран
+согласия оставался скрытым, а включённый `PUSH_ENABLED=1` присылал пуши, от
+которых нельзя было отказаться в приложении. Теперь флаг объявлен `ARG`-ом,
+передаётся в `pnpm build` и попадает в `build.args` compose; дефолт — `0`.
 
 Дополнительные правила:
 - опечатка в `VITE_SUBSCRIPTIONS` (любое значение кроме `enabled`, `off` или пустой строки) намеренно валит сборку (`apps/web/scripts/buildSettings.ts`);
@@ -338,7 +345,32 @@ docker compose up -d --force-recreate api
 
 ---
 
-## 10. Типовые ошибки
+## 10. Секрет вебхука в логах: почему `$uri` больше не логируется (Б-4, 1.6.19)
+
+`TELEGRAM_WEBHOOK_SECRET` — не заголовок и не query, а **сегмент пути**:
+`/api/v1/internal/telegram/webhook/<secret>`. Отсюда следствие, которое легко не
+заметить: «логируем путь без query string, значит секретов нет» было неправдой —
+и `$uri` в nginx, и `req.path` в access-логе API содержали секрет целиком,
+причём на **каждом** вызове (Telegram дёргает вебхук постоянно).
+
+Что сделано:
+
+- `docker/nginx.conf` логирует `$uri_logged` — `map`, который заменяет секрет
+  на `***`; `$request_uri` не используется вовсе (он добавил бы ещё и query);
+- `apps/api/src/common/request-context.ts` (`requestPath`) маскирует путь **до**
+  записи в лог, поэтому `http_request`, `request_rejected` и `request_failed`
+  безопасны по построению, а не «мы проверили каждый вызов»;
+- `apps/api/src/common/secret-url.ts` — единственная реализация маски; логгер
+  (`redact`/`serialize`) прогоняет через неё **любую** строку, плюс
+  `url`/`expected_url`/`actual_url`/`request_uri` в `FORBIDDEN_KEYS`;
+- аудит админки (`admin_audit.after.url`) тоже хранит маску: журнал читают в
+  панели, и секрет в нём — это утечка к любому, у кого есть доступ к панели.
+
+Ответ `POST /admin/telegram/webhook` по-прежнему отдаёт **полный** адрес: без
+него нельзя сверить регистрацию, и он доступен только авторизованному админу.
+Это осознанное исключение, а не забытое место.
+
+## 11. Типовые ошибки
 
 | Симптом | Причина | Решение |
 |---|---|---|
@@ -356,7 +388,7 @@ docker compose up -d --force-recreate api
 
 ---
 
-## 11. Памятка для следующего агента (`init-vps`)
+## 12. Памятка для следующего агента (`init-vps`)
 
 1. **TLS и домен (`web`):** возьми `docker/conf.d/ssl.conf.example`, подставь домен, сохрани как `docker/conf.d/ssl.conf`, раскомментируй проброс `443:8443` и монтирование `/etc/letsencrypt` + `ssl.conf` в `docker-compose.prod.yml`. При редиректе `80 → 443` перенастрой `healthcheck` сервиса `web` на `http://127.0.0.1:8080/nginx-health`.
 2. **Крон-джобов (`infra/systemd/`):** в проде порт `api:8080` наружу не публикуется, поэтому в `/etc/astro-soul/jobs.env` укажи `ASTRO_JOBS_URL=http://127.0.0.1/api/v1/internal/jobs/run` (или HTTPS-адрес домена) и точный `INTERNAL_JOB_SECRET`. В `docker/conf.d/default.conf` для `/api/v1/internal/jobs/` уже выставлен `proxy_read_timeout 330s`.
@@ -370,7 +402,7 @@ docker compose up -d --force-recreate api
 
 ---
 
-## 10. Вебхук Telegram и диагностика оплаты
+## 13. Вебхук Telegram и диагностика оплаты
 
 ### Вебхук регистрируется сам
 

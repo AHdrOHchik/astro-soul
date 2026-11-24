@@ -39,6 +39,42 @@ export type AccessFeature =
   /** Карта года. */
   | 'solar';
 
+/**
+ * Почему разбор доступен (контракт 1.6.19, `Me.report_access.source`).
+ *
+ * Порядок приоритета зафиксирован и проверяется тестом: `purchased` →
+ * `all_access` → `single_report`. Клиент показывает разный текст («куплено»,
+ * «входит в подарок», «осталось N бесплатных»), поэтому источник — часть
+ * контракта, а не деталь реализации.
+ */
+export type ReportAccessSource = 'purchased' | 'all_access' | 'single_report';
+
+/**
+ * Ответ на вопрос «можно ли человеку разбор» — в одном объекте.
+ *
+ * `available` — это **право** (можно заказать или открыть разбор сейчас),
+ * `chartId` — карта, за которую разбор уже оплачен (или по которой он готов).
+ * Это разные вопросы: у владельца «всё включено» право есть, а оплаченной
+ * карты нет (1.6.19, дефект round44: `full_report = true` при `chart_id = null`
+ * читался клиентом как «оплачено на этой карте»).
+ */
+export interface ReportAccess {
+  readonly available: boolean;
+  readonly source: ReportAccessSource | null;
+  /** Конец права «всё включено»; у покупки/подарка срока нет — `null`. */
+  readonly expiresAt: string | null;
+  /** Карта, за которую разбор оплачен/готов; `null` — привязки к карте нет. */
+  readonly chartId: string | null;
+}
+
+/** «Разбора нет» — одно значение на все отказы, чтобы не плодить `null`-и. */
+const NO_REPORT_ACCESS: ReportAccess = {
+  available: false,
+  source: null,
+  expiresAt: null,
+  chartId: null,
+};
+
 export interface AccessCheckOptions {
   /** Для `report`: карта, за которую спрашиваем. */
   readonly chartId?: string;
@@ -91,6 +127,26 @@ export class AccessService {
       return false;
     }
 
+    // `report` больше не нужен `getEntitlements` (1.6.19): решение принимает
+    // `reportAccess`, который сам смотрит на покупку, готовый разбор, «всё
+    // включено» и подаренные разборы. Флаг `fullReport` — витрина, а не дверь.
+    if (feature === 'report') {
+      const access = await this.reportAccess(userId, options);
+
+      if (!access.available) {
+        return false;
+      }
+
+      // Списывается только подаренный разбор и только по явному требованию
+      // (`consume: true`). Оплаченный разбор и «всё включено» не расходуются:
+      // первые — покупка, второе — срок, а не счётчик.
+      if (options.consume !== true || access.source !== 'single_report') {
+        return true;
+      }
+
+      return this.consume(userId, 'single_report', options.chartId);
+    }
+
     const rights = await this.entitlements.getEntitlements(userId);
 
     switch (feature) {
@@ -110,59 +166,61 @@ export class AccessService {
         return rights.solarIncluded;
       case 'compat':
         return this.compatAccess(userId, rights.compatPerMonth, options.consume === true);
-      case 'report':
-        return this.reportAccess(
-          userId,
-          rights.fullReport,
-          options.chartId,
-          options.consume === true,
-        );
     }
   }
 
   /**
-   * Разбор: оплаченный (на конкретную карту) **или** одноразовое право.
+   * Разбор: право, его источник и карта — **одна** функция (контракт 1.6.19).
    *
-   * Оплаченный разбор проверяется по карте, а не по флагу: одна покупка не
-   * должна открывать разборы по другим картам (это деньги). Одноразовое право
-   * карте не привязано — его тратит первый заказ.
+   * Зачем: до 1.6.19 ответ «можно ли заказать разбор» собирался в двух местах —
+   * в `hasAccess` (по флагу `entitlements.fullReport`) и в `Me` (по тем же
+   * флагам, но иначе). Из-за этого владелец «всё включено» видел в `/me`
+   * «разбор куплен», а `POST /reports` отвечал `402 report_not_paid`.
+   *
+   * Порядок источников фиксирован: купленный/готовый разбор этой карты →
+   * действующее «всё включено» → неизрасходованный бесплатный разбор. Он важен
+   * не только для текста на экране: `single_report` — расходуемое право, и
+   * списывать его, когда разбор уже оплачен, значит брать деньги дважды.
    */
-  private async reportAccess(
-    userId: string,
-    paid: boolean,
-    chartId: string | undefined,
-    consume: boolean,
-  ): Promise<boolean> {
-    if (chartId !== undefined && (await this.reportPaidFor(userId, chartId))) {
-      return true;
+  async reportAccess(userId: string, options: AccessCheckOptions = {}): Promise<ReportAccess> {
+    if (await this.isBanned(userId)) {
+      return NO_REPORT_ACCESS;
+    }
+
+    const chartId = options.chartId;
+
+    // 1. Оплаченный разбор. С картой — только эта карта (одна покупка не
+    //    открывает разборы по другим: это деньги). Без карты — «есть оплаченный
+    //    разбор вообще», но привязку не выдаём: показывать `chart_id` чужой
+    //    карты в `/me` значило бы обещать разбор не по той карте.
+    if (chartId !== undefined) {
+      if (await this.reportPaidFor(userId, chartId)) {
+        return { available: true, source: 'purchased', expiresAt: null, chartId };
+      }
+    } else if ((await this.entitlements.fullReportChartId(userId)) !== null) {
+      return { available: true, source: 'purchased', expiresAt: null, chartId: null };
     }
 
     const rights = await this.entitlements.getGrantEntitlements(userId);
 
-    // «Всё включено» — это и разбор, причём **любой** карты (1.6.18).
-    //
-    // Раньше проверка шла мимо этого права: `chartId` есть → смотрим только
-    // оплаченный разбор этой карты → дальше только `single_report`. Поэтому
-    // владелец с действующим `all_access` видел открытую совместимость и
-    // платный разбор, а `POST /reports` отвечал `402 report_not_paid`.
-    // Грант не привязан к карте, поэтому и проверка стоит до `chartId`.
+    // 2. «Всё включено» — право на разбор любой карты, но не покупка: `chartId`
+    //    остаётся `null`, иначе клиент считает карту оплаченной (round44).
     if (rights.allAccessUntil !== null) {
-      return true;
+      return {
+        available: true,
+        source: 'all_access',
+        expiresAt: rights.allAccessUntil,
+        chartId: null,
+      };
     }
 
-    if (paid && chartId === undefined) {
-      return true;
+    // 3. Бесплатный разбор от кода/партнёра. Срок у него не показываем: право
+    //    живёт до использования, а не до даты.
+    if (rights.singleReports > 0) {
+      return { available: true, source: 'single_report', expiresAt: null, chartId: null };
     }
 
-    if (rights.singleReports === 0) {
-      return false;
-    }
-
-    if (!consume) {
-      return true;
-    }
-
-    return this.consume(userId, 'single_report', chartId);
+    return NO_REPORT_ACCESS;
   }
 
   /**

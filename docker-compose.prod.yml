@@ -105,6 +105,28 @@ services:
           cpus: '0.5'
           memory: 128M
 
+  # Админ-панель (Б-2, итерация 45). Тот же образ, что собирает release.yml;
+  # `read_only` + tmpfs — как у web. Порт только на loopback: снаружи — nginx
+  # с TLS и авторизацией (задача деплоя), прямой 8090 не публикуется.
+  admin:
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+      - /var/cache/nginx:rw,noexec,nosuid,size=32m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - '127.0.0.1:${ADMIN_HTTP_PORT:-8090}:8080'
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 96M
+
   migrate:
     restart: 'no'
     read_only: true

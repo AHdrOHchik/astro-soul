@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.18
+  version: 1.6.19
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -814,6 +814,43 @@ info:
         (длительность идущего дампа неизвестна, обещать её окончание нельзя).
         Панель говорит «повтори через N», а не «сейчас нельзя».
 
+    1.6.19 — «право на разбор» стало отдельным ответом (round45). До этой
+    версии вопрос «можно ли человеку разбор» решался по флагу
+    `entitlements.full_report`, и флаг отвечал сразу на два разных вопроса:
+    «есть ли оплаченный разбор» и «можно ли заказать разбор сейчас». Из этого
+    родились два дефекта: владелец «всё включено» видел `full_report: true` при
+    `full_report_chart_id: null` (клиент читал это как «оплачено на этой карте»),
+    а человек с подаренным разбором получал `402 report_not_paid` на кнопке,
+    которая выглядела открытой.
+      • добавлено **необязательное** поле `Me.report_access` (`ReportAccess`):
+        `{available, source, expires_at, chart_id}`. `available` — «можно
+        заказать или открыть разбор сейчас», `source` — почему именно
+        (`purchased` → `all_access` → `single_report`, порядок фиксирован),
+        `chart_id` — карта, за которую разбор оплачен/готов (`null`, когда право
+        есть, а оплаченной карты нет). Поле **необязательное**: старый клиент
+        его не читает и работает как раньше;
+      • `full_report` уточнён и больше **не** решает доступ: это буквально
+        «есть оплаченный (`entitlements kind = report`) или уже готовый разбор»,
+        без «всё включено» и без подаренных разборов. Право на разбор отдаёт
+        только `report_access`, и то же самое решение принимает заказ
+        (`POST /reports`) и биллинг (`POST /billing/checkout`);
+      • новых кодов `Problem.code` нет. Машинные причины: к прежним добавлена
+        одна — `banned` (`403 FORBIDDEN` на `POST /billing/invoice`). Раньше
+        забаненный человек не мог получить разбор, но **мог за него заплатить**:
+        дверь доступа его не пускала, а счёт создавался, и возврат делали
+        руками. Теперь счёт не выставляется;
+      • у `422` от `POST /billing/invoice` снова есть `details.reason`
+        (`chart_required_for_report`, `chart_not_found`,
+        `invoice_request_invalid`): `invalidFields` затирал переданный `details`,
+        и обещанные контрактом причины до клиента не доезжали — доезжали только
+        те, что собирались вручную (`report_already_owned`).
+
+        Таблица «состояние → `available`/`source` → ответ заказа» — в описании
+        `ReportAccess`. Гарантия совместимости: при `available: true` ни один
+        маршрут не отвечает `402 report_not_paid` и `POST /billing/invoice` не
+        создаёт счёт (`422 report_already_owned`), то есть заплатить дважды за
+        одно право нельзя.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`
     (или `Authorization: tma <initData>`).
@@ -1023,6 +1060,8 @@ components:
             разборов не было.
         subscription: { $ref: '#/components/schemas/SubscriptionState' }
         entitlements: { $ref: '#/components/schemas/Entitlements' }
+        report_access:
+          $ref: '#/components/schemas/ReportAccess'
         quotas:
           type: array
           items: { $ref: '#/components/schemas/Quota' }
@@ -1259,6 +1298,75 @@ components:
           description: |-
             Номер места основателя (1..50); `null` — не основатель. Только для
             показа: право купить `founder_month` проверяется на сервере.
+
+    ReportAccess:
+      type: object
+      description: |
+        Право на полный разбор — ответ на вопрос «можно ли сейчас заказать или
+        открыть разбор» (контракт 1.6.19). **Необязательное** поле `Me`:
+        старый клиент его не читает и обязан по-прежнему работать.
+
+        Почему отдельное поле: `entitlements.full_report` отвечал на два разных
+        вопроса сразу, и оба ответа были верны только наполовину. Право зависит
+        от карты (одна покупка не открывает разборы по другим), от «всё
+        включено» (срок, а не покупка) и от подаренных разборов (счётчик,
+        который расходуется). Флаг `boolean` этого не описывает.
+
+        Порядок источников фиксирован: `purchased` → `all_access` →
+        `single_report`. Он важен не только для текста на экране: `single_report`
+        — расходуемое право, и списывать его, когда разбор уже оплачен, значило
+        бы брать деньги дважды.
+
+        | Состояние человека | `available` | `source` | `chart_id` | `expires_at` | `POST /reports` | `POST /billing/checkout` (разбор) |
+        |---|---|---|---|---|---|---|
+        | оплачен разбор этой карты | `true` | `purchased` | эта карта | `null` | `202` | `422 report_already_owned` |
+        | оплачен разбор другой карты | `false` | `null` | `null` | `null` | `402 report_not_paid` | `201` (карта своя) |
+        | действует «всё включено» | `true` | `all_access` | `null` | конец права | `202` | `422 report_already_owned` |
+        | есть подаренный разбор | `true` | `single_report` | `null` | `null` | `202` | `422 report_already_owned` |
+        | «всё включено» истекло | `false` | `null` | `null` | `null` | `402 report_not_paid` | `201` |
+        | ничего | `false` | `null` | `null` | `null` | `402 report_not_paid` | `201` |
+        | забанен | `false` | `null` | `null` | `null` | `403` | `403` |
+
+        Коды `Problem.code` в таблице не появляются: `402` — `PAYMENT_REQUIRED`,
+        `422` — `VALIDATION_FAILED` (`details.reason = report_already_owned`),
+        `403` — `FORBIDDEN`. Новых кодов в 1.6.19 нет.
+
+        Обещание клиенту: если `available: true`, то ни один путь не ответит
+        `402` и не попросит денег. Если `available: false`, `402` — законный
+        ответ, и его `details.reason` всегда `report_not_paid`.
+      required: [available, source]
+      properties:
+        available:
+          type: boolean
+          description: |
+            Можно ли заказать или открыть разбор **сейчас**. Это ответ двери
+            (`AccessService.hasAccess('report', {chartId})`), а не вывод из
+            `entitlements`: клиент не имеет права считать доступ сам.
+        source:
+          type: [string, 'null']
+          enum: [purchased, all_access, single_report, null]
+          description: |
+            Почему доступ есть: `purchased` — оплаченный (или уже готовый)
+            разбор этой карты, `all_access` — действующее право «всё включено»,
+            `single_report` — неизрасходованный бесплатный разбор. `null` —
+            доступа нет (`available: false`). Источник нужен для текста на
+            экране: «куплено», «входит в подарок», «остался 1 бесплатный».
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            Конец права, если у источника есть срок. Сейчас срок есть только у
+            `all_access`; у покупки и у подаренного разбора — `null` (покупка
+            навсегда, подарок живёт до использования).
+        chart_id:
+          type: [string, 'null']
+          format: uuid
+          description: |
+            Карта, за которую разбор оплачен или по которой он готов. `null` —
+            право есть, но оплаченной карты нет (`all_access`, `single_report`,
+            или разбор куплен, а карты у человека сейчас нет). Поле **не**
+            означает «разбор оплачен на текущую карту»: для этого сравните его
+            с `Me.chart_id`.
 
     AccessCode:
       type: object

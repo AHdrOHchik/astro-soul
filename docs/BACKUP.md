@@ -39,7 +39,11 @@
 | `BACKUP_RETENTION_DAYS` | нет | Сколько дней держать локальные копии, ≥ 7, по умолчанию 7 |
 | `BACKUP_MIN_FREE_MB` | нет | Минимум свободного места перед дампом, по умолчанию 512 |
 | `BACKUP_STATE_FILE` | да, для алерта | Файл-маркер; тот же путь, что `BACKUP_STATE_FILE` у API |
-| `PG_DUMP_BIN` | нет | Путь к `pg_dump`, если он не в `PATH` |
+| `BACKUP_DUMP_MODE` | нет | `host` (по умолчанию) — `pg_dump` на машине; `exec` — внутри контейнера Postgres (Б-3, 1.6.19) |
+| `BACKUP_DOCKER_BIN` | для `exec` | Путь к `docker`, по умолчанию `docker` |
+| `BACKUP_COMPOSE_SERVICE` | для `exec` | Сервис Postgres в compose, по умолчанию `postgres` |
+| `BACKUP_COMPOSE_FILE` | нет | `-f` для `docker compose`, если файл не в текущем каталоге |
+| `PG_DUMP_BIN` | нет | Путь к `pg_dump`, если он не в `PATH` (режим `host`) |
 
 Если не задан ни `BACKUP_S3_URL`, ни `BACKUP_REMOTE`, скрипт **падает** с кодом
 2. Это осознанно: «сделал локально и успокоился» — худший вид бэкапа.
@@ -60,6 +64,41 @@ export BACKUP_STATE_FILE='/var/lib/astro-soul/backup-last-success'
 ```cron
 30 3 * * * cd /srv/astro-soul && set -a && . ./.env && set +a && ./scripts/db-dump.sh >> /var/log/astro-soul-backup.log 2>&1
 ```
+
+### Прод: `BACKUP_DUMP_MODE=exec` (Б-3, 1.6.19)
+
+На проде Postgres не публикует порт (`docker-compose.prod.yml`, сеть
+`internal`), поэтому `pg_dump` с хоста получает `connection refused` — то есть
+режим `host` там не работает **по устройству**, а не «иногда падает». В этом
+случае дамп делается внутри контейнера, а файл забирается в stdout:
+
+```cron
+30 3 * * * cd /srv/astro-soul && set -a && . ./.env && set +a \
+  BACKUP_DUMP_MODE=exec ./scripts/db-dump.sh >> /var/log/astro-soul-backup.log 2>&1
+```
+
+Что это меняет:
+
+* `DATABASE_URL` не нужен и не проверяется — подключение делает `pg_dump`
+  внутри контейнера, где `POSTGRES_USER`/`POSTGRES_DB` уже есть. Копии пароля в
+  cron-окружении не появляется;
+* `pg_dump` на хосте не нужен: нужен только `docker` и доступ к compose-файлу;
+* файл всё равно пишется **на хост** (в `BACKUP_DIR`) и оттуда выгружается:
+  дамп внутри контейнера умер бы вместе с `docker compose down -v`;
+* `BACKUP_COMPOSE_FILE=/srv/astro-soul/docker-compose.prod.yml` — если cron
+  запускается не из каталога с compose-файлом.
+
+Проверить режим, не дожидаясь ночи:
+
+```bash
+cd /srv/astro-soul && set -a && . ./.env && set +a \
+  BACKUP_DUMP_MODE=exec BACKUP_DIR=/tmp/backup-check ./scripts/db-dump.sh
+# в логе: «дамп контейнера postgres → …», затем «OK: … выгружен»
+```
+
+Второй вариант той же проблемы — опубликовать 5432 на `127.0.0.1`. Это решение
+сервера (и оно расширяет поверхность атаки), поэтому оно остаётся задачей
+деплоя, а не репозитория; `exec` решает задачу без открытого порта.
 
 Сначала запусти руками и посмотри на вывод: скрипт печатает каждый шаг с
 UTC-временем.

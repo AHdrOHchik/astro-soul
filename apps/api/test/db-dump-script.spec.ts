@@ -234,3 +234,90 @@ exit 1`,
     expect(result.stderr).toContain('не найден pg_dump');
   });
 });
+
+/**
+ * Б-3 (итерация 45): `BACKUP_DUMP_MODE=exec` — дамп через контейнер.
+ *
+ * Почему это понадобилось: на проде Postgres не публикует порт (сеть
+ * `internal`), поэтому `pg_dump` с хоста не подключается — бэкап молча
+ * превращался в «connection refused» каждый вечер. Режим `exec` выполняет
+ * `pg_dump` внутри контейнера и забирает поток в файл на хосте.
+ *
+ * Заглушка `docker` пишет фейковый дамп в stdout и журналирует аргументы —
+ * проверяется ровно контракт скрипта: код выхода, место файла, отказ при
+ * отсутствии docker и запрет неизвестного режима.
+ */
+describe('db-dump.sh: BACKUP_DUMP_MODE=exec', () => {
+  const dockerOk = `printf 'docker %s\\n' "$*" >> "$FAKE_LOG"
+# Аргументы: compose exec -T [ -f file ] service sh -c <script>
+printf 'PGDMP container dump\\n'
+exit 0
+`;
+
+  it('дамп через контейнер: DATABASE_URL и pg_dump на хосте не нужны', async () => {
+    await stub('docker', dockerOk);
+
+    const result = await runDump(
+      baseEnv({
+        BACKUP_DUMP_MODE: 'exec',
+        // Ни строки подключения, ни бинаря pg_dump: в exec их не должно быть нужно.
+        DATABASE_URL: '',
+        PG_DUMP_BIN: 'pg_dump-does-not-exist',
+      }),
+    );
+
+    expect(result.code).toBe(0);
+    expect(await dumps()).toHaveLength(1);
+
+    const calls = await readFile(logPath, 'utf8');
+    expect(calls).toMatch(/^docker compose exec -T postgres sh -c pg_dump /mu);
+    // Именно контейнерный дамп: `pg_dump` на хосте не вызывался вовсе.
+    expect(calls).not.toMatch(/^pg_dump /mu);
+    // Выгрузка всё равно обязательна: успех = копия вне сервера.
+    expect(calls).toMatch(/^aws s3 cp /mu);
+  });
+
+  it('compose-файл и сервис берутся из переменных', async () => {
+    await stub('docker', dockerOk);
+
+    const result = await runDump(
+      baseEnv({
+        BACKUP_DUMP_MODE: 'exec',
+        DATABASE_URL: '',
+        BACKUP_COMPOSE_FILE: '/srv/astro-soul/docker-compose.prod.yml',
+        BACKUP_COMPOSE_SERVICE: 'db',
+      }),
+    );
+
+    expect(result.code).toBe(0);
+    const calls = await readFile(logPath, 'utf8');
+    expect(calls).toContain('compose exec -T -f /srv/astro-soul/docker-compose.prod.yml db sh -c');
+  });
+
+  it('контейнерный pg_dump упал → код 4 и никакого файла', async () => {
+    await stub('docker', `printf 'docker %s\\n' "$*" >> "$FAKE_LOG"\nprintf 'половина дампа\\n'\nexit 1\n`);
+
+    const result = await runDump(baseEnv({ BACKUP_DUMP_MODE: 'exec', DATABASE_URL: '' }));
+
+    expect(result.code).toBe(4);
+    expect(result.stderr).toContain('pg_dump в контейнере');
+    expect(await readdir(backupDir)).toHaveLength(0);
+  });
+
+  it('нет docker → код 2 с понятным текстом', async () => {
+    const result = await runDump(
+      baseEnv({ BACKUP_DUMP_MODE: 'exec', DATABASE_URL: '', BACKUP_DOCKER_BIN: 'docker-нет' }),
+    );
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('не найден docker-нет');
+  });
+
+  it('неизвестный режим → код 2: опечатка не должна означать «host»', async () => {
+    const result = await runDump(baseEnv({ BACKUP_DUMP_MODE: 'exce' }));
+
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain('допустимо host или exec');
+    expect(await dumps()).toHaveLength(0);
+  });
+});

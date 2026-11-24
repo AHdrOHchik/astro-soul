@@ -1,4 +1,5 @@
 import { currentRequestId } from './request-context';
+import { maskSecrets } from './secret-url';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -13,6 +14,13 @@ const LEVEL_WEIGHT: Readonly<Record<LogLevel, number>> = {
  * Ключи, которые не должны попасть в лог ни при каких условиях
  * (SPEC «Приватность», AGENTS.md §8): дата/время/место рождения, координаты,
  * telegram_id, сырой initData и содержимое разборов.
+ *
+ * `url`, `expected_url`, `actual_url`, `request_uri` — Б-4 (итерация 45):
+ * адрес вебхука содержит `TELEGRAM_WEBHOOK_SECRET` в пути, и логирование
+ * адреса = логирование секрета. Значения этих ключей маскируются ещё и
+ * вызывающей стороной (`maskWebhookUrl`/`maskSecretPath`), а запись в списке
+ * запрещённых — вторая линия: новое `logger.info(..., { url })` не протечёт
+ * молча, даже если автор о маскировании не подумал.
  */
 const FORBIDDEN_KEYS = new Set([
   'birth_date',
@@ -43,6 +51,11 @@ const FORBIDDEN_KEYS = new Set([
   'chapters',
   'report_text',
   'forecast_text',
+  'url',
+  'webhook_url',
+  'expected_url',
+  'actual_url',
+  'request_uri',
 ]);
 
 const REDACTED = '[redacted]';
@@ -74,13 +87,19 @@ export function redact(value: unknown, depth = 0): unknown {
     return result;
   }
 
-  return value;
+  // Б-4: любая строка лога проходит через маску секрета вебхука — в том числе
+  // та, что пришла не из поля `url`, а из текста ошибки или склейки пути.
+  return typeof value === 'string' ? maskSecrets(value) : value;
 }
 
 function serialize(line: Record<string, unknown>): string {
   return JSON.stringify(line, (_key, value: unknown) => {
     if (typeof value === 'bigint') {
       return value.toString();
+    }
+    // `msg` и `base` в `redact` не попадают — маскируем их здесь (Б-4).
+    if (typeof value === 'string') {
+      return maskSecrets(value);
     }
     if (value instanceof Error) {
       return { name: value.name, message: value.message, stack: value.stack };

@@ -13,16 +13,7 @@ import {
 import { TelegramInlineService } from './modules/telegram/telegram-inline.service';
 import { TelegramWebhookService } from './modules/telegram/telegram-webhook.service';
 import { applyRequestContext } from './common/request-id.middleware';
-
-/**
- * Адрес вебхука содержит секрет в пути — в лог он целиком попасть не должен,
- * но по последним символам видно, тот это секрет или нет.
- */
-function maskSecret(url: string): string {
-  return url.replace(/webhook\/(.+)$/, (_match, secret: string) =>
-    `webhook/***${secret.slice(-4)}`,
-  );
-}
+import { maskWebhookUrl } from './common/secret-url';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -106,8 +97,9 @@ async function bootstrap(): Promise<void> {
     logger.info('telegram_webhook_state', {
       state: status.state,
       description: webhook.describe(status),
-      expected_url: status.expectedUrl === null ? null : maskSecret(status.expectedUrl),
-      actual_url: status.actualUrl === null ? null : maskSecret(status.actualUrl),
+      // Б-4: маска одна на весь проект (`secret-url.ts`), локальной копии больше нет.
+      expected_url: maskWebhookUrl(status.expectedUrl),
+      actual_url: maskWebhookUrl(status.actualUrl),
       pending_update_count: status.pendingUpdateCount,
       last_error_message: status.lastErrorMessage,
       // Человеческий текст для тех состояний, где нужно действие (итерация 26).

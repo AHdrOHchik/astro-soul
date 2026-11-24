@@ -37,6 +37,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       api_image: ${{ steps.img.outputs.api }}
       web_image: ${{ steps.img.outputs.web }}
+      admin_image: ${{ steps.img.outputs.admin }}
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +55,7 @@ jobs:
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           echo "api=ghcr.io/${owner}/astro-soul-api" >> "$GITHUB_OUTPUT"
           echo "web=ghcr.io/${owner}/astro-soul-web" >> "$GITHUB_OUTPUT"
+          echo "admin=ghcr.io/${owner}/astro-soul-admin" >> "$GITHUB_OUTPUT"
 
       - name: Тег релиза
         id: meta
@@ -199,6 +201,24 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Б-2 (итерация 45): образ админки. Панель до этого уезжала только
+      # статикой (`admin-dist`) и ставилась руками; теперь она в том же
+      # реестре и деплоится тем же `docker compose --profile admin up -d admin`.
+      - name: Сборка и публикация admin
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/admin.Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VITE_API_BASE_URL=
+          tags: |
+            ${{ steps.img.outputs.admin }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.img.outputs.admin }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       # Проверяем именно прод-теги в реестре: один манифест на version/latest,
       # платформа linux/amd64. Содержимое бандла здесь не распаковывается —
       # это не выдаётся за проверку UI.
@@ -230,12 +250,13 @@ jobs:
           BOOTSTRAP: ${{ inputs.bootstrap }}
           API_IMAGE: ${{ steps.img.outputs.api }}
           WEB_IMAGE: ${{ steps.img.outputs.web }}
+          ADMIN_IMAGE: ${{ steps.img.outputs.admin }}
         run: |
           {
             echo "## release"
             echo "- Тег: \`$TAG\`"
             echo "- Время (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')"
             echo "- bootstrap: $BOOTSTRAP"
-            echo "- Образы: \`$API_IMAGE:$TAG\`, \`$WEB_IMAGE:$TAG\` (и \`:latest\`)"
+            echo "- Образы: \`$API_IMAGE:$TAG\`, \`$WEB_IMAGE:$TAG\`, \`$ADMIN_IMAGE:$TAG\` (и \`:latest\`)"
             echo "- Артефакт: admin-dist (статика админки, страж мока)"
           } >> "$GITHUB_STEP_SUMMARY"

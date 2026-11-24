@@ -3,7 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { isFounderPlanCode, type Invoice, type SubscriptionState } from '@astro-soul/shared';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
-import { ApiError, conflict, internalError, invalidFields, rateLimited } from '../../common/api-error';
+import {
+  ApiError,
+  conflict,
+  forbidden,
+  internalError,
+  invalidFields,
+  rateLimited,
+} from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import type { VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
@@ -77,6 +84,17 @@ export class BillingService {
       telegramUserId: auth.telegramUserId,
       languageCode: auth.user.language_code,
     });
+
+    // Забаненному счёт не выставляем (1.6.19). Дверь доступа его уже не
+    // пускает (`hasAccess` → false), а биллинг — пускал: человек платил за
+    // разбор, который заведомо не соберётся, и деньги возвращали руками.
+    // Ответ — существующий `403 FORBIDDEN`, код не новый.
+    if (await this.access.isBanned(userId)) {
+      throw forbidden({
+        reason: 'banned',
+        message: 'Доступ к покупкам закрыт. Напиши в поддержку',
+      });
+    }
 
     // План — строка из `plans`: цена, тексты и права только оттуда.
     const plan = await this.resolveSellablePlan(planCode, userId);

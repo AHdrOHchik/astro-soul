@@ -1,4 +1,5 @@
 import type { Entitlements, GrantEntitlements, Me } from '@astro-soul/shared';
+import type { ReportAccess } from './access.service';
 
 /**
  * `Entitlements` (camelCase, внутренняя форма) → `Me.entitlements` (контракт,
@@ -28,5 +29,28 @@ export function toEntitlementsDto(
     single_compat: grants.singleCompat,
     is_founder: grants.isFounder,
     founder_place: grants.founderPlace,
+  };
+}
+
+/** `Me.report_access` в контрактной форме (1.6.19). */
+export type ReportAccessDto = NonNullable<Me['report_access']>;
+
+/**
+ * `ReportAccess` (camelCase) → `Me.report_access` (контракт, snake_case) —
+ * **единственное** место сборки этого блока.
+ *
+ * Почему отдельная функция, а не поле внутри `toEntitlementsDto`: блок живёт на
+ * верхнем уровне `Me`, а не в `entitlements`, и решение принимает другая дверь
+ * (`AccessService.reportAccess`). Одна обёртка на один блок — это то, что
+ * позволяет стражу `report-access-guard.spec.ts` утверждать «собирается
+ * ровно в одном месте»: иначе клиент читал бы `report_access` двух разных
+ * форм — из `/me`, `/me/activate-code` и `/me/founder-claim`.
+ */
+export function toReportAccessDto(access: ReportAccess): ReportAccessDto {
+  return {
+    available: access.available,
+    source: access.source,
+    expires_at: access.expiresAt,
+    chart_id: access.chartId,
   };
 }

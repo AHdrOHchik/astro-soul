@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { JsonLogger } from '../../common/logger';
+import { maskWebhookUrl } from '../../common/secret-url';
 import { TelegramClient, type WebhookInfo } from './telegram.client';
 import { hostFromUrl, resolveHost, webhookUnreachableHint } from './webhook-address';
 
@@ -207,7 +208,7 @@ export class TelegramWebhookService {
       const hint = webhookUnreachableHint(resolution);
 
       this.logger.warn('telegram_webhook_unreachable', {
-        expected_url: expectedUrl,
+        expected_url: maskWebhookUrl(expectedUrl),
         host: resolution.host,
         dns_error: resolution.error,
         hint,
@@ -273,8 +274,8 @@ export class TelegramWebhookService {
     // Адрес другой (или его нет). Это и есть причина «оплата не проходит» в
     // 90% случаев: Telegram шлёт `pre_checkout_query` на старый домен.
     this.logger.warn('telegram_webhook_mismatch', {
-      actual_url: actual.url === '' ? null : actual.url,
-      expected_url: expectedUrl,
+      actual_url: actual.url === '' ? null : maskWebhookUrl(actual.url),
+      expected_url: maskWebhookUrl(expectedUrl),
       pending_update_count: actual.pendingUpdateCount,
       last_error_message: actual.lastErrorMessage,
     });
@@ -376,7 +377,8 @@ export class TelegramWebhookService {
     const after = await this.telegram.getWebhookInfo();
     const confirmed = after.result?.url === url;
 
-    this.logger.info('telegram_webhook_reinstalled', { url, confirmed });
+    // Б-4: адрес содержит секрет — в лог идёт только факт и маска.
+    this.logger.info('telegram_webhook_reinstalled', { url: maskWebhookUrl(url), confirmed });
 
     this.remember(
       this.status(

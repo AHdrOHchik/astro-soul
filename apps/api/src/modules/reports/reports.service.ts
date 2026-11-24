@@ -273,14 +273,17 @@ export class ReportsService {
       throw notFound({ message: 'Такой карты нет. Построй карту заново', reason: 'chart_not_found' });
     }
 
-    const entitlement = await this.entitlements.getEntitlements(userId);
+    // Право спрашиваем у двери один раз на запрос (1.6.19): `available` — это
+    // ровно тот ответ, который `/me.report_access` показал человеку, поэтому
+    // «кнопка открыта, а заказ отвечает 402» стало невозможно by construction.
+    const access = await this.access.reportAccess(userId, { chartId: chart.id });
 
     // Б-4: повтор с тем же `Idempotency-Key` обязан вернуть тот же объект, что
     // `GET /reports/{id}`. Раньше здесь жёстко стояло `is_paid: false`, и
     // оплаченный разбор в ответе выглядел неоплаченным.
     const byKey = await this.repo.findByIdempotencyKey(userId, idempotencyKey);
     if (byKey !== null) {
-      return this.view(byKey, entitlement.fullReport);
+      return this.view(byKey, access.available);
     }
 
     const latest = await this.repo.latestForChart(chart.id, 'report');
@@ -288,21 +291,16 @@ export class ReportsService {
     // Пока разбор собирается (или уже собран), второй заказ бессмысленен:
     // отдаём существующий, деньги не списываем.
     if (latest !== null && latest.status !== 'failed' && latest.status !== 'refunded') {
-      return this.view(latest, entitlement.fullReport);
+      return this.view(latest, access.available);
     }
 
-    // Проверка доступа — через единственную дверь `hasAccess` (1.6.14).
-    //   • оплаченный разбор этой карты — как раньше, по карте, а не по флагу
-    //     `fullReport`: одна покупка не открывает разборы по другим картам;
-    //   • одноразовое право **не списывается здесь** (1.6.17). Раньше
-    //     `single_report` гасился на заказе, и провал генерации (модель, формат,
-    //     брейкер) сжигал подаренное право: человек платил попыткой за наш сбой.
-    //     Теперь расход — на `ready`, в `settleGrantFor` ниже.
-    const owned = await this.access.hasAccess(userId, 'report', {
-      chartId: chart.id,
-      consume: false,
-    });
-    if (!owned) {
+    // Проверка доступа — решение той же функции, что отдаёт `/me.report_access`
+    // (1.6.19). Источники: оплаченный разбор этой карты (одна покупка не
+    // открывает разборы по другим — это деньги), действующее «всё включено»,
+    // неизрасходованный бесплатный разбор.
+    //   • одноразовое право **не списывается здесь** (1.6.17): расход — на
+    //     `ready`, иначе провал генерации сжигал подаренное право.
+    if (!access.available) {
       throw new ApiError('PAYMENT_REQUIRED', 402, {
         message: 'Полный разбор — отдельная покупка. Оформи её на экране разбора',
         reason: 'report_not_paid',
@@ -360,11 +358,10 @@ export class ReportsService {
       });
     });
 
-    // `owned` — не «оплачено», а «текст доступен»: после расхода
-    // одноразового права строка `entitlements` уже создана выше, но блок прав
-    // прочитан раньше неё. Отдавать `is_paid: false` на только что выданный
-    // бесплатный разбор значило бы соврать клиенту.
-    return this.view(report, owned);
+    // `is_paid` = «текст доступен», а не «за него заплатили»: на разборе,
+    // выданном по бесплатному праву, `false` означало бы «не оплачено» — то
+    // есть ложь и для клиента, и для PDF.
+    return this.view(report, access.available);
   }
 
   async get(auth: VerifiedInitData, reportId: string): Promise<ReportView> {
@@ -375,12 +372,18 @@ export class ReportsService {
       throw notFound({ message: 'Такого разбора нет. Обнови приложение', reason: 'report_not_found' });
     }
 
-    const entitlement = await this.entitlements.getEntitlements(userId);
+    // `is_paid` здесь — «текст доступен», а не «за него заплатили»: разбор,
+    // выданный по «всё включено» или бесплатному праву, ничем не хуже
+    // купленного, и `pdf_url: null` на нём читался бы как «недоступно».
+    // Решение — та же дверь, что у заказа и у `/me.report_access` (1.6.19).
+    const access = await this.access.reportAccess(userId, {
+      chartId: report.chart_id ?? undefined,
+    });
 
     // `pdf_url` — свежая подписанная ссылка на уже собранный документ.
     // `null` означает «PDF ещё не собирали», а не «недоступно»: заказывают его
     // через `POST /reports/{id}/pdf`, и это отдельное действие.
-    const paid = entitlement.fullReport;
+    const paid = access.available;
     const key =
       paid && report.status === 'ready'
         ? await this.repo.readyPdfKey(report.id, this.env.ENGINE_VERSION, PROMPT_VERSION)

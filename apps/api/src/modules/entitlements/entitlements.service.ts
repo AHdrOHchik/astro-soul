@@ -149,18 +149,28 @@ export class EntitlementsService {
           askPerDay: Math.max(base.askPerDay, 5),
           compatPerMonth: Math.max(base.compatPerMonth, 1),
           solarIncluded: true,
-          // Пятая фича — разбор (1.6.18, дефект round44). Здесь её **не было**:
-          // «всё включено» открывал прогноз, вопросы, совместимость и карту
-          // года, а разбор оставался платным — то есть название права было
-          // неправдой в одной пятой части. `fullReportChartId` при этом остаётся
-          // `null`: право не привязано к карте, оплаченного разбора нет.
-          fullReport: true,
+          // Разбор — пятая фича «всё включено», но **не** через `fullReport`
+          // (1.6.19). Право на разбор считает `AccessService.reportAccess`:
+          // оно зависит ещё и от карты, и от подаренных разборов, и флаг
+          // `full_report` такой вопрос не описывает.
+          //
+          // Round44 ставил здесь `fullReport: true`, чтобы владелец «всё
+          // включено» перестал получать `402 report_not_paid`. Симптом был
+          // вылечен не тем полем: флаг назывался «куплен разбор», и рядом с
+          // `full_report_chart_id: null` он читался как «оплачено на этой
+          // карте». Теперь доступ решает дверь, а `full_report` снова отвечает
+          // буквально на свой вопрос — «есть ли оплаченный или готовый разбор».
         }
       : base;
 
     return {
       ...withAccess,
-      fullReport: withAccess.fullReport || kinds.has('report') || readyReport !== null,
+      // «Право» и «готовый разбор» — разные вопросы (1.6.19). Здесь только
+      // второе, буквально по контракту: оплаченная строка `entitlements` или
+      // уже готовый разбор (он куплен навсегда). «Всё включено» и подаренные
+      // разборы в этот флаг **не входят**: они дают право, а не покупку, и их
+      // видно в `Me.report_access`.
+      fullReport: kinds.has('report') || readyReport !== null,
       fullReportChartId: paidChart,
       compatPerMonth: Math.max(
         withAccess.compatPerMonth,
