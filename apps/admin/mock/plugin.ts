@@ -30,6 +30,7 @@ import {
   mockGrants,
   mockMe,
   mockMetrics,
+  mockAudit,
   mockPlanHistory,
   mockPlans,
   mockUsers,
@@ -169,13 +170,33 @@ export function adminMockApi(options: MockOptions): PluginOption {
     const demo = { 'X-Admin-Demo': '1' };
 
     if (ctx.method === 'POST' && pathname === '/api/v1/admin/auth/telegram') {
+      // Отказы — те же, что у живого сервера (1.6.15), чтобы тексты входа
+      // проверялись на экране, а не в мечтах разработчика панели:
+      //   422 missing_fields · 401 invalid_hash · 401 auth_stale · 403 forbidden.
+      // 429 по IP в моке нет — его воспроизводит только настоящая защита.
       const body = asRecord(ctx.body);
       const missing = ['id', 'auth_date', 'hash'].filter((key) => body[key] === undefined);
       if (missing.length > 0) {
         problem(res, 422, 'VALIDATION_FAILED', 'Виджет вернул неполный набор полей.', demo, {
           field_errors: missing.map((field) => ({ field, message: 'Подпись виджета не полная' })),
+          reason: 'missing_fields',
           mock: MOCK_MARKER,
         });
+        return;
+      }
+      if (body.hash === 'bad') {
+        problem(res, 401, 'UNAUTHORIZED', 'Подпись не совпала.', demo, { reason: 'invalid_hash' });
+        return;
+      }
+      const authDate = Number(body.auth_date);
+      if (!Number.isFinite(authDate) || Date.now() / 1000 - authDate > 300) {
+        problem(res, 401, 'UNAUTHORIZED', 'Подпись старше 300 секунд.', demo, { reason: 'auth_stale' });
+        return;
+      }
+      // «Владелец» мока — 777001; кнопка ДЕМО шлёт 0, smoke-скрипты — 42.
+      const id = String(body.id);
+      if (id !== '777001' && id !== '0' && id !== '42') {
+        problem(res, 403, 'FORBIDDEN', 'Этот id не входит в ADMIN_TG_ID.', demo, { reason: 'forbidden' });
         return;
       }
       json(res, 200, { ok: true, note: MOCK_MARKER }, { ...demo, 'Set-Cookie': 'admin_session=mock; Path=/; SameSite=Lax' });
@@ -183,6 +204,12 @@ export function adminMockApi(options: MockOptions): PluginOption {
     }
 
     if (ctx.method === 'POST' && pathname === '/api/v1/admin/auth/logout') {
+      // Живую сессиию сервер разлогинит только с CSRF-заголовком; без cookie
+      // повтор кнопки остаётся идемпотентным 200.
+      if (hasSession(ctx.cookie) && ctx.csrf !== DEMO_CSRF) {
+        problem(res, 403, 'FORBIDDEN', 'Выход из живой сессии требует X-Admin-CSRF.', demo, { reason: 'csrf_missing' });
+        return;
+      }
       json(res, 200, { ok: true }, { ...demo, 'Set-Cookie': 'admin_session=; Path=/; Max-Age=0' });
       return;
     }
@@ -316,6 +343,46 @@ export function adminMockApi(options: MockOptions): PluginOption {
       };
       grants = [created, ...grants];
       json(res, 200, { grant_id: created.id, kind: created.kind, source: created.source, expires_at: created.expires_at }, demo);
+      return;
+    }
+
+    if (ctx.method === 'GET' && pathname === '/api/v1/admin/audit') {
+      // Курсор — непрозрачный `c<offset>`: как у сервера, «страниц по номеру»
+      // интерфейс не знает, а мокеру нужен переносимый указатель.
+      const limitRaw = ctx.url.searchParams.get('limit');
+      if (limitRaw !== null && limitRaw !== '') {
+        const limit = Number(limitRaw);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+          problem(res, 422, 'VALIDATION_FAILED', 'Limit вне диапазона 1..200.', demo, { reason: 'invalid_limit', field_errors: [{ field: 'limit', message: 'Целое 1..200' }] });
+          return;
+        }
+      }
+      const actor = ctx.url.searchParams.get('actor_tg_id');
+      if (actor !== null && actor !== '' && !/^\d+$/.test(actor)) {
+        problem(res, 422, 'VALIDATION_FAILED', 'actor_tg_id — только цифры.', demo, { reason: 'invalid_actor_tg_id', field_errors: [{ field: 'actor_tg_id', message: 'Число' }] });
+        return;
+      }
+      const cursorRaw = ctx.url.searchParams.get('cursor');
+      let start = 0;
+      if (cursorRaw !== null && cursorRaw !== '') {
+        const match = /^c(\d+)$/.exec(cursorRaw);
+        if (match === null) {
+          problem(res, 422, 'VALIDATION_FAILED', 'Курсор мне не знаком.', demo, { reason: 'invalid_cursor' });
+          return;
+        }
+        start = Number(match[1]);
+      }
+      const limit = limitRaw === null || limitRaw === '' ? 50 : Number(limitRaw);
+      const entity = ctx.url.searchParams.get('entity');
+      const action = ctx.url.searchParams.get('action');
+      const rows = mockAudit.filter(
+        (item) =>
+          (entity === null || entity === '' || item.entity === entity) &&
+          (action === null || action === '' || item.action === action) &&
+          (actor === null || actor === '' || item.actor_tg_id === actor),
+      );
+      const page = rows.slice(start, start + limit);
+      json(res, 200, { items: page, next_cursor: start + limit < rows.length ? `c${start + limit}` : null, note: MOCK_MARKER }, demo);
       return;
     }
 

@@ -16,6 +16,7 @@
 import contractSource from '../../../../api.openapi.yaml?raw';
 import { describe, expect, it } from 'vitest';
 import { ADMIN_ROUTES, missingRoutesFor, route } from './routes';
+import { callableRoutes } from './http';
 import { config } from '../env';
 
 const source = contractSource;
@@ -58,16 +59,64 @@ describe('реестр маршрутов админки', () => {
     expect(wrong).toEqual([]);
   });
 
+  it('число отсутствующих маршрутов известно: это список задач бэкенду', () => {
+    // Со сменой контракта список обязан shorten-иться руками: он и есть перечень
+    // того, что панели не разрешено. 1.6.15 забрал из него вход (3 маршрута) и
+    // журнал (1) — было 20, стало 16.
+    const missing = ADMIN_ROUTES.filter((item) => !item.inContract);
+    expect(missing).toHaveLength(16);
+    expect(missing.map((item) => item.path).sort()).toEqual([
+      '/api/v1/admin/alerts/{id}/ack',
+      '/api/v1/admin/backup/run',
+      '/api/v1/admin/founders',
+      '/api/v1/admin/partners',
+      '/api/v1/admin/payments',
+      '/api/v1/admin/plans',
+      '/api/v1/admin/plans/{code}',
+      '/api/v1/admin/plans/{code}/history',
+      '/api/v1/admin/reports',
+      '/api/v1/admin/reports/{id}/regenerate',
+      '/api/v1/admin/telegram/webhook',
+      '/api/v1/admin/users',
+      '/api/v1/admin/users/{id}',
+      '/api/v1/admin/users/{id}/ban',
+      '/api/v1/admin/users/{id}/push',
+      '/api/v1/admin/users/{id}/refund',
+    ].sort());
+  });
+
+  it('в прод-сборке панель дергает вход и аудит: их нет в списке «недоступно»', () => {
+    // Страж сверяется с `paths:` сгенерированного контракта 1.6.15 — этот тест
+    // падает и если флаг подняли зря, и если забыли поднять, когда маршрут приехал.
+    // `callableRoutes()` — тот же список, по которому `http` пропускает запросы.
+    const live = new Set(callableRoutes().map((item) => item.key));
+    expect([...live].filter((key) => key.startsWith('auth') || key === 'auditList').sort()).toEqual([
+      'auditList',
+      'authLogout',
+      'authMe',
+      'authTelegram',
+    ]);
+    // Публичные маршруты доступны и до входа — на них стоит «Обзор» без сессии.
+    expect(live.has('health')).toBe(true);
+    expect(live.has('foundersCount')).toBe(true);
+  });
+
+  it('пришедшее в 1.6.15 помечено рабочим: вход и аудит — в боевом списке', () => {
+    // Этот тест падает, если кто-то «временно» вернёт флаг назад, и чинится
+    // только вместе с реестром: «Сервер ещё не принимает сессии» больше не
+    // имеет права появляться как дефолт.
+    for (const key of ['authTelegram', 'authMe', 'authLogout', 'auditList']) {
+      expect(route(key).inContract, `${key} в 1.6.15 есть — флаг обязан быть поднят`).toBe(true);
+    }
+  });
+
   it('панель не дергает маршруты, которых нет: они помечены как отсутствующие', () => {
-    // Список отсутствует-маршрутов = задачи бэкенду. Он проверяется, потому что
-    // «забыли выключить флаг» — это ровно тот путь, по которому экран
+    // Список отсутствующих маршрутов = задачи бэкенду. Он проверяется, потому
+    // что «забыли выключить флаг» — это ровно тот путь, по которому экран
     // начинает показывать выдуманные данные.
     const missing = ADMIN_ROUTES.filter((item) => !item.inContract).map((item) => item.path);
     expect(missing).toEqual(
       expect.arrayContaining([
-        '/api/v1/admin/auth/telegram',
-        '/api/v1/admin/auth/logout',
-        '/api/v1/admin/me',
         '/api/v1/admin/users',
         '/api/v1/admin/users/{id}',
         '/api/v1/admin/users/{id}/refund',
@@ -76,7 +125,6 @@ describe('реестр маршрутов админки', () => {
         '/api/v1/admin/reports',
         '/api/v1/admin/plans',
         '/api/v1/admin/plans/{code}',
-        '/api/v1/admin/audit',
         '/api/v1/admin/founders',
         '/api/v1/admin/partners',
         '/api/v1/admin/backup/run',
@@ -99,6 +147,10 @@ describe('реестр маршрутов админки', () => {
         '/api/v1/admin/alerts',
         '/api/v1/admin/codes',
         '/api/v1/admin/grants',
+        '/api/v1/admin/auth/telegram',
+        '/api/v1/admin/me',
+        '/api/v1/admin/auth/logout',
+        '/api/v1/admin/audit',
       ]),
     );
   });
@@ -108,7 +160,8 @@ describe('реестр маршрутов админки', () => {
   });
 
   it('несуществующие экраны перечисляют именно отсутствующие маршруты', () => {
-    const planned = ['users', 'payments', 'plans', 'founders', 'ops', 'audit'] as const;
+    // «Аудит» из списка ушёл: его маршрут пришёл в 1.6.15, экран настоящий.
+    const planned = ['users', 'payments', 'plans', 'founders', 'ops'] as const;
     for (const screen of planned) {
       const missing = missingRoutesFor(screen);
       expect(missing.length, `экран ${screen} обязан ждать хотя бы один маршрут`).toBeGreaterThan(0);
@@ -119,7 +172,7 @@ describe('реестр маршрутов админки', () => {
     }
     // У живых экранов тоже могут быть недостающие маршруты (Обзор ждёт /admin/reports),
     // но хотя бы один рабочий обязан быть.
-    for (const screen of ['overview', 'codes'] as const) {
+    for (const screen of ['overview', 'codes', 'audit'] as const) {
       expect(ADMIN_ROUTES.some((item) => item.inContract && item.screens.includes(screen))).toBe(true);
     }
   });

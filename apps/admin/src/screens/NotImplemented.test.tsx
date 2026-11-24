@@ -9,8 +9,12 @@ const SCREENS: readonly { key: ScreenKey; title: string }[] = [
   { key: 'plans', title: 'Тарифы' },
   { key: 'founders', title: 'Основатели и партнёры' },
   { key: 'ops', title: 'Эксплуатация' },
-  { key: 'audit', title: 'Аудит' },
 ];
+
+/**
+ * «Аудит» в этом списке больше нет: его маршрут пришёл в 1.6.15, и экран
+ * настоящий. Заглушка для него теперь была бы враньём — проверяем, что её нет.
+ */
 
 describe('экраны без серверных маршрутов', () => {
   afterEach(cleanup);
@@ -31,5 +35,9 @@ describe('экраны без серверных маршрутов', () => {
     // строк таблицы, ни плашек-цифр — только тексты про отсутствие маршрутов.
     expect(document.querySelectorAll('.stat')).toHaveLength(0);
     expect(document.querySelectorAll('tbody tr').length).toBe(missing.length);
+  });
+
+  it('аудит больше не заглушка', () => {
+    expect(missingRoutesFor('audit')).toHaveLength(0);
   });
 });

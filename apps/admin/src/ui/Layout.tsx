@@ -2,7 +2,7 @@
  * Каркас окна: шапка (кто вошёл, до чего сессия, выход), прилипающая плашка
  * ДЕМО и меню на все восемь разделов.
  *
- * Меню показывает и шесть разделов без маршрутов — не «чтобы было красиво», а
+ * Меню показывает и разделы без маршрутов — не «чтобы было красиво», а
  * как список задач, видимый в самом приложении: админ с первой минуты видит,
  * чего в панели нет и почему.
  */
@@ -12,7 +12,7 @@ import { SCREEN_READINESS, type ScreenKey } from '../api/routes';
 import { config } from '../env';
 import { ru } from '../i18n/ru';
 import { toHref, type RouterLocation } from '../lib/router';
-import { formatDateTime } from '../lib/format';
+import { formatClock } from '../lib/format';
 import type { AdminSession, SessionView } from '../auth/session';
 
 const NAV: readonly { key: ScreenKey; label: string }[] = [
@@ -59,9 +59,11 @@ export function Layout({ location, view, demo, onLogout, busy, children }: Layou
               {ru.app.signedInAs}: <strong className="mono">{name}</strong>
               {session && session.tgId !== '' ? <span className="mono"> · id {session.tgId}</span> : null}
             </span>
+            {/* «сессия до HH:MM» — подсказка по часам браузера; решает 401,
+                и подпись в title об этом напоминает прямо в шапке. */}
             {session?.expiresAt ? (
-              <span>
-                {ru.app.sessionExpires} {formatDateTime(session.expiresAt)}
+              <span title={ru.app.sessionExpiresNote}>
+                {ru.app.sessionExpires} {formatClock(session.expiresAt)}
               </span>
             ) : null}
           </div>

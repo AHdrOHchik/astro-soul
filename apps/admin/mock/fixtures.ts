@@ -14,7 +14,7 @@
  */
 
 import type { components, paths } from '../src/api/schema.gen';
-import type { AdminPlanHistoryRow, AdminPlanRow, AdminUserCard, AdminUserRow } from '../src/api/types.ts';
+import type { AdminPlanHistoryRow, AdminPlanRow, AdminUserCard, AdminUserRow, AuditEntry } from '../src/api/types.ts';
 
 /** Маркер для стража: если строка попала в `dist` — мок уехал в прод. */
 export const MOCK_MARKER = 'ADMIN_MOCK_FIXTURE_v1';
@@ -433,3 +433,91 @@ export function userRow(card: AdminUserCard): AdminUserRow {
     banned: card.banned_at !== null,
   };
 }
+
+
+/**
+ * Журнал аудита. Порядок — как у серверной ленты (`at DESC`): самые свежие
+ * первыми. Один `actor_tg_id = '0'` — служебная запись уборки: по ней видно,
+ * что панель отличает «сервис» от человека, и `actor_name` здесь тоже снимок:
+ * имена в `users` меняются, журнал — нет.
+ */
+export const mockAudit: AuditEntry[] = [
+  {
+    id: 'a-8',
+    at: nowIso(-9 * MINUTE),
+    actor_tg_id: '777001',
+    actor_name: 'ДЕМО · данные вымышлены',
+    action: 'code.create',
+    entity: 'code',
+    entity_id: 'c-42',
+    before: null,
+    after: { kind: 'single_report', days: 30, max_activations: 5 },
+    reason: 'подкаст «Разбор», партия к запуску',
+    request_id: 'req-1001',
+  },
+  {
+    id: 'a-7',
+    at: nowIso(-40 * MINUTE),
+    actor_tg_id: '777001',
+    actor_name: 'ДЕМО · данные вымышлены',
+    action: 'session.login',
+    entity: 'session',
+    entity_id: null,
+    before: null,
+    after: null,
+    reason: null,
+    request_id: 'req-991',
+  },
+  {
+    id: 'a-6',
+    at: nowIso(-3 * HOUR),
+    actor_tg_id: '777002',
+    actor_name: 'Поддержка',
+    action: 'grant.revoke',
+    entity: 'grant',
+    entity_id: 'g-17',
+    before: { expires_at: nowIso(11 * DAY) },
+    after: { revoked_at: nowIso(-3 * HOUR) },
+    reason: 'право выдано ошибочно (дубль обращения 4170)',
+    request_id: 'req-940',
+  },
+  {
+    id: 'a-5',
+    at: nowIso(-6 * HOUR),
+    actor_tg_id: '0',
+    actor_name: 'planner',
+    action: 'session.purge',
+    entity: 'session',
+    entity_id: null,
+    before: null,
+    after: { purged: 3 },
+    reason: null,
+    request_id: null,
+  },
+  {
+    id: 'a-4',
+    at: nowIso(-2 * DAY),
+    actor_tg_id: '777002',
+    actor_name: 'Поддержка',
+    action: 'grant.create',
+    entity: 'grant',
+    entity_id: 'g-15',
+    before: null,
+    after: { kind: 'all_access', days: 14 },
+    reason: 'компенсация за сбой генерации 12.11',
+    request_id: 'req-811',
+  },
+  {
+    id: 'a-3',
+    at: nowIso(-4 * DAY),
+    actor_tg_id: '777001',
+    actor_name: 'Владелец',
+    action: 'code.revoke',
+    entity: 'code',
+    entity_id: 'c-31',
+    before: { is_active: true },
+    after: { is_active: false },
+    reason: 'партнёр слил код в открытый чат',
+    request_id: 'req-702',
+  },
+];

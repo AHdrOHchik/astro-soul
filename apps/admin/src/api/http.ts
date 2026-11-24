@@ -127,7 +127,9 @@ export function assertCallable(item: AdminRoute, csrfToken: string | null, allow
       route: item.path,
     });
   }
-  if (MUTATING.includes(item.method) && csrfToken === null) {
+  // Логин — исключение: у `/admin/auth/telegram` `needsSession: false` (в
+  // контракте `security: []`), сессии ещё нет — предъявлять нечего.
+  if (MUTATING.includes(item.method) && item.needsSession && csrfToken === null) {
     throw new ApiError({
       code: 'CSRF_MISSING',
       status: null,

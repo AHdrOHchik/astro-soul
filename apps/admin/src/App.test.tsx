@@ -1,101 +1,126 @@
 /*
- * Проверка того, что панель делает ДО всяких данных: пока сервер не умеет
- * входить, она не притворяется рабочей — показывает список отсутствующих
- * маршрутов и не трогает приватные адреса.
+ * Сборка App: что показывается ДО входа и что появляется ПОСЛЕ.
+ *
+ * Отдельный уровень, а не только тесты экранов, потому что именно здесь
+ * живёт решение «пускать ли в панель»: проба `/admin/me`, экран входа, отсутствие
+ * приватных запросов до входа и то, что старых заглушек про «вход недоступен»
+ * никто не вернул.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { createAdminApi } from './api/admin';
-import { createFetchLog, jsonResponse } from './testing/fetchLog';
 import { createHttp } from './api/http';
 import { createSessionStore } from './auth/session';
 import { createTokenStore } from './auth/tokenStore';
+import { createFetchLog, jsonResponse, problemResponse } from './testing/fetchLog';
+
+const future = new Date(Date.now() + 6 * 3_600_000).toISOString();
 
 const health = {
   status: 'ok',
-  version: '1.6.14',
+  version: '1.6.15',
   db: 'ok',
+  llm: 'ok',
+  astro: 'ok',
   telegram_webhook: 'ok',
   checked_at: new Date().toISOString(),
   flags: { test_plans: false, report_breaker: true, push: { enabled: false, last_run_at: null, last_sent_count: 0 }, bonus_budget: { spent_rub: 0, limit_rub: 100, exhausted: false } },
 };
 
-function renderApp(options: { me: 'unavailable' | 'unauthorized' | 'live' } = { me: 'unavailable' }) {
-  const log = createFetchLog((url) =>
-    url.includes('/api/v1/health')
-      ? jsonResponse(health)
-      : new Response(JSON.stringify({ code: 'NOT_FOUND', message: 'Такой страницы нет.', request_id: 'r' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/problem+json' },
-        }),
-  );
+function renderApp(me: 'unauthorized' | 'live' | 'error' | 'no-route' = 'unauthorized') {
+  const log = createFetchLog((url) => {
+    if (url.includes('/api/v1/health')) return jsonResponse(health);
+    if (url.includes('/api/v1/founders/count')) return jsonResponse({ founders: 7, target: 100 });
+    if (url.includes('/admin/me')) {
+      if (me === 'live') {
+        return jsonResponse({ tg_id: '42', name: 'Владелец', expires_at: future, csrf_token: 'csrf-test' });
+      }
+      if (me === 'error') return problemResponse(500, 'INTERNAL', 'База не отвечает');
+      if (me === 'no-route') return problemResponse(404, 'NOT_FOUND', 'Маршрута нет');
+      return problemResponse(401, 'UNAUTHORIZED', 'Сессии нет');
+    }
+    // Всё приватное сюда не должно доходить ни при каком раскладе.
+    return problemResponse(500, 'INTERNAL', 'панель сходила туда, куда не следовало');
+  });
 
   const tokens = createTokenStore();
-  const http = createHttp({ fetchImpl: log.fetchImpl, csrfToken: () => tokens.get(), allowUnknownRoutes: true });
+  const http = createHttp({ fetchImpl: log.fetchImpl, retries: 0, csrfToken: () => tokens.get(), onUnauthorized: () => undefined });
   const api = createAdminApi(http);
-  if (options.me === 'live') {
-    api.me = vi.fn(() => Promise.resolve({
-      kind: 'ok' as const,
-      result: {
-        data: { tg_id: '42', name: 'Владелец', expires_at: new Date(Date.now() + 3_600_000).toISOString(), csrf_token: 'csrf' },
-        status: 200,
-        requestId: null,
-        demo: false,
-      },
-    }));
-  }
-  if (options.me === 'unauthorized') {
+  if (me === 'unauthorized') {
     api.me = vi.fn(() => Promise.resolve({ kind: 'unauthorized' as const, demo: false }));
+  }
+  if (me === 'no-route') {
+    api.me = vi.fn(() => Promise.resolve({ kind: 'unavailable' as const, demo: false }));
   }
 
   const session = createSessionStore(api, tokens);
   render(<App api={api} session={session} demo={false} />);
-  return { log, session };
+  return { log, session, tokens };
 }
 
 describe('входной гейт', () => {
   afterEach(cleanup);
 
-  it('без серверных маршрутов входа панель говорит «недоступно» и не дёргает приватные адреса', async () => {
+  it('до входа приватные адреса не дёргаются, а экран входа — настоящий', async () => {
     const { log } = renderApp();
 
-    expect(await screen.findByText('Вход недоступен: сервер ещё не принимает сессии')).toBeInTheDocument();
-    expect(screen.getByText('POST /api/v1/admin/auth/telegram')).toBeInTheDocument();
-    expect(screen.getByText('GET /api/v1/admin/me')).toBeInTheDocument();
-    expect(screen.getByText('POST /api/v1/admin/auth/logout')).toBeInTheDocument();
+    expect(await screen.findByText(/^Панель открывается по Telegram-аккаунту из ADMIN_TG_ID/)).toBeInTheDocument();
+    expect(screen.getAllByText(/BotFather/).length).toBeGreaterThan(0);
+    // Формы с логином/паролем тут нет и быть не может: вход — только виджет.
+    expect(document.querySelector('input[type="password"]')).toBeNull();
 
-    // Ни одного запроса к приватным маршрутам: только попытка узнать сессию.
     const urls = log.urls();
     expect(urls.filter((url) => url.includes('/admin/metrics') || url.includes('/admin/alerts'))).toHaveLength(0);
+    expect(urls.filter((url) => url.includes('/admin/audit'))).toHaveLength(0);
   });
 
-  it('из экрана входа можно открыть публичную часть — и только её', async () => {
+  it('«Обзор без входа» удалён: со экрана входа в приватную часть не пускает', async () => {
     const { log } = renderApp();
+    await screen.findByText(/ADMIN_TG_ID/);
 
-    fireEvent.click(await screen.findByRole('button', { name: /Обзор/ }));
-
-    await waitFor(() => expect(screen.getByText('Состояние сервиса')).toBeInTheDocument());
-    const urls = log.urls();
-    expect(urls.some((url) => url.includes('/api/v1/health'))).toBe(true);
-    expect(urls.filter((url) => url.includes('/admin/metrics'))).toHaveLength(0);
-    expect(screen.getAllByText(/Сессии нет/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Обзор без входа/)).toBeNull();
+    expect(document.querySelector('a[href="#overview"]')).toBeNull();
+    expect(log.urls().filter((url) => url.includes('/admin/metrics'))).toHaveLength(0);
   });
 
-  it('с живой сессией панель показывает Обзор и имя админа', async () => {
-    renderApp({ me: 'live' });
+  it('сервер болен — виден текст сервера, а не заглушка «вход недоступен»', async () => {
+    renderApp('error');
+
+    expect(await screen.findByText('База не отвечает')).toBeInTheDocument();
+    expect(screen.queryByText(/Вход недоступен/)).toBeNull();
+    expect(screen.queryByText(/ещё не принимает сессии/)).toBeNull();
+  });
+
+  it('404 на маршруте входа — «Сервер ещё не принимает сессии», и это единственный случай', async () => {
+    renderApp('no-route');
+
+    expect(await screen.findByText('Сервер ещё не принимает сессии')).toBeInTheDocument();
+    expect(screen.queryByText(/Вход недоступен/)).toBeNull();
+  });
+
+  it('с живой сессией панель показывает Обзор, имя админа и срок сессии', async () => {
+    renderApp('live');
 
     expect(await screen.findByText('Владелец')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Выйти' })).toBeInTheDocument();
+    const meta = document.querySelector('.top__meta');
+    if (meta === null) throw new Error('шапки нет');
+    expect(meta.textContent).toMatch(/сессия до \d{2}:\d{2}/);
+    // Подпись при часах: «сессия до» — подсказка, а не решение.
+    expect(meta.querySelector('span[title]')?.getAttribute('title')).toMatch(/401/);
   });
 
-  it('меню показывает все восемь разделов, шесть — с пометкой «нет маршрутов»', async () => {
-    renderApp({ me: 'live' });
+  it('меню показывает все восемь разделов, пять — с пометкой «нет маршрутов»', async () => {
+    renderApp('live');
     await screen.findByText('Владелец');
 
     const nav = screen.getByRole('navigation');
     expect(nav.querySelectorAll('a')).toHaveLength(8);
-    expect(nav.querySelectorAll('.nav__mark')).toHaveLength(6);
+    // «Аудит» получил маршрут в 1.6.15 — пометки на нём больше нет.
+    expect(nav.querySelectorAll('.nav__mark')).toHaveLength(5);
+    const audit = [...nav.querySelectorAll('a')].find((link) => link.textContent.includes('Аудит'));
+    expect(audit?.querySelector('.nav__mark')).toBeNull();
   });
 });

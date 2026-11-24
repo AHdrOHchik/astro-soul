@@ -12,6 +12,8 @@
  * пустили» она не даёт.
  */
 
+import type { TelegramAuthPayload } from '../api/types';
+
 export const WIDGET_SRC = 'https://telegram.org/js/telegram-widget.js?22';
 /** Имя глобального колбэка: виджет вызывает именно строку из `data-onauth`. */
 export const WIDGET_CALLBACK = 'onAstroAdminTelegramAuth';
@@ -49,26 +51,49 @@ export function isTelegramLoginUser(value: unknown): value is TelegramLoginUser 
 /**
  * Что уходит на сервер. Ключи — ровно те имена, которыми подписан набор полей;
  * ничего не дописываем и не переименовываем, иначе подпись не сойдётся.
- * Значения — строки: сервер разберёт их сам.
+ * Типы — как дал виджет: `id` и `auth_date` остаются числами (контракт
+ * принимает и строку, но «как приходит» точнее, и `Number`-округление сюда не
+ * приходит вовсе), сложные значения отбрасываются — сервер ждёт плоский набор.
  */
-export function toAuthPayload(value: unknown): Record<string, string> | null {
-  if (!isRecord(value)) return null;
-  const payload: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    // Объектные поля (`auth_date` в виде строки у других версий виджета) не сериализуем:
-    // сервер ждёт плоский набор подписанных строк.
-    if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
-      payload[key] = String(raw);
+/**
+ * Подписанный набор → тело `POST /admin/auth/telegram`.
+ *
+ * Что отдаёт виджет, то и уходит: лишние ключи (вложенные объекты, `auth_size`)
+ * отбрасываются — сервер принимает любой набор, но панель не должна передавать
+ * в подпись то, что человек дописал руками. `id` и `auth_date` — числами, как
+ * их отдаёт сам виджет (контракт принимает `string | number` для `id`, числа
+ * убирают трактовку вида «007»); если виджет прислал их строкой, значение
+ * приводится к целому, а не уходит как есть.
+ */
+export function toAuthPayload(user: unknown): TelegramAuthPayload | null {
+  if (user === null || typeof user !== 'object') return null;
+  const source = user as Record<string, unknown>;
+  const payload: Record<string, unknown> = {};
+
+  for (const key of ['id', 'first_name', 'last_name', 'username', 'photo_url', 'auth_date', 'hash'] as const) {
+    const value = source[key];
+    if (value === undefined || value === null) continue;
+    if (key === 'id' || key === 'auth_date') {
+      const numeric = typeof value === 'number' ? value : Number(value);
+      if (!Number.isInteger(numeric)) continue;
+      payload[key] = numeric;
+      continue;
     }
+    if (typeof value !== 'string') continue;
+    payload[key] = value;
   }
-  return Object.keys(payload).length === 0 ? null : payload;
+
+  // Обязательное по контракту: `id`, `auth_date`, `hash`. Без любого из трёх
+  // тело отправлять нечего — сервер ответит 422, и человек увидит «неполный
+  // набор полей»; панель говорит это сразу, без запроса.
+  if (typeof payload.id !== 'number' || typeof payload.auth_date !== 'number') return null;
+  // Значение `hash` не приводится к нижнему регистру и не тримится — это
+  // часть подписи; пустой (или из одних пробелов) hash отсекается, потому что
+  // с ним сервер ответил бы 401 вместо честного «неполный набор».
+  if (typeof payload.hash !== 'string' || payload.hash.trim() === '') return null;
+  return payload as unknown as TelegramAuthPayload;
 }
 
-/**
- * Вставляет скрипт виджета в `container`. Возвращает функцию уборки: глобальный
- * колбэк чужой библиотеки обязан быть снят, иначе второй смонтированный экран
- * начнёт принимать чужие колбэки.
- */
 export function mountTelegramWidget(container: HTMLElement, options: WidgetOptions): () => void {
   const { botUsername, onAuth, onError } = options;
 
