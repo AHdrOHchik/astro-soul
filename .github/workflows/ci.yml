@@ -78,12 +78,26 @@ jobs:
       # Отдельный шаг до общего `check`: тесты API и общих пакетов должны
       # отработать (и быть видны в логе), даже если `check` упадёт позже
       # на линте/типах фронта.
+      # Логи пишем в файлы: без этого красный прогон нечем разобрать
+      # (страница логов GitHub из песочницы не читается, а `gh run view
+      # --log-failed` отдаёт EOF). Артефакт скачивается через API.
       - name: Тесты API, shared и UI
+        shell: bash
         run: |
-          pnpm --filter @astro-soul/shared run build
-          pnpm --filter @astro-soul/api run test
-          pnpm --filter @astro-soul/shared run test
-          pnpm --filter @astro-soul/ui run test
+          set -eo pipefail
+          mkdir -p ci-logs
+          pnpm --filter @astro-soul/shared run build 2>&1 | tee ci-logs/shared-build.log
+          pnpm --filter @astro-soul/api run test 2>&1 | tee ci-logs/api-tests.log
+          pnpm --filter @astro-soul/shared run test 2>&1 | tee ci-logs/shared-tests.log
+          pnpm --filter @astro-soul/ui run test 2>&1 | tee ci-logs/ui-tests.log
+
+      - name: Логи тестов при падении
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci-logs/
+          retention-days: 7
 
       - name: Линт, типы, тесты
         run: pnpm check
