@@ -6,8 +6,10 @@
  * `api.openapi.yaml`, то не запрашивается и не рисуется, а выносится отдельным
  * запросом к контракту; за экран на придуманном адресе PR отклоняется.
  *
- * Исключения — блоки «НЕ В КОНТРАКТЕ» в конце файла: они помечены как
- * отсутствующие в контракте и существуют только для dev-мокера.
+ * Вход (`/admin/me`, `POST /admin/auth/telegram`) и аудит (`/admin/audit`) с
+ * 1.6.15 — выведенные типы, как и всё остальное. Исключение — блок «НЕ В
+ * КОНТРАКТЕ» в конце файла (`/admin/plans*`, `/admin/users*`): он помечен как
+ * отсутствующий и существует только для dev-мокера.
  */
 
 import type { components, paths } from './schema.gen';
@@ -31,6 +33,18 @@ export type Metrics = paths['/api/v1/admin/metrics']['get']['responses'][200]['c
 export type CodesList = paths['/api/v1/admin/codes']['get']['responses'][200]['content']['application/json'];
 export type CodeCreateBody = paths['/api/v1/admin/codes']['post']['requestBody']['content']['application/json'];
 
+/** `GET /api/v1/admin/me` — кто вошёл, срок сессии (подсказка) и CSRF-токен. */
+export type AdminMe = paths['/api/v1/admin/me']['get']['responses'][200]['content']['application/json'];
+
+/** `POST /api/v1/admin/auth/telegram` — набор полей виджета; `id` сервер
+ * принимает строкой или числом, панель отправляет «как дал виджет». */
+export type TelegramAuthPayload =
+  paths['/api/v1/admin/auth/telegram']['post']['requestBody']['content']['application/json'];
+
+/** `GET /api/v1/admin/audit` — страница журнала; `actor_name` — снимок. */
+export type AuditEntry = Schemas['AdminAuditEntry'];
+export type AuditPage = paths['/api/v1/admin/audit']['get']['responses'][200]['content']['application/json'];
+
 export type GrantsList = paths['/api/v1/admin/grants']['get']['responses'][200]['content']['application/json'];
 export type GrantRow = GrantsList['items'][number];
 export type GrantsWriteBody = paths['/api/v1/admin/grants']['post']['requestBody']['content']['application/json'];
@@ -40,35 +54,19 @@ export type GrantKind = GrantRow['kind'];
 export type GrantSource = GrantRow['source'];
 
 /* ------------------------------------------------------------------------- *
- * НЕ В КОНТРАКТЕ 1.6.14.
+ * НЕ В КОНТРАКТЕ 1.6.15.
  *
- * Формы ниже взяты из ТЗ админки (§3) и нужны, чтобы dev-мокер отвечал в той
- * же конвенции, что и остальные маршруты. Экраны, построенные на них, не
+ * Формы ниже нужны, чтобы dev-мокер отвечал в той же конвенции, что и
+ * остальные маршруты. Экраны, построенные на них, не
  * выезжают в прод, пока бэкенд не добавит маршруты в `api.openapi.yaml`: гейт
  * в `http.assertCallable` не даёт сделать запрос на неизвестный путь.
- * Как только маршрут появится в контракте — эти два типа удаляются, и их
- * место берут выведенные из `paths`.
+ * Как только маршрут появится в контракте — тип удаляется и его место
+ * занимает выведенный из `paths` (так произошло с формами входа в 1.6.15).
  * ------------------------------------------------------------------------- */
-
-export interface AdminMe {
-  /**
-   * Поля необязательны нарочно: `/admin/me` ещё нет в контракте, и форма ниже
-   * — предложение бэкенду, а не факт. Пока маршрут не описан, панель обязана
-   * обрабатывать отсутствующее значение, а не считать его гарантированным:
-   * нет `csrf_token` — сессия негодна (`auth/session.ts` → `CSRF_MISSING`).
-   */
-  readonly tg_id?: string | null;
-  readonly name?: string | null;
-  readonly expires_at?: string | null;
-  readonly csrf_token?: string | null;
-}
-
-/** То, что виджет возвращает подписанным набором полей; сервер проверяет подпись. */
-export type TelegramAuthPayload = Readonly<Record<string, string>>;
 
 /**
  * Формы «Тарифов» и «Пользователей» — тоже «НЕ В КОНТРАКТЕ»: маршрутов
- * `/admin/plans*` и `/admin/users*` в 1.6.14 нет. Формы взяты из ответов
+ * `/admin/plans*` и `/admin/users*` в 1.6.15 нет. Формы взяты из ответов
  * владельца на запрос к контракту (`answers/admin-pr1-review.md`) — это и есть
  * причина каждой формы, а не удобная выдумка панели:
  *

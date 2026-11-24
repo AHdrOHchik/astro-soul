@@ -1,17 +1,19 @@
 /*
- * Сессия админа. Пять состояний, и каждое — про разный вопрос:
+ * Сессия админа. Маршруты входа — в контракте с 1.6.15, поэтому состояний
+ * четыре, и каждое — про разный вопрос:
  *
- *   checking      — ещё не спросили;
- *   live          — сервер назвал админа, токен CSRF есть;
- *   anonymous     — сервер знает адрес, но не знает, кто ты (401): вход;
- *   no-auth-route — сервер **не умеет** входить: `GET /admin/me` нет в
- *                   контракте. Это не «разлогинился», это «панели пока не на
- *                   чём ездить», и текст на экране должен быть именно такой;
- *   error         — сеть/500: вход мог бы работать, но запрос не прошёл.
+ *   checking  — ещё не спросили;
+ *   live      — сервер назвал админа, токен CSRF есть;
+ *   anonymous — сервер знает адрес, но не знает, кто ты: вход. Причина
+ *               подставляется отдельная (`expired` — 401 застал живую сессию,
+ *               `signed-out` — вышли кнопкой), потому что «войди снова» и
+ *               «тебя разлогинили» — разные сообщения человеку;
+ *   error     — запрос не прошёл (сеть/500/401 с отказом виджета): текст
+ *               разбирает экран входа (`loginErrors.ts`).
  *
  * Доступ решает сервер: панель не хранит «админ/не админ», только то, что ей
  * ответили. Отзыв сессии мгновенный: 401 от любого запроса гасит её здесь же,
- * не дожидаясь истечения.
+ * не дожидаясь истечения; `expires_at` — подсказка для интерфейса, не права.
  */
 
 import { useSyncExternalStore } from 'react';
@@ -27,11 +29,12 @@ export interface AdminSession {
   readonly demo: boolean;
 }
 
+export type AnonymousReason = 'expired' | 'signed-out' | null;
+
 export type SessionView =
   | { readonly kind: 'checking' }
-  | { readonly kind: 'anonymous' }
+  | { readonly kind: 'anonymous'; readonly reason: AnonymousReason }
   | { readonly kind: 'live'; readonly session: AdminSession }
-  | { readonly kind: 'no-auth-route'; readonly error: ApiError | null }
   | { readonly kind: 'error'; readonly error: ApiError };
 
 export interface SessionStore {
@@ -48,20 +51,15 @@ export interface SessionStore {
 const ME_ROUTE = 'GET /api/v1/admin/me';
 
 /**
- * Поля `/admin/me` сужаются на месте: маршрут ещё не описан контрактом, и
- * сессия без `tg_id` — это не «живая сессия с пустым именем», а сломанный
- * ответ. Различать их обязан экран, а не молча подставлять прочерк.
+ * `/admin/me` описан контрактом (`tg_id`, `name` обязательны), но пустая
+ * строка в `tg_id` всё ещё ломаный ответ: сессия без имени пользователя — не
+ * «живая сессия», а основание показать ошибку.
  */
 function sessionFromMe(me: AdminMe, demo: boolean): AdminSession | null {
-  const tgId = typeof me.tg_id === 'string' ? me.tg_id.trim() : '';
+  const tgId = me.tg_id.trim();
   if (tgId === '') return null;
-  const name = typeof me.name === 'string' ? me.name.trim() : '';
-  return {
-    tgId,
-    name: name !== '' ? name : tgId,
-    expiresAt: typeof me.expires_at === 'string' ? me.expires_at : null,
-    demo,
-  };
+  const name = me.name.trim();
+  return { tgId, name: name !== '' ? name : tgId, expiresAt: me.expires_at, demo };
 }
 
 /** Просрочена ли сессия по часам браузера. Панель не продлевает её молча. */
@@ -95,8 +93,10 @@ export function createSessionStore(api: AdminApi, tokens: TokenStore): SessionSt
     const probed = await api.me();
 
     if (probed.kind === 'unavailable') {
+      // Недостижимо, пока реестр и контракт сверяет тест-страж; если разъехались
+      // — сказать правду про «не принимает», а не выдумывать «о сети».
       clear();
-      setView({ kind: 'no-auth-route', error: null });
+      setView({ kind: 'error', error: clientError('ROUTE_NOT_IN_CONTRACT', 'Сервер ещё не принимает сессии.', ME_ROUTE) });
       return;
     }
     if (probed.kind === 'error') {
@@ -106,7 +106,7 @@ export function createSessionStore(api: AdminApi, tokens: TokenStore): SessionSt
     }
     if (probed.kind === 'unauthorized') {
       clear();
-      setView({ kind: 'anonymous' });
+      setView({ kind: 'anonymous', reason: null });
       return;
     }
 
@@ -120,12 +120,14 @@ export function createSessionStore(api: AdminApi, tokens: TokenStore): SessionSt
 
     if (isExpired(session.expiresAt, Date.now())) {
       clear();
-      setView({ kind: 'anonymous' });
+      setView({ kind: 'anonymous', reason: 'expired' });
       return;
     }
 
+    // Токен — только в памяти владелицы (tokenStore) и только из этого
+    // ответа: при перезагрузке страницы путь один — снова `/admin/me`.
     const token = probed.result.data.csrf_token;
-    csrf = typeof token === 'string' && token !== '' ? token : null;
+    csrf = token !== null && token !== '' ? token : null;
     tokens.set(csrf);
 
     // Без токена панель не сможет сделать ни одного изменяющего запроса, а
@@ -152,8 +154,12 @@ export function createSessionStore(api: AdminApi, tokens: TokenStore): SessionSt
     csrfToken: () => csrf,
 
     handleUnauthorized: () => {
+      const wasLive = view.kind === 'live';
       clear();
-      setView({ kind: 'anonymous' });
+      // 401 — единственный источник правды. Живая сессия, умершая на запросе,
+      // заслуживает «истекла, войди снова»; молча же «вернуться к входу» без
+      // причины — значит заставлять админа искать, что он сделал не так.
+      setView({ kind: 'anonymous', reason: wasLive ? 'expired' : null });
     },
 
     refresh,
@@ -162,17 +168,13 @@ export function createSessionStore(api: AdminApi, tokens: TokenStore): SessionSt
       try {
         await api.login(payload);
       } catch (error) {
+        // Тексты разбирает экран (`loginErrors.ts`): `invalid_hash`,
+        // `auth_stale`, `forbidden`, `429`, «404 — сервер не принимает
+        // сессии» — пять разных сообщений, а не одна универсальная отговорка.
         const apiError =
           error instanceof ApiError
             ? error
             : clientError('NETWORK', 'Сервер входа не ответил', 'POST /api/v1/admin/auth/telegram');
-        // 404 на маршруте, которого нет в контракте, — это «не с чем работать»,
-        // а не «неверный пароль»: текст должен быть разный.
-        if (apiError.code === 'ROUTE_NOT_IN_CONTRACT') {
-          clear();
-          setView({ kind: 'no-auth-route', error: apiError });
-          return;
-        }
         clear();
         setView({ kind: 'error', error: apiError });
         return;
@@ -201,7 +203,7 @@ export function createSessionStore(api: AdminApi, tokens: TokenStore): SessionSt
         // равно, токен из памяти уходит всегда.
       }
       clear();
-      setView({ kind: 'anonymous' });
+      setView({ kind: 'anonymous', reason: 'signed-out' });
     },
   };
 }

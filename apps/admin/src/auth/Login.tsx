@@ -1,20 +1,23 @@
 /*
- * Экран входа. Три разных состояния, и каждое говорит свою правду:
+ * Экран входа (контракт 1.6.15: маршруты есть, надвигаться нечем).
+ * Состояния и их тексты:
  *
- *   anonymous     — сервер готов пускать, но тебя ещё нет: рисуем виджет;
- *   no-auth-route — сервер **не умеет** пускать: маршрутов входа в контракте
- *                   нет. Это не ошибка пароля, и текст здесь другой;
- *   error         — запрос не прошёл (сеть/500): показываем причину и request id.
+ *   anonymous          — сервер готов пускать, но тебя ещё нет: виджет;
+ *   anonymous(expired) — сессия умерла на запросе: тот же виджет плюс
+ *                        «Сессия истекла, войди снова»;
+ *   error              — отказ входа: текст разбирает `loginErrors.ts` —
+ *                        подпись/устарело/не админ/429/«сервер не принимает»
+ *                        это пять разных сообщений, а не одно.
  *
  * Ни одного «демо-входа» вне ДЕМО-режима: кнопка появляется только когда панель
  * знает, что данные ей отдаёт мокер.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { route, routeLabel } from '../api/routes';
 import { config } from '../env';
 import { ru } from '../i18n/ru';
 import { Banner, Notice } from '../ui/primitives';
+import { loginErrorText } from './loginErrors';
 import type { SessionStore } from './session';
 import { isTelegramLoginUser, mountTelegramWidget, toAuthPayload } from './telegramWidget';
 
@@ -22,17 +25,14 @@ export interface LoginProps {
   readonly store: SessionStore;
   readonly view: ReturnType<SessionStore['getSnapshot']>;
   readonly demo: boolean;
-  readonly onOpenPublic: () => void;
 }
-
-const AUTH_ROUTES = ['authTelegram', 'authMe', 'authLogout'].map((key) => route(key));
 
 /** Кнопка «я админ» для локального просмотра интерфейса. Только в ДЕМО. */
 async function demoSignIn(store: SessionStore): Promise<void> {
-  await store.signIn({ id: '0', first_name: 'ДЕМО', auth_date: String(Math.floor(Date.now() / 1000)), hash: 'demo' });
+  await store.signIn({ id: 0, first_name: 'ДЕМО', auth_date: Math.floor(Date.now() / 1000), hash: 'demo' });
 }
 
-export function Login({ store, view, demo, onOpenPublic }: LoginProps) {
+export function Login({ store, view, demo }: LoginProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [widgetError, setWidgetError] = useState<'none' | 'load' | 'no-bot'>('none');
   const [busy, setBusy] = useState(false);
@@ -50,15 +50,19 @@ export function Login({ store, view, demo, onOpenPublic }: LoginProps) {
     [store],
   );
 
+  // Виджет живёт и при отказе входа: «Попробуй войти ещё раз» обязан быть
+  // кликом, а не перезагрузкой страницы.
+  const canSignIn = view.kind !== 'live';
+
   useEffect(() => {
     const host = hostRef.current;
-    if (host === null || view.kind !== 'anonymous') return;
+    if (host === null || !canSignIn) return;
     return mountTelegramWidget(host, {
       botUsername: config.botUsername,
       onAuth: (user) => void onAuth(user),
       onError: (reason) => { setWidgetError(reason); },
     });
-  }, [onAuth, view.kind]);
+  }, [canSignIn, onAuth]);
 
   return (
     <section className="grid" style={{ gridTemplateColumns: 'minmax(0, 720px)' }}>
@@ -66,32 +70,16 @@ export function Login({ store, view, demo, onOpenPublic }: LoginProps) {
         <h1>{ru.login.heading}</h1>
         <p className="lead">{ru.login.lead}</p>
 
-        {view.kind === 'no-auth-route' ? (
-          <Banner level="crit" title={ru.login.noRoute.title}>
-            <p>{ru.login.noRoute.lead}</p>
-            <p>
-              <strong>{ru.login.noRoute.routes}</strong>
-            </p>
-            <ul className="tight mono">
-              {AUTH_ROUTES.map((item) => (
-                <li key={`${item.method}-${item.path}`}>{routeLabel(item)}</li>
-              ))}
-            </ul>
-            <p>
-              <strong>{ru.login.noRoute.whatWorks}</strong>
-            </p>
-            <p>{ru.login.noRoute.whatWorksLead}</p>
-            <p>
-              <button type="button" onClick={onOpenPublic}>
-                {ru.app.shortTitle}: {ru.nav.overview}
-              </button>
-            </p>
-          </Banner>
+        {view.kind === 'anonymous' && view.reason === 'expired' ? (
+          <Banner level="warn" title={ru.login.expired} />
+        ) : null}
+        {view.kind === 'anonymous' && view.reason === 'signed-out' ? (
+          <Banner level="info" title={ru.login.signedOut} />
         ) : null}
 
         {view.kind === 'error' ? (
           <Banner level="crit" title={ru.login.failed}>
-            <p>{view.error.message}</p>
+            <p>{loginErrorText(view.error)}</p>
             <p className="muted mono">
               {view.error.code}
               {view.error.requestId ? ` · request_id ${view.error.requestId}` : ''}
@@ -99,13 +87,13 @@ export function Login({ store, view, demo, onOpenPublic }: LoginProps) {
           </Banner>
         ) : null}
 
-        {view.kind === 'anonymous' ? (
+        {canSignIn ? (
           <>
-            {config.botUsername === '' ? (
-              <Notice>{ru.login.noBotUsername}</Notice>
-            ) : (
-              <div ref={hostRef} aria-label={ru.login.widgetAlt} />
-            )}
+            {/* Контейнер виджета рисуется всегда, пока вход возможен: «нет
+                бота» сообщает сам монтировщик (`onError('no-bot')`), и тогда
+                текст об этом один, а не два. Размонтировать контейнер после
+                отказа означало бы «попробуй ещё раз, но сначала F5». */}
+            <div ref={hostRef} aria-label={ru.login.widgetAlt} />
             {widgetError === 'load' ? <Banner level="warn" title={ru.login.widgetBlocked} /> : null}
             {widgetError === 'no-bot' ? <Banner level="warn" title={ru.login.noBotUsername} /> : null}
             {busy ? <Notice>{ru.login.submitting}</Notice> : null}

@@ -16,6 +16,7 @@ import type { Http, HttpResult, ProbeResult } from './http';
 import type {
   AccessCode,
   AdminBanResult,
+  AuditPage,
   AdminMe,
   AdminPlanHistoryResponse,
   AdminPlanPatchBody,
@@ -43,6 +44,17 @@ export const GRANT_KINDS: readonly GrantKind[] = ['all_access', 'single_report',
 /** Потолок пакета: «создать 5000 кодов» — это не работа поддержки, а рассылка. */
 export const CODE_BATCH_MAX = 50;
 
+/** Фильтр журнала; `cursor` — непрозрачное значение из `next_cursor`. */
+export interface AuditQuery {
+  readonly entity?: string | null;
+  readonly entity_id?: string | null;
+  readonly action?: string | null;
+  readonly actor_tg_id?: string | null;
+  /** Сервер принимает 1..200; панель не зажимает молча: чужой `422` честнее. */
+  readonly limit?: number | null;
+  readonly cursor?: string | null;
+}
+
 export interface AdminApi {
   /** Публичный: работает и без сессии — на нём стоит первый экран. */
   health(signal?: AbortSignal): Promise<HttpResult<Health>>;
@@ -68,6 +80,8 @@ export interface AdminApi {
   me(): Promise<ProbeResult<AdminMe>>;
   login(payload: TelegramAuthPayload): Promise<HttpResult<unknown>>;
   logout(): Promise<HttpResult<unknown>>;
+  /** Журнал действий: курсорная страница `{items, next_cursor}`. */
+  audit(params?: AuditQuery, signal?: AbortSignal): Promise<HttpResult<AuditPage>>;
 }
 
 export function createAdminApi(http: Http): AdminApi {
@@ -114,6 +128,8 @@ export function createAdminApi(http: Http): AdminApi {
     login: (payload) => http.call<unknown>('authTelegram', { body: { ...payload } }),
 
     logout: () => http.call<unknown>('authLogout', { body: {} }),
+
+    audit: (params, signal) => http.call<AuditPage>('auditList', { query: { ...params }, signal }),
   };
 }
 
