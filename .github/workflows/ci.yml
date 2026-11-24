@@ -96,6 +96,11 @@ jobs:
           pnpm --filter @astro-soul/api run test 2>&1 | tee ci-logs/api-tests.log
           pnpm --filter @astro-soul/shared run test 2>&1 | tee ci-logs/shared-tests.log
           pnpm --filter @astro-soul/ui run test 2>&1 | tee ci-logs/ui-tests.log
+          # Панель и веб — теми же командами, что в `pnpm check`. Явно, а не
+          # через `pnpm -r`: иначе непонятно, что именно упало, и зеленеет ли
+          # шаг на самом деле.
+          pnpm --filter @astro-soul/admin run test 2>&1 | tee ci-logs/admin-tests.log
+          pnpm --filter @astro-soul/web run test 2>&1 | tee ci-logs/web-tests.log
 
       - name: Линт, типы, тесты
         shell: bash
@@ -128,7 +133,8 @@ jobs:
               try { return fs.readFileSync(path, 'utf8'); } catch { return ''; }
             };
             const source = read('ci-logs/check.log') + read('ci-logs/api-tests.log') +
-              read('ci-logs/shared-tests.log') + read('ci-logs/ui-tests.log');
+              read('ci-logs/shared-tests.log') + read('ci-logs/ui-tests.log') +
+              read('ci-logs/admin-tests.log') + read('ci-logs/web-tests.log');
             // Строки в логе префиксованы именем пакета (`apps/api test:  FAIL …`),
             // поэтому ищем подстроку, а не начало строки.
             const lines = source
