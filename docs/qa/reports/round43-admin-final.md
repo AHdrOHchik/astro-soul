@@ -87,8 +87,7 @@
 ### Основатели
 
 `GET /admin/founders?limit=50&cursor=` → `{items: [{place, user_id,
-telegram_id, username, created_at, grant_kind, expires_at, code_activated}],
-next_cursor}`.
+telegram_id, created_at, grant_kind, expires_at, code_activated}], next_cursor}`.
 
 * порядок — по дате заявки (`founders.created_at, user_id`), keyset-курсор
   base64url: `offset` на живой ленте теряет и дублирует строки;
@@ -98,8 +97,10 @@ next_cursor}`.
   показывал бы чужую выдачу;
 * `code_activated` — есть ли строка в `access_code_activations`; «пришёл сам» —
   это `false`, а не отсутствие поля;
-* `username` — всегда `null`: **в `users` нет такой колонки** (ник живёт только
-  в Telegram-апдейте), и подставлять туда alias было бы подлогом;
+* `username` — **поля нет** (1.6.18). В `users` нет такой колонки (ник живёт
+  только в Telegram-апдейте), и подставлять туда alias было бы подлогом. В
+  1.6.17 поле отдавалось всегда `null` «на будущее»; постоянный `null` —
+  обещание колонки, которой не будет, поэтому поле убрано из контракта;
 * ПДн нет: ни `birth_date`/`birth_time`, ни `place_name`, ни `profile`.
 
 ### Партнёры
@@ -207,7 +208,7 @@ plan_code}], next_cursor}`.
 1. **`apps/admin`** — только реестр и фикстуры, ни одного экрана:
    шесть флагов `inContract: false → true` (`foundersList`, `partnersStats`,
    `paymentsList`, `backupNow`, `webhookSet`, `alertsAck`);
-   `FALLBACK_CONTRACT_VERSION` `1.6.15 → 1.6.17`; `SCREEN_READINESS` для
+   `FALLBACK_CONTRACT_VERSION` `1.6.15 → 1.6.18`; `SCREEN_READINESS` для
    «Основателей» и «Эксплуатации» — `ready` (маршрутов больше не ждём, пометка
    в меню 5 → 3); следом стражи: в списке «отсутствующих» 16 → 10, эти шесть
    убраны из ожиданий, фикстуры алертов получили `acked_until`. Это и есть то
@@ -263,7 +264,7 @@ pnpm build                 → api + web + admin — зелёные
 
 | Файл | Что проверяет |
 |---|---|
-| `admin-directory.spec.ts` (14) | основатели: порядок по дате заявки, `code_activated` true/false, `username: null`, точный набор ключей (нет ПДн), курсор по одному без повторов, `limit` 0/51 → `422`, битый курсор → `422 invalid_cursor`, чужому — `403`; партнёры: агрегаты (`activations_total` 3 при двух людях, `paid_users` 2, `revenue_stars` 798 без вычета возврата), партнёр без активаций с нулями, отсутствие в ответе `user_id`/`telegram_id`/кодов, точный набор ключей; платежи: порядок «новые сверху», поиск по `charge_id` (и пустой список на «нет такого»), фильтры `status=refunded`/`user_id`, `422` на `status=cancelled`, не-UUID, `limit=101`, `charge_id` из двух символов, курсор по одному |
+| `admin-directory.spec.ts` (14) | основатели: порядок по дате заявки, `code_activated` true/false, отсутствие `username` в ответе, точный набор ключей (нет ПДн), курсор по одному без повторов, `limit` 0/51 → `422`, битый курсор → `422 invalid_cursor`, чужому — `403`; партнёры: агрегаты (`activations_total` 3 при двух людях, `paid_users` 2, `revenue_stars` 798 без вычета возврата), партнёр без активаций с нулями, отсутствие в ответе `user_id`/`telegram_id`/кодов, точный набор ключей; платежи: порядок «новые сверху», поиск по `charge_id` (и пустой список на «нет такого»), фильтры `status=refunded`/`user_id`, `422` на `status=cancelled`, не-UUID, `limit=101`, `charge_id` из двух символов, курсор по одному |
 | `admin-ops.spec.ts` (18) | бэкап: `202` + маркер появляется только после выгрузки, отказ выгрузки → маркера нет и локальный дамп удалён, `409 backup_too_frequent`, аудит `backup.run` с причиной, `422` на пустой `reason` и лишнее поле, `503 backup_not_configured` с именами переменных на «пустом» окружении; `BackupService` напрямую: `not_configured`, `in_progress`, `too_frequent` с `retry_after_seconds`; вебхук: `200` при совпадении `getWebhookInfo().url`, `502` с текстом Bot API, **ни одного вызова `deleteWebhook`**, аудит в обоих случаях, `409 webhook_url_not_configured`; `ack`: `acked_until` в ответе и в `GET /admin/alerts`, `value`/`threshold`/`since` не меняются, `fired` гаснет, границы 15/1440 и `422` вне их, `422 unknown_alert`, аудит `alert.ack`, чужому — `403`; для всех девяти алертов `ack` отвечает `200` |
 | `plan-test-only.spec.ts` (9) | включение без подтверждения, снятие без `confirm` → `422 confirmation_required` (флаг не изменился), снятие с `confirm` → `200` + аудит `plan.test_only_change` (`before {test_only: true}` → `after {test_only: false}`), неверная строка → `422`, «ни цены, ни флага» → `422 nothing_to_update`, цена и флаг одной ручкой → две записи аудита и итог в ответе, тариф основателей: цена `403`, флаг `200`, устаревшая `base_version` → `409`, неизвестное поле → `422 unknown_field` |
 | `report-single-grant.spec.ts` (4) | провал провайдера → `failed`, `grants.consumed_at IS NULL`, ни одной строки `entitlements`; после провала право можно потратить снова (второй заказ — не `402`); успех → `consumed_at` заполнен, `is_paid: true`; подписчик с подарком подарок не теряет |
@@ -299,8 +300,9 @@ pnpm build                 → api + web + admin — зелёные
 1. **Основатели.** `GET /admin/founders?limit=2` → два места по возрастанию
    даты заявки; `next_cursor` не `null`; следующий запрос с курсором не
    повторяет строки. У основателя, пришедшего по коду партнёра,
-   `code_activated: true`; у пришедшего сам — `false`. `username` — `null`
-   (колонки нет). В ответе нет `birth_date`/`place_name`.
+   `code_activated: true`; у пришедшего сам — `false`. Поля `username` в
+   ответе нет вовсе (1.6.18; в `users` нет такой колонки). В ответе нет
+   `birth_date`/`place_name`.
 2. **Партнёры.** `GET /admin/partners` → `revenue_stars` совпадает с суммой
    `GET /admin/payments?user_id=…` по `status=paid` активировавших; сделайте
    возврат (`POST /admin/users/{id}/refund`) и убедитесь, что `revenue_stars`
@@ -466,3 +468,32 @@ pnpm build                 → api + web + admin — зелёные
    (сотни) — нет, но ограничение осознанное.
 8. **Частичный возврат, отмена подписки при бане, выгрузка списка людей** —
    не реализованы намеренно (см. предыдущие волны).
+
+## Правки после ревью (контракт 1.6.18)
+
+Ревью 1.6.17 нашло два места, где ответ обещал больше, чем есть. Обе правки
+сделаны до round44, пока экраны новых маршрутов не написаны.
+
+1. **`username` убран из `AdminFounder`.** Проверено по миграциям
+   (`migrations/0001_core_users.sql` и все `ALTER TABLE users`): колонки
+   `username` в `users` нет и не появлялось — ник живёт только в подписи
+   Telegram-апдейта. Поле отдавалось всегда `null`; такое поле — обещание
+   колонки, которой не будет, и панель показала бы пустую колонку. Удаление
+   единственное неаддитивное изменение версии; ни один клиент его не читал.
+   Тест `admin-directory.spec.ts` теперь проверяет **отсутствие** поля
+   (`expect(item).not.toHaveProperty('username')`) и точный набор ключей.
+2. **`retry_after_seconds` у обоих `409` `POST /admin/backup/run`.** У
+   `backup_too_frequent` это **точный** остаток десятиминутного окна (срок
+   известен). У `backup_in_progress` — **интервал опроса**, 30 секунд
+   (`BACKUP_IN_PROGRESS_RETRY_SECONDS`): длительность идущего `pg_dump` и
+   выгрузки неизвестна, таймаута у скрипта нет, и любое «осталось N секунд»
+   было бы выдумкой. Разная семантика записана и в контракте, и в
+   `docs/ADMIN.md`, чтобы панель не приняла одно за другое.
+
+Тесты: `admin-ops.spec.ts` проверяет `retry_after_seconds` у
+`backup_too_frequent` (590…600) и у `backup_in_progress` — на по-настоящему
+идущем дампе: скрипт сервиса на один тест подменяется медленным, иначе обычный
+`db-dump.sh` с шимами заканчивается раньше второго запроса.
+
+Версия контракта поднята до **1.6.18**: удаление поля — изменение, которое
+нельзя сделать молча, даже если клиентов пока нет.

@@ -80,10 +80,16 @@ export class AdminOpsService {
     }
 
     if (outcome.kind === 'in_progress') {
+      // `retry_after_seconds` — интервал опроса, не срок окончания: сколько
+      // идти дампу, сервер не знает (см. `BACKUP_IN_PROGRESS_RETRY_SECONDS`).
+      // Панель по нему говорит «повтори через N», а не «нельзя».
       throw conflict({
         reason: 'backup_in_progress',
         message: 'Дамп уже идёт',
-        details: { reason: 'backup_in_progress' },
+        details: {
+          reason: 'backup_in_progress',
+          retry_after_seconds: outcome.retryAfterSeconds,
+        },
       });
     }
 

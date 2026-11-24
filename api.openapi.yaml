@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.17
+  version: 1.6.18
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -799,6 +799,20 @@ info:
         `telegram_refund_failed`, `push_disabled`, `push_test_sent_24h`,
         `telegram_push_failed`, `report_not_found`, `report_not_regenerable`,
         `invalid_filter`. Коды `Problem.code` не менялись.
+
+    1.6.18 — две правки по итогам ревью 1.6.17, до начала round44. Обе про
+    честность ответа, а не про новые возможности:
+      • из `AdminFounder` **убрано поле `username`**. Оно отдавалось всегда
+        `null`, потому что в `users` нет такой колонки: имя в Telegram мы не
+        храним вовсе. Постоянный `null` — это обещание поля, которого не
+        будет; панель, поставленная на него, показывала бы пустую колонку.
+        Удаление единственное неаддитивное изменение в этой версии; ни один
+        клиент его не читал (экран «Основатели» ещё не написан);
+      • `409` на `POST /admin/backup/run` теперь **всегда** несёт
+        `details.retry_after_seconds`: у `backup_too_frequent` — точный остаток
+        десятиминутного окна, у `backup_in_progress` — интервал опроса
+        (длительность идущего дампа неизвестна, обещать её окончание нельзя).
+        Панель говорит «повтори через N», а не «сейчас нельзя».
 
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
     `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`
@@ -2362,19 +2376,14 @@ components:
     AdminFounder:
       type: object
       description: |-
-        Основатель в панели (1.6.17). ПДн нет: только `place`, `telegram_id` и
-        выдача права.
+        Основатель в панели (1.6.17; с 1.6.18 — без `username`). ПДн нет:
+        только `place`, `telegram_id` и выдача права.
       required:
-        [place, user_id, telegram_id, username, created_at, grant_kind, expires_at, code_activated]
+        [place, user_id, telegram_id, created_at, grant_kind, expires_at, code_activated]
       properties:
         place: { type: integer, minimum: 1, maximum: 50 }
         user_id: { type: string, format: uuid }
         telegram_id: { type: string }
-        username:
-          type: 'null'
-          description: |-
-            Всегда `null`: имена в Telegram не хранятся (в базе нет колонки
-            `username`). Поле оставлено, чтобы панель не переделывала колонку.
         created_at: { type: string, format: date-time }
         grant_kind:
           type: [string, 'null']
@@ -5754,8 +5763,10 @@ paths:
         любое его право.
 
         **ПДн нет**: ни даты рождения, ни города, ни времени — только
-        `telegram_id` (он же в чеке и в боте) и `place`. `username` всегда
-        `null`: имена в Telegram мы не храним (в базе нет такой колонки).
+        `telegram_id` (он же в чеке и в боте) и `place`. **Имени нет вовсе**
+        (1.6.18): в `users` нет колонки `username`, а постоянный `null` в
+        ответе был обещанием поля, которого не будет, — поэтому поле убрано из
+        контракта, а не заполняется заглушкой.
 
         Пагинация — курсором (`next_cursor`), а не `offset`: между страницами
         появляются новые строки, и `offset` показал бы одну дважды.
@@ -5886,8 +5897,12 @@ paths:
         выгрузки — не бэкап, и панель должна показать «не настроено», а не
         «делается».
 
-        `409 backup_in_progress` — дамп уже идёт. `409 backup_too_frequent` —
-        предыдущий запуск был меньше 10 минут назад (`details.retry_after_seconds`).
+        Оба `409` несут `details.retry_after_seconds`, чтобы панель говорила
+        «повтори через N», а не просто «нельзя»:
+        `409 backup_in_progress` — дамп уже идёт, `retry_after_seconds` —
+        интервал опроса (сколько идти дампу, сервер не знает и не обещает);
+        `409 backup_too_frequent` — предыдущий запуск был меньше 10 минут
+        назад, `retry_after_seconds` — точный остаток окна.
       security:
         - TelegramInitData: []
         - AdminSessionCookie: []
@@ -5915,7 +5930,9 @@ paths:
                   job_id: { type: string, format: uuid }
         '403': { description: FORBIDDEN }
         '409':
-          description: '`backup_in_progress` / `backup_too_frequent`'
+          description: |-
+            `backup_in_progress` / `backup_too_frequent`, у обоих в `details` —
+            `reason` и `retry_after_seconds` (положительное целое, секунды)
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }

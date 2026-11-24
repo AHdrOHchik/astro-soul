@@ -148,7 +148,6 @@ describe('GET /admin/founders', () => {
         place: number;
         user_id: string;
         telegram_id: string;
-        username: string | null;
         grant_kind: string | null;
         expires_at: string | null;
         code_activated: boolean;
@@ -168,10 +167,10 @@ describe('GET /admin/founders', () => {
         'place',
         'telegram_id',
         'user_id',
-        'username',
       ]);
-      // Имя в Telegram мы не храним: поле есть, но всегда null.
-      expect(item.username).toBeNull();
+      // Имени нет и в контракте (1.6.18): в `users` нет колонки `username`, а
+      // постоянный null был обещанием поля, которого не будет.
+      expect(item).not.toHaveProperty('username');
     }
 
     // Право основателя — только у первого; у остальных null, а не «последнее

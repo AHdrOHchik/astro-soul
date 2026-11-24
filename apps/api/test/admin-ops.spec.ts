@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { INIT_DATA_HEADER } from '../src/modules/auth/init-data';
-import { BackupService, BACKUP_MIN_INTERVAL_MS } from '../src/modules/ops/backup.service';
+import {
+  BackupService,
+  BACKUP_IN_PROGRESS_RETRY_SECONDS,
+  BACKUP_MIN_INTERVAL_MS,
+} from '../src/modules/ops/backup.service';
 import type { AppEnv } from '../src/config/env';
 import { createTestContext, truncateAll, type TestContext } from './test-app';
 import { signInitData } from './init-data-fixture';
@@ -207,9 +211,55 @@ describe('POST /admin/backup/run', () => {
       .expect(409);
 
     expect((second.body as { code: string }).code).toBe('CONFLICT');
-    expect((second.body as { details: { reason: string } }).details.reason).toBe(
-      'backup_too_frequent',
-    );
+    const details = (second.body as { details: { reason: string; retry_after_seconds: number } })
+      .details;
+    expect(details.reason).toBe('backup_too_frequent');
+
+    // 1.6.18: панель говорит «повтори через N». Здесь N — **точный** остаток
+    // десятиминутного окна: срок известен, поэтому он и есть остаток (минус
+    // доли секунды, прошедшие с запуска).
+    expect(Number.isInteger(details.retry_after_seconds)).toBe(true);
+    expect(details.retry_after_seconds).toBeGreaterThan(590);
+    expect(details.retry_after_seconds).toBeLessThanOrEqual(BACKUP_MIN_INTERVAL_MS / 1000);
+  });
+
+  it('409 backup_in_progress тоже несёт retry_after_seconds — интервал опроса', async () => {
+    // Обычный `db-dump.sh` с шимами заканчивается быстрее, чем успевает
+    // прийти второй запрос, поэтому на один тест подменяем скрипт сервиса:
+    // «дамп идёт» должно проверяться на дампе, который правда идёт.
+    const service = ctx.app.get(BackupService);
+    const slow = join(workDir, 'slow-dump.sh');
+    await writeFile(slow, '#!/usr/bin/env bash\nsleep 3\nexit 0\n');
+    await chmod(slow, 0o755);
+
+    const env = (service as unknown as { env: { BACKUP_SCRIPT?: string } }).env;
+    const original = env.BACKUP_SCRIPT;
+    env.BACKUP_SCRIPT = slow;
+
+    try {
+      await asAdmin('post', '/api/v1/admin/backup/run')
+        .send({ reason: 'медленный дамп для проверки' })
+        .expect(202);
+      expect(service.isRunning()).toBe(true);
+
+      const second = await asAdmin('post', '/api/v1/admin/backup/run')
+        .send({ reason: 'пока предыдущий идёт' })
+        .expect(409);
+
+      const body = second.body as {
+        code: string;
+        details: { reason: string; retry_after_seconds: number };
+      };
+      expect(body.code).toBe('CONFLICT');
+      expect(body.details.reason).toBe('backup_in_progress');
+
+      // Здесь N — **интервал опроса**, а не остаток: сколько идти дампу,
+      // сервер не знает и не обещает. Ноль означал бы цикл запросов.
+      expect(body.details.retry_after_seconds).toBe(BACKUP_IN_PROGRESS_RETRY_SECONDS);
+    } finally {
+      expect(await waitFor(() => !service.isRunning(), 15_000)).toBe(true);
+      env.BACKUP_SCRIPT = original;
+    }
   });
 
   it('пишет аудит backup.run с причиной', async () => {
@@ -281,7 +331,11 @@ describe('BackupService.start — состояния, которые через 
     expect(first.kind).toBe('started');
     expect(service.isRunning()).toBe(true);
 
-    expect(service.start(new Date('2026-11-16T10:00:01Z')).kind).toBe('in_progress');
+    const whileRunning = service.start(new Date('2026-11-16T10:00:01Z'));
+    expect(whileRunning.kind).toBe('in_progress');
+    expect(
+      whileRunning.kind === 'in_progress' ? whileRunning.retryAfterSeconds : 0,
+    ).toBe(BACKUP_IN_PROGRESS_RETRY_SECONDS);
 
     expect(await waitFor(() => !service.isRunning(), 10_000)).toBe(true);
 

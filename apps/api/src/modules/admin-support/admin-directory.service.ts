@@ -17,11 +17,12 @@ export interface AdminFounder {
   readonly user_id: string;
   readonly telegram_id: string;
   /**
-   * Имя в Telegram. **Всегда `null`**: имена не хранятся вовсе (в базе нет
-   * колонки `username`). Поле оставлено в контракте, чтобы панель не
-   * переделывала колонку, когда/если владелец решит его хранить.
+   * Имени здесь нет и не будет (1.6.18): в `users` нет колонки `username` —
+   * имя в Telegram мы не храним вовсе. В 1.6.17 поле отдавалось всегда `null`
+   * «на будущее»; постоянный `null` — это обещание поля, которого не будет, и
+   * панель построила бы на нём пустую колонку. Поэтому поле убрано из
+   * контракта, а не заполнено заглушкой.
    */
-  readonly username: string | null;
   readonly created_at: string;
   readonly grant_kind: string | null;
   readonly expires_at: string | null;
@@ -167,7 +168,6 @@ export class AdminDirectoryService {
       place: row.place,
       user_id: row.user_id,
       telegram_id: row.telegram_id,
-      username: null,
       created_at: row.created_at.toISOString(),
       grant_kind: row.grant_kind,
       expires_at: row.expires_at?.toISOString() ?? null,
