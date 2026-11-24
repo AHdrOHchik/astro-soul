@@ -4764,8 +4764,10 @@ export interface paths {
          *     любое его право.
          *
          *     **ПДн нет**: ни даты рождения, ни города, ни времени — только
-         *     `telegram_id` (он же в чеке и в боте) и `place`. `username` всегда
-         *     `null`: имена в Telegram мы не храним (в базе нет такой колонки).
+         *     `telegram_id` (он же в чеке и в боте) и `place`. **Имени нет вовсе**
+         *     (1.6.18): в `users` нет колонки `username`, а постоянный `null` в
+         *     ответе был обещанием поля, которого не будет, — поэтому поле убрано из
+         *     контракта, а не заполняется заглушкой.
          *
          *     Пагинация — курсором (`next_cursor`), а не `offset`: между страницами
          *     появляются новые строки, и `offset` показал бы одну дважды.
@@ -4979,8 +4981,12 @@ export interface paths {
          *     выгрузки — не бэкап, и панель должна показать «не настроено», а не
          *     «делается».
          *
-         *     `409 backup_in_progress` — дамп уже идёт. `409 backup_too_frequent` —
-         *     предыдущий запуск был меньше 10 минут назад (`details.retry_after_seconds`).
+         *     Оба `409` несут `details.retry_after_seconds`, чтобы панель говорила
+         *     «повтори через N», а не просто «нельзя»:
+         *     `409 backup_in_progress` — дамп уже идёт, `retry_after_seconds` —
+         *     интервал опроса (сколько идти дампу, сервер не знает и не обещает);
+         *     `409 backup_too_frequent` — предыдущий запуск был меньше 10 минут
+         *     назад, `retry_after_seconds` — точный остаток окна.
          */
         post: {
             parameters: {
@@ -5027,7 +5033,10 @@ export interface paths {
                     };
                     content?: never;
                 };
-                /** @description `backup_in_progress` / `backup_too_frequent` */
+                /**
+                 * @description `backup_in_progress` / `backup_too_frequent`, у обоих в `details` —
+                 *     `reason` и `retry_after_seconds` (положительное целое, секунды)
+                 */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -6540,19 +6549,14 @@ export interface components {
             subscription_period_sec?: number | null;
         };
         /**
-         * @description Основатель в панели (1.6.17). ПДн нет: только `place`, `telegram_id` и
-         *     выдача права.
+         * @description Основатель в панели (1.6.17; с 1.6.18 — без `username`). ПДн нет:
+         *     только `place`, `telegram_id` и выдача права.
          */
         AdminFounder: {
             place: number;
             /** Format: uuid */
             user_id: string;
             telegram_id: string;
-            /**
-             * @description Всегда `null`: имена в Telegram не хранятся (в базе нет колонки
-             *     `username`). Поле оставлено, чтобы панель не переделывала колонку.
-             */
-            username: null;
             /** Format: date-time */
             created_at: string;
             /** @enum {string|null} */

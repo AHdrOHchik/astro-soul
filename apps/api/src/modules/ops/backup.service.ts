@@ -42,11 +42,23 @@ export interface BackupConfig {
 export type BackupStartOutcome =
   | { readonly kind: 'started'; readonly jobId: string }
   | { readonly kind: 'not_configured'; readonly missing: readonly string[] }
-  | { readonly kind: 'in_progress' }
+  | { readonly kind: 'in_progress'; readonly retryAfterSeconds: number }
   | { readonly kind: 'too_frequent'; readonly retryAfterSeconds: number };
 
 /** Интервал между запусками из панели: одно нажатие в 10 минут. */
 export const BACKUP_MIN_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * Что значит `retry_after_seconds` у `backup_in_progress` (1.6.18).
+ *
+ * У `too_frequent` это точный остаток окна — там срок известен. У идущего
+ * дампа срок неизвестен никому: `pg_dump` и выгрузка занимают сколько
+ * занимают, таймаута у скрипта нет, и любое «осталось N секунд» было бы
+ * выдумкой. Поэтому здесь это **интервал опроса**: панель гасит кнопку на
+ * полминуты и спрашивает снова. Не ноль — иначе панель опрашивала бы в цикле,
+ * не единица — это тот же цикл, только с лишними запросами.
+ */
+export const BACKUP_IN_PROGRESS_RETRY_SECONDS = 30;
 
 @Injectable()
 export class BackupService {
@@ -115,7 +127,7 @@ export class BackupService {
     }
 
     if (this.running !== null) {
-      return { kind: 'in_progress' };
+      return { kind: 'in_progress', retryAfterSeconds: BACKUP_IN_PROGRESS_RETRY_SECONDS };
     }
 
     if (this.lastStartedAt !== null) {

@@ -43,7 +43,7 @@ function str(value: string | undefined): string {
  * `api.openapi.yaml`, и тест (`src/api/routes.contract.test.ts`) сверяет их,
  * чтобы надпись не отстала от контракта.
  */
-const FALLBACK_CONTRACT_VERSION = '1.6.17';
+const FALLBACK_CONTRACT_VERSION = '1.6.18';
 
 export const config: AdminConfig = {
   apiBaseUrl: str(raw.VITE_API_BASE_URL as string | undefined),

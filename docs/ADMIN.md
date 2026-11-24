@@ -228,7 +228,7 @@ attempts}`. Перезапускается только `failed` (`409 report_no
 
 | Маршрут | Что делает |
 |---|---|
-| `GET /admin/founders?limit=50&cursor=` | места «первых 50» по дате заявки: `place`, `user_id`, `telegram_id`, `username`, `created_at`, `grant_kind`, `expires_at`, `code_activated` |
+| `GET /admin/founders?limit=50&cursor=` | места «первых 50» по дате заявки: `place`, `user_id`, `telegram_id`, `created_at`, `grant_kind`, `expires_at`, `code_activated` |
 | `GET /admin/partners` | агрегаты по `access_codes.partner_name`: коды, активации, сколько людей, сколько заплатили, `revenue_stars` |
 | `GET /admin/payments?charge_id=&user_id=&status=&limit=&cursor=` | лента платежей для поддержки; `charge_id` — главный сценарий |
 | `POST /admin/backup/run` | `{reason}` → `202 {started, job_id}`; тот же `scripts/db-dump.sh`, что у cron |
@@ -238,8 +238,10 @@ attempts}`. Перезапускается только `failed` (`409 report_no
 * **`code_activated`** — `true`, если у основателя есть строка в
   `access_code_activations`. «Пришёл сам» и «пришёл по коду» — разные ответы на
   вопрос «работает ли партнёрская ссылка», и склеивать их в одно число нельзя.
-  В `users` нет колонки `username`, поэтому поле всегда `null` — это честный
-  `null`, а не потеря.
+  **Имени в ответе нет** (1.6.18): в `users` нет колонки `username`, имя в
+  Telegram мы не храним вовсе. В 1.6.17 поле `username` отдавалось всегда
+  `null` «на будущее» — это обещание колонки, которой не будет, поэтому поле
+  убрано из контракта, а не заполнено заглушкой.
 * **Партнёры — только агрегаты.** Ни `user_id`, ни `telegram_id`, ни самих
   кодов в ответе нет; это проверяется тестом по подстрокам. `paid_users` —
   активировавшие код, у которых есть хоть один платёж; `revenue_stars` —
@@ -250,8 +252,12 @@ attempts}`. Перезапускается только `failed` (`409 report_no
   маркер» живёт в `scripts/db-dump.sh`; кнопка только запускает его. Отказ
   выгрузки → код 5, маркера нет, локальный дамп удалён. `503
   UNAVAILABLE backup_not_configured` (в `details.missing` — имена
-  незаданных переменных), `409 backup_in_progress`, `409 backup_too_frequent`
-  (не чаще раза в 10 минут, `details.retry_after_seconds`). Ограничители — в
+  незаданных переменных), `409 backup_in_progress` и `409 backup_too_frequent`
+  (не чаще раза в 10 минут). **Оба** `409` несут `details.retry_after_seconds`
+  (1.6.18), чтобы кнопка говорила «повтори через N», а не «нельзя»: у
+  `too_frequent` это точный остаток окна, у `in_progress` — интервал опроса
+  (30 с), потому что длительность идущего дампа неизвестна и обещать её
+  окончание было бы выдумкой. Ограничители — в
   памяти процесса; при нескольких инстансах от двойного дампа защищает `flock`
   в самом скрипте.
 * **Вебхук: `setWebhook`, никогда `deleteWebhook`.** Между `delete` и `set`
