@@ -201,6 +201,56 @@ describe('GET /admin/founders', () => {
 
     expect(secondBody.items.map((item) => item.place)).toEqual([2]);
     expect(secondBody.next_cursor).not.toBeNull();
+
+    // Третья страница, а не только вторая: дефект round44 (усечение
+    // микросекунд в курсоре) выглядел именно как «вторая страница = первая», и
+    // проверка двух страниц его ловила; но последняя страница с `null` — это
+    // то, что панель реально листает, и она обязана закончиться.
+    const third = await asAdmin(
+      `/api/v1/admin/founders?limit=1&cursor=${encodeURIComponent(secondBody.next_cursor ?? '')}`,
+    ).expect(200);
+    const thirdBody = third.body as { items: { place: number }[]; next_cursor: string | null };
+
+    expect(thirdBody.items.map((item) => item.place)).toEqual([3]);
+    expect(thirdBody.next_cursor).toBeNull();
+  });
+
+  it('курсор не повторяет строку, у которой та же миллисекунда', async () => {
+    // Самая злая форма той же ошибки: два человека с **одинаковым** `created_at`
+    // (в том числе микросекунды). Порядок тогда решает `user_id`, и курсор
+    // обязан сдвинуться по нему, а не встать.
+    // Двое своих, чтобы не трогать уже занятые места 1…3.
+    const userD = users.userIdFor(BigInt('555000444'));
+    const userE = users.userIdFor(BigInt('555000555'));
+    await ctx.db.query(
+      `INSERT INTO users (id, telegram_id) VALUES ($1, '555000444'), ($2, '555000555')`,
+      [userD, userE],
+    );
+    await ctx.db.query(
+      `INSERT INTO founders (user_id, place, created_at)
+       VALUES ($1, 4, now() + interval '10 minutes'),
+              ($2, 5, now() + interval '10 minutes')`,
+      [userD, userE],
+    );
+
+    const seen: number[] = [];
+    let cursor: string | null = null;
+
+    for (let page = 0; page < 6; page += 1) {
+      const query: string = cursor === null ? '?limit=2' : `?limit=2&cursor=${encodeURIComponent(cursor)}`;
+      const response = await asAdmin(`/api/v1/admin/founders${query}`).expect(200);
+      const body = response.body as { items: { place: number }[]; next_cursor: string | null };
+
+      seen.push(...body.items.map((item) => item.place));
+      cursor = body.next_cursor;
+
+      if (cursor === null) {
+        break;
+      }
+    }
+
+    // Пять мест, каждое ровно один раз: ни повтора, ни пропуска.
+    expect(seen).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('границы: limit=51 и битый курсор — 422', async () => {

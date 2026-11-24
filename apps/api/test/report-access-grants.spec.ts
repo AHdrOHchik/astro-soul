@@ -421,6 +421,92 @@ describe('держателю права не продают то, что у не
     expect(await countPayments(userId)).toBe(0);
   });
 
+  /**
+   * Таблица «состояние → код» одной проверкой.
+   *
+   * `402 report_not_paid` и `422 report_already_owned` легко принять за один
+   * случай с двумя ответами: они описывают **противоположные** состояния. 402 —
+   * «здесь права нет, заплати» (только `POST /reports`); 422 — «право уже есть,
+   * платить не надо» (только касса). Пересечься они не могут, и это дешевле
+   * проверить, чем объяснять: одно и то же состояние аккаунта спрашивается у
+   * обоих маршрутов.
+   *
+   * Отдельной строкой — асимметрия тела ответа, чтобы её не искали заново:
+   * у `422` причина лежит в `details.reason`, у `402` **`details` нет вовсе**
+   * (контракт 1.6.18 обещает только статус и `code = PAYMENT_REQUIRED`; поле
+   * `reason` уходит в лог). Клиент обязан различать их по статусу, а не по
+   * `details.reason`, иначе на 402 он получит `undefined`.
+   */
+  it('402 и 422 не пересекаются: у одного состояния — оба ответа сразу', async () => {
+    const free = await newAccount();
+
+    const refused = await request(ctx.app.getHttpServer())
+      .post('/api/v1/reports')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .set('Idempotency-Key', 'codes-free')
+      .send({ chart_id: free.chartId, type: 'full' })
+      .expect(402);
+    const refusedBody = refused.body as { code: string; details?: unknown };
+    expect(refusedBody.code).toBe('PAYMENT_REQUIRED');
+    // Причины в теле нет — и это осознанно: по контракту 402 на этом маршруте
+    // означает ровно «разбор не куплен», различать больше нечего.
+    expect(refusedBody.details).toBeUndefined();
+
+    // То же состояние и другая дверь: покупать можно, счёт создаётся.
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor())
+      .send({ plan_code: 'one_149', chart_id: free.chartId })
+      .expect(201);
+
+    // Теперь у человека есть право — и оба ответа меняются местами.
+    const holder = await newAccount(USER_ID_2);
+    await ctx.db.query(
+      `INSERT INTO grants (user_id, kind, source) VALUES ($1, 'single_report', 'admin')`,
+      [holder.userId],
+    );
+
+    await request(ctx.app.getHttpServer())
+      .post('/api/v1/reports')
+      .set(INIT_DATA_HEADER, initDataFor(USER_ID_2))
+      .set('Idempotency-Key', 'codes-holder')
+      .send({ chart_id: holder.chartId, type: 'full' })
+      .expect(202);
+
+    const owned = await request(ctx.app.getHttpServer())
+      .post('/api/v1/billing/invoice')
+      .set(INIT_DATA_HEADER, initDataFor(USER_ID_2))
+      .send({ plan_code: 'one_149', chart_id: holder.chartId })
+      .expect(422);
+    expect((owned.body as { details: { reason: string } }).details.reason).toBe(
+      'report_already_owned',
+    );
+
+    // Третья дверь — просмотр. Она **не** отвечает ошибкой: неоплаченный
+    // разбор отдаётся `200` с `is_paid: false` и пустыми `sections`, потому что
+    // текст собирается нашим трудом, а статус — ответ на «что показать».
+    // Ошибку `403 report_not_paid` дают только PDF и шеринг (`insight`,
+    // `identity`), и это отдельная проверка ниже.
+    const unpaid = await newAccount(444_200_003);
+    await ctx.db.query(
+      `INSERT INTO reports (user_id, chart_id, kind, status, idempotency_key, chart_hash,
+                            model, prompt_version, report_structure_version, chart_facts_version)
+       VALUES ($1, $2, 'report', 'queued', 'seed-unpaid', 'hash', 'stub', 'p1', 's1', 'c1')`,
+      [unpaid.userId, unpaid.chartId],
+    );
+    const reportId = await ctx.db.queryOne<{ id: string }>(
+      `SELECT id::text AS id FROM reports WHERE user_id = $1`,
+      [unpaid.userId],
+    );
+
+    const teaser = await request(ctx.app.getHttpServer())
+      .get(`/api/v1/reports/${reportId?.id ?? ''}`)
+      .set(INIT_DATA_HEADER, initDataFor(444_200_003))
+      .expect(200);
+    expect((teaser.body as { is_paid: boolean }).is_paid).toBe(false);
+    expect((teaser.body as { sections: unknown[] }).sections).toEqual([]);
+  });
+
   it('истёкшее `all_access` покупку не блокирует', async () => {
     const { userId, chartId } = await newAccount();
     await ctx.db.query(
