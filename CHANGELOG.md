@@ -1,5 +1,61 @@
 # Changelog
 
+## Итерация 40 (бэкенд) — вход в админ-панель: сессии, CSRF и журнал (контракт 1.6.15)
+
+Панели нужен второй способ входа: в браузере нет `initData`. Сделано аддитивно
+— мини-апп продолжает ходить по `X-Telegram-Init-Data`, старые админские ручки
+не изменились ни по форме, ни по коду ответа.
+
+### Что появилось
+
+- **`POST /admin/auth/telegram`** — вход по подписи Telegram Login Widget:
+  `secret = SHA256(bot_token)`, `data_check_string` из отсортированных `k=v`,
+  constant-time сравнение, окно `auth_date` **300 секунд** (ровно 300 — годен).
+  `id` принимается строкой и числом; `id ≠ ADMIN_TG_ID` → `403 forbidden` **без**
+  строки сессии и **без** записи `session.login`. Успех — `200 {ok:true}` и
+  cookie `__Host-admin_session` (`HttpOnly`, `Secure` при `COOKIE_SECURE=true`,
+  `SameSite=Lax`, `Max-Age` = срок сессии). 10 неудач за 15 минут с одного IP →
+  `429` с `details.retry_after`; заблокированный запрос подпись не считает.
+- **`GET /admin/me`** — `{tg_id, name, expires_at, csrf_token}`. Имя — снимок из
+  сессии (не текущее имя пользователя). Для входа по `initData` срок и токен —
+  `null`.
+- **`POST /admin/auth/logout`** — `200 {ok:true}`, `Max-Age=0`, `revoked_at` в
+  строке сессии. Старая cookie после выхода даёт `401`; повторный выход — снова
+  `200` без второй записи в журнале. Stateless-сессий нет: «Выйти» обязано
+  означать «выйти».
+- **CSRF** — `X-Admin-CSRF` на `POST`/`PATCH`/`DELETE` для cookie-пути:
+  `403 csrf_missing` / `403 csrf_mismatch` **до** любого эффекта. Путь
+  `initData` CSRF не требует. Токен ротируется при входе, а не при запросе.
+  Один гард в middleware принимает обе двери (`Authorization: tma <initData>`
+  тоже поддержан) и кладёт действующего админа в запрос.
+- **`GET /admin/audit`** — журнал: `{items, next_cursor}`, фильтры `entity`,
+  `entity_id`, `action`, `actor_tg_id`, сортировка `at DESC, id DESC`, курсор
+  `(at, id)`, `limit > 200` → `422`. Пишутся `session.login`, `session.logout`,
+  `code.create`, `grant.create`, `grant.revoke`, `session.purge`.
+- **Аудит в той же транзакции**, что и действие: `grants.issue/revoke` и
+  `codes.create` получили клиент транзакции, журнал пишется до `COMMIT`. Отказ
+  журнала — `500 admin_audit_write_failed`, и изменения **нет** (проверено
+  тестом с падающим триггером).
+- **Миграции**: `0037_admin_sessions` (`id uuid`, `tg_id`, `name` — снимок,
+  `csrf_token`, `created_at`, `expires_at`, `revoked_at`, `last_seen_at`,
+  индексы `tg_id`, `expires_at`), `0038_admin_audit` (append-only: `UPDATE` и
+  `DELETE` запрещены триггером; `before`/`after` без ПДн; индексы `at DESC`,
+  `(entity, entity_id)`, `actor_tg_id`).
+- **Джоб `admin_sessions_cleanup`** — удаляет сессии, просроченные больше 7 дней,
+  и пишет `session.purge` с числом удалённых; `JobRunResult.admin_sessions_purged`.
+- **Наблюдаемость**: `/health` → `flags.admin_auth {enabled, sessions_active}`;
+  `/admin/metrics` → `admin_logins_24h`, `admin_audit_writes_24h`,
+  `admin_sessions_purged_24h`; лог `admin_session: action=… tg_id=… ip_hash=…
+  ok=…` (IP — только хэшем с перцем); события `admin_login`, `admin_logout`,
+  `admin_audit_write_failed`.
+- **`docs/ADMIN.md`** — BotFather, cookie и CSRF, лимит попыток, разбор «вход
+  недоступен», проверка после деплоя, чтение журнала.
+
+### Чего не делали (волна 40.2+)
+
+Пользователи, возвраты звёзд, перегенерация разборов, редактирование тарифов,
+бэкапы, вебхуки. `GET/POST /admin/grants` и `/admin/codes` — без изменений.
+
 ## Итерация 40 — админ-панель: каркас, вход и «Коды и гранты» (контракт 1.6.14, без бампа)
 
 Третий фронтенд-домен в монорепо: `apps/admin`. Задача — дать владельцу продукта

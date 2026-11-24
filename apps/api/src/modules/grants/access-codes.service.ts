@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import type { GrantKind } from '@astro-soul/shared';
 import { ApiError, conflict, invalidFields, notFound, reasonOptions } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
@@ -84,8 +85,16 @@ export class AccessCodesService {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
-  /** `POST /admin/codes`: создаёт код. Код уникален, коллизия — повтор. */
-  async create(input: CreateCodeInput): Promise<AccessCodeRow> {
+  /**
+   * `POST /admin/codes`: создаёт код. Код уникален, коллизия — повтор.
+   *
+   * `client` (итерация 40) — транзакция вызывающего: код и запись в журнале
+   * аудита должны коммититься вместе. Повтор после коллизии внутри чужой
+   * транзакции делается через `SAVEPOINT`: в PostgreSQL ошибка `23505`
+   * переводит транзакцию в состояние «aborted», и без точки сохранения второй
+   * `INSERT` был бы невозможен.
+   */
+  async create(input: CreateCodeInput, options: { readonly client?: PoolClient } = {}): Promise<AccessCodeRow> {
     const kind = input.kind;
 
     if (kind === 'all_access' && (input.days === undefined || input.days === null || input.days <= 0)) {
@@ -106,20 +115,17 @@ export class AccessCodesService {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = explicit ?? generateAccessCode();
       try {
-        const row = await this.db.queryOne<AccessCodeRow>(
-          `INSERT INTO access_codes (code, kind, days, max_activations, partner_name, expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING id, code, kind, days, max_activations, activations, partner_name,
-                     is_active, expires_at, created_at`,
-          [
-            code,
-            kind,
-            kind === 'all_access' ? (input.days ?? null) : null,
-            input.maxActivations,
-            input.partnerName ?? null,
-            input.expiresAt ?? null,
-          ],
-        );
+        if (options.client !== undefined) {
+          // Точка сохранения на попытку: откат возвращает транзакцию в рабочее
+          // состояние, и следующая попытка не падает на «aborted transaction».
+          await options.client.query('SAVEPOINT access_code_attempt');
+        }
+
+        const row = await this.insertRow(code, kind, input, options.client);
+
+        if (options.client !== undefined) {
+          await options.client.query('RELEASE SAVEPOINT access_code_attempt');
+        }
 
         if (row !== null) {
           this.logger.info('access_code_created', {
@@ -133,6 +139,10 @@ export class AccessCodesService {
           return row;
         }
       } catch (error) {
+        if (options.client !== undefined) {
+          await options.client.query('ROLLBACK TO SAVEPOINT access_code_attempt');
+        }
+
         // 23505 — уникальность `code`. Явно заданный код повторять бессмысленно.
         if ((error as { code?: string }).code !== '23505' || explicit !== null) {
           throw error;
@@ -141,6 +151,35 @@ export class AccessCodesService {
     }
 
     throw conflict(reasonOptions('code_collision', 'Не удалось создать код, попробуй ещё раз'));
+  }
+
+  /** Один `INSERT`: через клиент транзакции или через пул. */
+  private async insertRow(
+    code: string,
+    kind: GrantKind,
+    input: CreateCodeInput,
+    client: PoolClient | undefined,
+  ): Promise<AccessCodeRow | null> {
+    const params = [
+      code,
+      kind,
+      kind === 'all_access' ? (input.days ?? null) : null,
+      input.maxActivations,
+      input.partnerName ?? null,
+      input.expiresAt ?? null,
+    ];
+
+    const sql = `INSERT INTO access_codes (code, kind, days, max_activations, partner_name, expires_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 RETURNING id, code, kind, days, max_activations, activations, partner_name,
+                           is_active, expires_at, created_at`;
+
+    if (client !== undefined) {
+      const result = await client.query<AccessCodeRow>(sql, params);
+      return result.rows[0] ?? null;
+    }
+
+    return this.db.queryOne<AccessCodeRow>(sql, params);
   }
 
   async list(options: { readonly limit?: number } = {}): Promise<readonly AccessCodeRow[]> {

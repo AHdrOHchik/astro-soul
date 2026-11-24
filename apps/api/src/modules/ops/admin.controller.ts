@@ -1,10 +1,11 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Query } from '@nestjs/common';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
-import { forbidden, invalidFields } from '../../common/api-error';
+import { invalidFields } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
-import { CurrentUser } from '../auth/current-user.decorator';
-import type { VerifiedInitData } from '../auth/init-data';
+import { DbService } from '../../db/db.service';
+import { AdminAuditService } from '../admin-audit/admin-audit.service';
+import { CurrentAdmin, assertAdmin, isAdmin, type AdminActor } from '../admin-auth/admin-actor';
 import { AccessCodesService, type AccessCodeRow } from '../grants/access-codes.service';
 import { GrantsService } from '../grants/grants.service';
 
@@ -32,11 +33,19 @@ import { AdminMetricsService, type ProductMetrics } from './admin-metrics.servic
 import { AlertsService, type AlertsResponse } from './alerts.service';
 
 /**
- * `GET /api/v1/admin/metrics` — метрики продукта для владельца.
+ * Админские маршруты владельца.
  *
  * Доступ — по `ADMIN_TG_ID` из окружения, а не по роли в БД: одна переменная,
  * которую нельзя поменять из мини-аппа. ID не задан — маршрут закрыт всегда
  * (403), и это осознанно: «нет настройки» не должно означать «открыто всем».
+ *
+ * С итерации 40 «кто это» приходит одним декоратором `@CurrentAdmin()`: гард
+ * middleware уже различил `initData` и cookie-сессию панели, а ручкам знать
+ * разницу незачем.
+ *
+ * Изменяющие ручки (`grant.create`, `grant.revoke`, `code.create`) пишут
+ * журнал **в той же транзакции**, что и само изменение: если журнал недоступен,
+ * действие не выполняется (см. `AdminAuditService`).
  */
 @Controller('admin')
 export class AdminController {
@@ -47,16 +56,16 @@ export class AdminController {
     @Inject(JsonLogger) private readonly logger: JsonLogger,
     @Inject(GrantsService) private readonly grants: GrantsService,
     @Inject(AccessCodesService) private readonly codes: AccessCodesService,
+    @Inject(AdminAuditService) private readonly audit: AdminAuditService,
+    @Inject(DbService) private readonly db: DbService,
   ) {}
 
-  /** Общая проверка «это владелец»: та же, что у метрик, и те же 403. */
-  private assertAdmin(auth: VerifiedInitData, action: string): void {
-    const adminId = this.env.ADMIN_TG_ID;
-
-    if (adminId === undefined || BigInt(adminId) !== auth.telegramUserId) {
+  /** Общая проверка «это владелец»: те же 403, что были у метрик. */
+  private ensureAdmin(actor: AdminActor, action: string): void {
+    if (!isAdmin(actor, this.env.ADMIN_TG_ID)) {
       this.logger.warn('admin_action_forbidden', { action, reason: 'not_admin' });
-      throw forbidden({ reason: 'admin_only' });
     }
+    assertAdmin(actor, this.env.ADMIN_TG_ID);
   }
 
   /**
@@ -70,15 +79,28 @@ export class AdminController {
   @Post('grants')
   @HttpCode(200)
   async issueGrant(
-    @CurrentUser() auth: VerifiedInitData,
+    @CurrentAdmin() actor: AdminActor,
     @Body() body: unknown,
   ): Promise<{ grant_id: string; kind: string; source: string; expires_at: string | null }> {
-    this.assertAdmin(auth, 'grant');
+    this.ensureAdmin(actor, 'grant');
 
     const input: AdminGrantCreate = parseAdminGrantCreate(body);
 
     if (input.action === 'revoke') {
-      const row = await this.grants.revoke(input.user_id, input.grant_id);
+      const row = await this.db.withTransaction(async (client) => {
+        const revoked = await this.grants.revoke(input.user_id, input.grant_id, { client });
+
+        await this.audit.write(client, actor, {
+          action: 'grant.revoke',
+          entity: 'grant',
+          entityId: revoked.id,
+          before: { revoked_at: null },
+          after: { revoked_at: revoked.revoked_at?.toISOString() ?? null },
+        });
+
+        return revoked;
+      });
+
       return {
         grant_id: row.id,
         kind: row.kind,
@@ -87,11 +109,28 @@ export class AdminController {
       };
     }
 
-    const issued = await this.grants.issue({
-      userId: input.user_id,
-      kind: input.kind,
-      source: 'admin',
-      days: input.days,
+    const issued = await this.db.withTransaction(async (client) => {
+      const result = await this.grants.issue({
+        userId: input.user_id,
+        kind: input.kind,
+        source: 'admin',
+        days: input.days,
+        client,
+      });
+
+      await this.audit.write(client, actor, {
+        action: 'grant.create',
+        entity: 'grant',
+        entityId: result.grant.id,
+        after: {
+          kind: result.grant.kind,
+          source: result.grant.source,
+          expires_at: result.grant.expires_at?.toISOString() ?? null,
+          code_id: result.grant.code_id,
+        },
+      });
+
+      return result;
     });
 
     return {
@@ -111,10 +150,10 @@ export class AdminController {
    */
   @Get('grants')
   async listGrants(
-    @CurrentUser() auth: VerifiedInitData,
+    @CurrentAdmin() actor: AdminActor,
     @Query('user_id') userId: string | undefined,
   ): Promise<{ items: AdminGrantView[] }> {
-    this.assertAdmin(auth, 'grant_list');
+    this.ensureAdmin(actor, 'grant_list');
 
     if (userId === undefined || userId.trim() === '') {
       throw invalidFields([{ field: 'user_id', message: 'Укажи user_id' }]);
@@ -144,28 +183,45 @@ export class AdminController {
   @Post('codes')
   @HttpCode(201)
   async createCode(
-    @CurrentUser() auth: VerifiedInitData,
+    @CurrentAdmin() actor: AdminActor,
     @Body() body: unknown,
   ): Promise<AccessCodeRow> {
-    this.assertAdmin(auth, 'code_create');
-    return this.codes.create(parseAdminCodeCreate(body));
+    this.ensureAdmin(actor, 'code_create');
+
+    const input = parseAdminCodeCreate(body);
+
+    return this.db.withTransaction(async (client) => {
+      const row = await this.codes.create(input, { client });
+
+      await this.audit.write(client, actor, {
+        action: 'code.create',
+        entity: 'code',
+        entityId: row.id,
+        after: {
+          code: row.code,
+          kind: row.kind,
+          days: row.days,
+          expires_at: row.expires_at?.toISOString() ?? null,
+        },
+      });
+
+      return row;
+    });
   }
 
   /** `GET /admin/codes` (1.6.14) — последние коды с остатком активаций. */
   @Get('codes')
-  async listCodes(@CurrentUser() auth: VerifiedInitData): Promise<{ items: AccessCodeRow[] }> {
-    this.assertAdmin(auth, 'code_list');
+  async listCodes(@CurrentAdmin() actor: AdminActor): Promise<{ items: AccessCodeRow[] }> {
+    this.ensureAdmin(actor, 'code_list');
     return { items: [...(await this.codes.list())] };
   }
 
   @Get('metrics')
-  async getMetrics(@CurrentUser() auth: VerifiedInitData): Promise<ProductMetrics> {
-    const adminId = this.env.ADMIN_TG_ID;
-
-    if (adminId === undefined || BigInt(adminId) !== auth.telegramUserId) {
+  async getMetrics(@CurrentAdmin() actor: AdminActor): Promise<ProductMetrics> {
+    if (!isAdmin(actor, this.env.ADMIN_TG_ID)) {
       this.logger.warn('admin_metrics_forbidden', { reason: 'not_admin' });
-      throw forbidden({ reason: 'admin_only' });
     }
+    assertAdmin(actor, this.env.ADMIN_TG_ID);
 
     return this.metrics.getMetrics();
   }
@@ -177,13 +233,11 @@ export class AdminController {
    * было одним запросом к одному `id`.
    */
   @Get('alerts')
-  async getAlerts(@CurrentUser() auth: VerifiedInitData): Promise<AlertsResponse> {
-    const adminId = this.env.ADMIN_TG_ID;
-
-    if (adminId === undefined || BigInt(adminId) !== auth.telegramUserId) {
+  async getAlerts(@CurrentAdmin() actor: AdminActor): Promise<AlertsResponse> {
+    if (!isAdmin(actor, this.env.ADMIN_TG_ID)) {
       this.logger.warn('admin_alerts_forbidden', { reason: 'not_admin' });
-      throw forbidden({ reason: 'admin_only' });
     }
+    assertAdmin(actor, this.env.ADMIN_TG_ID);
 
     return this.alerts.list();
   }

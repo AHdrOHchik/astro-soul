@@ -82,6 +82,13 @@ export async function createTestContext(options: TestContextOptions = {}): Promi
   const app = moduleRef.createNestApplication({ logger: false });
 
   app.setGlobalPrefix('api/v1');
+  // Как в main.ts: сервис за прокси, и `req.ip` — клиент, а не прокси. Нужно
+  // тесту лимита входа в панель: без этого все запросы supertest приходят с
+  // одного адреса, и «считать по IP» нечем проверить.
+  (app.getHttpAdapter().getInstance() as { set: (key: string, value: unknown) => void }).set(
+    'trust proxy',
+    1,
+  );
   // Как в main.ts: request_id появляется до разбора тела (QA-12b).
   applyRequestContext(app);
   await app.init();
@@ -123,11 +130,15 @@ const TABLES = [
   // дотягиваются, но `access_codes` ни к чему не привязана — её чистим явно,
   // иначе код «на 1 активацию» из прошлого теста остаётся исчерпанным.
   'grants',
-  'access_code_activations',
   'access_codes',
   'founders',
   'referrals',
   'entitlements',
+  // Итерация 40: сессии панели и журнал аудита. К `users` не привязаны вовсе:
+  // без явной чистки вход из прошлого теста «держит» счётчик сессий в `/health`,
+  // а запись журнала попадает в ленту следующего теста.
+  'admin_sessions',
+  'admin_audit',
   'payments',
   'invoices',
   'subscriptions',

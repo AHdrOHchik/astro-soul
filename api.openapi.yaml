@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Astro Soul API
-  version: 1.6.14
+  version: 1.6.15
   description: |
     API мини-приложения «Разбор личности» (Telegram Mini App).
     Контракт — единственный источник правды. Любое поле, которого здесь нет,
@@ -686,10 +686,59 @@ info:
       • состояние inline не кэшируется дольше жизни процесса: `/setinline`
         меняет ответ Bot API в любой момент, следующий старт API его подхватит.
 
+    1.6.15 — админ-панель: вход, сессия, CSRF и журнал аудита (итерация 40).
+    Аддитивно: ни одно существующее поле не переименовано и не удалено из
+    `required`; мини-апп продолжает ходить по `X-Telegram-Init-Data`:
+      • `POST /admin/auth/telegram` — вход по подписи Telegram Login Widget:
+        `secret = SHA256(bot_token)`, окно `auth_date` 300 секунд (`401
+        auth_stale` старше, ровно 300 — ещё годен), `id` сравнивается с
+        `ADMIN_TG_ID` (`403 forbidden`, без сессии и без записи в журнале).
+        Успех — `200 {ok: true}` и cookie `__Host-admin_session` (`HttpOnly`,
+        `Secure` при `COOKIE_SECURE=true`, `SameSite=Lax`, `Max-Age` = срок
+        сессии). `429` с `details.retry_after` после 10 неудач за 15 минут с
+        одного IP; заблокированный запрос подпись не проверяет;
+      • `GET /admin/me` — `{tg_id, name, expires_at, csrf_token}`. `name` —
+        снимок имени из сессии, а не текущее имя пользователя. `csrf_token`
+        нужен панели потому, что cookie `HttpOnly`; для входа по `initData`
+        `expires_at` и `csrf_token` — `null` (там подпись проверяется на каждом
+        запросе). Срок в ответе — подсказка для UI: источник правды — `401`;
+      • `POST /admin/auth/logout` — `200 {ok: true}` и снятие cookie;
+        сессия получает `revoked_at`, повторный вызов — снова `200`. Сессия
+        хранится строкой в `admin_sessions`: stateless-токен нельзя отозвать,
+        и «Выйти» перестало бы означать «выйти»;
+      • изменяющие админские маршруты, открытые cookie-сессией, требуют
+        заголовок `X-Admin-CSRF` со значением `csrf_token`: без него
+        `403 csrf_missing`, с чужим — `403 csrf_mismatch`, оба **до** любого
+        эффекта. Путь `initData` CSRF не требует: подпись проверяется на каждом
+        запросе, чужой сайт её не подделает;
+      • `GET /admin/audit` — журнал действий: `{items, next_cursor}`, фильтры
+        `entity`, `entity_id`, `action`, `actor_tg_id`, `limit` (по умолчанию
+        50, больше 200 — `422`), сортировка `at` по убыванию. Пишутся
+        `session.login`, `session.logout`, `code.create`, `grant.create`,
+        `grant.revoke`; запись идёт **в той же транзакции**, что и действие:
+        нет записи — нет изменения. `actor_name` — снимок, ПДн в `before`/
+        `after` нет (карта — `chart_id`, платёж — `charge_id`);
+      • `GET /health` — `flags.admin_auth {enabled, sessions_active}`.
+        `enabled` — настроен ли `ADMIN_TG_ID`; `sessions_active` — сколько
+        живых сессий панели прямо сейчас;
+      • `GET /admin/metrics` — `admin_logins_24h`, `admin_audit_writes_24h`,
+        `admin_sessions_purged_24h`;
+      • `JobRunResult` — `admin_sessions_purged`; новый джоб
+        `admin_sessions_cleanup` удаляет сессии, просроченные больше 7 дней;
+      • новые машинные причины в `Problem.details.reason`: `invalid_hash`,
+        `auth_stale`, `missing_hash`, `missing_fields`, `csrf_missing`,
+        `csrf_mismatch`, `admin_session_invalid`, `admin_login_throttled`,
+        `invalid_cursor`, `invalid_limit`, `admin_audit_write_failed`.
+        Коды `Problem.code` не менялись.
+
     Аутентификация: каждый запрос из мини-аппа передаёт заголовок
-    `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`.
+    `X-Telegram-Init-Data` с сырой строкой `Telegram.WebApp.initData`
+    (или `Authorization: tma <initData>`).
     Сервер валидирует подпись HMAC-SHA256 по ключу бота и проверяет auth_date (<= 24 ч).
-    Других способов авторизации нет (никаких JWT в localStorage — их нельзя защитить).
+    Других способов авторизации у мини-аппа нет (никаких JWT в localStorage —
+    их нельзя защитить). Браузерная админ-панель входит вторым, независимым
+    способом — cookie `__Host-admin_session` + `X-Admin-CSRF` (1.6.15); обе
+    двери ведут к одному и тому же админскому гарду.
 servers:
   - url: https://api.astro-soul.example.com
     description: production
@@ -713,6 +762,29 @@ components:
       in: header
       name: X-Telegram-Init-Data
       description: Сырая строка initData из Telegram.WebApp
+    AdminSessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-admin_session
+      description: |-
+        Сессия админ-панели (1.6.15). Ставится `POST /admin/auth/telegram`,
+        `HttpOnly`, `Secure` (при `COOKIE_SECURE=true`), `SameSite=Lax`,
+        `Path=/`. Изменяющие запросы с этой cookie обязаны нести заголовок
+        `X-Admin-CSRF` со значением `csrf_token` из `GET /admin/me`:
+        `403 csrf_missing` / `403 csrf_mismatch` до любого эффекта.
+
+  parameters:
+    AdminCsrf:
+      name: X-Admin-CSRF
+      in: header
+      required: true
+      schema: { type: string }
+      description: |-
+        CSRF-токен сессии админ-панели (значение `csrf_token` из
+        `GET /admin/me`, 1.6.15). Обязателен для cookie-пути на
+        `POST`/`PATCH`/`DELETE`; для пути `initData` не нужен (там подпись
+        проверяется на каждом запросе). Отсутствие — `403 csrf_missing`,
+        несовпадение — `403 csrf_mismatch`, оба до любого эффекта.
 
   headers:
     X-Request-Id:
@@ -1600,6 +1672,34 @@ components:
             birth_place: { $ref: '#/components/schemas/GeoPlace' }
             name: { type: string, maxLength: 60 }
 
+    AdminAuditEntry:
+      type: object
+      description: |-
+        Одна запись журнала аудита (1.6.15). Пишет сервер; изменить или удалить
+        запись нельзя (триггер в БД). `before`/`after` — только изменённые
+        поля и без ПДн.
+      required: [id, at, actor_tg_id, actor_name, action, entity]
+      properties:
+        id: { type: string }
+        at: { type: string, format: date-time }
+        actor_tg_id:
+          type: string
+          description: '`0` — служебная запись (уборка сессий), а не действие человека'
+        actor_name: { type: string, description: Снимок имени на момент действия }
+        action: { type: string, example: 'grant.create' }
+        entity: { type: string, example: 'grant' }
+        entity_id: { type: [string, 'null'] }
+        before:
+          type: [object, 'null']
+          additionalProperties: true
+        after:
+          type: [object, 'null']
+          additionalProperties: true
+        reason: { type: [string, 'null'] }
+        request_id:
+          type: [string, 'null']
+          description: '`X-Request-Id` запроса, который сделал действие'
+
     JobRunResult:
       type: object
       description: |
@@ -1648,6 +1748,13 @@ components:
         telegram_cancel_retried: { type: integer }
         telegram_cancel_cancelled: { type: integer }
         telegram_cancel_gave_up: { type: integer }
+        push_runs_purged: { type: integer }
+        share_cards_purged: { type: integer }
+        admin_sessions_purged:
+          type: integer
+          description: >-
+            Сессий админ-панели удалено: просрочены больше 7 дней (1.6.15,
+            джоб `admin_sessions_cleanup`).
       example:
         subscriptions_expired: 0
         expiry_notices_sent: 0
@@ -1671,6 +1778,9 @@ components:
         telegram_cancel_retried: 0
         telegram_cancel_cancelled: 0
         telegram_cancel_gave_up: 0
+        push_runs_purged: 0
+        share_cards_purged: 0
+        admin_sessions_purged: 0
 
     CompatibilityRequest:
       type: object
@@ -2224,6 +2334,18 @@ paths:
                           spent_rub: { type: number }
                           limit_rub: { type: number }
                           exhausted: { type: boolean }
+                      admin_auth:
+                        type: object
+                        description: |-
+                          Вход в админ-панель (1.6.15). `enabled` — настроен ли
+                          `ADMIN_TG_ID`: без него войти не может никто, и это
+                          видно снаружи одним полем. `sessions_active` — сколько
+                          живых (не отозванных и не просроченных) сессий сейчас;
+                          забытая сессия на чужом ноутбуке видна здесь, а не
+                          только в базе.
+                        properties:
+                          enabled: { type: boolean }
+                          sessions_active: { type: integer }
                       push:
                         type: object
                         description: |-
@@ -2570,7 +2692,9 @@ paths:
         экран поддержки, поэтому без параметра — `422`. Отозванные права
         **входят** в список (`revoked: true`): вопрос «почему у человека
         отобрали доступ» отвечается историей, а не логами.
-      security: [{ TelegramInitData: [] }]
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
       parameters:
         - name: user_id
           in: query
@@ -2619,7 +2743,12 @@ paths:
         Тело `POST /admin/codes`: `{kind, days?, max_activations,
         partner_name?, expires_at?}`. `max_activations` обязателен: код без
         счётчика — это и есть бесконтрольная раздача.
-      security: [{ TelegramInitData: [] }]
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        # Обязателен только для cookie-пути; путь `initData` его игнорирует.
+        - $ref: '#/components/parameters/AdminCsrf'
       requestBody:
         required: true
         content:
@@ -2668,7 +2797,12 @@ paths:
       tags: [internal]
       summary: Создать код доступа
       description: Доступ только для `ADMIN_TG_ID` (иначе `403`).
-      security: [{ TelegramInitData: [] }]
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        # Обязателен только для cookie-пути; путь `initData` его игнорирует.
+        - $ref: '#/components/parameters/AdminCsrf'
       requestBody:
         required: true
         content:
@@ -2694,7 +2828,9 @@ paths:
       tags: [internal]
       summary: Последние коды с остатком активаций
       description: Доступ только для `ADMIN_TG_ID` (иначе `403`). Порядок — новые сначала.
-      security: [{ TelegramInitData: [] }]
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
       responses:
         '200':
           description: OK
@@ -4016,6 +4152,8 @@ paths:
               - pdn_retention_cleanup
               - forecast_nightly
               - forecast_push
+              - push_share_retention
+              - admin_sessions_cleanup
       responses:
         '202':
           description: Работы выполнены, счётчики в теле
@@ -4024,6 +4162,244 @@ paths:
               schema: { $ref: '#/components/schemas/JobRunResult' }
         '403':
           description: Нет секрета или он неверный (FORBIDDEN)
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/auth/telegram:
+    post:
+      tags: [internal]
+      summary: Вход в админ-панель по подписи Telegram Login Widget
+      description: |-
+        Единственный админский маршрут без сессии и без `initData`: иначе
+        войти было бы нечем. Защита своя — подпись `hash`, окно `auth_date`
+        300 секунд, `id = ADMIN_TG_ID` и лимит неудачных попыток по IP.
+
+        Поля приходят «как есть» из виджета (все, включая `hash`): набор полей
+        задаёт Telegram, жёсткая схема ломалась бы на первом новом поле
+        (`first_name`, `last_name`, `username`, `photo_url` — все необязательны).
+
+        `id` принимается и строкой, и числом. Подпись считается по
+        `data_check_string` из отсортированных `k=v`, ключ —
+        `secret = SHA256(bot_token)`; сравнение — constant-time.
+
+        На успехе ставится cookie `__Host-admin_session` (см.
+        `AdminSessionCookie`) и **не** отдаётся ничего, кроме `{ok: true}`:
+        идентификатор сессии в теле означал бы, что он попадает в логи
+        фронта и в отчёты об ошибках.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: |-
+                Подписанный набор полей виджета. `hash` и `id` обязательны
+                по смыслу (их отсутствие — `422`), `auth_date` — тоже.
+              additionalProperties: true
+              required: [id, auth_date, hash]
+              properties:
+                id: { type: [string, integer] }
+                auth_date: { type: integer, description: 'Unix-время подписи, секунды' }
+                hash: { type: string }
+                first_name: { type: string }
+                last_name: { type: string }
+                username: { type: string }
+                photo_url: { type: string }
+            example:
+              id: '777000001'
+              first_name: 'Владелец'
+              auth_date: 1770000000
+              hash: '00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff'
+      responses:
+        '200':
+          description: Сессия создана, cookie выставлена
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: '`__Host-admin_session=<uuid>; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=43200`'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '401':
+          description: |-
+            `details.reason = invalid_hash` — подпись не совпала;
+            `details.reason = auth_stale` — `auth_date` старше 300 секунд.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '403':
+          description: '`details.reason = forbidden` — id не равен `ADMIN_TG_ID`; сессия не создаётся, журнал не пишется'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422':
+          description: '`details.reason = missing_hash | missing_fields | malformed` — подписи нет, нет `id`/`auth_date`, тип поля не строка/число'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '429':
+          description: |-
+            Слишком много неудач с одного IP. Тело содержит
+            `details.retry_after` (секунды). Заблокированный запрос подпись
+            **не проверяет**.
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/me:
+    get:
+      tags: [internal]
+      summary: Кто вошёл в панель, срок сессии и CSRF-токен
+      description: |-
+        Доступ — `initData` или cookie-сессия панели. `name` — снимок имени из
+        сессии (`first_name last_name` на момент входа, иначе `username`), а не
+        текущее имя пользователя: история входов не должна меняться задним
+        числом.
+
+        `csrf_token` нужен панели потому, что cookie `HttpOnly` и JS её не
+        прочитает. Токен ротируется при каждом входе, а не при каждом запросе:
+        иначе две открытые вкладки гасили бы токен друг другу. Для входа по
+        `initData` `expires_at` и `csrf_token` — `null` (там CSRF не нужен).
+
+        `expires_at` — подсказка для интерфейса; **источник правды — `401`**:
+        панель не продлевает сессию по своим часам.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      responses:
+        '200':
+          description: Текущий админ
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tg_id, name, expires_at, csrf_token]
+                properties:
+                  tg_id:
+                    type: string
+                    description: Telegram id (bigint строкой — не теряет точность в JS)
+                  name:
+                    type: string
+                    description: Снимок имени из сессии (или из `initData`)
+                  expires_at:
+                    type: [string, 'null']
+                    format: date-time
+                    description: '`null` — вход по `initData`: сессии нет'
+                  csrf_token:
+                    type: [string, 'null']
+                    description: '`null` — вход по `initData`: CSRF не требуется'
+        '401': { description: UNAUTHORIZED }
+        '403': { description: FORBIDDEN }
+
+  /api/v1/admin/auth/logout:
+    post:
+      tags: [internal]
+      summary: Выход из панели (отзыв сессии)
+      description: |-
+        Ставит `revoked_at` и снимает cookie (`Max-Age=0`). Сессия перестаёт
+        работать немедленно — это и есть смысл строки в базе вместо подписи.
+
+        Идемпотентно: повторный вызов (в том числе с уже отозванной cookie или
+        вовсе без неё) отвечает `200 {ok: true}` и ничего не меняет. Второй
+        записи `session.logout` в журнале не появляется: писать «вышел» дважды
+        — врать в журнале.
+
+        Если сессия жива, запрос с cookie обязан нести `X-Admin-CSRF`: иначе
+        чужой сайт мог бы разлогинить админа одной формой. Без cookie
+        (`logout` уже случился) CSRF не требуется — иначе повторная кнопка
+        получала бы `403` на успешном действии.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      responses:
+        '200':
+          description: Сессия отозвана или её уже не было
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+              description: '`__Host-admin_session=; Max-Age=0`'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '403':
+          description: '`csrf_missing` / `csrf_mismatch` — для живой сессии без заголовка или с чужим токеном'
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+
+  /api/v1/admin/audit:
+    get:
+      tags: [internal]
+      summary: Журнал действий админа
+      description: |-
+        Лента `at DESC, id DESC`. Курсор `(at, id)`, а не `offset`: журнал
+        пополняется на каждом действии, и `offset` на живой ленте теряет и
+        дублирует строки.
+
+        Пишутся только действия: `session.login`, `session.logout`,
+        `code.create`, `grant.create`, `grant.revoke` (плюс `session.purge` от
+        джоба уборки). Чтения не пишутся — иначе журнал перестаёт быть
+        читаемым.
+
+        `before`/`after` — только изменённые поля. ПДн нет: карта — `chart_id`,
+        платёж — `charge_id`, ни дат рождения, ни имён получателей.
+        `actor_name` — снимок на момент действия (ник меняется, журнал — нет).
+        Таблица append-only: `UPDATE`/`DELETE` запрещены триггером.
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
+      parameters:
+        - name: entity
+          in: query
+          schema: { type: string }
+          description: '`session`, `code`, `grant`, …'
+        - name: entity_id
+          in: query
+          schema: { type: string }
+        - name: action
+          in: query
+          schema: { type: string }
+          description: '`session.login`, `code.create`, `grant.create`, `grant.revoke`, …'
+        - name: actor_tg_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+          description: 'Больше 200 — `422`: «попросил 500, получил 200» выглядит как потеря данных'
+        - name: cursor
+          in: query
+          schema: { type: string }
+          description: Непрозрачное значение из `next_cursor` предыдущей страницы
+      responses:
+        '200':
+          description: Страница журнала
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminAuditEntry' }
+                  next_cursor:
+                    type: [string, 'null']
+                    description: '`null` — страниц больше нет'
+        '401': { description: UNAUTHORIZED }
+        '403': { description: FORBIDDEN }
+        '422':
+          description: '`invalid_limit` / `invalid_cursor` / `invalid_actor_tg_id`'
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/Problem' }
@@ -4040,7 +4416,9 @@ paths:
         события, — поэтому опоздавший батч (`occurred_at` до суток назад) попадает в
         свой день, а не в день доставки. Окно — 30 дней, `occurred_at` не
         старше суток от серверного времени (см. `POST /events`).
-      security: [{ TelegramInitData: [] }]
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
       responses:
         '200':
           description: OK
@@ -4368,6 +4746,24 @@ paths:
                     description: Сколько мест «первых 50» занято (из 50).
                   bonus_budget_spent_rub: { type: number }
                   bonus_budget_limit_rub: { type: number }
+                  admin_logins_24h:
+                    type: integer
+                    description: |-
+                      Входов в админ-панель за сутки (1.6.15). Считается по
+                      журналу (`session.login`), а не по логу процесса: рестарт
+                      API не должен обнулять цифру дежурства.
+                  admin_audit_writes_24h:
+                    type: integer
+                    description: |-
+                      Записей в журнал аудита за сутки. Ноль при живых действиях
+                      админа значит, что аудит сломан; рост без действий —
+                      повод открыть `GET /admin/audit`.
+                  admin_sessions_purged_24h:
+                    type: integer
+                    description: |-
+                      Сколько просроченных сессий панели убрал джоб
+                      `admin_sessions_cleanup` за сутки. Ноль неделями — таблица
+                      растёт, и видно это только здесь.
 
         '403': { description: FORBIDDEN }
 
@@ -4399,7 +4795,9 @@ paths:
         (`telegram_webhook`), рубли (`llm_spend`), часы (`backup_stale`).
         `value: null` — значение неизвестно (не было проверки вебхука, нет
         маркера бэкапа).
-      security: [{ TelegramInitData: [] }]
+      security:
+        - TelegramInitData: []
+        - AdminSessionCookie: []
       responses:
         '200':
           description: Текущие значения всех алертов
@@ -4512,6 +4910,9 @@ x-analytics-server-events:
   - pdf_downloaded
   - share_card_opened
   - share_card_created
+  - admin_login
+  - admin_logout
+  - admin_audit_write_failed
 # payment_rejected — props: code (no_invoice | amount_mismatch | unknown_plan |
 #                    invoice_invalidated | user_deleted | refund_failed)
 #                    refund_failed означает: отказ записан, но звёзды вернуть
@@ -4526,6 +4927,15 @@ x-analytics-server-events:
 #                    кнопка в приложении (`POST /subscription/cancel`); у
 #                    `DELETE /me` этого события нет: там отмена — часть
 #                    удаления, и она видна в `account_deleted`.
+# admin_login          — props: ok (true | false), reason
+#                    Вход в админ-панель (1.6.15). Нет ни tg_id, ни IP: только
+#                    факт и причина (`invalid_hash`, `auth_stale`, `not_admin`,
+#                    `throttled`). Успех пишется сюда, подробности — в журнал.
+# admin_logout         — props: none
+# admin_audit_write_failed — props: action, entity
+#                    Журнал недоступен: действие не выполнено. Это авария, а не
+#                    «мелочь» — один такой случай уже значит, что админка
+#                    перестала работать.
 # forecast_ready       — props: date, chars, warnings, cost_rub
 #                    Текст прогноза дня сгенерирован. Повторный запрос в тот же
 #                    день даёт `forecast_cache_hit`, а не второе событие.

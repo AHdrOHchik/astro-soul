@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import type { GrantKind, GrantSource } from '@astro-soul/shared';
 import { notFound, reasonOptions } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
@@ -38,6 +39,13 @@ export interface IssueGrantInput {
    * ограничивает новые обещания, а не снятие уже выданных.
    */
   readonly checkBudget?: boolean;
+  /**
+   * Клиент уже открытой транзакции (итерация 40). Нужен админскому маршруту:
+   * выдача и запись в журнал аудита обязаны быть одной транзакцией, иначе
+   * «право выдано, аудита нет» станет возможным при отказе журнала.
+   * Без клиента сервис открывает свою транзакцию, как раньше.
+   */
+  readonly client?: PoolClient;
 }
 
 export interface IssuedGrant {
@@ -83,7 +91,7 @@ export class GrantsService {
 
     const startNow = await this.hasChart(input.userId);
 
-    const result = await this.db.withTransaction(async (client) => {
+    const write = async (client: PoolClient): Promise<{ grant: GrantRow; extended: boolean }> => {
       if (kind === 'all_access') {
         const extended = await this.repo.extendAllAccess(client, input.userId, days ?? 0, startNow);
 
@@ -102,7 +110,12 @@ export class GrantsService {
       });
 
       return { grant: inserted, extended: false };
-    });
+    };
+
+    const result =
+      input.client === undefined
+        ? await this.db.withTransaction(write)
+        : await write(input.client);
 
     this.logger.info('grant_issued', {
       user: input.userId,
@@ -146,8 +159,12 @@ export class GrantsService {
     });
   }
 
-  async revoke(userId: string, grantId: string): Promise<GrantRow> {
-    const row = await this.repo.revoke(userId, grantId);
+  async revoke(
+    userId: string,
+    grantId: string,
+    options: { readonly client?: PoolClient } = {},
+  ): Promise<GrantRow> {
+    const row = await this.repo.revoke(userId, grantId, options.client);
 
     if (row === null) {
       throw notFound(reasonOptions('grant_not_found', 'Такого права нет или оно уже отозвано'));

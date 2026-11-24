@@ -128,6 +128,29 @@ const envSchema = z.object({
     z.coerce.number().int().positive().optional(),
   ),
 
+  /**
+   * Срок жизни сессии админ-панели (итерация 40). 12 часов — «один рабочий
+   * день»: за это время админ успевает всё, а забытая на чужом ноутбуке
+   * сессия не живёт до следующей недели.
+   */
+  ADMIN_SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(12),
+
+  /**
+   * `Secure` у cookie сессии. В проде — только `true`: cookie с идентификатором
+   * админа по http не должна уезжать вовсе. В песочнице и на `http://localhost`
+   * браузер её иначе не сохранит, поэтому там `false` (см. docs/ADMIN.md).
+   */
+  COOKIE_SECURE: z.enum(['true', 'false']).default('true'),
+
+  /**
+   * Порог блокировки входа в панель: не больше N неудач за окно с одного IP.
+   * Считаем **неудачи**, а не запросы: успешный вход обнуляет счётчик, иначе
+   * дежурный, ошибшийся паролем/виджетом десять раз за неделю, закрыл бы себе
+   * вход окончательно.
+   */
+  ADMIN_LOGIN_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(10),
+  ADMIN_LOGIN_WINDOW_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+
   /** Секрет `POST /internal/jobs/run` (крон). Не задан — маршрут закрыт всегда. */
   INTERNAL_JOB_SECRET: z.preprocess(
     (value) => (value === '' ? undefined : value),

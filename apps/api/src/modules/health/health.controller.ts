@@ -40,7 +40,7 @@ export class HealthController {
 
   @Get()
   async health(@Res({ passthrough: true }) response: Response): Promise<HealthResponse> {
-    const [dbOk, astroState, push, bonusBudget] = await Promise.all([
+    const [dbOk, astroState, push, bonusBudget, adminSessionsActive] = await Promise.all([
       this.db.ping(),
       this.astro.health(),
       this.pushState(),
@@ -48,6 +48,13 @@ export class HealthController {
       // только строка в логе: «подарки кончились» должно объясняться одним
       // запросом к `/health`, а не перепиской.
       this.bonusBudget.state(),
+      // Итерация 40: сколько живых сессий админки прямо сейчас. Без этого
+      // «почему панель не пускает» упирается в ручной SQL, а «сессия, которую
+      // забыли отозвать» не видна вовсе. Запрос — тем же `DbService`, а не
+      // через сервис сессий: конструктор `/health` остаётся из пяти
+      // зависимостей, и тест `ops-alerts` не приходится править ради
+      // одного числа.
+      this.adminSessionsActive(),
     ]);
 
     // Состояние вебхука — из последней проверки при старте/диагностике
@@ -95,9 +102,38 @@ export class HealthController {
           limit_rub: bonusBudget.limit_rub,
           exhausted: bonusBudget.exhausted,
         },
+        admin_auth: {
+          // `enabled` — настроен ли `ADMIN_TG_ID`: без него вход в панель
+          // закрыт для всех, и это видно снаружи одним полем.
+          enabled: this.env.ADMIN_TG_ID !== undefined,
+          sessions_active: adminSessionsActive,
+        },
       },
       checked_at: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Живые сессии админки (`flags.admin_auth.sessions_active`).
+   *
+   * Отказ этого запроса не делает `/health` хуже: `db: down` уже виден по
+   * `ping`, а количество сессий — справочная цифра. Поэтому `0` вместо
+   * исключения: мониторинг не должен получать `500` из-за поля, по которому
+   * ничего не решается.
+   */
+  private async adminSessionsActive(): Promise<number> {
+    try {
+      const row = await this.db.queryOne<{ active: string }>(
+        `SELECT count(*) AS active
+           FROM admin_sessions
+          WHERE revoked_at IS NULL
+            AND expires_at > now()`,
+      );
+
+      return Number(row?.active ?? 0);
+    } catch {
+      return 0;
+    }
   }
 
   /**
