@@ -171,10 +171,19 @@ curl -s -X POST 'https://api.<домен>/api/v1/internal/jobs/run?job=admin_ses
 * **Версия — оптимистическая блокировка**: панель присылает `base_version`,
   которую видела. Устарела — `409 price_changed` с `details.current
   {price_stars, version}`. Две вкладки больше не перетирают друг друга молча.
-* **Меняется только цена.** `test_only`, `is_active`, `grants` через `PATCH`
-  не правятся: неизвестное поле — `422 unknown_field`.
+* **Меняются цена и флаг тестового режима** (флаг — с 1.6.17, см. ниже).
+  `is_active`, `grants`, `subscription_plan` через `PATCH` не правятся:
+  неизвестное поле — `422 unknown_field`.
 * **Только новые покупки** (`price_change_scope: only_new_purchases`): у уже
   выставленных счетов цена — снимок `invoices.stars`, он не пересчитывается.
+* **`test_only` — двумя шагами** (1.6.17). Включить тестовый режим можно одной
+  правкой (`{test_only: true, comment, base_version}`), снять — только с
+  `confirm: "disable_test_plan"`, иначе `422 confirmation_required`. Это не
+  формальность: `test_only: false` превращает тариф за 1 ⭐ в продаваемый всем,
+  и заметить это некому. Флаг пишется отдельной записью аудита
+  `plan.test_only_change` (цена — `plan.price_change`); в историю цены
+  (`plan_price_history`) смена флага не попадает. Цену тарифа основателей менять
+  по-прежнему нельзя (`403 founder_plan_locked`), а флаг — можно.
 
 ### Пользователи
 
@@ -215,6 +224,61 @@ curl -s -X POST 'https://api.<домен>/api/v1/internal/jobs/run?job=admin_ses
 attempts}`. Перезапускается только `failed` (`409 report_not_regenerable`),
 новых платежей не создаётся, `attempts` и `MAX_ATTEMPTS` не меняются.
 
+### Основатели, партнёры, платежи (1.6.17)
+
+| Маршрут | Что делает |
+|---|---|
+| `GET /admin/founders?limit=50&cursor=` | места «первых 50» по дате заявки: `place`, `user_id`, `telegram_id`, `username`, `created_at`, `grant_kind`, `expires_at`, `code_activated` |
+| `GET /admin/partners` | агрегаты по `access_codes.partner_name`: коды, активации, сколько людей, сколько заплатили, `revenue_stars` |
+| `GET /admin/payments?charge_id=&user_id=&status=&limit=&cursor=` | лента платежей для поддержки; `charge_id` — главный сценарий |
+| `POST /admin/backup/run` | `{reason}` → `202 {started, job_id}`; тот же `scripts/db-dump.sh`, что у cron |
+| `POST /admin/telegram/webhook` | `{reason}` → `200 {url, ok:true, last_error_message:null}` или `502` с ответом Telegram дословно |
+| `POST /admin/alerts/{id}/ack` | `{minutes}` 15…1440 → `200 {acked_until, alert}`; `GET /admin/alerts` отдаёт `acked_until` |
+
+* **`code_activated`** — `true`, если у основателя есть строка в
+  `access_code_activations`. «Пришёл сам» и «пришёл по коду» — разные ответы на
+  вопрос «работает ли партнёрская ссылка», и склеивать их в одно число нельзя.
+  В `users` нет колонки `username`, поэтому поле всегда `null` — это честный
+  `null`, а не потеря.
+* **Партнёры — только агрегаты.** Ни `user_id`, ни `telegram_id`, ни самих
+  кодов в ответе нет; это проверяется тестом по подстрокам. `paid_users` —
+  активировавшие код, у которых есть хоть один платёж; `revenue_stars` —
+  **только оплаченные** платежи, возвраты не вычитаются (иначе «выручка»
+  партнёра менялась бы от чужого возврата через месяц; размер возвратов виден в
+  `GET /admin/payments?status=refunded`).
+* **Бэкап не пишет маркер сам.** Порядок «локальный файл → выгрузка →
+  маркер» живёт в `scripts/db-dump.sh`; кнопка только запускает его. Отказ
+  выгрузки → код 5, маркера нет, локальный дамп удалён. `503
+  UNAVAILABLE backup_not_configured` (в `details.missing` — имена
+  незаданных переменных), `409 backup_in_progress`, `409 backup_too_frequent`
+  (не чаще раза в 10 минут, `details.retry_after_seconds`). Ограничители — в
+  памяти процесса; при нескольких инстансах от двойного дампа защищает `flock`
+  в самом скрипте.
+* **Вебхук: `setWebhook`, никогда `deleteWebhook`.** Между `delete` и `set`
+  Telegram успевает принять апдейты в никуда — поэтому маршрут только
+  переустанавливает адрес и проверяет результат через `getWebhookInfo`. Успех =
+  `getWebhookInfo().url` совпал с ожидаемым; иначе `502
+  telegram_webhook_failed` с `last_error_message` из ответа Telegram.
+  `409 webhook_url_not_configured` — не задан `MINI_APP_URL`/секрет.
+* **`ack` не «чинит» алерт.** Заглушение живёт отдельно от срабатывания: до
+  `acked_until` панель показывает «скрыт до HH:MM», `value`/`threshold`/`since`
+  не меняются, `fired` остаётся `false` до истечения срока, а после — снова
+  виден, если причина не ушла. Заглушка — строка аудита `alert.ack`; её и
+  читает `GET /admin/alerts` (`DISTINCT ON (entity_id)` по последней записи).
+  `422 unknown_alert` для неизвестного id, `422` для `minutes` вне 15…1440.
+
+### Переменные окружения ручного бэкапа
+
+| Переменная | Смысл |
+|---|---|
+| `BACKUP_STATE_FILE` | файл-маркер «копия вне сервера есть» (его же читает алерт `backup_stale`) |
+| `BACKUP_DIR` | куда `pg_dump` пишет локальный файл |
+| `BACKUP_S3_URL` или `BACKUP_REMOTE` | куда выгружать; достаточно одной |
+| `BACKUP_SCRIPT` | путь к скрипту (по умолчанию ищется `scripts/db-dump.sh`) |
+
+Все — необязательные: без них `/admin/backup/run` отвечает `503` с перечнем
+того, чего не хватает, а не «запущено».
+
 ### Что дежурный видит в цифрах
 
 `/admin/metrics` → `push_test_sent_24h`, `admin_login_failed_24h`,
@@ -229,7 +293,8 @@ attempts}`. Перезапускается только `failed` (`409 report_no
 Пишутся: `session.login`, `session.logout`, `code.create`, `grant.create`,
 `grant.revoke`, `session.purge` (джоб уборки, `actor_tg_id = 0`), а с 1.6.16 —
 `plan.price_change`, `user.card_view`, `user.refund`, `user.ban`, `user.unban`,
-`user.push_test`, `report.regenerate`.
+`user.push_test`, `report.regenerate`, а с 1.6.17 — `plan.test_only_change`,
+`backup.run`, `webhook.reinstall`, `alert.ack`.
 
 * Запись идёт **в той же транзакции**, что и действие: нет записи — нет
   изменения. Ошибка записи видна как `500` с
@@ -252,6 +317,7 @@ attempts}`. Перезапускается только `failed` (`409 report_no
 | `/admin/metrics` | `admin_logins_24h`, `admin_audit_writes_24h`, `admin_sessions_purged_24h`, `push_test_sent_24h`, `admin_login_failed_24h`, `refunds_24h` |
 | лог | `admin_session: action=login|logout tg_id=… ip_hash=… ok=…` (без initData, без cookie, без IP) |
 | события | `admin_login`, `admin_logout`, `admin_audit_write_failed` — без ПДн |
+| лог 1.6.17 | `backup_run_started` / `backup_run_finished` / `backup_run_failed` (код выхода и последняя строка stderr), `telegram_webhook_reinstalled` (url без секрета), `alert_acknowledged` (`minutes`, `acked_until`), `code_activation_throttled` (`user_id`, `retry_after_seconds`) |
 
 Дежурные правила: `admin_audit_writes_24h = 0` при действиях админа значит,
 что журнал сломан; `admin_sessions_purged_24h = 0` неделями — что джоб

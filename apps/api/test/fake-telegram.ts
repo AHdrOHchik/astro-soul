@@ -6,6 +6,7 @@ import type {
   PushSendResult,
   PushSendStatus,
   StarSubscriptionCancelResult,
+  WebhookInfo,
 } from '../src/modules/telegram/telegram.client';
 
 /** Статус, которым «Bot API» отвечает на пуш: старые имена сохранены. */
@@ -51,6 +52,15 @@ export interface FakeTelegram {
   /** `429`: сколько секунд просит подождать Bot API (`parameters.retry_after`). */
   pushRetryAfter: number | null;
   /**
+   * Вызовы методов вебхука (1.6.17): тест «не вызывать `deleteWebhook``
+   * проверяет именно этот список, а не намерение в комментарии.
+   */
+  readonly webhookCalls: { method: 'setWebhook' | 'deleteWebhook' | 'getWebhookInfo'; url?: string }[];
+  /** Чем «Bot API» отвечает на `setWebhook`: `null` — успешно (по умолчанию). */
+  setWebhookError: string | null;
+  /** Что `getWebhookInfo` считает текущим адресом; `null` — «вебхука нет». */
+  webhookUrl: string | null;
+  /**
    * Очередь статусов на ближайшие отправки: `['rate_limited', 'sent']` —
    * первый вызов получит `429`, второй пройдёт. Пусто — действует `pushOutcome`.
    */
@@ -88,6 +98,8 @@ export interface FakeTelegram {
     results: readonly InlineQueryPhotoResult[],
   ): Promise<void>;
   getMe(): Promise<BotApiAnswer<{ id: number; username?: string; supports_inline_queries?: boolean }>>;
+  getWebhookInfo(): Promise<BotApiAnswer<WebhookInfo>>;
+  setWebhook(url: string, secretToken: string): Promise<BotApiAnswer<boolean>>;
   refundStarPayment(userId: number, chargeId: string): Promise<boolean>;
   editUserStarSubscription(
     userId: number | null,
@@ -105,6 +117,7 @@ export function makeFakeTelegram(): FakeTelegram {
   const inlineAnswers: FakeTelegram['inlineAnswers'] = [];
   const starSubscriptionCancels: FakeTelegram['starSubscriptionCancels'] = [];
   const callbackAnswers: FakeTelegram['callbackAnswers'] = [];
+  const webhookCalls: FakeTelegram['webhookCalls'] = [];
 
   const fake: FakeTelegram = {
     invoiceCalls,
@@ -116,6 +129,9 @@ export function makeFakeTelegram(): FakeTelegram {
     inlineAnswers,
     starSubscriptionCancels,
     callbackAnswers,
+    webhookCalls,
+    setWebhookError: null,
+    webhookUrl: null,
     inlineMode: true,
     getMeError: false,
     pushOutcome: 'sent',
@@ -201,6 +217,53 @@ export function makeFakeTelegram(): FakeTelegram {
         ok: true,
         status: 200,
         result: { id: 1, username: 'astro_soul_bot', supports_inline_queries: fake.inlineMode },
+        description: null,
+      });
+    },
+    getWebhookInfo() {
+      webhookCalls.push({ method: 'getWebhookInfo' });
+
+      return Promise.resolve({
+        reachable: true,
+        ok: true,
+        status: 200,
+        result: {
+          url: fake.webhookUrl ?? '',
+          hasCustomCertificate: false,
+          pendingUpdateCount: 0,
+          lastErrorDate: null,
+          lastErrorMessage: null,
+          lastSynchronizationErrorDate: null,
+          maxConnections: 40,
+          allowedUpdates: null,
+        },
+        description: null,
+      });
+    },
+    setWebhook(url, secretToken) {
+      webhookCalls.push({ method: 'setWebhook', url });
+      void secretToken;
+
+      if (fake.setWebhookError !== null) {
+        return Promise.resolve({
+          reachable: true,
+          ok: false,
+          status: 400,
+          result: null,
+          description: fake.setWebhookError,
+        });
+      }
+
+      // Telegram принимает адрес — и запоминает его: `getWebhookInfo` после
+      // успешного `setWebhook` обязан вернуть тот же адрес, иначе проверка
+      // «подтвердилось ли» в сервисе будет всегда ложной.
+      fake.webhookUrl = url;
+
+      return Promise.resolve({
+        reachable: true,
+        ok: true,
+        status: 200,
+        result: true,
         description: null,
       });
     },

@@ -26,6 +26,11 @@ const PROBLEM_CODES: Record<ProblemCode, true> = {
   // 503: the monthly free-access budget is spent. The screen says "try next month"
   // instead of "something broke on our side" — nothing is broken.
   BONUS_BUDGET_EXHAUSTED: true,
+  // 503 без вины клиента и без поломки: функция есть, но не настроена на сервере
+  // (контракт 1.6.17 — кнопки панели «бэкап сейчас» и переустановка вебхука).
+  // Регулярные экраны приложения этот код не получают; строка нужна, чтобы
+  // `Record<ApiErrorCode, …>` оставался полным.
+  UNAVAILABLE: true,
 };
 
 /**

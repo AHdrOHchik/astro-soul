@@ -4,6 +4,7 @@ import { PlansModule } from '../billing/plans.module';
 import { UsersRepository } from '../users/users.repository';
 import { AccessCodesService } from './access-codes.service';
 import { BonusBudgetService } from './bonus-budget.service';
+import { CodeActivationThrottle } from './code-activation-throttle.service';
 import { FoundersController, MeGrantsController } from './grants.controller';
 import { GrantsService } from './grants.service';
 import { GrantsDataModule } from './grants-data.module';
@@ -29,6 +30,7 @@ import { ReferralsService } from './referrals.service';
     FoundersService,
     ReferralsService,
     BonusBudgetService,
+    CodeActivationThrottle,
     EntitlementsService,
     UsersRepository,
   ],

@@ -1,5 +1,89 @@
 # Changelog
 
+## Итерация 43 (бэкенд) — последняя волна админки и четыре долга (контракт 1.6.17)
+
+Закрывает §5 «Панель» целиком: основатели, партнёры, платежи, ручной бэкап,
+переустановка вебхука, подтверждение алерта. Аддитивно: `required` нигде не
+тронут, формы работающих админских маршрутов (`/admin/grants`, `/admin/codes`,
+`/admin/metrics`, `/admin/plans`, `/admin/users`, `/admin/reports`,
+`/admin/auth/*`, `/admin/audit`) не менялись. Миграции не нужны: все новые
+маршруты читают существующие таблицы, ни одна колонка не добавлена.
+
+### Что появилось
+
+- **`GET /admin/founders?limit=50&cursor=`** → `{items: [{place, user_id,
+  telegram_id, username, created_at, grant_kind, expires_at, code_activated}],
+  next_cursor}`. `place` 1…50 по дате заявки, курсор — base64url `(created_at,
+  place)`, `422 invalid_cursor` на мусор, `limit` 1…50. `code_activated` — есть
+  ли строка в `access_code_activations`; «пришёл сам» = `false`. В `users` нет
+  колонки `username`, поэтому поле всегда `null`. **Ни `birth_*`, ни
+  `place_name`, ни `profile` в ответе нет** — это список людей, а не выгрузка
+  ПДн.
+- **`GET /admin/partners`** → агрегаты по `access_codes.partner_name`:
+  `codes_total`, `activations_total`, `activated_users`, `paid_users`,
+  `revenue_stars`, `last_activation_at`. Ни одного идентификатора в ответе:
+  ни `user_id`, ни `telegram_id`, ни самих кодов. `paid_users` — активировавшие,
+  у кого есть платёж; `revenue_stars` — только `status = 'paid'`, **возвраты не
+  вычитаются** (см. отчёт: это осознанно, размер возвратов виден в ленте
+  платежей).
+- **`GET /admin/payments?charge_id=&user_id=&status=&limit=&cursor=`** →
+  лента `{charge_id, user_id, amount_stars, currency, status, created_at,
+  refunded_at, plan_code}`. `charge_id` — точное совпадение (не `LIKE`), 20
+  строк по умолчанию, потолок 100, keyset-курсор `(created_at, id)` DESC.
+  `status` ∈ `paid|processed|refunded|failed`, `user_id` — UUID, иначе `422`.
+- **`POST /admin/backup/run {reason}`** → `202 {started: true, job_id}`.
+  Запускается **тот же** `scripts/db-dump.sh`, что у cron: порядок «локальный
+  файл → выгрузка → маркер» живёт в одном месте. `503 UNAVAILABLE
+  backup_not_configured` (`details.missing` — имена переменных), `409
+  backup_in_progress`, `409 backup_too_frequent` (`details.retry_after_seconds`,
+  не чаще раза в 10 минут). Аудит `backup.run`. Отказ выгрузки → маркера нет,
+  локальный дамп удалён (проверяется настоящим скриптом с поддельными
+  `pg_dump`/`aws`).
+- **`POST /admin/telegram/webhook {reason}`** → `200 {url, ok: true,
+  last_error_message: null}` / `502 {url, ok: false, last_error_message}` (ответ
+  Telegram дословно) / `409 webhook_url_not_configured`. **`deleteWebhook` не
+  вызывается никогда** — между `delete` и `set` апдейты теряются; успех
+  проверяется через `getWebhookInfo().url`. Аудит `webhook.reinstall`.
+- **`POST /admin/alerts/{id}/ack {minutes}`** (15…1440) → `200 {acked_until,
+  alert}`. `422 unknown_alert` для неизвестного id и для `minutes` вне
+  диапазона. `GET /admin/alerts` получил `acked_until`. Заглушка **не меняет**
+  `value`, `threshold` и `since`, а `fired` до истечения срока — `false`;
+  панель показывает «скрыт до HH:MM». Аудит `alert.ack`. Два новых алерта:
+  `bonus_budget_exhausted` (warning, бюджет бесплатного доступа выбран) и
+  `admin_login_failed` (warning, серия неудачных входов в панель).
+- **`PATCH /admin/plans/{code}`** принимает `test_only` (см. долги) — форма
+  ответа та же, добавлено только поле в тело.
+
+### Долги, закрытые в этой итерации
+
+1. **`test_only` из панели — двумя шагами.** `{test_only: false}` без
+   `confirm: "disable_test_plan"` → `422 confirmation_required`; включение
+   (`true`) подтверждения не требует. Отдельная запись аудита
+   `plan.test_only_change`, в `plan_price_history` не попадает, замок
+   `founder_month` относится только к цене.
+2. **`single_report` списывается на `ready`, а не на заказе.** Провал
+   генерации (модель, формат, запрещённая тема, брейкер) больше **не сжигает**
+   подаренное право: `hasAccess('report', {consume: false})` на заказе,
+   `settleGrantFor(report)` после сохранения текста. Ошибка расхода не
+   переводит готовый разбор в `failed` — текст уже есть, в лог уходит
+   `report_grant_settle_failed`.
+3. **Активация кода: 10 неудач в час на человека** → `429 RATE_LIMITED`
+   `details.reason = code_activation_throttled`, `retry_after_seconds`,
+   `window_seconds: 3600`, событие `code_activation_throttled`. Считаются
+   неудачи (не попытки), успех снимает счётчик, окно не продлевается, `422`
+   формата попыток не тратит. Настройка `CODE_ACTIVATION_MAX_FAILURES`
+   (1…100, по умолчанию 10).
+4. **`MOON_GOOD_FOR` проходит тест запрещённых тем** — тот же список, что у
+   `MOON_ADVICE`: утренний пуш идёт от нашего имени в личный чат, и «что
+   хорошего сделать в эту фазу» — такой же медицинский/денежный/эзотерический
+   риск, как совет по фазе.
+
+### Не делалось
+
+Экраны панели под новые маршруты (их PR — отдельный), отзыв чужих сессий,
+отмена подписки при бане, выгрузка списка людей. `MAX_ATTEMPTS`, брейкеры и
+лимиты генераций не тронуты.
+
 ## Итерация 41 (бэкенд) — панель поддержки и цен (контракт 1.6.16)
 
 Вторая волна админки: то, ради чего поддержка открывает панель. Аддитивно —

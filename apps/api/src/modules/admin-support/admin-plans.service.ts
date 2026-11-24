@@ -1,6 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { isFounderPlanCode } from '@astro-soul/shared';
-import { conflict, forbidden, notFound, reasonOptions } from '../../common/api-error';
+import {
+  conflict,
+  forbidden,
+  notFound,
+  reasonOptions,
+  validationFailed,
+} from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
 import { DbService } from '../../db/db.service';
 import { AdminAuditService } from '../admin-audit/admin-audit.service';
@@ -8,7 +14,7 @@ import { assertAdmin, type AdminActor } from '../admin-auth/admin-actor';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
 import { AdminPlansRepository, type PlanRecord, type PriceHistoryRow } from './admin-plans.repository';
-import { parseAdminPriceUpdate } from './admin-support.dto';
+import { DISABLE_TEST_PLAN_CONFIRM, parseAdminPlanUpdate } from './admin-support.dto';
 
 /** Тариф в панели: цена, период и признаки. */
 export interface AdminPlan {
@@ -113,7 +119,11 @@ export class AdminPlansService {
   async updatePrice(actor: AdminActor, code: string, body: unknown): Promise<AdminPriceUpdateResult> {
     this.ensureAdmin(actor, 'plan.price_change');
 
-    if (isFounderPlanCode(code)) {
+    const input = parseAdminPlanUpdate(body);
+
+    // Цена основателей зафиксирована обещанием, а `test_only` — режим тарифа, и
+    // запрещать его незачем: основательский тариф в проде и так не тестовый.
+    if (input.priceStars !== null && isFounderPlanCode(code)) {
       this.logger.warn('admin_plan_locked', { code, reason: 'founder_plan' });
       throw forbidden(
         reasonOptions(
@@ -123,34 +133,111 @@ export class AdminPlansService {
       );
     }
 
-    const input = parseAdminPriceUpdate(body);
+    // Текущее состояние нужно до проверки подтверждения: снятие флага с тарифа,
+    // у которого он и так снят, — не «опасная операция», а пустая. Без этого
+    // чтения повторный запрос панели требовал бы подтверждения на ровном месте.
+    const current = await this.repo.get(code);
+
+    if (current === null) {
+      throw notFound(reasonOptions('plan_not_found', 'Такого тарифа нет'));
+    }
+
+    if (
+      input.testOnly === false &&
+      current.test_only &&
+      input.confirm !== DISABLE_TEST_PLAN_CONFIRM
+    ) {
+      // Второй шаг: снять «тестовый» — значит выставить тариф в продажу по его
+      // текущей цене. Панель показывает диалог и присылает строку подтверждения;
+      // без неё — `422`, и это защита от опечатки в один символ.
+      throw validationFailed({
+        message: `Чтобы снять test_only, пришли confirm: "${DISABLE_TEST_PLAN_CONFIRM}"`,
+        details: {
+          reason: 'confirmation_required',
+          field_errors: [
+            {
+              field: 'confirm',
+              message: `Обязателен при test_only: false — "${DISABLE_TEST_PLAN_CONFIRM}"`,
+            },
+          ],
+        },
+      });
+    }
 
     const outcome = await this.db.withTransaction(async (client) => {
-      const result = await this.repo.updatePrice(client, {
-        code,
-        priceStars: input.priceStars,
-        comment: input.comment,
-        baseVersion: input.baseVersion,
-        actorTgId: actor.tgId,
-        actorName: actor.name,
-      });
+      let record: PlanRecord | null = null;
+      let previousStars: number | null = null;
+      let effectiveFrom: Date | null = null;
+      let previousTestOnly: boolean | null = null;
 
-      if (result === null || result === 'version_mismatch') {
-        return result;
+      if (input.priceStars !== null) {
+        const result = await this.repo.updatePrice(client, {
+          code,
+          priceStars: input.priceStars,
+          comment: input.comment,
+          baseVersion: input.baseVersion,
+          actorTgId: actor.tgId,
+          actorName: actor.name,
+        });
+
+        if (result === null || result === 'version_mismatch') {
+          return result;
+        }
+
+        record = result.plan;
+        previousStars = result.previousStars;
+        effectiveFrom = result.effectiveFrom;
+
+        await this.audit.write(client, actor, {
+          action: 'plan.price_change',
+          entity: 'plan',
+          entityId: result.plan.code,
+          // Только изменённые поля: ни `grants`, ни `subscription_plan` в журнал
+          // не попадают — их эта ручка не трогает.
+          before: { price_stars: result.previousStars, version: input.baseVersion },
+          after: { price_stars: result.plan.stars, version: result.plan.version },
+          reason: input.comment,
+        });
       }
 
-      await this.audit.write(client, actor, {
-        action: 'plan.price_change',
-        entity: 'plan',
-        entityId: result.plan.code,
-        // Только изменённые поля: ни `grants`, ни `subscription_plan` в журнал
-        // не попадают — их эта ручка не трогает.
-        before: { price_stars: result.previousStars, version: input.baseVersion },
-        after: { price_stars: result.plan.stars, version: result.plan.version },
-        reason: input.comment,
-      });
+      if (input.testOnly !== null) {
+        const flag = await this.repo.updateTestOnly(client, {
+          code,
+          testOnly: input.testOnly,
+          // Если цену уже поменяли в этой же транзакции, сверяемся с новой
+          // версией: панель прислала ту, которую видела, а мы только что подняли
+          // её сами. Иначе «цена и флаг одной ручкой» всегда получало бы `409` на
+          // собственном же изменении.
+          baseVersion: record?.version ?? input.baseVersion,
+        });
 
-      return result;
+        if (flag === null || flag === 'version_mismatch') {
+          return flag;
+        }
+
+        // `flag.plan` — строка после правки флага (и после правки цены, если она
+        // была в этой же транзакции): ответ панели должен показывать итог, а не
+        // состояние до второй правки.
+        record = flag.plan;
+        previousTestOnly = flag.previous;
+
+        if (flag.previous !== input.testOnly) {
+          await this.audit.write(client, actor, {
+            action: 'plan.test_only_change',
+            entity: 'plan',
+            entityId: flag.plan.code,
+            before: { test_only: flag.previous },
+            after: { test_only: flag.plan.test_only },
+            reason: input.comment,
+          });
+        }
+      }
+
+      if (record === null) {
+        return null;
+      }
+
+      return { plan: record, previousStars, previousTestOnly, effectiveFrom };
     });
 
     if (outcome === null) {
@@ -176,18 +263,23 @@ export class AdminPlansService {
       });
     }
 
-    this.logger.info('admin_plan_price_changed', {
+    this.logger.info('admin_plan_changed', {
       code,
       price_stars: outcome.plan.stars,
       previous_price_stars: outcome.previousStars,
+      test_only: outcome.plan.test_only,
+      previous_test_only: outcome.previousTestOnly,
       version: outcome.plan.version,
     });
 
     return {
       plan: this.toPlan(outcome.plan),
       // Только новые покупки: снимок цены уже выставленных счетов не меняется,
-      // поэтому моментом действия цены служит момент изменения.
-      effective_from: outcome.effectiveFrom.toISOString(),
+      // поэтому моментом действия цены служит момент изменения. Если менялся
+      // только `test_only`, цены не было — отдаём `updated_at` плана: это
+      // честное «когда состояние стало таким», а не выдуманное «с этой минуты
+      // действует новая цена».
+      effective_from: (outcome.effectiveFrom ?? outcome.plan.updated_at).toISOString(),
     };
   }
 

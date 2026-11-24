@@ -435,6 +435,47 @@ const envSchema = z.object({
     (value) => (value === '' ? undefined : value),
     z.string().min(1).optional(),
   ),
+
+  /**
+   * Настройки выгрузки для `scripts/db-dump.sh` (итерация 43).
+   *
+   * Скрипт читал их из окружения и раньше — здесь они появляются в схеме,
+   * потому что теперь их читает **и API**: `POST /admin/backup/run` обязан
+   * сказать «не настроено» (`503`), а не «сделалось», если выгрузки нет.
+   * Секретов тут нет: у S3 креденшелы живут в `~/.aws`/роли, у `scp` — в
+   * `~/.ssh`, а в переменных только адреса и каталоги.
+   */
+  /**
+   * Сколько **неудачных** активаций кода в час допускается на человека (1.6.17).
+   *
+   * 10 — «ошибся пару раз и ввёл правильно» проходит, а перебор — нет. Счётчик
+   * снимается успешной активацией (см. `code-activation-throttle.service.ts`).
+   */
+  CODE_ACTIVATION_MAX_FAILURES: z.coerce.number().int().min(1).max(100).default(10),
+
+  BACKUP_DIR: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  BACKUP_S3_URL: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  BACKUP_REMOTE: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  /**
+   * Путь к скрипту дампа. По умолчанию — `scripts/db-dump.sh` монорепо.
+   *
+   * Нужен для тестов (и для нестандартной раскладки в проде): тест подставляет
+   * настоящий скрипт с поддельными `pg_dump`/`aws` в `PATH` и проверяет порядок
+   * «файл → выгрузка → маркер» на живом `db-dump.sh`, а не на его копии.
+   */
+  BACKUP_SCRIPT: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   FILE_SIGNING_SECRET: z.preprocess(
     (value) => (value === '' ? undefined : value),
     z.string().min(16).optional(),

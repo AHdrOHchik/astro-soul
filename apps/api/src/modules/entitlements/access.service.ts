@@ -184,6 +184,29 @@ export class AccessService {
   }
 
   /**
+   * Списать одноразовое право на разбор (1.6.17).
+   *
+   * Отдельный метод, а не `hasAccess('report', {consume: true})`, потому что
+   * расход теперь происходит **на `ready`**, а не на заказе (см.
+   * `ReportsService`): проверка доступа к моменту генерации уже прошла, и
+   * списывать право должен тот, кто довёл разбор до текста. Иначе провал
+   * генерации сжигал подаренное право — а обещание было «право на разбор», не
+   * «право на попытку».
+   *
+   * `chartId` нужен, чтобы материализовать `entitlements` строку: по ней потом
+   * работает проверка PDF и `is_paid` (та же логика, что была у `consume`).
+   */
+  async consumeSingleReport(userId: string, chartId: string | undefined): Promise<boolean> {
+    const rights = await this.entitlements.getGrantEntitlements(userId);
+
+    if (rights.singleReports === 0) {
+      return false;
+    }
+
+    return this.consume(userId, 'single_report', chartId);
+  }
+
+  /**
    * Совместимость: подписка/право «всё включено» (одна в 30 дней) **или**
    * разовый кредит, купленный или подаренный.
    *

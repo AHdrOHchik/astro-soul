@@ -43,6 +43,9 @@ export interface TestContextOptions {
     | 'getMe'
     | 'refundStarPayment'
     | 'editUserStarSubscription'
+    // 1.6.17: переустановка вебхука из панели и её проверка.
+    | 'getWebhookInfo'
+    | 'setWebhook'
   >;
   /** Подмена провайдера LLM: в тестах не тратим деньги и не ходим в сеть. */
   readonly llm?: LlmProvider;

@@ -58,8 +58,26 @@ describe('selectors', () => {
 
   it('на Обзор идут только fired; `since` не теряется', () => {
     const response = alerts([
-      { id: 'llm_spend', level: 'warning', value: 1, threshold: 500, since: null, fired: false },
-      { id: 'backup_stale', level: 'warning', value: 92, threshold: 36, since: '', fired: true },
+      // `acked_until` — новое поле контракта 1.6.17: алерт можно заглушить до
+      // срока. На «Обзор» по-прежнему идут только `fired`.
+      {
+        id: 'llm_spend',
+        level: 'warning',
+        value: 1,
+        threshold: 500,
+        since: null,
+        fired: false,
+        acked_until: null,
+      },
+      {
+        id: 'backup_stale',
+        level: 'warning',
+        value: 92,
+        threshold: 36,
+        since: '',
+        fired: true,
+        acked_until: null,
+      },
     ]);
     expect(firedAlerts(response).map((item) => item.id)).toEqual(['backup_stale']);
   });

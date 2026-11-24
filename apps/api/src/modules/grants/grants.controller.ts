@@ -1,12 +1,14 @@
 import { Body, Controller, Get, HttpCode, Inject, Post, Query } from '@nestjs/common';
 import type { Me } from '@astro-soul/shared';
-import { invalidFields } from '../../common/api-error';
+import { ApiError, invalidFields, rateLimited } from '../../common/api-error';
+import { JsonLogger } from '../../common/logger';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { VerifiedInitData } from '../auth/init-data';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { toEntitlementsDto } from '../entitlements/entitlements.dto';
 import { UsersRepository } from '../users/users.repository';
 import { AccessCodesService } from './access-codes.service';
+import { CodeActivationThrottle } from './code-activation-throttle.service';
 import { FoundersService } from './founders.service';
 import { ReferralsService } from './referrals.service';
 
@@ -50,6 +52,8 @@ export class MeGrantsController {
     @Inject(ReferralsService) private readonly referrals: ReferralsService,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
     @Inject(UsersRepository) private readonly users: UsersRepository,
+    @Inject(CodeActivationThrottle) private readonly throttle: CodeActivationThrottle,
+    @Inject(JsonLogger) private readonly logger: JsonLogger,
   ) {}
 
   /**
@@ -59,6 +63,11 @@ export class MeGrantsController {
    * `409 already_activated`, `410 code_expired`, `422` (формат), `401` (нет
    * initData). Ответ — полный блок прав, чтобы клиенту не нужен был второй
    * запрос и он не показывал «активировано» без подтверждения сервера.
+   *
+   * Лимит (1.6.17): 10 **неудачных** попыток в час на человека →
+   * `429 code_activation_throttled` с `retry_after_seconds`. Успешная активация
+   * снимает счётчик, поэтому «ошибся дважды, вспомнил код, ввёл» проходит с
+   * третьей попытки — это и проверяет тест.
    */
   @Post('activate-code')
   @HttpCode(200)
@@ -71,7 +80,45 @@ export class MeGrantsController {
       languageCode: auth.user.language_code,
     });
 
-    await this.codes.activate(userId, readCode(body));
+    // Проверка стоит до похода в базу: заблокированный перебор не должен стоить
+    // нам ни запроса, ни поиска кода.
+    const retryAfter = this.throttle.retryAfterSeconds(userId);
+
+    if (retryAfter !== null) {
+      this.logger.warn('code_activation_throttled', {
+        user_id: userId,
+        retry_after_seconds: retryAfter,
+        note: 'больше лимита неудачных активаций за час',
+      });
+
+      throw rateLimited({
+        reason: 'code_activation_throttled',
+        message: `Слишком много попыток. Попробуй снова через ${Math.ceil(retryAfter / 60)} мин`,
+        details: {
+          reason: 'code_activation_throttled',
+          retry_after_seconds: retryAfter,
+          window_seconds: 3600,
+        },
+      });
+    }
+
+    const code = readCode(body);
+
+    try {
+      await this.codes.activate(userId, code);
+    } catch (error) {
+      // Считаем именно неудачи активации (нет кода, исчерпан, просрочен, уже
+      // активирован), а не «кривое тело»: 422 на пустую строку — это опечатка
+      // ввода, и она не должна съедать час попыток. Поэтому формат (и любой
+      // другой `VALIDATION_FAILED`) из счётчика исключён — иначе двенадцать
+      // опечаток подряд закрыли бы человеку активацию на час.
+      if (error instanceof ApiError && error.code !== 'VALIDATION_FAILED') {
+        this.throttle.registerFailure(userId);
+      }
+      throw error;
+    }
+
+    this.throttle.registerSuccess(userId);
 
     return { entitlements: await this.entitlementsDto(userId) };
   }
