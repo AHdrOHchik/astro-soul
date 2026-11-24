@@ -129,11 +129,14 @@ jobs:
             };
             const source = read('ci-logs/check.log') + read('ci-logs/api-tests.log') +
               read('ci-logs/shared-tests.log') + read('ci-logs/ui-tests.log');
+            // Строки в логе префиксованы именем пакета (`apps/api test:  FAIL …`),
+            // поэтому ищем подстроку, а не начало строки.
             const lines = source
               .replace(/\u001b\[[0-9;]*m/g, '')
               .split('\n')
-              .filter((line) => /^( FAIL|AssertionError|Error:|TypeError:|\s+×)/.test(line) ||
-                /Tests\s+\d+ failed/.test(line));
+              .filter((line) =>
+                /FAIL |AssertionError|TypeError:|Tests\s+\d+ failed/.test(line) ||
+                /^\s*×/.test(line));
             const marker = '<!-- ci-failure-report -->';
             const body = [
               marker,
