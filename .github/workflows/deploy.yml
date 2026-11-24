@@ -79,48 +79,62 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          mkdir -p artifact
+          rm -rf artifact && mkdir -p artifact
 
           mapfile -t runs < <(
             gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/runs?per_page=50" \
               --jq '.workflow_runs[]
                      | select(.head_sha | startswith("'"$TAG"'"))
-                     | [.id, .status, (.conclusion // ""), .html_url] | @tsv'
+                     | [.id, .status, (.conclusion // "")] | @tsv'
           )
 
           if [[ ${#runs[@]} -eq 0 ]]; then
             echo "ОШИБКА: не найден запуск release с коммитом '$TAG'" >&2
             exit 1
           fi
-
           echo "Запуски release с коммитом ${TAG}:"
           printf '  %s\n' "${runs[@]}"
 
           ok_id=""
           for row in "${runs[@]}"; do
-            IFS=$'\t' read -r id status conclusion _ <<< "$row"
+            IFS=$'\t' read -r id status conclusion <<< "$row"
             if [[ "$status" == "completed" && "$conclusion" == "success" ]]; then
               ok_id="$id"
               break
             fi
           done
-
           if [[ -z "$ok_id" ]]; then
-            echo "ОШИБКА: release с тегом '$TAG' не завершился успешно (нужно completed/success). Деплоить нельзя." >&2
+            echo "ОШИБКА: release с тегом '$TAG' не завершился успешно" >&2
             exit 1
           fi
 
-          rm -rf artifact/admin-dist
-          gh run download "$ok_id" -n admin-dist --dir artifact
+          # Скачиваем во временную папку и ищем маркер рекурсивно:
+          # gh может положить содержимое как в <dir>/<artifact>, так и прямо в <dir>.
+          tmp="$(mktemp -d)"
+          gh run download "$ok_id" -n admin-dist --dir "$tmp"
 
-          [[ -f artifact/admin-dist/RELEASE_TAG ]] || {
-            echo "ОШИБКА: в артефакте run #$ok_id нет RELEASE_TAG" >&2; exit 1
-          }
-          got="$(tr -d '[:space:]' < artifact/admin-dist/RELEASE_TAG)"
-          [[ "$got" == "$TAG" ]] || {
-            echo "ОШИБКА: в артефакте RELEASE_TAG='$got', ожидался '$TAG'" >&2; exit 1
-          }
-          test -s artifact/admin-dist/index.html
+          tag_file="$(find "$tmp" -type f -name RELEASE_TAG -print -quit)"
+          if [[ -z "$tag_file" ]]; then
+            echo "ОШИБКА: в артефакте run #$ok_id нет RELEASE_TAG. Содержимое:" >&2
+            find "$tmp" -maxdepth 3 | sed 's/^/  /' >&2
+            exit 1
+          fi
+
+          got="$(tr -d '[:space:]' < "$tag_file")"
+          if [[ "$got" != "$TAG" ]]; then
+            echo "ОШИБКА: RELEASE_TAG='$got', ожидался '$TAG'" >&2
+            exit 1
+          fi
+
+          web_root="$(dirname "$tag_file")"
+          if [[ ! -s "$web_root/index.html" ]]; then
+            echo "ОШИБКА: рядом с RELEASE_TAG нет index.html ($web_root)" >&2
+            exit 1
+          fi
+
+          # Нормализуем к artifact/admin-dist — этого ждёт шаг rsync.
+          mkdir -p artifact/admin-dist
+          cp -a "$web_root"/. artifact/admin-dist/
           echo "admin-dist: release run #$ok_id, тег $TAG"
 
       # Скрипт версионируется в репозитории и передаётся по stdin. Первая
