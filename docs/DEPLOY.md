@@ -114,6 +114,18 @@ curl -fsS http://127.0.0.1:8081/api/v1/health   # проверить тело: s
 - `health=failed`, «Откат: да» — деплой откатился и завершился ошибкой;
   смотри лог миграций в `/srv/astro-soul/var/log/deploy/` и
   `health после отката` в summary.
+- «не удалось скачать образ … (сеть/registry)» или в логе
+  `failed to copy … timeout awaiting response headers` — сбой сети при
+  скачивании из Docker Hub/GHCR. Deploy заранее качает недостающие образы
+  (`postgres`, `redis`, `api`, `web`) с тремя попытками и останавливается до
+  миграций и `up`; просто повтори deploy, а при повторах проверь сеть сервера
+  или настрой зеркало registry. `astro` deploy не качает — он должен быть на
+  сервере с bootstrap.
+- WARNING `Your credentials are stored unencrypted in …/config.json` —
+  безвредно: токен GHCR на время deploy кладётся во временный каталог
+  и удаляется по завершении. Если deploy уже запускался старой версией —
+  удали `~/.docker/config.json` у SSH-пользователя: там мог остаться токен
+  от прежних запусков.
 
 ## Известные зазоры
 

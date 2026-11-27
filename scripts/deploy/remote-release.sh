@@ -12,7 +12,14 @@ DEPLOY_ROOT="${DEPLOY_ROOT:-/srv/astro-soul}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8081/api/v1/health}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 ROLLBACK_TIMEOUT="${ROLLBACK_TIMEOUT:-30}"
+PULL_ATTEMPTS="${PULL_ATTEMPTS:-3}"
+PULL_RETRY_DELAY="${PULL_RETRY_DELAY:-10}"
 HEALTH_BODY="$(mktemp)"
+# Токен GHCR живёт только на время deploy: docker login пишет его в config.json
+# временного каталога, cleanup его удаляет. WARNING docker про «stored
+# unencrypted» относится к этому временному файлу и безвреден.
+DOCKER_CONFIG_DIR="$(mktemp -d)"
+export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
 
 health="unknown"
 rollback="no"
@@ -33,6 +40,7 @@ report() {
 
 cleanup() {
   docker logout ghcr.io >/dev/null 2>&1 || true
+  rm -rf "$DOCKER_CONFIG_DIR"
   rm -f "$HEALTH_BODY"
   report
 }
@@ -115,19 +123,47 @@ printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdi
 echo "GHCR: логин выполнен ($GHCR_USER)"
 
 # Запоминаем image id до обновления: после up старый образ перестанет быть
-# текущим, но останется на месте и будет использован для отката.
+# текущим, но останется на месте и будет использован для отката. {{.Image}} у
+# контейнера — id образа; {{.Id}} дал бы id контейнера, его docker tag не примет.
 prev_api_id=""
 prev_web_id=""
 api_cid="$("${COMPOSE[@]}" ps -q api || true)"
 web_cid="$("${COMPOSE[@]}" ps -q web || true)"
-[[ -z "$api_cid" ]] || prev_api_id="$(docker inspect -f '{{.Id}}' "$api_cid")"
-[[ -z "$web_cid" ]] || prev_web_id="$(docker inspect -f '{{.Id}}' "$web_cid")"
+[[ -z "$api_cid" ]] || prev_api_id="$(docker inspect -f '{{.Image}}' "$api_cid")"
+[[ -z "$web_cid" ]] || prev_web_id="$(docker inspect -f '{{.Image}}' "$web_cid")"
 echo "Предыдущие image id: api=${prev_api_id:-нет}, web=${prev_web_id:-нет}"
 
-# astro собирается один раз на bootstrap и в GHCR не публикуется, поэтому
-# тянем только сервисы из GHCR: общий `compose pull` полез бы astro-soul/astro
-# из Docker Hub и упал бы.
-"${COMPOSE[@]}" pull api web
+# Образы скачиваем заранее и с повторами: compose run/up сами лезут в registry
+# посреди деплоя (у migrate postgres приходит через depends_on), а Docker Hub
+# и его CDN иногда отвечают таймаутом. Тянем только недостающее; миграции при
+# этом НЕ повторяются — их перезапуск вслепую небезопасен.
+pull_with_retry() {
+  local img="$1" attempt
+  for ((attempt = 1; attempt <= PULL_ATTEMPTS; attempt++)); do
+    if docker pull "$img"; then
+      return 0
+    fi
+    if (( attempt < PULL_ATTEMPTS )); then
+      echo "ВНИМАНИЕ: не удалось скачать $img (попытка $attempt из $PULL_ATTEMPTS), повтор через ${PULL_RETRY_DELAY}с" >&2
+      sleep "$PULL_RETRY_DELAY"
+    fi
+  done
+  return 1
+}
+
+for img in "${compose_images[@]}"; do
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    continue
+  fi
+  case "$img" in
+    astro-soul/astro|astro-soul/astro:*)
+      die "образ $img не найден на сервере — astro не публикуется в GHCR и собирается только на bootstrap; доставь образ по docs/DEPLOY.md и повтори deploy (CI не собирает образы на сервере)"
+      ;;
+  esac
+  echo "Скачиваю образ: $img"
+  pull_with_retry "$img" || \
+    die "не удалось скачать $img после $PULL_ATTEMPTS попыток (сеть/registry) — миграции и up не запускались, откат не требуется; проверь сеть сервера или зеркало registry и повтори deploy"
+done
 
 mkdir -p var/log/deploy
 migrate_log="var/log/deploy/migrate-${TAG}-$(date -u +%Y%m%dT%H%M%SZ).log"
