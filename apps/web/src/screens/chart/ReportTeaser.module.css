@@ -67,3 +67,9 @@
   margin-left: var(--space-2);
   color: var(--color-text);
 }
+
+/* Why the report is open ("included until", "a free report left"): said under the button. */
+.note {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}

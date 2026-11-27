@@ -8,6 +8,7 @@ export {
   fieldErrorsOf,
   isAbortError,
   isApiError,
+  reasonOf,
   rejectionTextOf,
   resetAtOf,
   serverTextOf,
@@ -26,6 +27,11 @@ export type SubscriptionCancelResult = components['schemas']['SubscriptionCancel
 export type NotificationSettings = components['schemas']['Notifications'];
 /** What the user may use right now. Drawn by the app, decided by the server alone. */
 export type Entitlements = components['schemas']['Entitlements'];
+/**
+ * The server's answer to «may this user have a full report right now» (contract 1.6.19).
+ * The app never builds this answer itself: it reads `Me.report_access` and nothing else.
+ */
+export type ReportAccess = NonNullable<Me['report_access']>;
 export type Quota = components['schemas']['Quota'];
 export type GeoPlace = components['schemas']['GeoPlace'];
 export type Chart = components['schemas']['Chart'];
@@ -418,12 +424,39 @@ function toEntitlements(value: unknown): Entitlements {
   };
 }
 
+/** The sources the contract names, in its order. A source this build does not know opens nothing by itself. */
+const REPORT_ACCESS_SOURCES = ['purchased', 'all_access', 'single_report'] as const;
+
+/**
+ * `Me.report_access` (contract 1.6.19) as the screens read it, or `undefined` when the server
+ * did not send a usable one.
+ *
+ * Absent is **not** «no access»: a server older than 1.6.19 knows no such field, and the app
+ * then says it cannot tell instead of guessing from entitlements. A server that answers
+ * `available: true` with a source this build has never heard of still opens the report — the
+ * source is only the wording — while anything malformed is treated as no field at all.
+ */
+function toReportAccess(value: unknown): Me['report_access'] {
+  if (!isRecord(value) || typeof value.available !== 'boolean') return undefined;
+  const source = REPORT_ACCESS_SOURCES.find((known) => known === value.source) ?? null;
+  return {
+    available: value.available,
+    source,
+    expires_at: typeof value.expires_at === 'string' && value.expires_at !== '' ? value.expires_at : null,
+    chart_id: typeof value.chart_id === 'string' && value.chart_id !== '' ? value.chart_id : null,
+  };
+}
+
 function toMe(value: unknown): Me {
   if (!isRecord(value) || typeof value.user_id !== 'string') throw invalid();
   const subscription = isRecord(value.subscription) ? value.subscription : {};
   const limits = toLimits(value.limits);
+  // The raw field never reaches the screens: either the shape this build knows, or nothing.
+  const { report_access: rawReportAccess, ...rest } = value;
+  const reportAccess = toReportAccess(rawReportAccess);
   return {
-    ...(value as Me),
+    ...(rest as Me),
+    ...(reportAccess === undefined ? {} : { report_access: reportAccess }),
     ...(limits === undefined ? {} : { limits }),
     has_chart: value.has_chart === true,
     chart_id: typeof value.chart_id === 'string' ? value.chart_id : null,

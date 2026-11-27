@@ -19,6 +19,7 @@ import {
   meSubscribed,
   meWithChart,
   rejection,
+  reportAlreadyOwned,
   reportInvoice,
   setupUser,
 } from '../../test/fixtures';
@@ -507,6 +508,50 @@ describe('PaywallScreen', () => {
     await user.click(await payButton());
     expect(await screen.findByRole('button', { name: new RegExp('req-bare') })).toBeInTheDocument();
     expect(screen.getByRole('alert').textContent).toContain(copy.invoiceRejected);
+  });
+
+  it('a report the server says is already the user`s (`422 report_already_owned`): no error, the access is asked again, the report opens', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValueOnce(reportAlreadyOwned());
+    const onChartGone = vi.fn();
+    const { analytics, onReportPaid, refreshMe, telegram, user } = setup({ api, afterPayment: mePaid, props: { onChartGone } });
+    analytics.clear();
+
+    await user.click(await payButton());
+
+    await waitFor(() => { expect(onReportPaid).toHaveBeenCalledTimes(1); });
+    expect(refreshMe).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Разбор для этой карты уже куплен/)).not.toBeInTheDocument();
+    expect(telegram.openInvoice).not.toHaveBeenCalled();
+    // The refusal carries `field_errors[0].field = chart_id`, and it is still not «the chart is gone».
+    expect(onChartGone).not.toHaveBeenCalled();
+    expect(analytics.names()).not.toContain('error_shown');
+  });
+
+  it('another `422` is still a failure with the server`s words: only the machine reason opens the report', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValueOnce(apiError('VALIDATION_FAILED', { status: 422, serverMessage: 'Проверь выбранный тариф', details: { reason: 'invoice_request_invalid' } }));
+    const { onReportPaid, user } = setup({ api });
+
+    await user.click(await payButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Проверь выбранный тариф');
+    expect(onReportPaid).not.toHaveBeenCalled();
+  });
+
+  it('a `402 report_not_paid` for the report is «нужно купить», not a failure: the catalogue stays and nothing is said', async () => {
+    const api = fakeApi();
+    api.createInvoice.mockRejectedValueOnce(apiError('PAYMENT_REQUIRED', { status: 402, details: { reason: 'report_not_paid' } }));
+    const { analytics, user } = setup({ api });
+    analytics.clear();
+
+    await user.click(await payButton());
+
+    expect(await payButton()).toBeEnabled();
+    expect(await option(offer('one_149').title)).toBeChecked();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(analytics.names()).not.toContain('error_shown');
   });
 
   it('blocks checkout on invoice/catalogue mismatch, reports it safely, and requires a fresh catalogue', async () => {

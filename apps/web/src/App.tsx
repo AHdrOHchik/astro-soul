@@ -8,7 +8,8 @@ import { useRequest } from './hooks/useRequest';
 import { CONSENT_VERSION, ru } from './i18n/ru';
 import { EMPTY_DRAFT, toChartRequest, type BirthDraft, type BirthStep } from './lib/birth';
 import type { IdempotencyKeys } from './lib/idempotency';
-import { grants, hasReportFor } from './lib/plans';
+import { grants } from './lib/plans';
+import { useReportAccess } from './lib/reportAccess';
 import type { TermsReload } from './lib/termsReload';
 import { BottomTabs, type MainTab } from './components/BottomTabs';
 import { DailyForecastScreen } from './screens/DailyForecastScreen';
@@ -352,6 +353,8 @@ function Screens({
   const clock = useCallback(() => pinnedToday ?? new Date(), [pinnedToday]);
   // What the server last said about the user. Access is read from here and from nowhere else.
   const [me, setMe] = useState(meAtStart);
+  // The server's answer to «may this user have a report now»: the one place the interface asks (contract 1.6.19).
+  const reportAccess = useReportAccess(me);
   // The report the app knows of: the one `Me` names, then whichever the report screen meets.
   const [reportId, setReportId] = useState<string | null>(meAtStart.latest_report_id ?? null);
   // And the server's last word about it, so the chart screen can show it at once and ask again behind it.
@@ -678,9 +681,10 @@ function Screens({
         onOpenSettings={openSettings}
         subscriptionPromotion={route === 'current' && canSubscribe ? { onOpen: openSubscriptions } : undefined}
         report={{
-          // Paid for or not is asked about the chart on screen, never about the user: `cached` is that chart
-          // from the moment the server hands it over (`onLoaded` comes before the screen draws it).
-          fullReport: cached !== null && hasReportFor(me, cached.chart.chart_id),
+          // Open or not is the server's answer (`Me.report_access`), shown for the chart on screen: the
+          // app compares the chart the server names with this one and decides nothing else (round46).
+          access: reportAccess,
+          onRefreshAccess: refreshMeForChart,
           reportId,
           known: knownReport,
           onKnown: setKnownReport,
@@ -715,6 +719,9 @@ function Screens({
   const reportChart = openChart ?? (typeof me.chart_id === 'string' ? { chartId: me.chart_id } : null);
   // The chart the paywall sells the report for; null when the report is not on offer there.
   const paywallChartId = reportChart?.chartId ?? null;
+  // The report is on sale only where the screen came with that intent: the teaser shows «Купить» only when the
+  // server says there is no access (`status: 'none'`), and the report screen says so after a `402`. So the
+  // price list never offers a report the user already has (round46).
   const offersReport = paywall.offersReport && paywallChartId !== null;
   // The chart of the payment the app is waiting for; null when there is none, or it is for a subscription.
   const awaitedChartId = awaitedPurchase?.chartId ?? null;
@@ -855,11 +862,18 @@ function Screens({
           track={track}
           back={back}
           onPaymentRequired={(explain) => {
+            // The server refused the order, so what `Me` said before is not to be trusted: asked again, and the
+            // paywall sells from the fresh answer (it may turn out that the report is open and nothing is for sale).
+            void refreshMeForChart().catch(() => undefined);
             setPaywall({ preferredKind: 'one_off', offersReport: true, reportRequired: explain, compatibility: false });
             replace('paywall');
           }}
           onReportId={setReportId}
-          onReport={setKnownReport}
+          onReport={(report) => {
+            setKnownReport(report);
+            // A finished report has spent the right it was opened by (a purchase, a free report): `Me` says what is left.
+            if (report.status === 'ready') void refreshMeForChart().catch(() => undefined);
+          }}
           onReportGone={forgetReport}
           onChartGone={handleChartGone}
           isChartThere={isChartThere}

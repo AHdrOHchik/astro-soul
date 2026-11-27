@@ -21,6 +21,8 @@ import {
   REPORT_ID,
   sections,
 } from '../../test/fixtures';
+import { formatDayMonthOf } from '../../i18n/format';
+import type { ReportAccessState } from '../../lib/reportAccess';
 import { ChartScreen, type ChartReportProps } from './ChartScreen';
 
 const copy = ru.chart;
@@ -46,8 +48,17 @@ interface SetupOptions {
   report?: Partial<ChartReportProps>;
 }
 
-/** The full report as the chart screen of a user who has bought nothing sees it. */
-const NO_REPORT: ChartReportProps = { fullReport: false, reportId: null, onBuy: vi.fn(), onOrder: vi.fn(), onOpen: vi.fn() };
+/** The full report as the chart screen of a user the server says has no access to it sees it. */
+const NO_REPORT: ChartReportProps = {
+  access: { status: 'none' },
+  reportId: null,
+  onBuy: vi.fn(),
+  onOrder: vi.fn(),
+  onOpen: vi.fn(),
+};
+
+/** The same for a user whose report is open: by a purchase of this chart, or by a right for any chart. */
+const OPEN_REPORT: ReportAccessState = { status: 'open', source: 'purchased', expiresAt: null, chartId: chart.chart_id };
 
 function setup({ result, current, inlineShare = true, linkShare = true, openLinkShare = true, api = fakeApi(), listens = true, strict = false, report }: SetupOptions = {}) {
   if (result) api.createChart.mockImplementation(() => Promise.resolve(result));
@@ -286,7 +297,7 @@ describe('ChartScreen', () => {
     it('paid and known: says where the report stands and leads to it', async () => {
       const api = fakeApi();
       api.getReport.mockResolvedValue({ ...reportFixture, status: 'generating', progress: 40, sections });
-      const { report, user } = setup({ api, report: { fullReport: true, reportId: REPORT_ID, onOpen: vi.fn() } });
+      const { report, user } = setup({ api, report: { access: OPEN_REPORT, reportId: REPORT_ID, onOpen: vi.fn() } });
 
       const teaser = await teaserBlock();
       expect(await teaser.findByText(copy.reportStates.generating)).toBeInTheDocument();
@@ -343,12 +354,77 @@ describe('ChartScreen', () => {
     it('paid, with no report known: offers to get it, and a report about another chart does not count', async () => {
       const api = fakeApi();
       api.getReport.mockResolvedValue({ ...reportFixture, status: 'ready', chart_id: '00000000-0000-4000-8000-00000000beef' });
-      const { report, user } = setup({ api, report: { fullReport: true, reportId: REPORT_ID, onOrder: vi.fn() } });
+      const { report, user } = setup({ api, report: { access: OPEN_REPORT, reportId: REPORT_ID, onOrder: vi.fn() } });
 
       const teaser = await teaserBlock();
       await user.click(await teaser.findByRole('button', { name: copy.orderReport }));
       expect(report.onOrder).toHaveBeenCalledTimes(1);
       expect(teaser.queryByText(copy.reportStates.ready)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('the report the server says is open (contract 1.6.19, `Me.report_access`)', () => {
+    const UNTIL = '2026-12-12T12:00:00Z';
+    const teaserBlock = async () => within(await screen.findByRole('region', { name: copy.teaserTitle }));
+
+    it('open by «всё включено», no report yet: «Получить разбор» and the term, and no price is asked for at all', async () => {
+      const api = fakeApi();
+      const { report, user } = setup({
+        api,
+        report: {
+          access: { status: 'open', source: 'all_access', expiresAt: UNTIL, chartId: null },
+          reportId: null,
+          onOrder: vi.fn(),
+        },
+      });
+
+      const teaser = await teaserBlock();
+      expect(await teaser.findByRole('button', { name: copy.orderReport })).toBeInTheDocument();
+      expect(teaser.queryByRole('button', { name: TEASER_CTA_NAME })).not.toBeInTheDocument();
+      expect(teaser.getByText(copy.accessUntil(formatDayMonthOf(UNTIL)))).toBeInTheDocument();
+      expect(api.getPlans).not.toHaveBeenCalled();
+
+      await user.click(teaser.getByRole('button', { name: copy.orderReport }));
+      expect(report.onOrder).toHaveBeenCalledTimes(1);
+    });
+
+    it('open by a free report from a code: says so, and orders without a price', async () => {
+      const api = fakeApi();
+      const { report } = setup({
+        api,
+        report: { access: { status: 'open', source: 'single_report', expiresAt: null, chartId: null }, reportId: null, onOrder: vi.fn() },
+      });
+
+      const teaser = await teaserBlock();
+      expect(await teaser.findByRole('button', { name: copy.orderReport })).toBeInTheDocument();
+      expect(teaser.getByText(copy.accessSingle)).toBeInTheDocument();
+      expect(teaser.queryByText(copy.teaserLocked)).not.toBeInTheDocument();
+      expect(api.getPlans).not.toHaveBeenCalled();
+      expect(report.onOrder).not.toHaveBeenCalled();
+    });
+
+    it('no `report_access` in the answer (a server older than 1.6.19): says it cannot tell, offers a refresh, and shows no price', async () => {
+      const api = fakeApi();
+      const { report, user } = setup({ api, report: { access: { status: 'unknown' }, reportId: null, onRefreshAccess: vi.fn().mockResolvedValue(null) } });
+
+      const teaser = await teaserBlock();
+      expect(await teaser.findByRole('alert')).toHaveTextContent(copy.accessUnknown);
+      expect(teaser.queryByRole('button', { name: TEASER_CTA_NAME })).not.toBeInTheDocument();
+      expect(teaser.queryByRole('button', { name: copy.orderReport })).not.toBeInTheDocument();
+      expect(api.getPlans).not.toHaveBeenCalled();
+
+      await user.click(teaser.getByRole('button', { name: copy.refreshAccess }));
+      expect(report.onRefreshAccess).toHaveBeenCalledTimes(1);
+    });
+
+    it('no access: the price is the server`s, not a number in this build', async () => {
+      const api = fakeApi();
+      api.getPlans.mockResolvedValue(cataloguePlans.map((plan) => (plan.plan_code === 'one_149' ? { ...plan, stars: 220 } : plan)));
+      const { report, user } = setup({ api });
+
+      const cta = await (await teaserBlock()).findByRole('button', { name: new RegExp(`^${TEASER_CTA} 220`) });
+      await user.click(cta);
+      expect(report.onBuy).toHaveBeenCalledTimes(1);
     });
   });
 

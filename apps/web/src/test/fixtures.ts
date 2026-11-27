@@ -77,6 +77,14 @@ export const activatedPending: Me['entitlements'] = {
   source: 'partner',
 };
 
+/** The server's «no report access» (contract 1.6.19): the field is always in `Me` of a 1.6.19 server. */
+export const noReportAccess: NonNullable<Me['report_access']> = {
+  available: false,
+  source: null,
+  expires_at: null,
+  chart_id: null,
+};
+
 export const me: Me = {
   user_id: '00000000-0000-4000-8000-000000000001',
   display_name: null,
@@ -88,6 +96,7 @@ export const me: Me = {
   latest_report_id: null,
   subscription: { plan: 'none', is_active: false, expires_at: null, auto_renew: false },
   entitlements,
+  report_access: noReportAccess,
   quotas: [],
   onboarding_step: 'birth_date',
 };
@@ -157,7 +166,25 @@ export const chartWithoutTime: ChartResult = {
 export const meWithChart: Me = { ...me, is_new: false, has_profile: true, has_chart: true, chart_id: chart.chart_id, onboarding_step: 'done' };
 
 /** The same user with the full report bought: of the fixture chart, as the server names it. */
-export const mePaid: Me = { ...meWithChart, entitlements: { ...entitlements, full_report: true, full_report_chart_id: chart.chart_id } };
+export const mePaid: Me = {
+  ...meWithChart,
+  entitlements: { ...entitlements, full_report: true, full_report_chart_id: chart.chart_id },
+  report_access: { available: true, source: 'purchased', expires_at: null, chart_id: chart.chart_id },
+};
+
+/** The same user with the report opened by «всё включено» (a code): open for any chart, paid for none. */
+export const meAllAccess: Me = {
+  ...meWithChart,
+  entitlements: { ...activatedAllAccess },
+  report_access: { available: true, source: 'all_access', expires_at: '2026-12-12T12:00:00Z', chart_id: null },
+};
+
+/** The same user with one free report from a code: open for any chart, until it is used. */
+export const meFreeReport: Me = {
+  ...meWithChart,
+  entitlements: { ...entitlements, source: 'partner', single_reports: 1 },
+  report_access: { available: true, source: 'single_report', expires_at: null, chart_id: null },
+};
 
 /** The same user with a monthly subscription that renews. */
 export const meSubscribed: Me = {
@@ -309,6 +336,20 @@ export const askAnswer: AskAnswer = {
 
 export function apiError(code: ApiErrorCode, info: ConstructorParameters<typeof ApiError>[1] = {}): ApiError {
   return new ApiError(code, info);
+}
+
+/**
+ * `422 report_already_owned`: the server's answer to an invoice for a report the user already has
+ * (`apps/api/src/modules/billing/billing.service.ts`). Not a failure: the way to the report is the answer.
+ */
+export function reportAlreadyOwned(): ApiError {
+  const message = 'Разбор для этой карты уже куплен — открой его';
+  return apiError('VALIDATION_FAILED', {
+    status: 422,
+    serverMessage: message,
+    requestId: 'req-422',
+    details: { reason: 'report_already_owned', field_errors: [{ field: 'chart_id', message }] },
+  });
 }
 
 /** `422 VALIDATION_FAILED` as the API sends it: the fields in `details.field_errors`, the first text as the message. */

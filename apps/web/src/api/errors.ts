@@ -80,6 +80,16 @@ export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
 }
 
+/**
+ * `details.reason` of a `Problem`: the machine reason where one `code` covers several, e.g.
+ * `422 report_already_owned` (the report is already the user's) against every other `422`.
+ * A reason is a code, never a sentence: screens act on it and do not show it.
+ */
+export function reasonOf(error: unknown): string | null {
+  const reason = isApiError(error) ? error.details?.reason : undefined;
+  return typeof reason === 'string' && reason !== '' ? reason : null;
+}
+
 /** True for a request cancelled by the caller (unmount, newer search query). Not worth showing. */
 export function isAbortError(error: unknown): boolean {
   return isRecord(error) && error.name === 'AbortError';

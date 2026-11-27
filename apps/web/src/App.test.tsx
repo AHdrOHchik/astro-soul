@@ -24,10 +24,13 @@ import {
   kazan,
   me,
   mePaid,
+  meAllAccess,
   meSubscribed,
   meWithChart,
+  noReportAccess,
   rejection,
   report,
+  reportAlreadyOwned,
   reportInvoice,
   REPORT_ID,
   sections,
@@ -369,6 +372,25 @@ describe('App: the full report, the paywall and the settings', () => {
     expect(await screen.findByRole('radio', { name: new RegExp(`^${serverPlanTitle('one_149')} `) })).toBeChecked();
   });
 
+  it('an invoice for a report the server says is already the user`s (`422 report_already_owned`): the report opens, no error is said', async () => {
+    const { api, user } = returning((fake) => {
+      // The app starts with no access; the server, asked again after the refusal, says the report is there.
+      fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(mePaid);
+      fake.createInvoice.mockRejectedValue(reportAlreadyOwned());
+      fake.getReport.mockResolvedValue({ ...report, status: 'ready', progress: 100, sections });
+    });
+
+    await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}`) }));
+    const askedBefore = api.getMe.mock.calls.length;
+    await user.click(await screen.findByRole('button', { name: new RegExp(`^${ru.paywall.pay} `) }));
+
+    expect(await screen.findByRole('heading', { level: 1, name: ru.report.title })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Разбор для этой карты уже куплен/)).not.toBeInTheDocument();
+    // The access was asked again: the answer, not the app, decides what the screens show next.
+    expect(api.getMe.mock.calls.length).toBeGreaterThan(askedBefore);
+  });
+
   it('opens the report the server names in `Me` without waiting to be asked', async () => {
     const { api, user } = returning((fake) => {
       fake.getMe.mockResolvedValue({ ...mePaid, latest_report_id: REPORT_ID });
@@ -382,6 +404,19 @@ describe('App: the full report, the paywall and the settings', () => {
 
     expect(await screen.findByRole('region', { name: sections[0]?.title })).toBeInTheDocument();
     expect(api.orderReport).not.toHaveBeenCalled();
+  });
+
+  it('a report the server has finished asks the access again: a spent right becomes a purchase in the same session', async () => {
+    const { api, user } = returning((fake) => {
+      fake.getMe.mockResolvedValueOnce({ ...meWithChart, latest_report_id: REPORT_ID }).mockResolvedValue(mePaid);
+      fake.getReport.mockResolvedValue({ ...report, status: 'ready', progress: 100, sections });
+    });
+
+    expect(await screen.findByText(ru.chart.reportStates.ready)).toBeInTheDocument();
+    const asked = api.getMe.mock.calls.length;
+    await user.click(screen.getByRole('button', { name: ru.chart.openReport }));
+
+    await waitFor(() => { expect(api.getMe.mock.calls.length).toBeGreaterThan(asked); });
   });
 
   it('`Me` names a report the server no longer has (404): no error anywhere, the chart is what it is with no report, and the app forgets the id', async () => {
@@ -477,6 +512,31 @@ describe('App: the full report, the paywall and the settings', () => {
 
     expect(await screen.findByRole('heading', { name: ru.accessCode.successTitle })).toBeInTheDocument();
     expect(screen.getByText(ru.accessCode.success.allAccess(formatDayMonthOf(activatedAllAccess.all_access_until ?? '')))).toBeInTheDocument();
+    expect(api.activateCode).toHaveBeenCalledWith('K7M2P9X4');
+  });
+
+  it('a code that opens the report makes the chart offer «Получить разбор» without a reload', async () => {
+    const { api, telegram, user } = returning((fake) => {
+      fake.getMe.mockResolvedValueOnce(meWithChart).mockResolvedValue(meAllAccess);
+    });
+
+    expect(await screen.findByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}`) })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: ru.common.settings }));
+    await user.click(await screen.findByRole('button', { name: new RegExp(ru.accessCode.entry.title) }));
+    await user.type(screen.getByLabelText(ru.accessCode.field), 'K7M2P9X4');
+    await user.click(screen.getByRole('button', { name: ru.accessCode.submit }));
+    await user.click(await screen.findByRole('button', { name: ru.accessCode.done }));
+
+    // Back on the chart: the same screen, the server's new answer, and no reload.
+    const back = backHandler(telegram);
+    act(() => {
+      back?.();
+    });
+    expect(await screen.findByRole('button', { name: ru.chart.orderReport })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: new RegExp(`^${ru.chart.teaserCta}`) })).not.toBeInTheDocument();
+    // The code screen asked `Me` behind the confirmation; the chart shows that answer, not a reload.
+    expect(api.getMe.mock.calls.length).toBeGreaterThan(1);
     expect(api.activateCode).toHaveBeenCalledWith('K7M2P9X4');
   });
 
@@ -1473,7 +1533,7 @@ describe('App: round30 main tabs', () => {
   });
 });
 
-describe('App: the full report is paid for a chart, not for the user (`Entitlements.full_report_chart_id`)', () => {
+describe('App: the report is open for a chart, not for the user (`Me.report_access`)', () => {
   const CHART_A = chartResult.chart.chart_id;
   const CHART_B = '00000000-0000-4000-8000-0000000000b0';
   const chartA: ChartResult = { ...chartResult, is_restored: true };
@@ -1481,11 +1541,18 @@ describe('App: the full report is paid for a chart, not for the user (`Entitleme
   /** The report of chart A, ready: the one `Me` names as the user's latest. */
   const reportOfA = { ...report, chart_id: CHART_A, status: 'ready' as const, progress: 100, sections };
 
-  /** `Me` of a user whose current chart is `chartId`; what the server says of the report is `paidFor`. */
+  /**
+   * `Me` of a user whose current chart is `chartId`; the server says the report is `paidFor`.
+   * `report_access` is computed by the server for `Me.chart_id`, so `purchased` names that chart.
+   */
   const meOn = (chartId: string, paidFor: string | null, extra: Partial<Me> = {}): Me => ({
     ...meWithChart,
     chart_id: chartId,
     entitlements: { ...meWithChart.entitlements, full_report: true, full_report_chart_id: paidFor },
+    report_access:
+      paidFor === null
+        ? noReportAccess
+        : { available: true, source: 'purchased', expires_at: null, chart_id: paidFor },
     ...extra,
   });
 
@@ -1506,7 +1573,7 @@ describe('App: the full report is paid for a chart, not for the user (`Entitleme
       },
     });
 
-  it('two charts, `full_report: true` and `full_report_chart_id` = A on both: chart A offers «К разбору», chart B the price', async () => {
+  it('two charts, the answer names chart A on both: chart A offers «К разбору», chart B the price', async () => {
     // Chart A: the report was bought for it.
     const onA = openOn(chartA, meOn(CHART_A, CHART_A, { latest_report_id: REPORT_ID }));
     expect(await screen.findByRole('button', { name: 'К разбору' })).toBeInTheDocument();
@@ -1521,7 +1588,7 @@ describe('App: the full report is paid for a chart, not for the user (`Entitleme
     expect(onB.api.orderReport).not.toHaveBeenCalled();
   });
 
-  it('`full_report: true` with `full_report_chart_id: null`: the price. No chart is named, so no chart is paid for', async () => {
+  it('`available: false` names no chart: the price. Nothing is open, so there is nothing to open', async () => {
     const { api } = openOn(chartA, meOn(CHART_A, null));
 
     expect(await price()).toHaveTextContent(ru.chart.teaserCta);
@@ -1544,7 +1611,7 @@ describe('App: the full report is paid for a chart, not for the user (`Entitleme
     expect(api.createInvoice).toHaveBeenCalledWith({ plan_code: 'one_149', chart_id: CHART_B }, expect.any(AbortSignal));
   });
 
-  it('bought for chart A, then another chart built from the form: the new chart shows the price, though the app still holds `full_report: true`', async () => {
+  it('bought for chart A, then another chart built from the form: the new chart shows the price, though the answer still says `purchased`', async () => {
     const { api, user } = openOn(chartA, meOn(CHART_A, CHART_A, { latest_report_id: REPORT_ID }), (fake) => {
       fake.createChart.mockResolvedValue({ ...chartB, is_restored: false });
     });
@@ -1585,7 +1652,7 @@ describe('App: the full report is paid for a chart, not for the user (`Entitleme
   });
 
   describe('a payment for the report is confirmed for the chart it was made for', () => {
-    it('`full_report: true` for another chart confirms nothing: no report is ordered until the server names this chart', async () => {
+    it('a purchase of another chart confirms nothing: no report is ordered until the server names this chart', async () => {
       // The user has a report of chart A and pays for chart B. Telegram says «paid»; the webhook is late.
       const reportOfB = { ...report, chart_id: CHART_B };
       const { api, analytics, user } = openOn(chartB, meOn(CHART_B, CHART_A), (fake) => {

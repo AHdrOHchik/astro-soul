@@ -6,6 +6,7 @@ import {
   fieldErrorsOf,
   isAbortError,
   isApiError,
+  reasonOf,
   rejectionTextOf,
   resetAtOf,
   serverTextOf,
@@ -119,6 +120,18 @@ type Problem =
   | { kind: 'rejected'; text: string | undefined; requestId: string | undefined }
   | { kind: 'price_changed' }
   | { kind: 'error'; text: string; requestId: string | undefined };
+
+/**
+ * The server's machine reason for a missing purchase: `422` with `details.reason = report_already_owned`
+ * says the report is the user's already. That is not a failure — the answer is the report itself, and
+ * the app opens it instead of asking for money a second time (round46). Read by reason, never by
+ * `status === 422`: the same status also carries `chart_not_found` and a form the server did not like.
+ */
+function isAlreadyOwned(error: unknown): boolean {
+  if (!isApiError(error) || error.code !== 'VALIDATION_FAILED') return false;
+  const reason = reasonOf(error);
+  return reason === 'report_already_owned' || reason === 'already_owned';
+}
 
 function problemOf(error: unknown): Problem {
   const requestId = isApiError(error) ? error.requestId : undefined;
@@ -324,6 +337,24 @@ export function PaywallScreen({
         invoice = await api.createInvoice({ plan_code: plan.plan_code, ...forChart }, signal);
       } catch (error) {
         if (signal.aborted || isAbortError(error)) return;
+        if (isAlreadyOwned(error)) {
+          // Nothing went wrong: the report is his. Asked again — the access the interface reads must show it —
+          // and the report opens from here, with no error text and no price.
+          try {
+            await refreshMe(signal);
+          } catch {
+            if (isSignalAborted(signal)) return;
+          }
+          if (isSignalAborted(signal)) return;
+          setPhase('choosing');
+          onReportPaid();
+          return;
+        }
+        if (isApiError(error) && isReportOffer(plan) && error.code === 'PAYMENT_REQUIRED') {
+          // «The report is not paid» is what this screen is for, not a failure to report: the catalogue stays as it was.
+          setPhase('choosing');
+          return;
+        }
         if (isApiError(error) && error.status === 409) {
           // A conflict can mean the webhook granted this product between catalogue load
           // and invoice creation. Only fresh server state may open it; never infer access

@@ -3,8 +3,10 @@ import { useCallback, useEffect, useId, useState } from 'react';
 import { isAbortError, isApiError, type Api, type Report } from '../../api';
 import { Stars } from '../../components/Stars';
 import { useRequest } from '../../hooks/useRequest';
+import { formatDayMonthOf } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import { REPORT_PLAN } from '../../lib/plans';
+import { reportOpenFor, type ReportAccessState } from '../../lib/reportAccess';
 import styles from './ReportTeaser.module.css';
 
 const copy = ru.chart;
@@ -16,11 +18,13 @@ export interface ReportTeaserProps {
   /** The chart on screen: a report about another chart is not this chart's report. */
   chartId: string;
   /**
-   * The server's word that the full report of this very chart is paid for (`hasReportFor`).
-   * Not `Me.entitlements.full_report`: that one is about the user, and stays true on a chart
-   * the user has bought nothing for.
+   * The server's answer to «may this user have a report now» (`Me.report_access`), read through
+   * `useReportAccess`. The teaser shows what it allows and never decides it: a price appears only
+   * when the server says there is no access, and the wording of the button follows the answer.
    */
-  fullReport: boolean;
+  access: ReportAccessState;
+  /** Asks the server again when the access could not be told. */
+  onRefreshAccess?: () => Promise<unknown>;
   /** The report the app knows of (`Me.latest_report_id`, or one met in this session); null when there is none. */
   reportId: string | null;
   /** What the server last said about that report, when the app has already heard it: shown while it is asked again. */
@@ -51,11 +55,15 @@ export interface ReportTeaserProps {
  * Before the purchase there is the opening the server gives out (`report.teaser`), three
  * lines of it, and under it shapes that stand for the rest. The rest itself is not here in
  * any form: the server does not send it unpaid, and this block would not draw it if it did.
+ *
+ * Whether the report is open, and why, comes from `Me.report_access` and from nothing else:
+ * a missing answer is said out loud instead of turning into a price.
  */
 export function ReportTeaser({
   api,
   chartId,
-  fullReport,
+  access,
+  onRefreshAccess,
   reportId,
   known = null,
   onKnown,
@@ -67,7 +75,10 @@ export function ReportTeaser({
   onOpen,
 }: ReportTeaserProps) {
   const titleId = useId();
-  const needsReportPrice = !fullReport && !paymentPending;
+  const open = reportOpenFor(access, chartId);
+  // The price is asked for only where the server said there is no access to this chart: never next to a report
+  // that is open, and never in place of the answer it did not give (`unknown`).
+  const needsReportPrice = (access.status === 'none' || (access.status === 'open' && !open)) && !paymentPending;
   const [priceAttempt, setPriceAttempt] = useState(0);
   const [reportPrice, setReportPrice] = useState<ReportPrice>({ status: 'loading' });
   useEffect(() => {
@@ -130,7 +141,9 @@ export function ReportTeaser({
         ) : (
           <Body
             report={report}
-            fullReport={fullReport}
+            open={open}
+            access={access}
+            onRefreshAccess={onRefreshAccess}
             paymentPending={paymentPending}
             onCheckPayment={onCheckPayment}
             onBuy={onBuy}
@@ -148,16 +161,33 @@ export function ReportTeaser({
   );
 }
 
-type BodyProps = Pick<ReportTeaserProps, 'fullReport' | 'paymentPending' | 'onCheckPayment' | 'onBuy' | 'onOrder' | 'onOpen'> & {
+type BodyProps = Pick<
+  ReportTeaserProps,
+  'access' | 'onRefreshAccess' | 'paymentPending' | 'onCheckPayment' | 'onBuy' | 'onOrder' | 'onOpen'
+> & {
   report: Report | null;
+  /** Whether this state opens a report about this very chart (another chart's purchase does not). */
+  open: boolean;
   reportPrice: ReportPrice;
   onRetryPrice: () => void;
 };
 
-function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrder, onOpen, reportPrice, onRetryPrice }: BodyProps) {
+/** Why the report is open, in the words of the server's source: a right with a term, a free report, a purchase. */
+function accessNote(access: Extract<ReportAccessState, { status: 'open' }>): string | null {
+  if (access.source === 'all_access') {
+    const day = access.expiresAt === null ? '' : formatDayMonthOf(access.expiresAt);
+    return day === '' ? copy.accessOpen : copy.accessUntil(day);
+  }
+  if (access.source === 'single_report') return copy.accessSingle;
+  if (access.source === 'purchased') return null;
+  return copy.accessOpen;
+}
+
+function Body({ report, open, access, onRefreshAccess, paymentPending, onCheckPayment, onBuy, onOrder, onOpen, reportPrice, onRetryPrice }: BodyProps) {
   const [checking, setChecking] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   if (report !== null && (report.is_paid || report.status === 'failed' || report.status === 'refunded')) {
-    // There is a report to open: paid for, or one that failed and has something to say about it.
+    // There is a report to open: paid for, granted, or one that failed and has something to say about it.
     return (
       <>
         <p>{copy.reportStates[report.status]}</p>
@@ -170,10 +200,6 @@ function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrd
         </Button>
       </>
     );
-  }
-  if (report === null && fullReport) {
-    // This chart's report is paid for and not ordered yet, as far as the app knows. The server knows for sure: it answers the order.
-    return <Button onClick={onOrder}>{copy.orderReport}</Button>;
   }
   if (paymentPending) {
     // Paid by Telegram's word, not granted by the server yet. No price here: a second payment would be for the same report.
@@ -194,6 +220,39 @@ function Body({ report, fullReport, paymentPending, onCheckPayment, onBuy, onOrd
         >
           {ru.paywall.checkAgain}
         </Button>
+      </>
+    );
+  }
+  if (access.status === 'unknown') {
+    // The server did not say. Not «no access» and certainly not a price: the app says what it does not know.
+    return (
+      <>
+        <p role="alert">{copy.accessUnknown}</p>
+        <Button
+          variant="secondary"
+          disabled={refreshing}
+          onClick={() => {
+            setRefreshing(true);
+            void Promise.resolve(onRefreshAccess?.())
+              .catch(() => undefined)
+              .then(() => {
+                setRefreshing(false);
+              });
+          }}
+        >
+          {copy.refreshAccess}
+        </Button>
+      </>
+    );
+  }
+  if (open && access.status === 'open') {
+    // The report is open, whatever the price is: the one step left is ordering it. The server names the reason, if there is one.
+    const note = accessNote(access);
+    return (
+      <>
+        {report !== null && report.teaser !== '' && <p className={styles.opening}>{report.teaser}</p>}
+        <Button onClick={onOrder}>{copy.orderReport}</Button>
+        {note !== null && <p className={styles.note}>{note}</p>}
       </>
     );
   }
