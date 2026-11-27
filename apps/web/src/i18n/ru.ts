@@ -398,6 +398,14 @@ export const ru = {
     paymentPending: 'Платёж обрабатывается.',
     /** Owner's wording. */
     openReport: 'К разбору',
+    /** The server sent no `Me.report_access` (a build older than contract 1.6.19): not «no access» and not «buy». */
+    accessUnknown: 'Не удалось определить доступ к разбору',
+    /** Asks the server again about the access. */
+    refreshAccess: 'Обновить',
+    /** Under «Получить разбор»: why the report is open, when the server names a reason. */
+    accessUntil: (day: string) => `Включено в твой доступ до ${day}`,
+    accessSingle: 'У тебя есть бесплатный разбор',
+    accessOpen: 'Доступ к разбору открыт.',
   },
 
   /** Screen 7. Plan names, descriptions and prices come from the authenticated server catalogue. */

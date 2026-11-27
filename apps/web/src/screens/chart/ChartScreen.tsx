@@ -33,6 +33,7 @@ import {
 import { ErrorState } from '../../components/ErrorState';
 import { ShareCardButton } from '../../components/ShareCardButton';
 import { useRequest } from '../../hooks/useRequest';
+import type { ReportAccessState } from '../../lib/reportAccess';
 import { formatDate, formatPosition } from '../../i18n/format';
 import { ru } from '../../i18n/ru';
 import type { Telegram } from '../../telegram';
@@ -70,10 +71,12 @@ export interface ChartForecastProps {
 /** The full report on the chart screen: what the server says the user has, and where the buttons lead. */
 export interface ChartReportProps {
   /**
-   * Whether the full report of the chart on screen is paid for, by the server's word
-   * (`hasReportFor`). Of this chart, not of the user: a report bought for another chart is not it.
+   * The server's answer to «may this user have a report now» (`Me.report_access`), read through
+   * `useReportAccess`. The chart screen does not decide it: it shows what the answer allows.
    */
-  fullReport: boolean;
+  access: ReportAccessState;
+  /** Asks the server again when the access could not be told (`access.status === 'unknown'`). */
+  onRefreshAccess?: () => Promise<unknown>;
   /** `Me.latest_report_id`, or a report met in this session; null when the app knows of none. */
   reportId: string | null;
   /** What the server last said about that report, when the app has already heard it. */
@@ -429,7 +432,8 @@ function ChartView({
         <ReportTeaser
           api={api}
           chartId={chart.chart_id}
-          fullReport={report.fullReport}
+          access={report.access}
+          onRefreshAccess={report.onRefreshAccess}
           reportId={report.reportId}
           known={report.known}
           onKnown={report.onKnown}
