@@ -159,13 +159,32 @@ pull_with_retry() {
   return 1
 }
 
+# astro — локальный образ bootstrap: его нет ни в одном registry, поэтому
+# отсутствие — ошибка конфигурации, а не сети. Выясняем это сразу, до
+# скачивания остального. По умолчанию compose ждёт тег local (IMAGE_TAG:-local),
+# свой тег — через IMAGE_TAG в .env на сервере.
+for img in "${compose_images[@]}"; do
+  case "$img" in
+    astro-soul/astro|astro-soul/astro:*)
+      docker image inspect "$img" >/dev/null 2>&1 || \
+        die "образ $img не найден на сервере — astro не публикуется в GHCR и готовится только на bootstrap (по умолчанию это тег local, свой — через IMAGE_TAG в .env); доставь образ по docs/DEPLOY.md и повтори deploy (CI не собирает образы на сервере)"
+      ;;
+  esac
+done
+
 for img in "${compose_images[@]}"; do
   if docker image inspect "$img" >/dev/null 2>&1; then
     continue
   fi
   case "$img" in
     astro-soul/astro|astro-soul/astro:*)
-      die "образ $img не найден на сервере — astro не публикуется в GHCR и собирается только на bootstrap; доставь образ по docs/DEPLOY.md и повтори deploy (CI не собирает образы на сервере)"
+      continue  # уже проверено выше
+      ;;
+    astro-soul/admin|astro-soul/admin:*|astro-soul-admin|astro-soul-admin:*)
+      # Админка живёт в профиле admin: up без --profile её не поднимает, а
+      # деплой её сознательно не тянет (см. «Админка» в docs/DEPLOY.md).
+      echo "Пропускаю $img: сервис admin в профиле, деплой его не поднимает"
+      continue
       ;;
   esac
   echo "Скачиваю образ: $img"
