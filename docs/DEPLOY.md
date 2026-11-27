@@ -52,7 +52,8 @@ CI собирает образы и выкладывает их; этот фай
 
 Образ публикуется релизом (`ghcr.io/<owner>/astro-soul-admin:<tag>`), сервис
 `admin` есть в `docker-compose.yml`/`docker-compose.prod.yml`, но `remote-release.sh`
-тянет и поднимает только `api web` (и `migrate`). Это **осознанно**: релиз
+тянет и поднимает только `api web` (и `migrate`); отсутствующий образ `admin`
+он пропускает с пометкой в логе, а не требует его. Это **осознанно**: релиз
 мини-аппа не должен зависеть от панели, а панель сейчас выкладывается отдельно.
 
 Чтобы перевести панель на общий путь (задача деплоя, не репозитория):
@@ -77,9 +78,9 @@ CI собирает образы и выкладывает их; этот фай
 
 1. **Bootstrap вручную по runbook владельца:** VPS, пользователь `deploy`,
    Docker + compose v2, `curl`, `rsync`; `/srv/astro-soul` с клоном репозитория;
-   `.env` с правами `600`; образ `astro-soul/astro:<IMAGE_TAG>` — он должен быть уже
-   доставлен на VPS на bootstrap (CI его не собирает и в GHCR не публикует);
-   reverse-proxy для
+   `.env` с правами `600`; образ `astro-soul/astro:local` — доставь его по
+   разделу «Доставка образа astro (bootstrap)» ниже (CI его не собирает и
+   в GHCR не публикует); reverse-proxy для
    `tg-astrosoul.ru` и `admin.tg-astrosoul.ru`. На `admin.*` проксирует
    `/api/` на API **без обрезки префикса** (`proxy_pass http://api:8080;`,
    без завершающего `/`).
@@ -123,6 +124,43 @@ CI собирает образы и выкладывает их; этот фай
    изменение без `X-Admin-CSRF` → `403`; лог миграций
    `/srv/astro-soul/var/log/deploy/migrate-<tag>-*.log`.
 
+## Доставка образа astro (bootstrap)
+
+`astro` — единственный образ, который deploy не качает из registry: его нет
+в GHCR (и в Docker Hub тоже), он готовится один раз на bootstrap. Deploy
+проверяет его наличие до скачивания остального и останавливается с ошибкой
+«образ astro-soul/astro:… не найден на сервере», если образа нет.
+
+Тег: базовый compose ждёт `astro-soul/astro:local` (`IMAGE_TAG:-local`).
+Если образ называется иначе — пропиши `IMAGE_TAG=<тег>` в `/srv/astro-soul/.env`.
+
+Три способа доставить:
+
+1. Образ уже есть, но с другим тегом:
+   ```sh
+   docker images 'astro-soul/astro'
+   docker tag astro-soul/astro:<старый-тег> astro-soul/astro:local
+   ```
+2. Собрать один раз на сервере (ручной шаг bootstrap; CI так не делает):
+   ```sh
+   cd /srv/astro-soul
+   docker build -f docker/astro.Dockerfile -t astro-soul/astro:local .
+   ```
+   Сборка качает `python:3.11-slim-bookworm` из Docker Hub — при таймаутах
+   сети просто повтори команду.
+3. Надёжнее при нестабильном Docker Hub: собери на любой машине с репозиторием
+   и перенеси файлом:
+   ```sh
+   # на машине-источнике
+   docker build -f docker/astro.Dockerfile -t astro-soul/astro:local .
+   docker save astro-soul/astro:local | gzip > astro.tgz
+   # на сервере
+   docker load < astro.tgz
+   ```
+
+Проверка: `docker image inspect astro-soul/astro:local >/dev/null && echo ok`.
+После этого повтори deploy с тем же тегом — новый release не нужен.
+
 ## Откат вручную
 
 Предпочтительно: `make deploy TAG=<previous-tag>` — тот же путь с health и
@@ -156,8 +194,13 @@ curl -fsS http://127.0.0.1:8081/api/v1/health   # проверить тело: s
   скачивании из Docker Hub/GHCR. Deploy заранее качает недостающие образы
   (`postgres`, `redis`, `api`, `web`) с тремя попытками и останавливается до
   миграций и `up`; просто повтори deploy, а при повторах проверь сеть сервера
-  или настрой зеркало registry. `astro` deploy не качает — он должен быть на
-  сервере с bootstrap.
+  или настрой зеркало registry. `astro` deploy не качает — см. раздел
+  «Доставка образа astro (bootstrap)».
+- «образ astro-soul/astro:… не найден на сервере» — это bootstrap-зазор, а не
+  сбой сети: образ `astro` ниоткуда не скачивается, его готовят один раз.
+  Доставь его одним из способов в разделе «Доставка образа astro (bootstrap)»
+  и повтори deploy с тем же тегом. Образ `admin` deploy тоже не качает
+  (сервис в профиле `admin`) — это нормально, в логе будет «Пропускаю …».
 - WARNING `Your credentials are stored unencrypted in …/config.json` —
   безвредно: токен GHCR на время deploy кладётся во временный каталог
   и удаляется по завершении. Если deploy уже запускался старой версией —
@@ -178,5 +221,6 @@ curl -fsS http://127.0.0.1:8081/api/v1/health   # проверить тело: s
   сервера, а не кода. Пока правило одно: клиентский IP берётся из последнего
   хопа, подделанный заголовок не проходит.
 - `deploy/host-edge.yml` живёт только на сервере (host-specific), в репозитории
-  его нет; `compose pull` тянет `api`/`web`/`admin`, образ `astro` остаётся
-  локальным с bootstrap.
+  его нет. Deploy сам скачивает недостающие образы `api`/`web` (и `postgres`/
+  `redis`) с повторами; `astro` остаётся локальным с bootstrap, `admin` —
+  в профиле и деплоем не требуется.
