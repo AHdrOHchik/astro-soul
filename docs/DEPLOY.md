@@ -54,19 +54,27 @@ CI собирает образы и выкладывает их; этот фай
    ```yaml
    services:
      api:
-       image: ghcr.io/<owner>/astro-soul-api:${RELEASE_TAG}
+       image: ghcr.io/<owner в нижнем регистре>/astro-soul-api:${RELEASE_TAG}
      migrate:
-       image: ghcr.io/<owner>/astro-soul-api:${RELEASE_TAG}
+       image: ghcr.io/<owner в нижнем регистре>/astro-soul-api:${RELEASE_TAG}
      web:
-       image: ghcr.io/<owner>/astro-soul-web:${RELEASE_TAG}
+       image: ghcr.io/<owner в нижнем регистре>/astro-soul-web:${RELEASE_TAG}
        ports:
          - '127.0.0.1:8081:8080'
    ```
+   Имена GHCR — только в нижнем регистре: логин `AHdrOHchik` в имени образа
+   пишется `ahdrohchik`. Release публикует образы под нижним регистром
+   (см. шаг «Имена образов» в `release.yml`), deploy-скрипт сравнивает имена
+   без учёта регистра, но `docker compose` требует нижний регистр в самом
+   файле — иначе pull/ps не найдут образ.
    `migrate` переопределён отдельно: в базовом compose у него своё поле `image`,
    и без этой строки миграции полезли бы в Docker Hub. compose при deploy
    собирается из трёх файлов: `docker-compose.yml`, `docker-compose.prod.yml`,
    `deploy/host-edge.yml`. Файл остаётся untracked и переживает
    `git checkout` / `git pull`.
+   С порта `127.0.0.1:8081` должен отвечать health-контракт (`status` и `db`)
+   по `/api/v1/health`. В шаблоне выше это web-прокси; допустима и схема, где
+   на 8081 выведен сам api (web — на 8080): контракт от этого не меняется.
 4. Подготовь `/var/www/admin` (владелец `deploy`) — туда rsync'ится статика.
 5. `make release TAG=<tag> BOOTSTRAP=1` → approve в environment → проверь в
    summary тег и отпечатки образов; артефакт `admin-dist` обязан пройти страж
@@ -93,6 +101,19 @@ curl -fsS http://127.0.0.1:8081/api/v1/health   # проверить тело: s
 
 Откат образов **не откатывает миграции**: при изменении схемы БД восстановление
 делается отдельно по runbook (бэкап до релиза обязателен).
+
+## Типовые ошибки deploy
+
+- «в compose нет образа ghcr.io/…» — в `deploy/host-edge.yml` другой регистр
+  имени (нужен нижний) или другой тег (нужен именно тег версии, не `latest`).
+  В конце сообщения deploy-скрипт показывает, какие образы реально видит
+  compose.
+- «не найден запуск release с коммитом …» / «RELEASE_TAG=…, ожидался …» —
+  deploy запущен с тегом, для которого нет успешного release; сначала прогони
+  release с этим тегом.
+- `health=failed`, «Откат: да» — деплой откатился и завершился ошибкой;
+  смотри лог миграций в `/srv/astro-soul/var/log/deploy/` и
+  `health после отката` в summary.
 
 ## Известные зазоры
 

@@ -86,13 +86,22 @@ COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.prod.yml -f depl
 
 # Если в host-edge.yml не те образы, которые publish'ит release, откат по image id
 # не сработает — проверяем это до каких-либо действий с контейнерами.
-api_ref="ghcr.io/${OWNER}/astro-soul-api:${TAG}"
-web_ref="ghcr.io/${OWNER}/astro-soul-web:${TAG}"
+# GHCR и docker требуют нижний регистр в имени образа: владелец «AHdrOHchik»
+# пишется «ahdrohchik» — как в host-edge.yml и как в release.yml. Без этой
+# нормализации проверка и docker tag на откате падают на регистре имени.
+owner_lc="$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')"
+api_ref="ghcr.io/${owner_lc}/astro-soul-api:${TAG}"
+web_ref="ghcr.io/${owner_lc}/astro-soul-web:${TAG}"
 mapfile -t compose_images < <("${COMPOSE[@]}" config --images)
-printf '%s\n' "${compose_images[@]}" | grep -Fxq "$api_ref" || \
-  die "в compose нет образа $api_ref — поправь deploy/host-edge.yml (релиз использует тег версии, не latest)"
-printf '%s\n' "${compose_images[@]}" | grep -Fxq "$web_ref" || \
-  die "в compose нет образа $web_ref — поправь deploy/host-edge.yml (релиз использует тег версии, не latest)"
+# Сравниваем без учёта регистра: host-edge.yml может быть написан и с большой
+# буквы, compose всё равно нормализует имя в нижний регистр.
+compose_images_lc="$(printf '%s\n' "${compose_images[@]}" | tr '[:upper:]' '[:lower:]')"
+require_compose_image() {
+  grep -Fxq "$1" <<< "$compose_images_lc" || \
+    die "в compose нет образа $1 — поправь deploy/host-edge.yml (имя GHCR в нижнем регистре, тег версии, не latest); compose видит: $(printf '%s ' "${compose_images[@]}")"
+}
+require_compose_image "$api_ref"
+require_compose_image "$web_ref"
 # У migrate в базовом compose своё поле image: без оверлея миграции полезли бы
 # в astro-soul/api:<IMAGE_TAG> из Docker Hub. compose config --images не даёт
 # привязать образ к сервису, поэтому смотрим сам оверлей.
