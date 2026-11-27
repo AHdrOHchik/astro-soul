@@ -5394,6 +5394,7 @@ export interface components {
             latest_report_id?: string | null;
             subscription: components["schemas"]["SubscriptionState"];
             entitlements: components["schemas"]["Entitlements"];
+            report_access?: components["schemas"]["ReportAccess"];
             quotas: components["schemas"]["Quota"][];
             /** @enum {string} */
             onboarding_step: "birth_date" | "birth_time" | "birth_place" | "done";
@@ -5600,6 +5601,73 @@ export interface components {
              *     показа: право купить `founder_month` проверяется на сервере.
              */
             founder_place?: number | null;
+        };
+        /**
+         * @description Право на полный разбор — ответ на вопрос «можно ли сейчас заказать или
+         *     открыть разбор» (контракт 1.6.19). **Необязательное** поле `Me`:
+         *     старый клиент его не читает и обязан по-прежнему работать.
+         *
+         *     Почему отдельное поле: `entitlements.full_report` отвечал на два разных
+         *     вопроса сразу, и оба ответа были верны только наполовину. Право зависит
+         *     от карты (одна покупка не открывает разборы по другим), от «всё
+         *     включено» (срок, а не покупка) и от подаренных разборов (счётчик,
+         *     который расходуется). Флаг `boolean` этого не описывает.
+         *
+         *     Порядок источников фиксирован: `purchased` → `all_access` →
+         *     `single_report`. Он важен не только для текста на экране: `single_report`
+         *     — расходуемое право, и списывать его, когда разбор уже оплачен, значило
+         *     бы брать деньги дважды.
+         *
+         *     | Состояние человека | `available` | `source` | `chart_id` | `expires_at` | `POST /reports` | `POST /billing/checkout` (разбор) |
+         *     |---|---|---|---|---|---|---|
+         *     | оплачен разбор этой карты | `true` | `purchased` | эта карта | `null` | `202` | `422 report_already_owned` |
+         *     | оплачен разбор другой карты | `false` | `null` | `null` | `null` | `402 report_not_paid` | `201` (карта своя) |
+         *     | действует «всё включено» | `true` | `all_access` | `null` | конец права | `202` | `422 report_already_owned` |
+         *     | есть подаренный разбор | `true` | `single_report` | `null` | `null` | `202` | `422 report_already_owned` |
+         *     | «всё включено» истекло | `false` | `null` | `null` | `null` | `402 report_not_paid` | `201` |
+         *     | ничего | `false` | `null` | `null` | `null` | `402 report_not_paid` | `201` |
+         *     | забанен | `false` | `null` | `null` | `null` | `403` | `403` |
+         *
+         *     Коды `Problem.code` в таблице не появляются: `402` — `PAYMENT_REQUIRED`,
+         *     `422` — `VALIDATION_FAILED` (`details.reason = report_already_owned`),
+         *     `403` — `FORBIDDEN`. Новых кодов в 1.6.19 нет.
+         *
+         *     Обещание клиенту: если `available: true`, то ни один путь не ответит
+         *     `402` и не попросит денег. Если `available: false`, `402` — законный
+         *     ответ, и его `details.reason` всегда `report_not_paid`.
+         */
+        ReportAccess: {
+            /**
+             * @description Можно ли заказать или открыть разбор **сейчас**. Это ответ двери
+             *     (`AccessService.hasAccess('report', {chartId})`), а не вывод из
+             *     `entitlements`: клиент не имеет права считать доступ сам.
+             */
+            available: boolean;
+            /**
+             * @description Почему доступ есть: `purchased` — оплаченный (или уже готовый)
+             *     разбор этой карты, `all_access` — действующее право «всё включено»,
+             *     `single_report` — неизрасходованный бесплатный разбор. `null` —
+             *     доступа нет (`available: false`). Источник нужен для текста на
+             *     экране: «куплено», «входит в подарок», «остался 1 бесплатный».
+             * @enum {string|null}
+             */
+            source: "purchased" | "all_access" | "single_report" | null;
+            /**
+             * Format: date-time
+             * @description Конец права, если у источника есть срок. Сейчас срок есть только у
+             *     `all_access`; у покупки и у подаренного разбора — `null` (покупка
+             *     навсегда, подарок живёт до использования).
+             */
+            expires_at?: string | null;
+            /**
+             * Format: uuid
+             * @description Карта, за которую разбор оплачен или по которой он готов. `null` —
+             *     право есть, но оплаченной карты нет (`all_access`, `single_report`,
+             *     или разбор куплен, а карты у человека сейчас нет). Поле **не**
+             *     означает «разбор оплачен на текущую карту»: для этого сравните его
+             *     с `Me.chart_id`.
+             */
+            chart_id?: string | null;
         };
         /** @description Код доступа (1.6.14) — право на выдачу, а не право само по себе. */
         AccessCode: {

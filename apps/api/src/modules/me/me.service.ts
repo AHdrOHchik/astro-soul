@@ -5,7 +5,8 @@ import { conflict, invalidFields } from '../../common/api-error';
 import { displayNameOf, type VerifiedInitData } from '../auth/init-data';
 import { UsersRepository } from '../users/users.repository';
 import { EntitlementsService } from '../entitlements/entitlements.service';
-import { toEntitlementsDto as toEntitlements } from '../entitlements/entitlements.dto';
+import { toEntitlementsDto as toEntitlements, toReportAccessDto } from '../entitlements/entitlements.dto';
+import { AccessService } from '../entitlements/access.service';
 import { AccessCodesService } from '../grants/access-codes.service';
 import { ReferralsService, parseReferralStart } from '../grants/referrals.service';
 import { parsePartnerStart } from '../grants/grants-start';
@@ -33,6 +34,7 @@ export class MeService {
   constructor(
     @Inject(UsersRepository) private readonly users: UsersRepository,
     @Inject(EntitlementsService) private readonly entitlements: EntitlementsService,
+    @Inject(AccessService) private readonly access: AccessService,
     @Inject(QuotasService) private readonly quotas: QuotasService,
     @Inject(DbService) private readonly db: DbService,
     @Inject(EventsRepository) private readonly events: EventsRepository,
@@ -97,6 +99,13 @@ export class MeService {
       this.latestReportId(userId),
     ]);
 
+    // Право на разбор — тем же решением, что принимает заказ и биллинг
+    // (1.6.19). Чарт передаём тот, который `/me` сам отдаёт в `chart_id`:
+    // иначе клиент увидел бы `purchased` для карты, о которой не знает.
+    const reportAccess = await this.access.reportAccess(userId, {
+      chartId: profileState.chartId ?? undefined,
+    });
+
     // Местные сутки карты — та же шкала, что у квоты «спроси карту»
     // (`/engagement/ask`). Иначе `/me` и отказ по квоте расходятся на сутки
     // у людей в поясах, где «сегодня» уже другое.
@@ -120,6 +129,9 @@ export class MeService {
       // Реальные права из getEntitlements(userId): фронт рисует по ним
       // пейволл, но доступ всё равно решается на сервере (payments.md §4).
       entitlements: toEntitlements(entitlements, grants),
+      // Право на разбор отдельным блоком (1.6.19): `entitlements.full_report`
+      // отвечает на другой вопрос — «есть ли оплаченный или готовый разбор».
+      report_access: toReportAccessDto(reportAccess),
       // Ссылка приглашения (1.6.14). Без `BOT_USERNAME` её не собрать — отдаём
       // `null`, как и у шаринга: битая ссылка хуже отсутствующей.
       referral_link: await this.referralLink(userId),

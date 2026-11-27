@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BillingModule } from '../billing/billing.module';
 import { PlansModule } from '../billing/plans.module';
+import { AccessService } from '../entitlements/access.service';
 import { EntitlementsService } from '../entitlements/entitlements.service';
 import { EventsModule } from '../events/events.module';
 import { GrantsModule } from '../grants/grants.module';
@@ -28,6 +29,9 @@ import { MeService } from './me.service';
     GrantsModule,
   ],
   controllers: [MeController],
-  providers: [MeService, UsersRepository, EntitlementsService, QuotasService],
+  // `AccessService` — ради `Me.report_access` (1.6.19): право на разбор обязано
+  // считаться той же дверью, что заказ и биллинг, иначе `/me` и `POST /reports`
+  // снова разойдутся.
+  providers: [MeService, UsersRepository, EntitlementsService, QuotasService, AccessService],
 })
 export class MeModule {}

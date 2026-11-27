@@ -26,12 +26,17 @@ ARG VITE_API_BASE_URL=""
 ARG VITE_BOT_USERNAME=""
 ARG VITE_SUPPORT_CONTACT=""
 ARG VITE_SUBSCRIPTIONS=""
+# Б-1 (итерация 45): флаг UI уведомлений. Он тоже build-time: без ARG значение
+# из `.env`/vars оставалось за бортом сборки, и PUSH_ENABLED=1 включал рассылку
+# при выключенном (и невключаемом) экране согласия в приложении.
+ARG VITE_NOTIFICATIONS_UI="0"
 
 RUN pnpm --filter @astro-soul/shared build \
  && VITE_API_BASE_URL="${VITE_API_BASE_URL}" \
     VITE_BOT_USERNAME="${VITE_BOT_USERNAME}" \
     VITE_SUPPORT_CONTACT="${VITE_SUPPORT_CONTACT}" \
     VITE_SUBSCRIPTIONS="${VITE_SUBSCRIPTIONS}" \
+    VITE_NOTIFICATIONS_UI="${VITE_NOTIFICATIONS_UI}" \
     pnpm --filter @astro-soul/web build
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime

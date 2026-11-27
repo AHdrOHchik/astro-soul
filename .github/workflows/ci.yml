@@ -163,3 +163,48 @@ jobs:
             } else {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             }
+
+  # Б-2 (итерация 45): образ админки. До этого CI проверял только артефакт
+  # `apps/admin/dist`; Dockerfile существовал отдельно от проверки, поэтому
+  # «образ собирается» было обещанием, а не фактом. Здесь он собирается
+  # по-настоящему и проверяется как контейнер: отдаёт index.html, закрыт от
+  # индексирования и от встраивания в iframe.
+  #
+  # Отдельная джоба, а не шаг в `check`: сборка образа не должна удлинять
+  # прогон тестов и падать по причинам, не связанным с кодом.
+  admin-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Сборка образа админки
+        run: docker build --file docker/admin.Dockerfile --tag astro-soul-admin:ci .
+
+      - name: Контейнер отдаёт панель и закрыт от индексации/iframe
+        run: |
+          set -euo pipefail
+          docker run --detach --name admin-ci --publish 18090:8080 astro-soul-admin:ci
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18090/ --output index.html; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "ОШИБКА: контейнер не отдал index.html за 30 секунд" >&2
+            docker logs admin-ci >&2 || true
+            exit 1
+          fi
+          grep -q '<div id="root">' index.html || { echo "ОШИБКА: index.html без корня SPA — отдана не панель" >&2; exit 1; }
+          curl -fsS http://127.0.0.1:18090/robots.txt | grep -q 'Disallow: /' || { echo "ОШИБКА: robots.txt не запрещает индексацию" >&2; exit 1; }
+          headers="$(curl -fsSI http://127.0.0.1:18090/ || true)"
+          case "$headers" in
+            *X-Frame-Options*) ;;
+            *) echo "ОШИБКА: нет X-Frame-Options — панель можно встроить в чужую страницу" >&2; exit 1 ;;
+          esac
+          echo "admin: образ собран, панель отдаётся, iframe и индексация закрыты"
+
+      - name: Логи контейнера при падении
+        if: failure()
+        run: docker logs admin-ci || true

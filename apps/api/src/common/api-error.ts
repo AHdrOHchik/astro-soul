@@ -71,16 +71,30 @@ export interface FieldErrorInput {
 /**
  * `422 VALIDATION_FAILED` со списком полей.
  * Первое сообщение становится текстом ошибки, весь список — в `details.field_errors`.
+ *
+ * Дополнительные поля `details` **сохраняются**, а не затираются (1.6.19).
+ * Раньше `details` собирались заново, и переданный `reason` молча пропадал —
+ * ровно поэтому биллинг собирал `report_already_owned` руками. Контракт же
+ * обещает `details.reason` у `POST /billing/invoice` (`chart_not_found`,
+ * `chart_required_for_report`, `report_already_owned`, `compat_already_owned`,
+ * `invoice_request_invalid`): без слияния половина этих причин до клиента не
+ * доезжала, а тесты проверяли только код и текст.
  */
 export function invalidFields(
   errors: readonly FieldErrorInput[],
-  options: Omit<ApiErrorOptions, 'details'> = {},
+  options: ApiErrorOptions = {},
 ): ApiError {
   const first = errors[0];
   return new ApiError('VALIDATION_FAILED', 422, {
     ...options,
     ...(first === undefined ? {} : { message: first.message }),
-    details: { field_errors: errors.map(({ field, message }) => ({ field, message })) },
+    details: {
+      // `reason` — тоже часть `details` (см. `reasonOptions`): контракт обещает
+      // его клиенту, а не только логу.
+      ...(options.reason === undefined ? {} : { reason: options.reason }),
+      ...options.details,
+      field_errors: errors.map(({ field, message }) => ({ field, message })),
+    },
   });
 }
 

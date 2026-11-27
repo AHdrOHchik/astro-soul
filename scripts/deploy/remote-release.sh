@@ -6,7 +6,15 @@
 set -euo pipefail
 
 TAG="${1:-}"
-OWNER="${2:-}"
+# GHCR принимает только нижний регистр в имени репозитория: `ghcr.io/AHdrOHchik/…`
+# — «invalid reference format», и pull падает до скачивания. `release.yml`
+# поэтому считает имена образов в шелле (`${owner,,}`); деплой обязан делать то
+# же — иначе сборка публикует `ghcr.io/ahdrohchik/astro-soul-api`, а деплой
+# ищет `ghcr.io/AHdrOHchik/astro-soul-api` и не находит его.
+OWNER_RAW="${2:-}"
+OWNER="${OWNER_RAW,,}"
+# Логин в GHCR регистронезависим (имя пользователя GitHub), поэтому берём
+# переданное значение как есть и только подставляем владельца, если его нет.
 GHCR_USER="${3:-$OWNER}"
 DEPLOY_ROOT="${DEPLOY_ROOT:-/srv/astro-soul}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8081/api/v1/health}"

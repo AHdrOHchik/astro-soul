@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ApiError, conflict, internalError, validationFailed } from '../../common/api-error';
 import { JsonLogger } from '../../common/logger';
+import { maskWebhookUrl } from '../../common/secret-url';
 import { DbService } from '../../db/db.service';
 import { APP_ENV } from '../../config/env.module';
 import type { AppEnv } from '../../config/env';
@@ -149,14 +150,14 @@ export class AdminOpsService {
         action: 'webhook.reinstall',
         entity: 'webhook',
         entityId: null,
-        after: { url, ok: answer.ok, last_error_message: answer.lastErrorMessage },
+        after: { url: maskWebhookUrl(url), ok: answer.ok, last_error_message: answer.lastErrorMessage },
         reason: input.reason,
       });
     });
 
     if (!answer.ok) {
       this.logger.error('admin_webhook_reinstall_failed', {
-        url,
+        url: maskWebhookUrl(url),
         last_error_message: answer.lastErrorMessage,
       });
 

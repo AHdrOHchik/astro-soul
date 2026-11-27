@@ -33,6 +33,24 @@
 #   6 — не удалось переписать файл-маркер (дамп выгружен, но мониторинг об этом
 #       не узнает — это тоже ошибка)
 #
+# ── Режим дампа: `BACKUP_DUMP_MODE=host|exec` (Б-3, итерация 45) ───────────
+# `host` (по умолчанию) — `pg_dump` на самой машине подключается к
+# `DATABASE_URL`. Так работает стенд и локальная разработка, где Postgres
+# слушает порт.
+#
+# `exec` — `pg_dump` выполняется **внутри контейнера** Postgres:
+#   docker compose exec -T <BACKUP_COMPOSE_SERVICE> sh -c 'pg_dump -U "$POSTGRES_USER" -Fc -d "$POSTGRES_DB"'
+# Зачем: на проде порт Postgres наружу не публикуется (`docker-compose.prod.yml`,
+# сеть `internal`), и хост не может к нему подключиться — то есть режим `host`
+# там падает с «connection refused», а не «нет бэкапа». Второй вариант в той же
+# ситуации — публиковать 5432 на 127.0.0.1; это решение сервера, а не
+# репозитория, и оно шире, чем бэкап. `exec` не требует ни открытого порта, ни
+# `pg_dump` на хосте: нужен только `docker` и compose-файл.
+#
+# В режиме `exec` `DATABASE_URL` не нужен и не проверяется; `POSTGRES_USER`/
+# `POSTGRES_DB` берутся из окружения самого контейнера, поэтому копия пароля в
+# cron-окружении не появляется.
+#
 # Примеры запуска — в `docs/BACKUP.md`.
 
 set -euo pipefail
@@ -63,9 +81,27 @@ die() {
 : "${BACKUP_REMOTE:=}"
 : "${BACKUP_STATE_FILE:=}"
 : "${PG_DUMP_BIN:=pg_dump}"
+: "${BACKUP_DUMP_MODE:=host}"
+: "${BACKUP_DOCKER_BIN:=docker}"
+: "${BACKUP_COMPOSE_SERVICE:=postgres}"
+: "${BACKUP_COMPOSE_FILE:=}"
 
-[ -n "$DATABASE_URL" ] || die "$EXIT_CONFIG" "не задан DATABASE_URL"
-command -v "$PG_DUMP_BIN" >/dev/null 2>&1 || die "$EXIT_CONFIG" "не найден pg_dump ($PG_DUMP_BIN)"
+case "$BACKUP_DUMP_MODE" in
+  host)
+    [ -n "$DATABASE_URL" ] || die "$EXIT_CONFIG" "не задан DATABASE_URL"
+    command -v "$PG_DUMP_BIN" >/dev/null 2>&1 ||
+      die "$EXIT_CONFIG" "не найден pg_dump ($PG_DUMP_BIN)"
+    ;;
+  exec)
+    # `DATABASE_URL` здесь не нужен: подключение делает pg_dump внутри
+    # контейнера, где переменные POSTGRES_* уже есть.
+    command -v "$BACKUP_DOCKER_BIN" >/dev/null 2>&1 ||
+      die "$EXIT_CONFIG" "BACKUP_DUMP_MODE=exec, но не найден $BACKUP_DOCKER_BIN"
+    ;;
+  *)
+    die "$EXIT_CONFIG" "BACKUP_DUMP_MODE='$BACKUP_DUMP_MODE': допустимо host или exec"
+    ;;
+esac
 
 if [ -z "$BACKUP_S3_URL" ] && [ -z "$BACKUP_REMOTE" ]; then
   die "$EXIT_CONFIG" "не настроена выгрузка: нужен BACKUP_S3_URL или BACKUP_REMOTE (локальная копия — не бэкап)"
@@ -102,9 +138,24 @@ cleanup_partial() {
 # опаснее отсутствующего — он выглядит как бэкап и восстанавливается с ошибкой.
 trap cleanup_partial EXIT
 
-log "дамп $DATABASE_URL → $final_path"
-if ! "$PG_DUMP_BIN" --format=custom --no-owner --no-acl --file="$partial_path" "$DATABASE_URL"; then
-  die "$EXIT_DUMP" "pg_dump завершился ошибкой"
+if [ "$BACKUP_DUMP_MODE" = "exec" ]; then
+  compose_args=(exec -T)
+  if [ -n "$BACKUP_COMPOSE_FILE" ]; then
+    compose_args+=(-f "$BACKUP_COMPOSE_FILE")
+  fi
+  compose_args+=("$BACKUP_COMPOSE_SERVICE" sh -c 'pg_dump --format=custom --no-owner --no-acl -U "$POSTGRES_USER" -d "$POSTGRES_DB"')
+
+  log "дамп контейнера $BACKUP_COMPOSE_SERVICE → $final_path"
+  # Дамп идёт в stdout контейнера, а не в файл внутри него: файл обязан лежать
+  # на хосте, иначе `docker compose down -v` уносит бэкап вместе с базой.
+  if ! "$BACKUP_DOCKER_BIN" compose "${compose_args[@]}" > "$partial_path"; then
+    die "$EXIT_DUMP" "pg_dump в контейнере завершился ошибкой"
+  fi
+else
+  log "дамп $DATABASE_URL → $final_path"
+  if ! "$PG_DUMP_BIN" --format=custom --no-owner --no-acl --file="$partial_path" "$DATABASE_URL"; then
+    die "$EXIT_DUMP" "pg_dump завершился ошибкой"
+  fi
 fi
 
 [ -s "$partial_path" ] || die "$EXIT_DUMP" "pg_dump создал пустой файл"

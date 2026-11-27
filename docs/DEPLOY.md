@@ -12,7 +12,7 @@ CI собирает образы и выкладывает их; этот фай
 | `SSH_USER` | Пользователь с доступом к `/srv/astro-soul` и Docker (`deploy`). Создаётся на bootstrap. |
 | `SSH_KEY` | Приватный ключ ed25519 **без пароля**: `ssh-keygen -t ed25519 -f deploy_ci -N ''`. Публичная половина — в `~deploy/.ssh/authorized_keys` на сервере. |
 | `SSH_KNOWN_HOSTS` | Готовый отпечаток хоста: владелец один раз выполняет `ssh-keyscan -H -p <SSH_PORT> <SSH_HOST>` в доверенном канале и кладёт вывод в секрет. CI `ssh-keyscan` **не запускает**, `StrictHostKeyChecking=yes`. |
-| `GHCR_READ_TOKEN` | PAT с `read:packages` и доступом к обоим пакетам (`astro-soul-api`, `astro-soul-web`). Для private-пакетов — доступ аккаунта к пакетам и SSO, если репозиторий в организации. Логин при `docker login` — пользователь, запустивший `deploy` (`github.actor`), поэтому токен должен принадлежать ему или иметь доступ от его имени. |
+| `GHCR_READ_TOKEN` | PAT с `read:packages` и доступом ко всем трём пакетам (`astro-soul-api`, `astro-soul-web`, `astro-soul-admin`). Для private-пакетов — доступ аккаунта к пакетам и SSO, если репозиторий в организации. Логин при `docker login` — пользователь, запустивший `deploy` (`github.actor`), поэтому токен должен принадлежать ему или иметь доступ от его имени. |
 
 ## GitHub Variables (`vars`)
 
@@ -25,7 +25,44 @@ CI собирает образы и выкладывает их; этот фай
 | `VITE_BOT_USERNAME` | Имя бота из BotFather без `@`. Используется мини-аппом и (как `VITE_TG_BOT_USERNAME`) сборкой админки. |
 | `VITE_SUPPORT_CONTACT` | `@username` или `https://…` для кнопки поддержки. |
 | `VITE_SUBSCRIPTIONS` | `enabled`, `off` или пусто. Другое значение release блокирует. |
-| `VITE_NOTIFICATIONS_UI` | `0` по умолчанию; `1` только после исправления Б-1 (см. конец файла) и включения `PUSH_ENABLED=1` в `.env` на сервере. |
+| `VITE_NOTIFICATIONS_UI` | `0` по умолчанию; `1` — вместе с `PUSH_ENABLED=1` в `.env` на сервере и **после** его рестарта. С 1.6.19 флаг доезжает до сборки (Б-1 исправлен). |
+
+## Переменные: build-time и runtime (Б-7, 1.6.19)
+
+Разница не косметическая: build-time переменная попадает в файлы при сборке
+образа, и «поправить .env и перезапустить» её **не** меняет. Runtime читается
+процессом при старте — рестарта контейнера достаточно.
+
+| Переменная | Где задаётся | Когда читается | Что будет, если поменять .env без пересборки |
+|---|---|---|---|
+| `VITE_API_BASE_URL` | `vars` → `build.args` web | **build-time** | ничего: в бандле останется старое значение |
+| `VITE_BOT_USERNAME` | `vars` → `build.args` web | **build-time** | мини-апп продолжит звать старого бота |
+| `VITE_SUPPORT_CONTACT` | `vars` → `build.args` web | **build-time** | кнопка поддержки останется прежней |
+| `VITE_SUBSCRIPTIONS` | `vars` → `build.args` web | **build-time** | витрина подписок не изменится |
+| `VITE_NOTIFICATIONS_UI` | `vars` → `build.args` web | **build-time** (Б-1) | экран согласия не появится сам: нужна пересборка web |
+| `PUSH_ENABLED` | `.env` на сервере | runtime (API) | **работает** после `docker compose up -d api` |
+| `BACKUP_DUMP_MODE` | `.env`/cron на сервере | runtime (скрипт) | работает со следующего запуска cron (Б-3) |
+| `ADMIN_HTTP_PORT` | `.env` на сервере | runtime (compose) | работает после `docker compose --profile admin up -d admin` |
+
+Порядок для пары `PUSH_ENABLED`+`VITE_NOTIFICATIONS_UI` описан в
+`.env.example` и `docs/PUSH.md`: сначала API (иначе пуши приходят, а отказаться
+негде), потом пересборка web.
+
+## Админка: что осталось за деплоем
+
+Образ публикуется релизом (`ghcr.io/<owner>/astro-soul-admin:<tag>`), сервис
+`admin` есть в `docker-compose.yml`/`docker-compose.prod.yml`, но `remote-release.sh`
+тянет и поднимает только `api web` (и `migrate`). Это **осознанно**: релиз
+мини-аппа не должен зависеть от панели, а панель сейчас выкладывается отдельно.
+
+Чтобы перевести панель на общий путь (задача деплоя, не репозитория):
+
+1. в `deploy/host-edge.yml` (живёт только на сервере) добавить сервису `admin`
+   `image: ghcr.io/<owner>/astro-soul-admin:<tag>` — как это сделано для `api`;
+2. в `remote-release.sh` добавить `admin` в `pull` и `up -d --profile admin`
+   отдельным шагом, чтобы падение панели не останавливало релиз мини-аппа;
+3. наружу не открывать `8090`: только через nginx с TLS и авторизацией;
+4. проверить: `curl -fsSI http://127.0.0.1:8090/` отдаёт `X-Frame-Options: DENY`.
 
 ## Что НЕ живёт в GitHub
 
@@ -129,13 +166,17 @@ curl -fsS http://127.0.0.1:8081/api/v1/health   # проверить тело: s
 
 ## Известные зазоры
 
-- **Б-1:** в `docker/web.Dockerfile` пока нет `ARG VITE_NOTIFICATIONS_UI`.
-  При `vars.VITE_NOTIFICATIONS_UI=1` release падает с внятным сообщением —
-  silent-сборки без флага не будет. Минимальная правка Dockerfile — отдельным
-  пунктом в PR владельцу.
-- **Б-2:** `admin.Dockerfile` и сервиса `admin` в compose нет, поэтому админка
-  выкладывается rsync'ом. Когда появится Dockerfile — заменить этот шаг на
-  сервис compose.
+- **Б-5 (Postgres tuning):** `shared_buffers`, `work_mem`, `max_connections`
+  остаются дефолтными. Это настройка сервера (память конкретной VPS), в
+  репозитории её менять нельзя — иначе значение «на глаз» уедет на все стенды.
+  Задача деплоя: после замера `pg_stat_statements` выставить параметры и
+  записать их в `/etc/astro-soul/postgres.env`, который читает compose.
+- **Б-8 (`X-Forwarded-For`):** в репозитории `proxy_set_header
+  X-Forwarded-For $remote_addr` (перезапись, а не дописывание). Если перед
+  контейнером появится ещё один прокси (CDN/балансировщик), доверенных
+  источников станет два, и настройку надо будет пересмотреть — это решение
+  сервера, а не кода. Пока правило одно: клиентский IP берётся из последнего
+  хопа, подделанный заголовок не проходит.
 - `deploy/host-edge.yml` живёт только на сервере (host-specific), в репозитории
-  его нет; `compose pull` тянет только `api`/`web`, образ `astro` остаётся
+  его нет; `compose pull` тянет `api`/`web`/`admin`, образ `astro` остаётся
   локальным с bootstrap.

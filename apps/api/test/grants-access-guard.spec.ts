@@ -175,14 +175,21 @@ describe('единая дверь к доступу', () => {
   it('каждый гейт спрашивает `AccessService`, а не таблицы', () => {
     // Не обязательно `hasAccess`: окно совместимости считается по
     // `accessPeriod` + `quotaOf`, а подаренное право гасится
-    // `consumeSingleCompat`. Важно, что гейт спрашивает **сервис доступа**, а
-    // не таблицу подписок, и что таблицу он не читает вовсе.
+    // `consumeSingleCompat`. С 1.6.19 у разбора своя функция —
+    // `reportAccess`: она отдаёт не «да/нет», а решение с источником, и
+    // именно его показывает `/me.report_access`. Два разных ответа на один
+    // вопрос — это и был дефект round45, поэтому гейт обязан спрашивать
+    // дверь, но не обязан спрашивать `hasAccess` буквально.
     const offenders: string[] = [];
 
     for (const file of GATE_FILES) {
       const text = readFileSync(join(SRC, file), 'utf8');
 
-      if (!/this\.access\.(hasAccess|accessPeriod|consumeSingleCompat|singleCompatLeft)\(/u.test(text)) {
+      if (
+        !/this\.access\.(hasAccess|reportAccess|accessPeriod|consumeSingleCompat|singleCompatLeft)\(/u.test(
+          text,
+        )
+      ) {
         offenders.push(`${file}: не спрашивает AccessService`);
       }
       if (text.includes('FROM subscriptions')) {
